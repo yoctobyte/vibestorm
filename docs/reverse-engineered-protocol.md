@@ -13,6 +13,87 @@ It is intentionally practical rather than polished:
 
 This should be the document to keep open while reading captures, adding decoders, or comparing object variants.
 
+## External Reference Clues
+
+These references are useful for triangulating the protocol, but they are not equally authoritative.
+
+Working rule:
+
+- use live captures and repo tests for byte-accurate trust
+- use SL/OpenSim public docs to confirm message families, terminology, and likely semantics
+- treat old wiki pages and message-template material as structurally useful but potentially stale
+
+Recent external findings that matter for current work:
+
+- the Second Life protocol index still documents the UDP message system, packet layout, circuits, and packet accounting
+  - source: [Protocol](https://wiki.secondlife.com/wiki/Protocol)
+  - source: [Packet Layout](https://wiki.secondlife.com/wiki/Packet_Layout)
+  - source: [Packet Accounting](https://wiki.secondlife.com/wiki/Packet_Accounting)
+  - source: [Circuit](https://wiki.secondlife.com/wiki/Circuit)
+- the SL wiki confirms the outer message layouts for the object-update families we care about:
+  - `ObjectUpdate`
+  - `ImprovedTerseObjectUpdate`
+  - `ObjectUpdateCached`
+  - `ObjectUpdateCompressed`
+  - source: [ObjectUpdate](https://wiki.secondlife.com/wiki/ObjectUpdate)
+  - source: [ImprovedTerseObjectUpdate](https://wiki.secondlife.com/wiki/ImprovedTerseObjectUpdate)
+  - source: [ObjectUpdateCached](https://wiki.secondlife.com/wiki/ObjectUpdateCached)
+  - source: [ObjectUpdateCompressed](https://wiki.secondlife.com/wiki/ObjectUpdateCompressed)
+- Linden Lab viewer documentation labels `OUT_TERSE_IMPROVED` as a partial update path rather than a full-object creation path
+  - source: [Update Type](https://wiki.secondlife.com/wiki/Update_Type)
+- Linden Lab culling/interest-list notes explain the broader lifecycle:
+  - the client sends camera/frustum information
+  - the server maintains an interest list
+  - the simulator subscribes the client to objects with full state first
+  - later traffic is expected to be mostly deltas/updates
+  - unsubscribe traffic is paired with object-removal messages so the viewer can drop objects cleanly
+  - source: [Culling](https://wiki.secondlife.com/wiki/Culling)
+- OpenSim exposes interest-management controls that can plausibly change which update families appear in a given session:
+  - `[InterestManagement] UpdatePrioritizationScheme`
+  - `[InterestManagement] ObjectsCullingByDistance`
+  - source: [OpenSim.ini](https://opensimulator.org/wiki/Configuration/files/OpenSim/OpenSim.ini)
+- OpenSim release notes explicitly mention `ObjectsCullingByDistance` and interest-management work as an experimental area
+  - source: [OpenSim 0.9.0.0 release notes](https://opensimulator.dev/wiki/0.9.0.0_Release)
+- Linden Lab acknowledged in 2024-2025 that `message_template.msg` had drifted from current behavior and was updated again
+  - implication: the template is useful for framing and message numbers, but not sufficient on its own for behavioral truth
+  - source: [message_template.msg feedback thread](https://feedback.secondlife.com/server-bugs/p/documentation-message-templatemsg)
+- OpenSim mirror source-history snippets for `LLClientView.cs` show concrete send-side behavior:
+  - the update queue is explicitly split into `objectUpdates`, `compressedUpdates`, `terseUpdates`, and `terseAgentUpdates`
+  - `ObjectsCullingByDistance` and `UpdatePrioritizationScheme` are consulted during update dequeue/prioritization
+  - full updates force the `ObjectUpdate` path
+  - when the update flags are compatible with improved terse, the server builds `ImprovedTerseObjectUpdatePacket.ObjectDataBlock` values with `CreateImprovedTerseBlock(...)`
+  - self-avatar terse updates can be queued separately from general terse updates
+  - older and newer mirror snapshots both show compressed-update support as incomplete or disabled in practice in some code paths
+  - source: OpenSim mirror `LLClientView.cs` snippets from search results
+    - [queue split and send selection](https://git.4creative.net/OpenSim/OpenSimMirror/src/commit/3ee70aac0b41cd28e41f31a679b4ac4d615f46dc/OpenSim/Region/ClientStack/Linden/UDP/LLClientView.cs)
+    - [newer send selection with `canUseImproved` / `canUseCompressed`](https://git.4creative.net/OpenSim/OpenSimMirror/src/commit/f61e54892f2284b6f89bacf3069467c05b2eea11/OpenSim/Region/ClientStack/Linden/UDP/LLClientView.cs)
+    - [older conversion mask for improved terse eligibility](https://git.4creative.net/OpenSim/OpenSimMirror/src/commit/8a3958ad048535ad4f8a752cbd71d9114e53a42b/OpenSim/Region/ClientStack/Linden/UDP/LLClientView.cs)
+- OpenSim mirror source-history snippets also show specific `KillObject` safeguards:
+  - `LLClientView` keeps an `m_killRecord`
+  - comments state this is to prevent an update being sent after a kill, because some Linden viewers will keep displaying an ownerless phantom object until relog if that race occurs
+  - deleted objects can trigger another kill instead of a late update
+  - kill IDs are later flushed together with `SendKillObject(m_killRecord)`
+  - source: OpenSim mirror `LLClientView.cs` snippets from search results
+    - [kill-record comments and flush behavior](https://git.4creative.net/OpenSim/OpenSimMirror/src/commit/3ee70aac0b41cd28e41f31a679b4ac4d615f46dc/OpenSim/Region/ClientStack/Linden/UDP/LLClientView.cs)
+    - [lock + kill-record race protection](https://git.4creative.net/OpenSim/OpenSimMirror/src/commit/f61e54892f2284b6f89bacf3069467c05b2eea11/OpenSim/Region/ClientStack/Linden/UDP/LLClientView.cs)
+- OpenSim source-history also records a specific change that `SendKillObject` was modified to send multiple local IDs in one packet
+  - source: [OpenSim source-history snippet](https://gist.github.com/lkalif/544ba3685dca6b67a83e)
+- Second Life viewer-side public notes line up with those server safeguards:
+  - viewer render metadata labels `OUT_TERSE_IMPROVED` as a partial update
+  - release notes mention warnings about unknown local IDs in the `KillObject` handler
+  - source: [Update Type](https://wiki.secondlife.com/wiki/Update_Type)
+  - source: [Second Life 3.6.2 release notes](https://wiki.secondlife.com/wiki/Release_Notes/Second_Life_Release/3.6.2.278900)
+
+Current synthesis from those references plus live captures:
+
+- `ObjectUpdate` is the rich full-state lane
+- `ImprovedTerseObjectUpdate` is a partial-update lane carrying compact per-object state blobs
+- `ObjectUpdateCached` is a cache-oriented lane keyed by `local_id` plus `CRC` and `UpdateFlags`
+- object appearance and disappearance must be interpreted as part of interest-list subscribe/unsubscribe behavior, not only as create/delete events
+- OpenSim session-to-session differences in visible update traffic may be caused by interest-management configuration and scene activity, not only by client bugs
+- OpenSim server-side logic appears to choose packet families largely from update flags plus policy/culling state, not from one single global mode
+- `KillObject` handling is important enough that OpenSim keeps a kill record specifically to prevent post-kill update races
+
 ## Confidence Scale
 
 - `confirmed`: directly implemented and exercised in local OpenSim or fixture tests

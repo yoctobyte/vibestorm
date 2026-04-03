@@ -50,6 +50,9 @@ What changed recently:
 - nearby chat is stored for timeline correlation
 - `ChatFromSimulator` parsing now trims trailing NUL bytes from names and messages
 - protocol docs now include struct-style offset/length layouts
+- protocol docs now also record SL/OpenSim public-source clues about interest management, culling, and object-update families
+- docs now include `protocol-hypothesis.md` as the clearer named compact working model
+- protocol docs now include OpenSim `LLClientView` source-history clues for update-family selection and kill-record handling
 
 ## Verification
 
@@ -71,7 +74,7 @@ Current result after reconstructing the interrupted session:
 
 ## Recommended Next Step
 
-Run a fresh real OpenSim session against a clean `local/unknowns.sqlite3`, then inspect:
+Run a fresh real OpenSim session and inspect the latest recorded session in `local/unknowns.sqlite3`:
 
 1. how many `ObjectUpdate` packets were seen
 2. how many `ImprovedTerseObjectUpdate` packets were seen relative to `ObjectUpdate`
@@ -88,4 +91,7 @@ Run a fresh real OpenSim session against a clean `local/unknowns.sqlite3`, then 
   - use `--all` only for cross-session analysis
 - If test or synthetic data polluted the main DB, move it aside and start a new DB file instead of deleting useful historical sessions.
 - Keep `docs/reverse-engineered-protocol.md` current when a field becomes trustworthy.
+- Prefer `docs/protocol-hypothesis.md` when a future agent wants the short version first.
 - The most important current protocol lead is that terse entry `Data[0:4]` appears to be little-endian `local_id`.
+- External docs now point at OpenSim interest-management and culling settings as a plausible reason that some sessions show terse traffic while others do not.
+- OpenSim mirror snippets suggest `KillObject` is not just a simple delete message; it is part of a race-sensitive unsubscribe lifecycle and may batch multiple local IDs.
