@@ -1,0 +1,1 @@
+"""Simulator capability client code."""

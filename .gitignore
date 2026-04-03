@@ -1,0 +1,33 @@
+# Python environment and caches
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Local editor and OS noise
+.DS_Store
+Thumbs.db
+
+# Repo-local tool state
+.codex
+
+# Runtime logs and databases
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Large local integration runtime artifacts
+local/
+
