@@ -116,6 +116,93 @@ class ObjectUpdateSummary:
     object_count: int
 
 
+@dataclass(slots=True, frozen=True)
+class ObjectUpdateEntry:
+    local_id: int
+    state: int
+    full_id: UUID
+    crc: int
+    pcode: int
+    material: int
+    click_action: int
+    scale: tuple[float, float, float]
+    object_data_size: int
+    parent_id: int
+    update_flags: int
+    position: tuple[float, float, float] | None
+    rotation: tuple[float, float, float, float] | None
+    variant: str
+    name_values: dict[str, str]
+    texture_entry_size: int
+    texture_anim_size: int
+    data_size: int
+    text_size: int
+    media_url_size: int
+    ps_block_size: int
+    extra_params_size: int
+    default_texture_id: UUID | None
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectUpdateMessage:
+    region_handle: int
+    time_dilation: int
+    objects: tuple[ObjectUpdateEntry, ...]
+
+
+def _read_variable_field(data: bytes, offset: int, length_size: int, field_name: str) -> tuple[bytes, int]:
+    if len(data) < offset + length_size:
+        raise MessageDecodeError(f"{field_name} length is truncated")
+
+    length = int.from_bytes(data[offset : offset + length_size], "little")
+    start = offset + length_size
+    end = start + length
+    if len(data) < end:
+        raise MessageDecodeError(f"{field_name} payload is truncated")
+    return data[start:end], end
+
+
+def _read_variable_field_best_effort(
+    data: bytes,
+    offset: int,
+    length_size: int,
+    field_name: str,
+) -> tuple[bytes, int]:
+    if len(data) < offset + length_size:
+        raise MessageDecodeError(f"{field_name} length is truncated")
+
+    length_bytes = data[offset : offset + length_size]
+    candidates = (
+        int.from_bytes(length_bytes, "little"),
+        int.from_bytes(length_bytes, "big"),
+    )
+    start = offset + length_size
+    for length in candidates:
+        end = start + length
+        if len(data) >= end:
+            return data[start:end], end
+
+    raise MessageDecodeError(f"{field_name} payload is truncated")
+
+
+def _parse_name_values(payload: bytes) -> dict[str, str]:
+    text = payload.rstrip(b"\x00").decode("utf-8", errors="replace")
+    values: dict[str, str] = {}
+    for line in text.split("\n"):
+        if not line:
+            continue
+        parts = line.split(" ", 4)
+        if len(parts) < 5:
+            values[line] = ""
+            continue
+        key, value_type, access, sendto, value = parts
+        if value_type == "STRING" and access == "RW" and sendto == "SV":
+            values[key] = value
+        else:
+            values[key] = " ".join(parts[1:])
+    return values
+
+
 def parse_packet_ack(message: MessageDispatch) -> PacketAckMessage:
     if message.summary.name != "PacketAck":
         raise MessageDecodeError(f"expected PacketAck, got {message.summary.name}")
@@ -344,6 +431,180 @@ def parse_object_update_summary(message: MessageDispatch) -> ObjectUpdateSummary
         region_handle=unpack_from("<Q", message.body, 0)[0],
         time_dilation=unpack_from("<H", message.body, 8)[0],
         object_count=message.body[10],
+    )
+
+
+def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
+    if message.summary.name != "ObjectUpdate":
+        raise MessageDecodeError(f"expected ObjectUpdate, got {message.summary.name}")
+    if len(message.body) < 11:
+        raise MessageDecodeError("ObjectUpdate body is too short")
+
+    region_handle = unpack_from("<Q", message.body, 0)[0]
+    time_dilation = unpack_from("<H", message.body, 8)[0]
+    object_count = message.body[10]
+    if object_count != 1:
+        raise MessageDecodeError(f"unsupported ObjectUpdate object_count={object_count}")
+
+    offset = 11
+    if len(message.body) < offset + 40:
+        raise MessageDecodeError("ObjectUpdate object header is truncated")
+
+    local_id = unpack_from("<I", message.body, offset)[0]
+    state = message.body[offset + 4]
+    full_id = UUID(bytes=message.body[offset + 5 : offset + 21])
+    crc = unpack_from("<I", message.body, offset + 21)[0]
+    pcode = message.body[offset + 25]
+    material = message.body[offset + 26]
+    click_action = message.body[offset + 27]
+    scale = tuple(unpack_from("<fff", message.body, offset + 28))
+    offset += 40
+
+    object_data, offset = _read_variable_field(message.body, offset, 1, "ObjectUpdate.ObjectData")
+
+    if len(message.body) < offset + 8:
+        raise MessageDecodeError("ObjectUpdate parent/update block is truncated")
+    parent_id = unpack_from("<I", message.body, offset)[0]
+    update_flags = unpack_from("<I", message.body, offset + 4)[0]
+
+    position: tuple[float, float, float] | None = None
+    rotation: tuple[float, float, float, float] | None = None
+    variant = "unknown"
+    name_values: dict[str, str] = {}
+    texture_entry_size = 0
+    texture_anim_size = 0
+    data_size = 0
+    text_size = 0
+    media_url_size = 0
+    ps_block_size = 0
+    extra_params_size = 0
+    default_texture_id: UUID | None = None
+
+    if pcode == 9 and len(object_data) == 60:
+        position = tuple(unpack_from("<fff", object_data, 0))
+        rotation = tuple(unpack_from("<ffff", object_data, 40))
+        variant = "prim_basic"
+        tail_offset = offset + 8 + 22
+        texture_entry_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            2,
+            "ObjectUpdate.TextureEntry",
+        )
+        texture_anim_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            1,
+            "ObjectUpdate.TextureAnim",
+        )
+        _, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            2,
+            "ObjectUpdate.NameValue",
+        )
+        data_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            2,
+            "ObjectUpdate.Data",
+        )
+        text_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            1,
+            "ObjectUpdate.Text",
+        )
+        if len(message.body) < tail_offset + 4:
+            raise MessageDecodeError("ObjectUpdate text color is truncated")
+        tail_offset += 4
+        media_url_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            1,
+            "ObjectUpdate.MediaURL",
+        )
+        ps_block_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            1,
+            "ObjectUpdate.PSBlock",
+        )
+        extra_params_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            1,
+            "ObjectUpdate.ExtraParams",
+        )
+        texture_entry_size = len(texture_entry_payload)
+        if texture_entry_size >= 16:
+            default_texture_id = UUID(bytes=texture_entry_payload[:16])
+        texture_anim_size = len(texture_anim_payload)
+        data_size = len(data_payload)
+        text_size = len(text_payload)
+        media_url_size = len(media_url_payload)
+        ps_block_size = len(ps_block_payload)
+        extra_params_size = len(extra_params_payload)
+    elif pcode == 47 and len(object_data) == 76:
+        position = tuple(unpack_from("<fff", object_data, 16))
+        variant = "avatar_basic"
+        tail_offset = offset + 8 + 22
+        texture_entry_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            2,
+            "ObjectUpdate.TextureEntry",
+        )
+        texture_anim_payload, tail_offset = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            1,
+            "ObjectUpdate.TextureAnim",
+        )
+        name_value_payload, _ = _read_variable_field_best_effort(
+            message.body,
+            tail_offset,
+            2,
+            "ObjectUpdate.NameValue",
+        )
+        name_values = _parse_name_values(name_value_payload)
+        texture_entry_size = len(texture_entry_payload)
+        texture_anim_size = len(texture_anim_payload)
+    else:
+        raise MessageDecodeError(
+            f"unsupported ObjectUpdate variant pcode={pcode} object_data_size={len(object_data)}",
+        )
+
+    return ObjectUpdateMessage(
+        region_handle=region_handle,
+        time_dilation=time_dilation,
+        objects=(
+            ObjectUpdateEntry(
+                local_id=local_id,
+                state=state,
+                full_id=full_id,
+                crc=crc,
+                pcode=pcode,
+                material=material,
+                click_action=click_action,
+                scale=scale,  # type: ignore[arg-type]
+                object_data_size=len(object_data),
+                parent_id=parent_id,
+                update_flags=update_flags,
+                position=position,  # type: ignore[arg-type]
+                rotation=rotation,  # type: ignore[arg-type]
+                variant=variant,
+                name_values=name_values,
+                texture_entry_size=texture_entry_size,
+                texture_anim_size=texture_anim_size,
+                data_size=data_size,
+                text_size=text_size,
+                media_url_size=media_url_size,
+                ps_block_size=ps_block_size,
+                extra_params_size=extra_params_size,
+                default_texture_id=default_texture_id,
+            ),
+        ),
     )
 
 

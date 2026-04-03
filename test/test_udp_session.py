@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from struct import pack
+from tempfile import TemporaryDirectory
 from uuid import UUID
 
 from vibestorm.login.models import LoginBootstrap
@@ -242,3 +243,204 @@ class LiveCircuitSessionTests(unittest.TestCase):
 
         self.assertTrue(any(event.kind == "world.coarse_location" for event in session.events))
         self.assertEqual(len(session.world_view.coarse_agents), 2)
+
+    def test_object_update_capture_writes_fixture_files(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    capture_dir=Path(tmpdir),
+                    capture_messages=("ObjectUpdate",),
+                    capture_mode="all",
+                ),
+            )
+            session.start(10.0)
+
+            object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+            body = (
+                (123456789).to_bytes(8, "little")
+                + (42).to_bytes(2, "little")
+                + bytes([1])
+                + (7).to_bytes(4, "little")
+                + bytes([3])
+                + object_id.bytes
+                + (99).to_bytes(4, "little")
+                + bytes([9, 3, 1])
+                + pack("<fff", 1.0, 2.0, 3.0)
+                + bytes([len(object_data)])
+                + object_data
+                + (0).to_bytes(4, "little")
+                + (5).to_bytes(4, "little")
+                + (b"\x00" * 22)
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (0).to_bytes(2, "little")
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (b"\x00" * 4)
+                + bytes([0, 0, 0])
+                + (b"\x00" * 66)
+            )
+            inbound = build_packet(bytes([0x0C]) + body, sequence=77)
+
+            session.handle_incoming(inbound, 10.2)
+
+            capture_dir = Path(tmpdir) / "ObjectUpdate"
+            payloads = sorted(capture_dir.glob("*.body.bin"))
+            metadata = sorted(capture_dir.glob("*.json"))
+            self.assertEqual(len(payloads), 1)
+            self.assertEqual(len(metadata), 1)
+            self.assertEqual(payloads[0].read_bytes(), body)
+            self.assertIn('"message_name": "ObjectUpdate"', metadata[0].read_text(encoding="utf-8"))
+
+    def test_object_update_capture_smart_mode_skips_known_messages(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    capture_dir=Path(tmpdir),
+                    capture_messages=("ObjectUpdate",),
+                    capture_mode="smart",
+                ),
+            )
+            session.start(10.0)
+
+            object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+            body = (
+                (123456789).to_bytes(8, "little")
+                + (42).to_bytes(2, "little")
+                + bytes([1])
+                + (7).to_bytes(4, "little")
+                + bytes([3])
+                + object_id.bytes
+                + (99).to_bytes(4, "little")
+                + bytes([9, 3, 1])
+                + pack("<fff", 1.0, 2.0, 3.0)
+                + bytes([len(object_data)])
+                + object_data
+                + (0).to_bytes(4, "little")
+                + (5).to_bytes(4, "little")
+                + (b"\x00" * 22)
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (0).to_bytes(2, "little")
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (b"\x00" * 4)
+                + bytes([0, 0, 0])
+                + (b"\x00" * 66)
+            )
+            inbound = build_packet(bytes([0x0C]) + body, sequence=77)
+
+            session.handle_incoming(inbound, 10.2)
+
+            capture_dir = Path(tmpdir) / "ObjectUpdate"
+            self.assertFalse(capture_dir.exists())
+
+    def test_object_update_capture_smart_mode_skips_known_avatar_messages(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    capture_dir=Path(tmpdir),
+                    capture_messages=("ObjectUpdate",),
+                    capture_mode="smart",
+                ),
+            )
+            session.start(10.0)
+
+            name_values = b"FirstName STRING RW SV Vibestorm\nLastName STRING RW SV Admin\nTitle STRING RW SV \x00"
+            object_data = (
+                (0).to_bytes(4, "little")
+                + (0).to_bytes(4, "little")
+                + (0).to_bytes(4, "little")
+                + pack("<f", 1.0)
+                + pack("<fff", 128.0, 128.0, 25.96)
+                + (b"\x00" * 32)
+                + pack("<f", 0.021197397261857986)
+                + (b"\x00" * 12)
+            )
+            body = (
+                (1099511628032000).to_bytes(8, "little")
+                + (65535).to_bytes(2, "little")
+                + bytes([1])
+                + (367911621).to_bytes(4, "little")
+                + bytes([0])
+                + self.bootstrap.session_id.bytes
+                + (0).to_bytes(4, "little")
+                + bytes([47, 4, 0])
+                + pack("<fff", 0.45, 0.6, 1.9)
+                + bytes([len(object_data)])
+                + object_data
+                + (0).to_bytes(4, "little")
+                + (0).to_bytes(4, "little")
+                + (b"\x00" * 22)
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + len(name_values).to_bytes(2, "big")
+                + name_values
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (b"\x00" * 4)
+                + bytes([0, 0, 0])
+                + (b"\x00" * 66)
+            )
+            inbound = build_packet(bytes([0x0C]) + body, sequence=78)
+
+            session.handle_incoming(inbound, 10.2)
+
+            capture_dir = Path(tmpdir) / "ObjectUpdate"
+            self.assertFalse(capture_dir.exists())
+
+    def test_object_update_capture_smart_mode_keeps_rich_prim_messages(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    capture_dir=Path(tmpdir),
+                    capture_messages=("ObjectUpdate",),
+                    capture_mode="smart",
+                ),
+            )
+            session.start(10.0)
+
+            object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+            body = (
+                (123456789).to_bytes(8, "little")
+                + (42).to_bytes(2, "little")
+                + bytes([1])
+                + (7).to_bytes(4, "little")
+                + bytes([3])
+                + object_id.bytes
+                + (99).to_bytes(4, "little")
+                + bytes([9, 3, 1])
+                + pack("<fff", 1.0, 2.0, 3.0)
+                + bytes([len(object_data)])
+                + object_data
+                + (0).to_bytes(4, "little")
+                + (5).to_bytes(4, "little")
+                + (b"\x00" * 22)
+                + (4).to_bytes(2, "little")
+                + b"\x11\x22\x33\x44"
+                + bytes([0])
+                + (0).to_bytes(2, "little")
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (b"\x00" * 4)
+                + bytes([0, 0, 0])
+                + (b"\x00" * 66)
+            )
+            inbound = build_packet(bytes([0x0C]) + body, sequence=79)
+
+            session.handle_incoming(inbound, 10.2)
+
+            capture_dir = Path(tmpdir) / "ObjectUpdate"
+            self.assertTrue(capture_dir.exists())
+            self.assertEqual(len(list(capture_dir.glob("*.body.bin"))), 1)

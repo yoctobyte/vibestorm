@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from struct import pack
 from uuid import UUID
 
 from vibestorm.udp.dispatch import MessageDispatcher
@@ -13,6 +14,7 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_coarse_location_update,
+    parse_object_update,
     parse_object_update_summary,
     parse_packet_ack,
     parse_agent_movement_complete,
@@ -198,9 +200,160 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.sun_phase, 0.5)
 
     def test_parse_object_update_summary(self) -> None:
-        body = (123456789).to_bytes(8, "little") + (42).to_bytes(2, "little") + bytes([3]) + b"\x00" * 5
+        full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([3])
+            + full_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([9, 3, 1])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (b"\x00" * 22)
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (0).to_bytes(2, "little")
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (b"\x00" * 4)
+            + bytes([0, 0, 0])
+            + (b"\x00" * 66)
+        )
         dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
         parsed = parse_object_update_summary(dispatched)
         self.assertEqual(parsed.region_handle, 123456789)
         self.assertEqual(parsed.time_dilation, 42)
-        self.assertEqual(parsed.object_count, 3)
+        self.assertEqual(parsed.object_count, 1)
+
+    def test_parse_object_update(self) -> None:
+        full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([3])
+            + full_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([9, 3, 1])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (b"\x00" * 22)
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (0).to_bytes(2, "little")
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (b"\x00" * 4)
+            + bytes([0, 0, 0])
+            + (b"\x00" * 66)
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+        parsed = parse_object_update(dispatched)
+
+        self.assertEqual(parsed.region_handle, 123456789)
+        self.assertEqual(parsed.time_dilation, 42)
+        self.assertEqual(len(parsed.objects), 1)
+        self.assertEqual(parsed.objects[0].local_id, 7)
+        self.assertEqual(parsed.objects[0].full_id, full_id)
+        self.assertEqual(parsed.objects[0].parent_id, 0)
+        self.assertEqual(parsed.objects[0].update_flags, 5)
+        self.assertEqual(parsed.objects[0].object_data_size, 60)
+        self.assertEqual(parsed.objects[0].variant, "prim_basic")
+        self.assertEqual(parsed.objects[0].position, (1.0, 2.0, 3.0))
+        self.assertEqual(parsed.objects[0].texture_entry_size, 0)
+
+    def test_parse_avatar_style_object_update(self) -> None:
+        avatar_id = UUID("11111111-2222-3333-4444-555555555555")
+        name_values = b"FirstName STRING RW SV Vibestorm\nLastName STRING RW SV Admin\nTitle STRING RW SV \x00"
+        object_data = (
+            (0).to_bytes(4, "little")
+            + (0).to_bytes(4, "little")
+            + (0).to_bytes(4, "little")
+            + pack("<f", 1.0)
+            + pack("<fff", 128.0, 128.0, 25.96)
+            + (b"\x00" * 32)
+            + pack("<f", 0.021197397261857986)
+            + (b"\x00" * 12)
+        )
+        body = (
+            (1099511628032000).to_bytes(8, "little")
+            + (65535).to_bytes(2, "little")
+            + bytes([1])
+            + (367911621).to_bytes(4, "little")
+            + bytes([0])
+            + avatar_id.bytes
+            + (0).to_bytes(4, "little")
+            + bytes([47, 4, 0])
+            + pack("<fff", 0.45, 0.6, 1.9)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (0).to_bytes(4, "little")
+            + (b"\x00" * 22)
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + len(name_values).to_bytes(2, "big")
+            + name_values
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (b"\x00" * 4)
+            + bytes([0, 0, 0])
+            + (b"\x00" * 66)
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+
+        parsed = parse_object_update(dispatched)
+
+        self.assertEqual(parsed.objects[0].variant, "avatar_basic")
+        self.assertEqual(parsed.objects[0].position, (128.0, 128.0, 25.959999084472656))
+        self.assertEqual(parsed.objects[0].name_values["FirstName"], "Vibestorm")
+        self.assertEqual(parsed.objects[0].name_values["LastName"], "Admin")
+
+    def test_parse_prim_object_update_with_texture_entry(self) -> None:
+        full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        texture_id = UUID("00895567-4724-cb43-ed92-0b47caed1546")
+        object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+        texture_entry = texture_id.bytes + (b"\x00" * 48)
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([3])
+            + full_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([9, 3, 1])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (b"\x00" * 22)
+            + len(texture_entry).to_bytes(2, "little")
+            + texture_entry
+            + bytes([0])
+            + (0).to_bytes(2, "little")
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (b"\x00" * 4)
+            + bytes([0, 0, 0])
+            + (b"\x00" * 66)
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+
+        parsed = parse_object_update(dispatched)
+
+        self.assertEqual(parsed.objects[0].texture_entry_size, 64)
+        self.assertEqual(parsed.objects[0].default_texture_id, texture_id)

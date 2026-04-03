@@ -1,0 +1,336 @@
+{
+  "backlog": [
+    {
+      "count": 8,
+      "fixtures": [
+        "ObjectUpdate/001-seq000927.json",
+        "ObjectUpdate/002-seq000929.json",
+        "ObjectUpdate/003-seq000930.json",
+        "ObjectUpdate/004-seq000938.json",
+        "ObjectUpdate/005-seq000939.json",
+        "ObjectUpdate/006-seq000944.json",
+        "ObjectUpdate/007-seq000945.json",
+        "ObjectUpdate/008-seq000958.json"
+      ],
+      "key": "object-update-rich-tail",
+      "summary": "Known ObjectUpdate variants with non-empty tail data such as TextureEntry or ExtraParams."
+    }
+  ],
+  "capture_count": 8,
+  "captures": [
+    {
+      "at_seconds": 40.114103,
+      "body_path": "ObjectUpdate/001-seq000927.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/001-seq000927.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 927
+    },
+    {
+      "at_seconds": 40.129324,
+      "body_path": "ObjectUpdate/002-seq000929.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000929.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 929
+    },
+    {
+      "at_seconds": 40.204804,
+      "body_path": "ObjectUpdate/003-seq000930.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000930.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 930
+    },
+    {
+      "at_seconds": 46.270043,
+      "body_path": "ObjectUpdate/004-seq000938.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000938.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 938
+    },
+    {
+      "at_seconds": 46.300351,
+      "body_path": "ObjectUpdate/005-seq000939.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq000939.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 939
+    },
+    {
+      "at_seconds": 48.222492,
+      "body_path": "ObjectUpdate/006-seq000944.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/006-seq000944.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 944
+    },
+    {
+      "at_seconds": 48.283155,
+      "body_path": "ObjectUpdate/007-seq000945.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/007-seq000945.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 945
+    },
+    {
+      "at_seconds": 57.991509,
+      "body_path": "ObjectUpdate/008-seq000958.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/008-seq000958.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "extra_params_size": 0,
+        "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "local_id": 367911629,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          137.3898468017578,
+          126.17982482910156,
+          24.33590316772461
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.7071068286895752,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 958
+    }
+  ],
+  "generated_at": "2026-04-03T10:50:38.263687+00:00",
+  "root": "test/fixtures/live"
+}

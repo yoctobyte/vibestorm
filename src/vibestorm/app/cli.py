@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import platform
 from pathlib import Path
+from typing import Iterable
 
 from vibestorm import __version__
 from vibestorm.app.main import get_status
@@ -21,9 +22,10 @@ from vibestorm.udp.messages import (
     parse_region_handshake,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
-from vibestorm.udp.session import SessionConfig, SessionEvent, run_live_session
+from vibestorm.udp.session import SessionConfig, SessionEvent, SessionReport, run_live_session
 from vibestorm.udp.socket_client import UdpSocketClient
 from vibestorm.udp.zerocode import decode_zerocode
+from vibestorm.world.models import WorldView
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,7 +93,121 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--duration", type=float, default=15.0)
     session_parser.add_argument("--agent-update-interval", type=float, default=1.0)
     session_parser.add_argument("--spawn-cube", action="store_true")
+    session_parser.add_argument(
+        "--capture-dir",
+        type=Path,
+        help="Write selected inbound message fixtures under this directory.",
+    )
+    session_parser.add_argument(
+        "--capture-message",
+        action="append",
+        default=[],
+        help="Message name to capture. Repeatable. Defaults to ObjectUpdate when capture is enabled.",
+    )
+    session_parser.add_argument(
+        "--capture-mode",
+        choices=("smart", "all"),
+        default="smart",
+        help="Capture only unknown/violating messages or every matching message.",
+    )
+    session_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print live session events and transport diagnostics.",
+    )
     return parser
+
+
+def format_world_status(world_view: WorldView) -> list[str]:
+    lines: list[str] = []
+    if world_view.region is not None:
+        lines.append(
+            f"world[region]={world_view.region.name} "
+            f"grid=({world_view.region.grid_x},{world_view.region.grid_y})",
+        )
+    if world_view.latest_sim_stats is not None:
+        lines.append(
+            f"world[sim_stats]=updates:{world_view.sim_stats_updates} "
+            f"capacity:{world_view.latest_sim_stats.object_capacity} "
+            f"stats:{world_view.latest_sim_stats.stats_count}",
+        )
+    if world_view.latest_time is not None:
+        lines.append(
+            f"world[time]=updates:{world_view.time_updates} "
+            f"sun_phase:{world_view.latest_time.sun_phase:.3f} "
+            f"sec_per_day:{world_view.latest_time.sec_per_day}",
+        )
+    if world_view.coarse_agents:
+        lines.append(
+            f"world[coarse_agents]=updates:{world_view.coarse_location_updates} "
+            f"count:{len(world_view.coarse_agents)}",
+        )
+        for agent in world_view.coarse_agents:
+            lines.append(
+                f"world[coarse_agent]={agent.agent_id} "
+                f"pos=({agent.x},{agent.y},{agent.z}) "
+                f"you={agent.is_you} prey={agent.is_prey}",
+            )
+    if world_view.latest_object_update is not None:
+        lines.append(
+            f"world[object_update]=events:{world_view.object_update_events} "
+            f"objects:{world_view.latest_object_update.object_count} "
+            f"region_handle:{world_view.latest_object_update.region_handle}",
+        )
+    if world_view.objects:
+        lines.append(f"world[objects]=tracked:{len(world_view.objects)}")
+        for obj in sorted(world_view.objects.values(), key=lambda item: item.local_id)[:3]:
+            line = (
+                f"world[object]={obj.full_id} "
+                f"local_id={obj.local_id} parent_id={obj.parent_id} "
+                f"pcode={obj.pcode} variant={obj.variant} "
+                f"scale=({obj.scale[0]:.2f},{obj.scale[1]:.2f},{obj.scale[2]:.2f})"
+            )
+            if obj.position is not None:
+                line += f" pos=({obj.position[0]:.2f},{obj.position[1]:.2f},{obj.position[2]:.2f})"
+            if "FirstName" in obj.name_values or "LastName" in obj.name_values:
+                first = obj.name_values.get("FirstName", "").strip()
+                last = obj.name_values.get("LastName", "").strip()
+                full_name = " ".join(part for part in (first, last) if part)
+                if full_name:
+                    line += f" name={full_name}"
+            if obj.default_texture_id is not None:
+                line += f" texture={obj.default_texture_id}"
+            lines.append(line)
+    return lines
+
+
+def format_session_report(report: SessionReport, *, verbose: bool = False) -> list[str]:
+    lines = [
+        f"status={'closed' if report.close_reason else 'completed'}",
+        f"elapsed={report.elapsed_seconds:.2f}",
+        f"received={report.total_received}",
+        f"movement_completed={report.movement_completed}",
+    ]
+    if report.last_region_name is not None:
+        lines.append(f"region_name={report.last_region_name}")
+    if report.close_reason is not None:
+        lines.append(f"close_reason={report.close_reason}")
+    lines.extend(format_world_status(report.world_view))
+    if verbose:
+        lines.extend(
+            [
+                f"handshake_reply_sent={report.handshake_reply_sent}",
+                f"ping_requests_handled={report.ping_requests_handled}",
+                f"appended_acks_received={report.appended_acks_received}",
+                f"packet_acks_received={report.packet_acks_received}",
+                f"agent_updates_sent={report.agent_update_count}",
+                f"pending_reliable={len(report.pending_reliable_sequences)}",
+            ],
+        )
+        for name in sorted(report.message_counts):
+            lines.append(f"message[{name}]={report.message_counts[name]}")
+    return lines
+
+
+def print_lines(lines: Iterable[str]) -> None:
+    for line in lines:
+        print(line)
 
 
 def main() -> int:
@@ -270,6 +386,16 @@ def main() -> int:
             platform_version=platform.platform(),
         )
         bootstrap = asyncio.run(LoginClient().login(request))
+        print(
+            "session=starting "
+            f"sim={bootstrap.sim_ip}:{bootstrap.sim_port} "
+            f"duration={args.duration:.1f}s "
+            f"spawn_cube={args.spawn_cube} "
+            f"capture={args.capture_dir if args.capture_dir else 'off'} "
+            f"capture_mode={args.capture_mode} "
+            f"verbose={args.verbose}",
+            flush=True,
+        )
         report = asyncio.run(
             run_live_session(
                 bootstrap,
@@ -278,60 +404,14 @@ def main() -> int:
                     duration_seconds=args.duration,
                     agent_update_interval_seconds=args.agent_update_interval,
                     spawn_test_cube=args.spawn_cube,
+                    capture_dir=args.capture_dir,
+                    capture_messages=tuple(args.capture_message),
+                    capture_mode=args.capture_mode,
                 ),
-                on_event=print_session_event,
+                on_event=print_session_event if args.verbose else None,
             ),
         )
-        print(f"status={'closed' if report.close_reason else 'completed'}")
-        print(f"elapsed={report.elapsed_seconds:.2f}")
-        print(f"received={report.total_received}")
-        print(f"handshake_reply_sent={report.handshake_reply_sent}")
-        print(f"movement_completed={report.movement_completed}")
-        print(f"ping_requests_handled={report.ping_requests_handled}")
-        print(f"appended_acks_received={report.appended_acks_received}")
-        print(f"packet_acks_received={report.packet_acks_received}")
-        print(f"agent_updates_sent={report.agent_update_count}")
-        print(f"pending_reliable={len(report.pending_reliable_sequences)}")
-        if report.last_region_name is not None:
-            print(f"region_name={report.last_region_name}")
-        if report.close_reason is not None:
-            print(f"close_reason={report.close_reason}")
-        if report.world_view.region is not None:
-            print(
-                f"world[region]={report.world_view.region.name} "
-                f"grid=({report.world_view.region.grid_x},{report.world_view.region.grid_y})",
-            )
-        if report.world_view.latest_sim_stats is not None:
-            print(
-                f"world[sim_stats]=updates:{report.world_view.sim_stats_updates} "
-                f"capacity:{report.world_view.latest_sim_stats.object_capacity} "
-                f"stats:{report.world_view.latest_sim_stats.stats_count}",
-            )
-        if report.world_view.latest_time is not None:
-            print(
-                f"world[time]=updates:{report.world_view.time_updates} "
-                f"sun_phase:{report.world_view.latest_time.sun_phase:.3f} "
-                f"sec_per_day:{report.world_view.latest_time.sec_per_day}",
-            )
-        if report.world_view.coarse_agents:
-            print(
-                f"world[coarse_agents]=updates:{report.world_view.coarse_location_updates} "
-                f"count:{len(report.world_view.coarse_agents)}",
-            )
-            for agent in report.world_view.coarse_agents:
-                print(
-                    f"world[coarse_agent]={agent.agent_id} "
-                    f"pos=({agent.x},{agent.y},{agent.z}) "
-                    f"you={agent.is_you} prey={agent.is_prey}",
-                )
-        if report.world_view.latest_object_update is not None:
-            print(
-                f"world[object_update]=events:{report.world_view.object_update_events} "
-                f"objects:{report.world_view.latest_object_update.object_count} "
-                f"region_handle:{report.world_view.latest_object_update.region_handle}",
-            )
-        for name in sorted(report.message_counts):
-            print(f"message[{name}]={report.message_counts[name]}")
+        print_lines(format_session_report(report, verbose=args.verbose))
         return 0
 
     status = get_status()

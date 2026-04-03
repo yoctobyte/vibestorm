@@ -15,6 +15,12 @@ Confirmed working now:
 - UDP handshake probing works
 - a durable UDP session can stay alive for 60 seconds against local OpenSim
 - experimental client-side cube spawn appears to work against local OpenSim
+- default session console output now emphasizes world status rather than transport/debug noise
+- a first keyed object-entity slice is now populated from `ObjectUpdate`
+- live fixture analysis has now identified a stable single-prim `ObjectUpdate` variant with decoded position
+- live fixture analysis has now identified a basic avatar-style `ObjectUpdate` variant with decoded position and name values
+- rich prim `ObjectUpdate` packets now also expose a stable default texture UUID from `TextureEntry`
+- captured fixture directories can now be indexed into a structured backlog automatically
 
 User-confirmed status:
 
@@ -58,15 +64,26 @@ User-confirmed status:
 ### World-view slice
 
 - a UI-agnostic `WorldView` exists in `src/vibestorm/world/models.py`
+- message-to-world application is now split into `src/vibestorm/world/updater.py`
 - session traffic now feeds normalized state for:
   - region info
   - sim stats
   - simulator time
   - coarse agent locations
   - object update summaries
+  - first keyed object entities from stable `ObjectUpdate` fields
+- keyed prim objects now also decode world position from the known 60-byte `ObjectData` variant
+- basic avatar-style object updates now decode position plus `FirstName` / `LastName` / `Title` name values
+- rich prim object updates now expose a first decoded texture asset reference via `default_texture_id`
 - coarse locations now also populate keyed agent-presence entries by UUID where available
 - `session-run` now prints compact world summaries at the end of a run
+- `session-run` now prints a short startup banner before the live loop begins
+- `session-run` defaults to world-facing output; `--verbose` enables live event and transport diagnostics
 - `session-run` can optionally send an experimental `ObjectAdd` to spawn a test cube for local debugging
+- live packet capture now supports a smart anomaly-focused mode for `ObjectUpdate` fixture collection
+- smart capture now skips both known prim and known avatar `ObjectUpdate` variants by default
+- smart capture now still retains known prim packets when they carry non-empty rich tail data such as `TextureEntry`
+- `./run.sh fixtures` now rebuilds `test/fixtures/live/index.json` as a structured capture inventory/backlog
 
 ### Developer ergonomics
 
@@ -140,18 +157,17 @@ The durable-session core is now proven against local OpenSim. The next priority 
 
 Immediate next tasks:
 
-1. move message-to-world application into a dedicated updater/adapter layer
-2. expand keyed world entities beyond coarse agent presence
-3. deepen `ObjectUpdate` decoding toward identities and positions
-4. capture stable live fixtures from the now-working session loop, including with spawned test geometry
+1. decode more of the known prim `ObjectUpdate` tail, especially full `TextureEntry`, face overrides, and extra params
+2. expand keyed world entities beyond coarse agent presence and first object metadata
+3. capture and classify any remaining anomalous/live `ObjectUpdate` variants beyond the known prim and avatar forms
+4. connect decoded texture/material references to later asset-fetch work
 5. keep the world model frontend-agnostic for future console/2D/3D/web heads
 
 ## Likely Next Coding Targets
 
-- world updater module that applies parsed messages into `WorldView`
 - richer keyed agent/entity storage
 - fixture capture for stable live packets
-- deeper `ObjectUpdate` decoding for world-state work
+- deeper `ObjectUpdate` decoding for world-state work, especially identity + position-bearing fields
 - normalized object and coarse-avatar models
 
 ## Out Of Scope For The Immediate Next Step

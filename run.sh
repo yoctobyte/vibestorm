@@ -11,6 +11,8 @@ START_LOCATION="${VIBESTORM_START_LOCATION:-uri:Vibestorm Test&128&128&25}"
 SESSION_DURATION="${VIBESTORM_SESSION_DURATION:-60}"
 AGENT_UPDATE_INTERVAL="${VIBESTORM_AGENT_UPDATE_INTERVAL:-1.0}"
 SPAWN_CUBE="${VIBESTORM_SPAWN_CUBE:-0}"
+CAPTURE_DIR="${VIBESTORM_CAPTURE_DIR:-}"
+CAPTURE_MODE="${VIBESTORM_CAPTURE_MODE:-smart}"
 
 usage() {
   cat <<EOF
@@ -25,6 +27,7 @@ Commands:
   udp          Send the one-shot UseCircuitCode UDP probe
   handshake    Run the handshake probe
   session      Run the bounded live UDP session loop
+  fixtures     Rebuild the structured fixture inventory/backlog
   test         Run the unit test suite
 
 Defaults come from the local OpenSim notes and can be overridden with env vars:
@@ -36,6 +39,8 @@ Defaults come from the local OpenSim notes and can be overridden with env vars:
   VIBESTORM_SESSION_DURATION
   VIBESTORM_AGENT_UPDATE_INTERVAL
   VIBESTORM_SPAWN_CUBE
+  VIBESTORM_CAPTURE_DIR
+  VIBESTORM_CAPTURE_MODE
 
 Examples:
   ./run.sh opensim
@@ -43,6 +48,8 @@ Examples:
   ./run.sh bootstrap
   VIBESTORM_SESSION_DURATION=15 ./run.sh session
   VIBESTORM_SPAWN_CUBE=1 ./run.sh session
+  VIBESTORM_CAPTURE_DIR=test/fixtures/live ./run.sh session --capture-message ObjectUpdate
+  VIBESTORM_CAPTURE_DIR=test/fixtures/live VIBESTORM_CAPTURE_MODE=all ./run.sh session --capture-message ObjectUpdate
   VIBESTORM_PASSWORD=secret ./run.sh handshake
 EOF
 }
@@ -102,6 +109,10 @@ case "$command" in
     if [[ "$SPAWN_CUBE" == "1" ]]; then
       session_args+=(--spawn-cube)
     fi
+    if [[ -n "$CAPTURE_DIR" ]]; then
+      session_args+=(--capture-dir "$CAPTURE_DIR")
+    fi
+    session_args+=(--capture-mode "$CAPTURE_MODE")
     python_runner -m vibestorm.app.cli session-run \
       "${cli_base_args[@]}" \
       --duration "$SESSION_DURATION" \
@@ -112,6 +123,10 @@ case "$command" in
   test)
     cd "$ROOT_DIR"
     python_runner -m unittest discover -s test -v "$@"
+    ;;
+  fixtures)
+    cd "$ROOT_DIR"
+    python_runner tools/build_fixture_inventory.py "$@"
     ;;
   *)
     printf 'Unknown command: %s\n\n' "$command" >&2

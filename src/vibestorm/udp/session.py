@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import socket
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from vibestorm.login.models import LoginBootstrap
@@ -21,17 +23,14 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_agent_movement_complete,
-    parse_coarse_location_update,
-    parse_object_update_summary,
     parse_packet_ack,
     parse_region_handshake,
-    parse_sim_stats,
-    parse_simulator_viewer_time,
     parse_start_ping_check,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
 from vibestorm.world.models import WorldView
+from vibestorm.world.updater import WorldUpdater
 
 
 @dataclass(slots=True, frozen=True)
@@ -43,6 +42,10 @@ class SessionConfig:
     spawn_delay_seconds: float = 2.0
     region_handshake_reply_flags: int = 0
     max_logged_events: int = 64
+    capture_dir: Path | None = None
+    capture_messages: tuple[str, ...] = ()
+    max_captured_per_message: int = 8
+    capture_mode: str = "smart"
 
 
 @dataclass(slots=True, frozen=True)
@@ -98,6 +101,11 @@ class LiveCircuitSession:
     started_at: float | None = None
     events: list[SessionEvent] = field(default_factory=list)
     world_view: WorldView = field(default_factory=WorldView)
+    world_updater: WorldUpdater = field(init=False)
+    captured_messages: Counter[str] = field(default_factory=Counter)
+
+    def __post_init__(self) -> None:
+        self.world_updater = WorldUpdater(self.world_view)
 
     def start(self, now: float) -> list[bytes]:
         if self.started:
@@ -140,7 +148,6 @@ class LiveCircuitSession:
         dispatched = self.dispatcher.dispatch(view.message)
         self.total_received += 1
         self.received_messages[dispatched.summary.name] += 1
-
         if view.header.is_reliable and view.header.sequence not in self.queued_acks:
             self.queued_acks.append(view.header.sequence)
         if view.header.is_reliable:
@@ -184,22 +191,18 @@ class LiveCircuitSession:
         if dispatched.summary.name == "RegionHandshake":
             handshake = parse_region_handshake(dispatched)
             self.last_region_name = handshake.sim_name
-            self._record_event(
-                now,
-                "handshake.region",
-                f"sim_name={handshake.sim_name} flags={handshake.region_flags}",
-            )
             self.camera_center = (
                 float(self.bootstrap.region_x) + 128.0,
                 float(self.bootstrap.region_y) + 128.0,
                 self.camera_center[2],
             )
             self.handshake_reply_sent = True
-            self.world_view.set_region(
-                name=handshake.sim_name,
-                grid_x=self.bootstrap.region_x // 256,
-                grid_y=self.bootstrap.region_y // 256,
+            world_event = self.world_updater.apply_region_handshake(
+                handshake,
+                region_x=self.bootstrap.region_x,
+                region_y=self.bootstrap.region_y,
             )
+            self._record_event(now, world_event.kind, world_event.detail)
             packets = [
                 self._build_outbound_packet(
                     encode_region_handshake_reply(
@@ -225,38 +228,19 @@ class LiveCircuitSession:
                 "movement.complete",
                 f"region_handle={movement.region_handle} position={movement.position}",
             )
-        elif dispatched.summary.name == "SimStats":
-            stats = parse_sim_stats(dispatched)
-            self.world_view.apply_sim_stats(stats)
-            self._record_event(
-                now,
-                "sim.stats",
-                f"region=({stats.region_x},{stats.region_y}) object_capacity={stats.object_capacity} stats={len(stats.stats)} pid={stats.pid}",
-            )
-        elif dispatched.summary.name == "SimulatorViewerTimeMessage":
-            time_info = parse_simulator_viewer_time(dispatched)
-            self.world_view.apply_simulator_time(time_info)
-            self._record_event(
-                now,
-                "sim.time",
-                f"usec_since_start={time_info.usec_since_start} sec_per_day={time_info.sec_per_day} sun_phase={time_info.sun_phase:.3f}",
-            )
-        elif dispatched.summary.name == "CoarseLocationUpdate":
-            coarse = parse_coarse_location_update(dispatched)
-            self.world_view.apply_coarse_location_update(coarse)
-            self._record_event(
-                now,
-                "world.coarse_location",
-                f"locations={len(coarse.locations)} agents={len(coarse.agent_ids)} you={coarse.you_index} prey={coarse.prey_index}",
-            )
-        elif dispatched.summary.name == "ObjectUpdate":
-            object_update = parse_object_update_summary(dispatched)
-            self.world_view.apply_object_update_summary(object_update)
-            self._record_event(
-                now,
-                "world.object_update",
-                f"region_handle={object_update.region_handle} objects={object_update.object_count} dilation={object_update.time_dilation}",
-            )
+        else:
+            world_event = self.world_updater.apply_dispatch(dispatched)
+            if world_event is not None:
+                self._record_event(now, world_event.kind, world_event.detail)
+                self._capture_incoming_message(
+                    message_name=dispatched.summary.name,
+                    sequence=view.header.sequence,
+                    is_reliable=view.header.is_reliable,
+                    appended_acks=view.appended_acks,
+                    at_seconds=now - (self.started_at if self.started_at is not None else now),
+                    message_body=dispatched.body,
+                    reason=world_event.kind,
+                )
 
         return self._flush_transport_packets(now)
 
@@ -419,6 +403,59 @@ class LiveCircuitSession:
             self.events.pop(0)
         if self.on_event is not None:
             self.on_event(event)
+
+    def _capture_incoming_message(
+        self,
+        *,
+        message_name: str,
+        sequence: int,
+        is_reliable: bool,
+        appended_acks: tuple[int, ...],
+        at_seconds: float,
+        message_body: bytes,
+        reason: str,
+    ) -> None:
+        if self.config.capture_dir is None:
+            return
+
+        capture_messages = self.config.capture_messages or ("ObjectUpdate",)
+        if message_name not in capture_messages:
+            return
+
+        if self.config.capture_mode == "smart" and reason == "world.object_update":
+            return
+
+        captured_count = self.captured_messages[message_name]
+        if captured_count >= self.config.max_captured_per_message:
+            return
+
+        target_dir = self.config.capture_dir / message_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"{captured_count + 1:03d}-seq{sequence:06d}"
+        payload_path = target_dir / f"{stem}.body.bin"
+        metadata_path = target_dir / f"{stem}.json"
+
+        payload_path.write_bytes(message_body)
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "message_name": message_name,
+                    "sequence": sequence,
+                    "is_reliable": is_reliable,
+                    "appended_acks": list(appended_acks),
+                    "at_seconds": round(at_seconds, 6),
+                    "body_size": len(message_body),
+                    "capture_reason": reason,
+                    "capture_mode": self.config.capture_mode,
+                    "source": "live_session_capture",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.captured_messages[message_name] += 1
 
 
 async def run_live_session(
