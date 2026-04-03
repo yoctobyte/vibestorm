@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import socket
 import xmlrpc.client
 from dataclasses import dataclass
 from uuid import UUID
@@ -15,16 +16,39 @@ class LoginError(RuntimeError):
     """Raised when login/bootstrap fails."""
 
 
+class TimeoutTransport(xmlrpc.client.Transport):
+    def __init__(self, timeout_seconds: float) -> None:
+        super().__init__()
+        self.timeout_seconds = timeout_seconds
+
+    def make_connection(self, host: object) -> xmlrpc.client.HTTPConnection:
+        connection = super().make_connection(host)
+        connection.timeout = self.timeout_seconds
+        return connection
+
+
 @dataclass(slots=True)
 class LoginClient:
     """Perform the initial XML-RPC login/bootstrap request."""
+
+    timeout_seconds: float = 10.0
 
     async def login(self, request: LoginRequest) -> LoginBootstrap:
         return await asyncio.to_thread(self._login_sync, request)
 
     def _login_sync(self, request: LoginRequest) -> LoginBootstrap:
-        server = xmlrpc.client.ServerProxy(request.login_uri, allow_none=True)
-        response = server.login_to_simulator(self._request_payload(request))
+        transport = TimeoutTransport(timeout_seconds=self.timeout_seconds)
+        server = xmlrpc.client.ServerProxy(request.login_uri, allow_none=True, transport=transport)
+        try:
+            response = server.login_to_simulator(self._request_payload(request))
+        except TimeoutError as exc:
+            raise LoginError(f"login timed out after {self.timeout_seconds:.1f}s") from exc
+        except socket.timeout as exc:
+            raise LoginError(f"login timed out after {self.timeout_seconds:.1f}s") from exc
+        except OSError as exc:
+            raise LoginError(f"login request failed: {exc}") from exc
+        except xmlrpc.client.Error as exc:
+            raise LoginError(f"login XML-RPC failed: {exc}") from exc
         if not isinstance(response, dict):
             raise LoginError("login response is not a struct")
 

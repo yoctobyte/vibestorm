@@ -1,4 +1,5 @@
 import unittest
+import socket
 from uuid import UUID
 
 from vibestorm.login.client import LoginClient, LoginError, sl_password_hash
@@ -76,6 +77,27 @@ class LoginClientSyncTests(unittest.TestCase):
         xmlrpc.client.ServerProxy = lambda *args, **kwargs: DummyServer()  # type: ignore[assignment]
         try:
             with self.assertRaises(LoginError):
+                client._login_sync(request)
+        finally:
+            xmlrpc.client.ServerProxy = original  # type: ignore[assignment]
+
+    def test_login_sync_wraps_timeout(self) -> None:
+        client = LoginClient(timeout_seconds=2.5)
+        request = LoginRequest(
+            login_uri="http://127.0.0.1:9000/",
+            credentials=LoginCredentials(first="Vibestorm", last="Admin", password="changeme123"),
+        )
+
+        class DummyServer:
+            def login_to_simulator(self, payload: dict[str, object]) -> dict[str, object]:
+                raise socket.timeout("timed out")
+
+        import xmlrpc.client
+
+        original = xmlrpc.client.ServerProxy
+        xmlrpc.client.ServerProxy = lambda *args, **kwargs: DummyServer()  # type: ignore[assignment]
+        try:
+            with self.assertRaisesRegex(LoginError, "timed out after 2.5s"):
                 client._login_sync(request)
         finally:
             xmlrpc.client.ServerProxy = original  # type: ignore[assignment]

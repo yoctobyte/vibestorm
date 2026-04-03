@@ -6,7 +6,7 @@ from uuid import UUID
 from vibestorm.login.models import LoginBootstrap
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, LL_ZERO_CODE_FLAG, build_packet, split_packet
-from vibestorm.udp.session import LiveCircuitSession, SessionConfig
+from vibestorm.udp.session import LiveCircuitSession, SessionConfig, SessionEvent
 from vibestorm.udp.zerocode import decode_zerocode
 
 
@@ -41,7 +41,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertEqual(self.dispatcher.dispatch(first.message).summary.name, "UseCircuitCode")
         self.assertEqual(self.dispatcher.dispatch(second.message).summary.name, "CompleteAgentMovement")
 
-    def test_region_handshake_sends_reply_and_piggybacks_ack(self) -> None:
+    def test_region_handshake_sends_reply_and_explicit_ack(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)
 
@@ -69,12 +69,15 @@ class LiveCircuitSessionTests(unittest.TestCase):
 
         packets = session.handle_incoming(inbound, 11.0)
 
-        self.assertEqual(len(packets), 1)
+        self.assertEqual(len(packets), 2)
         reply = split_packet(decode_zerocode(packets[0]))
         self.assertTrue(reply.header.is_reliable)
-        self.assertEqual(reply.appended_acks, (22,))
+        self.assertEqual(reply.appended_acks, ())
         self.assertEqual(self.dispatcher.dispatch(reply.message).summary.name, "RegionHandshakeReply")
+        ack = split_packet(packets[1])
+        self.assertEqual(self.dispatcher.dispatch(ack.message).summary.name, "PacketAck")
         self.assertEqual(session.last_region_name, "Test")
+        self.assertTrue(any(event.kind == "handshake.region" for event in session.events))
 
     def test_packet_ack_clears_pending_reliable_sequences(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
@@ -85,6 +88,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session.handle_incoming(inbound, 11.0)
 
         self.assertEqual(session.pending_reliable, {})
+        self.assertEqual(session.packet_acks_received, 2)
 
     def test_agent_update_is_sent_on_interval_after_movement_complete(self) -> None:
         session = LiveCircuitSession(
@@ -116,3 +120,74 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertTrue(later[0][0] & LL_ZERO_CODE_FLAG)
         self.assertEqual(self.dispatcher.dispatch(view.message).summary.name, "AgentUpdate")
         self.assertEqual(session.agent_update_count, 1)
+        self.assertTrue(any(event.kind == "movement.complete" for event in session.events))
+
+    def test_reliable_packets_record_appended_ack_event(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        inbound = build_packet(bytes([0x01, 0x10, 0x00, 0x00, 0x00, 0x00]), sequence=55, flags=LL_RELIABLE_FLAG)
+        responses = session.handle_incoming(inbound, 11.0)
+
+        self.assertEqual(session.ping_requests_handled, 1)
+        self.assertEqual(len(responses), 2)
+        response = split_packet(responses[0])
+        self.assertEqual(response.appended_acks, ())
+        ack = split_packet(responses[1])
+        self.assertEqual(self.dispatcher.dispatch(ack.message).summary.name, "PacketAck")
+        outbound = session._build_outbound_packet(bytes([0x02, 0x10]), now=11.1, label="TestOutbound")
+        parsed = split_packet(outbound)
+        self.assertEqual(parsed.appended_acks, ())
+        self.assertEqual(session.appended_acks_received, 0)
+        self.assertTrue(any(event.kind == "transport.reliable_in" for event in session.events))
+
+    def test_duplicate_reliable_packet_is_not_reprocessed(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        sim_owner = UUID("12345678-1234-5678-1234-567812345678")
+        cache_id = UUID("87654321-4321-8765-4321-876543218765")
+        region_id = UUID("aaaaaaaa-1111-bbbb-2222-cccccccccccc")
+        body = bytearray()
+        body += (9).to_bytes(4, "little")
+        body += bytes([13])
+        body += bytes([4])
+        body += b"Test"
+        body += sim_owner.bytes
+        body += bytes([1])
+        body += pack("<f", 20.0)
+        body += pack("<f", 1.0)
+        body += cache_id.bytes
+        body += b"\x00" * (16 * 8)
+        body += b"\x00" * (4 * 8)
+        body += region_id.bytes
+        inbound = build_packet(
+            bytes([0xFF, 0xFF, 0x00, 0x94]) + bytes(body),
+            sequence=22,
+            flags=LL_RELIABLE_FLAG,
+        )
+
+        first_packets = session.handle_incoming(inbound, 11.0)
+        second_packets = session.handle_incoming(inbound, 11.1)
+
+        self.assertEqual(len(first_packets), 2)
+        self.assertEqual(len(second_packets), 1)
+        self.assertEqual(self.dispatcher.dispatch(split_packet(decode_zerocode(first_packets[0])).message).summary.name, "RegionHandshakeReply")
+        self.assertEqual(self.dispatcher.dispatch(split_packet(first_packets[1]).message).summary.name, "PacketAck")
+        self.assertEqual(self.dispatcher.dispatch(split_packet(second_packets[0]).message).summary.name, "PacketAck")
+        self.assertEqual(session.received_messages["RegionHandshake"], 2)
+        self.assertTrue(any(event.kind == "transport.reliable_duplicate" for event in session.events))
+
+    def test_session_emits_events_to_callback(self) -> None:
+        seen: list[SessionEvent] = []
+        session = LiveCircuitSession(
+            self.bootstrap,
+            self.dispatcher,
+            on_event=seen.append,
+        )
+        session.start(10.0)
+        session._record_event(10.5, "session.completed", "duration elapsed")
+
+        self.assertGreaterEqual(len(seen), 2)
+        self.assertEqual(seen[-1].kind, "session.completed")
+        self.assertEqual(session.events[-1].kind, "session.completed")

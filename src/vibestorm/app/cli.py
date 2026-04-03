@@ -21,7 +21,7 @@ from vibestorm.udp.messages import (
     parse_region_handshake,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
-from vibestorm.udp.session import SessionConfig, run_live_session
+from vibestorm.udp.session import SessionConfig, SessionEvent, run_live_session
 from vibestorm.udp.socket_client import UdpSocketClient
 from vibestorm.udp.zerocode import decode_zerocode
 
@@ -253,6 +253,9 @@ def main() -> int:
         return 0
 
     if args.command == "session-run":
+        def print_session_event(event: SessionEvent) -> None:
+            print(f"event[{event.at_seconds:.3f}]={event.kind} {event.detail}", flush=True)
+
         request = LoginRequest(
             login_uri=args.login_uri,
             credentials=LoginCredentials(
@@ -274,12 +277,17 @@ def main() -> int:
                     duration_seconds=args.duration,
                     agent_update_interval_seconds=args.agent_update_interval,
                 ),
+                on_event=print_session_event,
             ),
         )
         print(f"status={'closed' if report.close_reason else 'completed'}")
         print(f"elapsed={report.elapsed_seconds:.2f}")
         print(f"received={report.total_received}")
         print(f"handshake_reply_sent={report.handshake_reply_sent}")
+        print(f"movement_completed={report.movement_completed}")
+        print(f"ping_requests_handled={report.ping_requests_handled}")
+        print(f"appended_acks_received={report.appended_acks_received}")
+        print(f"packet_acks_received={report.packet_acks_received}")
         print(f"agent_updates_sent={report.agent_update_count}")
         print(f"pending_reliable={len(report.pending_reliable_sequences)}")
         if report.last_region_name is not None:

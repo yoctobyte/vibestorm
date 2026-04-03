@@ -20,10 +20,11 @@ This document tracks which UDP message-system messages matter for the first stag
 | `AgentMovementComplete` | simulator confirms movement completion | P0 | handled | semantic parse implemented and observed from local OpenSim |
 | `RegionHandshake` | simulator sends region/session metadata | P0 | handled | semantic parse implemented and observed from local OpenSim |
 | `RegionHandshakeReply` | acknowledge region handshake | P0 | handled | outbound builder implemented |
-| `AgentUpdate` | steady-state agent control/update traffic | P0 | planned | needed to remain present |
+| `AgentUpdate` | steady-state agent control/update traffic | P0 | verified | periodic send path implemented and verified in 60-second local OpenSim session |
 | `StartPingCheck` | ping/health mechanism | P0 | handled | semantic parse implemented |
-| `CompletePingCheck` | ping response | P0 | handled | semantic parse and outbound builder implemented |
-| `PacketAck` | explicit ACK transport support | P0 | parse-only | observed from local OpenSim UDP probe |
+| `CompletePingCheck` | ping response | P0 | verified | semantic parse and outbound builder implemented and observed in 60-second local session |
+| `PacketAck` | explicit ACK transport support | P0 | verified | explicit outbound ACK support implemented and verified against local OpenSim |
+| `AgentThrottle` | viewer bandwidth preferences | P1 | planned | likely next viewer-normal transport message |
 
 ## Phase 3 Text/2D Messages
 
@@ -31,16 +32,16 @@ This document tracks which UDP message-system messages matter for the first stag
 | --- | --- | --- | --- | --- |
 | `ChatFromSimulator` | receive nearby chat/system chat | P1 | planned | part of first useful text client |
 | `ImprovedInstantMessage` | IM/event-style message path | P1 | planned | likely later than nearby chat |
-| `CoarseLocationUpdate` | coarse avatar positions | P1 | planned | important for 2D/text observability |
-| `AvatarAnimation` | avatar state hints | P2 | planned | optional for initial text client |
-| `SimulatorViewerTimeMessage` | region time/environment hints | P2 | planned | lower priority |
+| `CoarseLocationUpdate` | coarse avatar positions | P1 | parse-only | observed repeatedly in stable local session |
+| `AvatarAnimation` | avatar state hints | P2 | parse-only | observed in stable local session |
+| `SimulatorViewerTimeMessage` | region time/environment hints | P2 | parse-only | observed repeatedly in stable local session |
 | `AlertMessage` | user-visible server alerts | P1 | planned | useful for error visibility |
 
 ## Phase 4 Object/World Messages
 
 | Message | Purpose | Priority | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `ObjectUpdate` | object state/update path | P1 | parse-only | observed in local OpenSim handshake probe |
+| `ObjectUpdate` | object state/update path | P1 | parse-only | observed in stable local OpenSim session |
 | `ObjectUpdateCached` | cached object updates | P2 | planned | may follow base object path |
 | `ImprovedTerseObjectUpdate` | compact frequent updates | P1 | planned | important once object stream works |
 | `KillObject` | remove object from world cache | P1 | planned | required for accurate world state |
@@ -55,7 +56,7 @@ These are not user-facing messages but must exist before many handlers are usefu
 | --- | --- | --- | --- | --- |
 | packet header parser | decode flags, sequence, header length | P0 | verified | implemented with ACK trailer split tests and packet builder round-trip |
 | zerocode decoder | expand zerocoded packets | P0 | verified | implemented with simple and wrapped zero-run tests |
-| reliable ACK tracking | support reliable transport semantics | P0 | planned | transport prerequisite |
+| reliable ACK tracking | support reliable transport semantics | P0 | verified | explicit ACK send path and duplicate suppression verified in local session |
 | `message_template.msg` loader | map IDs and fields to messages | P0 | verified | template summaries load from canonical artifact |
 | message-number decoder | resolve variable-length message IDs by packet frequency | P0 | verified | high, medium, low, and fixed message numbers tested |
 | message dispatcher | route decoded messages to handlers | P0 | handled | live OpenSim UDP replies decode to named messages |
@@ -72,8 +73,9 @@ Recommended order:
 6. `RegionHandshake` and reply
 7. ping handling
 8. `AgentUpdate`
-9. coarse location and chat
-10. object update family
+9. `AgentThrottle`
+10. coarse location and chat
+11. object update family
 
 ## Notes
 

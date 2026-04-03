@@ -6,6 +6,7 @@ import asyncio
 import socket
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Callable
 
 from vibestorm.login.models import LoginBootstrap
 from vibestorm.udp.dispatch import MessageDispatcher
@@ -13,6 +14,7 @@ from vibestorm.udp.messages import (
     encode_agent_update,
     encode_complete_agent_movement,
     encode_complete_ping_check,
+    encode_packet_ack,
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_agent_movement_complete,
@@ -30,6 +32,14 @@ class SessionConfig:
     receive_timeout_seconds: float = 0.25
     agent_update_interval_seconds: float = 1.0
     region_handshake_reply_flags: int = 0
+    max_logged_events: int = 64
+
+
+@dataclass(slots=True, frozen=True)
+class SessionEvent:
+    at_seconds: float
+    kind: str
+    detail: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -38,10 +48,15 @@ class SessionReport:
     total_received: int
     message_counts: dict[str, int]
     handshake_reply_sent: bool
+    movement_completed: bool
+    ping_requests_handled: int
+    appended_acks_received: int
+    packet_acks_received: int
     agent_update_count: int
     pending_reliable_sequences: tuple[int, ...]
     last_region_name: str | None
     close_reason: str | None
+    events: tuple[SessionEvent, ...]
 
 
 @dataclass(slots=True)
@@ -49,12 +64,17 @@ class LiveCircuitSession:
     bootstrap: LoginBootstrap
     dispatcher: MessageDispatcher
     config: SessionConfig = field(default_factory=SessionConfig)
+    on_event: Callable[[SessionEvent], None] | None = None
     next_sequence: int = 1
     pending_reliable: dict[int, str] = field(default_factory=dict)
+    seen_reliable_sequences: set[int] = field(default_factory=set)
     queued_acks: list[int] = field(default_factory=list)
     received_messages: Counter[str] = field(default_factory=Counter)
     total_received: int = 0
     handshake_reply_sent: bool = False
+    ping_requests_handled: int = 0
+    appended_acks_received: int = 0
+    packet_acks_received: int = 0
     agent_update_count: int = 0
     last_agent_update_at: float | None = None
     last_region_name: str | None = None
@@ -62,11 +82,15 @@ class LiveCircuitSession:
     camera_center: tuple[float, float, float] = (128.0, 128.0, 25.0)
     movement_completed: bool = False
     started: bool = False
+    started_at: float | None = None
+    events: list[SessionEvent] = field(default_factory=list)
 
     def start(self, now: float) -> list[bytes]:
         if self.started:
             return []
         self.started = True
+        self.started_at = now
+        self._record_event(now, "session.started", f"sim={self.bootstrap.sim_ip}:{self.bootstrap.sim_port}")
         packets = [
             self._build_outbound_packet(
                 encode_use_circuit_code(
@@ -95,6 +119,9 @@ class LiveCircuitSession:
         view = split_packet(packet)
         for ack in view.appended_acks:
             self.pending_reliable.pop(ack, None)
+        self.appended_acks_received += len(view.appended_acks)
+        if view.appended_acks:
+            self._record_event(now, "transport.appended_ack", ",".join(str(ack) for ack in view.appended_acks))
 
         dispatched = self.dispatcher.dispatch(view.message)
         self.total_received += 1
@@ -102,35 +129,59 @@ class LiveCircuitSession:
 
         if view.header.is_reliable and view.header.sequence not in self.queued_acks:
             self.queued_acks.append(view.header.sequence)
+        if view.header.is_reliable:
+            if view.header.sequence in self.seen_reliable_sequences:
+                self._record_event(now, "transport.reliable_duplicate", f"seq={view.header.sequence} msg={dispatched.summary.name}")
+                return self._flush_transport_packets(now)
+            self.seen_reliable_sequences.add(view.header.sequence)
+            self._record_event(now, "transport.reliable_in", f"seq={view.header.sequence} msg={dispatched.summary.name}")
 
         if dispatched.summary.name == "PacketAck":
-            for ack in parse_packet_ack(dispatched).packets:
+            ack_message = parse_packet_ack(dispatched)
+            self.packet_acks_received += len(ack_message.packets)
+            for ack in ack_message.packets:
                 self.pending_reliable.pop(ack, None)
-            return []
+            self._record_event(now, "transport.packet_ack", ",".join(str(ack) for ack in ack_message.packets))
+            return self._flush_transport_packets(now)
 
         if dispatched.summary.name == "CloseCircuit":
             self.close_reason = "simulator closed circuit"
+            self._record_event(now, "session.closed", self.close_reason)
             return []
 
         if dispatched.summary.name == "StartPingCheck":
             ping = parse_start_ping_check(dispatched)
-            return [
+            self.ping_requests_handled += 1
+            self._record_event(
+                now,
+                "ping.request",
+                f"ping_id={ping.ping_id} oldest_unacked={ping.oldest_unacked}",
+            )
+            packets = [
                 self._build_outbound_packet(
                     encode_complete_ping_check(ping.ping_id),
+                    now=now,
                     label="CompletePingCheck",
                 ),
             ]
+            packets.extend(self._flush_transport_packets(now))
+            return packets
 
         if dispatched.summary.name == "RegionHandshake":
             handshake = parse_region_handshake(dispatched)
             self.last_region_name = handshake.sim_name
+            self._record_event(
+                now,
+                "handshake.region",
+                f"sim_name={handshake.sim_name} flags={handshake.region_flags}",
+            )
             self.camera_center = (
                 float(self.bootstrap.region_x) + 128.0,
                 float(self.bootstrap.region_y) + 128.0,
                 self.camera_center[2],
             )
             self.handshake_reply_sent = True
-            return [
+            packets = [
                 self._build_outbound_packet(
                     encode_region_handshake_reply(
                         self.bootstrap.agent_id,
@@ -139,16 +190,24 @@ class LiveCircuitSession:
                     ),
                     reliable=True,
                     zerocoded=True,
+                    now=now,
                     label="RegionHandshakeReply",
                 ),
             ]
+            packets.extend(self._flush_transport_packets(now))
+            return packets
 
         if dispatched.summary.name == "AgentMovementComplete":
             movement = parse_agent_movement_complete(dispatched)
             self.camera_center = movement.position
             self.movement_completed = True
+            self._record_event(
+                now,
+                "movement.complete",
+                f"region_handle={movement.region_handle} position={movement.position}",
+            )
 
-        return self.drain_due_packets(now)
+        return self._flush_transport_packets(now)
 
     def drain_due_packets(self, now: float) -> list[bytes]:
         if self.close_reason is not None or not self.started or not self.movement_completed:
@@ -169,6 +228,7 @@ class LiveCircuitSession:
                     camera_center=self.camera_center,
                 ),
                 zerocoded=True,
+                now=now,
                 label="AgentUpdate",
             ),
         ]
@@ -179,10 +239,15 @@ class LiveCircuitSession:
             total_received=self.total_received,
             message_counts=dict(self.received_messages),
             handshake_reply_sent=self.handshake_reply_sent,
+            movement_completed=self.movement_completed,
+            ping_requests_handled=self.ping_requests_handled,
+            appended_acks_received=self.appended_acks_received,
+            packet_acks_received=self.packet_acks_received,
             agent_update_count=self.agent_update_count,
             pending_reliable_sequences=tuple(sorted(self.pending_reliable)),
             last_region_name=self.last_region_name,
             close_reason=self.close_reason,
+            events=tuple(self.events),
         )
 
     def _build_outbound_packet(
@@ -191,20 +256,30 @@ class LiveCircuitSession:
         *,
         reliable: bool = False,
         zerocoded: bool = False,
+        now: float | None = None,
+        include_queued_acks: bool = False,
         label: str,
     ) -> bytes:
         sequence = self.next_sequence
         self.next_sequence += 1
+        appended_acks = tuple(self._consume_queued_acks()) if include_queued_acks else ()
         packet = build_packet(
             message,
             sequence=sequence,
             flags=LL_RELIABLE_FLAG if reliable else 0,
-            appended_acks=tuple(self._consume_queued_acks()),
+            appended_acks=appended_acks,
         )
         if zerocoded:
             packet = encode_zerocode(packet)
         if reliable:
             self.pending_reliable[sequence] = label
+        if now is not None:
+            detail = f"seq={sequence}"
+            if reliable:
+                detail += " reliable"
+            if appended_acks:
+                detail += f" acks={','.join(str(ack) for ack in appended_acks)}"
+            self._record_event(now, "packet.sent", f"{label} {detail}")
         return packet
 
     def _consume_queued_acks(self) -> list[int]:
@@ -212,15 +287,44 @@ class LiveCircuitSession:
         self.queued_acks = []
         return queued
 
+    def _flush_transport_packets(self, now: float) -> list[bytes]:
+        packets: list[bytes] = []
+        if self.queued_acks:
+            acked = tuple(self._consume_queued_acks())
+            packets.append(
+                self._build_outbound_packet(
+                    encode_packet_ack(acked),
+                    now=now,
+                    label="PacketAck",
+                ),
+            )
+        packets.extend(self.drain_due_packets(now))
+        return packets
+
+    def _record_event(self, now: float, kind: str, detail: str) -> None:
+        started_at = self.started_at if self.started_at is not None else now
+        event = SessionEvent(at_seconds=now - started_at, kind=kind, detail=detail)
+        self.events.append(event)
+        if len(self.events) > self.config.max_logged_events:
+            self.events.pop(0)
+        if self.on_event is not None:
+            self.on_event(event)
+
 
 async def run_live_session(
     bootstrap: LoginBootstrap,
     dispatcher: MessageDispatcher,
     *,
     config: SessionConfig | None = None,
+    on_event: Callable[[SessionEvent], None] | None = None,
 ) -> SessionReport:
     session_config = config or SessionConfig()
-    session = LiveCircuitSession(bootstrap=bootstrap, dispatcher=dispatcher, config=session_config)
+    session = LiveCircuitSession(
+        bootstrap=bootstrap,
+        dispatcher=dispatcher,
+        config=session_config,
+        on_event=on_event,
+    )
     loop = asyncio.get_running_loop()
     start_time = loop.time()
     deadline = start_time + session_config.duration_seconds
@@ -251,4 +355,8 @@ async def run_live_session(
             for packet in session.handle_incoming(payload, loop.time()):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
+    if session.close_reason is None and session.movement_completed:
+        session._record_event(loop.time(), "session.completed", "duration elapsed")
+    elif session.close_reason is None:
+        session._record_event(loop.time(), "session.incomplete", "duration elapsed before movement complete")
     return session.build_report(loop.time() - start_time)

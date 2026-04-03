@@ -185,6 +185,12 @@ def encode_complete_ping_check(ping_id: int) -> bytes:
     return bytes([0x02, ping_id])
 
 
+def encode_packet_ack(packets: tuple[int, ...]) -> bytes:
+    if len(packets) > 0xFF:
+        raise ValueError("packet ack list must fit in U8 count")
+    return b"\xFF\xFF\xFF\xFB" + bytes([len(packets)]) + b"".join(pack("<I", packet) for packet in packets)
+
+
 def encode_agent_update(
     agent_id: UUID,
     session_id: UUID,

@@ -13,11 +13,12 @@ Confirmed working now:
 - seed capability resolution works
 - `EventQueueGet` polling works for the current local empty-state path
 - UDP handshake probing works
-- a first durable-session loop exists in code
+- a durable UDP session can stay alive for 60 seconds against local OpenSim
 
 User-confirmed status:
 
-- logging in appears to work
+- logging in works
+- local OpenSim session completes a 60-second run with continued simulator traffic
 
 ## What Has Been Done
 
@@ -47,6 +48,9 @@ User-confirmed status:
 - the session answers `StartPingCheck` with `CompletePingCheck`
 - the session sends periodic `AgentUpdate` after `AgentMovementComplete`
 - the session tracks reliable outbound packets and inbound ACKs
+- explicit `PacketAck` sending is implemented
+- duplicate reliable inbound packets are detected and not reprocessed semantically
+- live session events are streamed through the CLI for debugging
 - the CLI now exposes a bounded `session-run` path
 
 ### Developer ergonomics
@@ -68,6 +72,12 @@ User-confirmed status:
 - unit coverage exists for login, LLSD, event queue, UDP packets, template dispatch, semantic message helpers, session logic, and zerocode handling
 - `PYTHONPATH=src python3 -m unittest discover -s test -v` passed during the latest implementation pass
 - `python3 -m compileall src test` passed during the latest implementation pass
+- local OpenSim session verification succeeded for a full 60-second run with:
+  - `received=94`
+  - `ping_requests_handled=11`
+  - `agent_updates_sent=55`
+  - `pending_reliable=0`
+  - recurring live traffic including `SimStats`, `SimulatorViewerTimeMessage`, and `CoarseLocationUpdate`
 
 ## Current Working Commands
 
@@ -97,28 +107,27 @@ Run the test suite:
 
 ## What Is Next
 
-The project is now in the "Durable Session Core" stage. The next priority is not more bootstrap work. It is proving that the session remains alive for a sustained interval and understanding why it fails when it does.
+The durable-session core is now proven against local OpenSim. The next priority is expanding useful protocol coverage on top of that stable transport base.
 
 Immediate next tasks:
 
-1. run repeated live `./run.sh session` tests against local OpenSim
-2. confirm whether the session remains stable for at least 60 seconds
-3. add clearer session logging for:
-   - handshake transitions
-   - ping traffic
-   - ACK flow
-   - disconnect reason
-4. inspect whether reliable resend bookkeeping is needed beyond current ACK tracking
-5. tune `AgentUpdate` cadence if OpenSim drops the session too quickly
-6. confirm repeated world traffic continues after handshake, not just the initial burst
+1. add `AgentThrottle` so viewer traffic looks closer to a normal session
+2. add parse-only support for recurring live messages:
+   - `SimStats`
+   - `SimulatorViewerTimeMessage`
+   - `CoarseLocationUpdate`
+   - `ObjectUpdate`
+3. capture stable live fixtures from the now-working session loop
+4. promote more messages from parse-only to handled where they affect world/session state
+5. build the first normalized world-state model from recurring simulator traffic
 
 ## Likely Next Coding Targets
 
-- structured session lifecycle logging
-- reliable resend / timeout logic for outbound reliable packets
-- better visibility into why the simulator closes or stops responding
+- `AgentThrottle` builder and session integration
+- parse helpers for recurring world/session messages
 - fixture capture for stable live packets
 - first-pass `ObjectUpdate` decoding for world-state work
+- normalized coarse-avatar and sim-stat models
 
 ## Out Of Scope For The Immediate Next Step
 
@@ -134,6 +143,6 @@ If continuing work from this point, use this order:
 
 1. start OpenSim with `./run.sh opensim`
 2. run `./run.sh session`
-3. inspect whether the session stays alive for 60 seconds
-4. if it fails early, improve logging before expanding protocol breadth
-5. once the session is durable, move to packet capture and `ObjectUpdate` decoding
+3. confirm the 60-second session remains stable
+4. expand recurring live message decoding
+5. capture fixtures and move toward world-state building

@@ -5,9 +5,10 @@ from uuid import UUID
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
     encode_agent_update,
-    encode_region_handshake_reply,
     encode_complete_agent_movement,
     encode_complete_ping_check,
+    encode_packet_ack,
+    encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_packet_ack,
     parse_agent_movement_complete,
@@ -30,6 +31,11 @@ class SemanticMessageTests(unittest.TestCase):
 
     def test_parse_packet_ack(self) -> None:
         dispatched = self.dispatcher.dispatch(b"\xFF\xFF\xFF\xFB\x02" + (1).to_bytes(4, "little") + (2).to_bytes(4, "little"))
+        parsed = parse_packet_ack(dispatched)
+        self.assertEqual(parsed.packets, (1, 2))
+
+    def test_encode_packet_ack(self) -> None:
+        dispatched = self.dispatcher.dispatch(encode_packet_ack((1, 2)))
         parsed = parse_packet_ack(dispatched)
         self.assertEqual(parsed.packets, (1, 2))
 
