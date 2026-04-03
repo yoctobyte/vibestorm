@@ -27,6 +27,7 @@ from vibestorm.udp.messages import (
     parse_agent_movement_complete,
     parse_chat_from_simulator,
     parse_improved_terse_object_update,
+    parse_kill_object,
     parse_object_update,
     parse_object_update_summary,
     parse_packet_ack,
@@ -311,6 +312,12 @@ class LiveCircuitSession:
                     reason=world_event.kind,
                 )
                 self._record_improved_terse_observation(
+                    dispatched=dispatched,
+                    sequence=view.header.sequence,
+                    at_seconds=now - (self.started_at if self.started_at is not None else now),
+                    reason=world_event.kind,
+                )
+                self._record_kill_object_observation(
                     dispatched=dispatched,
                     sequence=view.header.sequence,
                     at_seconds=now - (self.started_at if self.started_at is not None else now),
@@ -722,12 +729,31 @@ class LiveCircuitSession:
                 message_sequence=sequence,
                 capture_reason=reason,
                 region_handle=parsed.region_handle,
-                local_id=obj.local_id,
-                data_size=obj.data_size,
-                texture_entry_size=obj.texture_entry_size,
-                data_preview_hex=obj.data_preview_hex,
-                texture_entry_preview_hex=obj.texture_entry_preview_hex,
+                entry=obj,
             )
+
+    def _record_kill_object_observation(
+        self,
+        *,
+        dispatched: MessageDispatch,
+        sequence: int,
+        at_seconds: float,
+        reason: str,
+    ) -> None:
+        if self.unknowns_db is None or dispatched.summary.name != "KillObject":
+            return
+        try:
+            parsed = parse_kill_object(dispatched)
+        except MessageDecodeError:
+            return
+
+        self.unknowns_db.record_kill_object_packet(
+            session_id=self.db_session_id,
+            observed_at_seconds=at_seconds,
+            message_sequence=sequence,
+            capture_reason=reason,
+            message=parsed,
+        )
 
     def _record_unknown_dispatch_failure(
         self,

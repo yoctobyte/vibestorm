@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 from vibestorm.udp.messages import (
-    CoarseLocationUpdateMessage,
+    ImprovedTerseObjectUpdateMessage,
+    KillObjectMessage,
     ObjectUpdateMessage,
     ObjectUpdateSummary,
     SimStatsMessage,
@@ -99,6 +100,7 @@ class WorldView:
     coarse_agents: tuple[CoarseAgentLocation, ...] = ()
     agent_presences: dict[UUID, AgentPresence] = field(default_factory=dict)
     objects: dict[UUID, WorldObject] = field(default_factory=dict)
+    local_id_to_full_id: dict[int, UUID] = field(default_factory=dict)
     sim_stats_updates: int = 0
     time_updates: int = 0
     coarse_location_updates: int = 0
@@ -163,7 +165,7 @@ class WorldView:
         for obj in message.objects:
             if obj.full_id.int == 0:
                 continue
-            self.objects[obj.full_id] = WorldObject(
+            new_obj = WorldObject(
                 full_id=obj.full_id,
                 local_id=obj.local_id,
                 parent_id=obj.parent_id,
@@ -190,3 +192,49 @@ class WorldView:
                 extra_params_size=obj.extra_params_size,
                 default_texture_id=obj.default_texture_id,
             )
+            self.objects[obj.full_id] = new_obj
+            self.local_id_to_full_id[obj.local_id] = obj.full_id
+
+    def apply_improved_terse_object_update(self, message: ImprovedTerseObjectUpdateMessage) -> None:
+        for entry in message.objects:
+            full_id = self.local_id_to_full_id.get(entry.local_id)
+            if full_id is None:
+                continue
+
+            obj = self.objects[full_id]
+            # Replace with updated transform
+            self.objects[full_id] = WorldObject(
+                full_id=obj.full_id,
+                local_id=obj.local_id,
+                parent_id=obj.parent_id,
+                pcode=obj.pcode,
+                material=obj.material,
+                click_action=obj.click_action,
+                scale=obj.scale,
+                state=entry.state,  # Updated
+                crc=obj.crc,
+                update_flags=obj.update_flags,
+                region_handle=message.region_handle,
+                time_dilation=message.time_dilation,
+                object_data_size=obj.object_data_size,
+                position=entry.position,  # Updated
+                rotation=entry.rotation,  # Updated
+                variant=obj.variant,
+                name_values=obj.name_values,
+                texture_entry_size=len(entry.texture_entry) if entry.texture_entry else 0,
+                texture_anim_size=obj.texture_anim_size,
+                data_size=obj.data_size,
+                text_size=obj.text_size,
+                media_url_size=obj.media_url_size,
+                ps_block_size=obj.ps_block_size,
+                extra_params_size=obj.extra_params_size,
+                default_texture_id=UUID(bytes=entry.texture_entry[:16])
+                if entry.texture_entry and len(entry.texture_entry) >= 16
+                else obj.default_texture_id,
+            )
+
+    def apply_kill_object(self, message: KillObjectMessage) -> None:
+        for local_id in message.local_ids:
+            full_id = self.local_id_to_full_id.pop(local_id, None)
+            if full_id is not None:
+                self.objects.pop(full_id, None)

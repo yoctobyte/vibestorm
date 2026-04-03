@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vibestorm.udp.messages import (
+    ImprovedTerseObjectEntry,
+    KillObjectMessage,
     ObjectUpdateEntry,
     format_object_update_interest,
     infer_object_update_label,
@@ -86,6 +88,19 @@ ON object_update_entities(payload_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_object_update_entities_full_id
 ON object_update_entities(full_id);
 
+CREATE TABLE IF NOT EXISTS kill_object_packets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    observed_at_seconds REAL NOT NULL,
+    message_sequence INTEGER NOT NULL,
+    capture_reason TEXT NOT NULL,
+    local_ids_json TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kill_object_packets_observed_at
+ON kill_object_packets(observed_at_seconds);
+
 CREATE TABLE IF NOT EXISTS improved_terse_packets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER,
@@ -111,6 +126,11 @@ CREATE TABLE IF NOT EXISTS improved_terse_entities (
     capture_reason TEXT NOT NULL,
     region_handle INTEGER NOT NULL,
     local_id INTEGER,
+    is_avatar INTEGER NOT NULL DEFAULT 0,
+    state INTEGER NOT NULL DEFAULT 0,
+    position_x REAL,
+    position_y REAL,
+    position_z REAL,
     data_size INTEGER NOT NULL,
     texture_entry_size INTEGER NOT NULL,
     has_texture_entry INTEGER NOT NULL,
@@ -233,6 +253,11 @@ class UnknownsDatabase:
         self._ensure_column(connection, "object_update_entities", "session_id", "INTEGER")
         self._ensure_column(connection, "improved_terse_packets", "session_id", "INTEGER")
         self._ensure_column(connection, "improved_terse_entities", "session_id", "INTEGER")
+        self._ensure_column(connection, "improved_terse_entities", "is_avatar", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "improved_terse_entities", "state", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(connection, "improved_terse_entities", "position_x", "REAL")
+        self._ensure_column(connection, "improved_terse_entities", "position_y", "REAL")
+        self._ensure_column(connection, "improved_terse_entities", "position_z", "REAL")
         self._ensure_column(connection, "nearby_chat_messages", "session_id", "INTEGER")
         self._ensure_column(connection, "unknown_udp_messages", "session_id", "INTEGER")
         self._ensure_column(connection, "inbound_messages", "session_id", "INTEGER")
@@ -535,17 +560,35 @@ class UnknownsDatabase:
         message_sequence: int,
         capture_reason: str,
         region_handle: int,
-        local_id: int | None,
-        data_size: int,
-        texture_entry_size: int,
-        data_preview_hex: str,
-        texture_entry_preview_hex: str,
+        entry: ImprovedTerseObjectEntry,
     ) -> None:
         entity_tags: list[str] = []
-        if local_id is not None:
+        if entry.local_id is not None:
             entity_tags.append("has_local_id")
-        if texture_entry_size > 0:
+        if entry.is_avatar:
+            entity_tags.append("avatar")
+        else:
+            entity_tags.append("prim")
+
+        # Handle the union of old and new field names for robustness
+        has_texture = False
+        if entry.texture_entry is not None:
+            has_texture = True
+        elif hasattr(entry, "texture_entry_size") and entry.texture_entry_size > 0:
+            has_texture = True
+
+        if has_texture:
             entity_tags.append("has_texture_entry")
+
+        # Extract previews and sizes
+        data_preview_hex = getattr(entry, "data_preview_hex", f"{entry.local_id:08x}...")
+        texture_entry_preview_hex = getattr(entry, "texture_entry_preview_hex", "")
+        if not texture_entry_preview_hex and entry.texture_entry:
+            texture_entry_preview_hex = entry.texture_entry[:16].hex()
+
+        data_size = getattr(entry, "data_size", (60 if entry.is_avatar else 44))
+        texture_entry_size = getattr(entry, "texture_entry_size", (len(entry.texture_entry) if entry.texture_entry else 0))
+
         with self._connect() as connection:
             connection.execute(
                 """
@@ -557,13 +600,18 @@ class UnknownsDatabase:
                     capture_reason,
                     region_handle,
                     local_id,
+                    is_avatar,
+                    state,
+                    position_x,
+                    position_y,
+                    position_z,
                     data_size,
                     texture_entry_size,
                     has_texture_entry,
                     data_preview_hex,
                     texture_entry_preview_hex,
                     entity_tags_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     packet_id,
@@ -572,7 +620,12 @@ class UnknownsDatabase:
                     message_sequence,
                     capture_reason,
                     region_handle,
-                    local_id,
+                    entry.local_id,
+                    int(entry.is_avatar),
+                    entry.state,
+                    entry.position[0],
+                    entry.position[1],
+                    entry.position[2],
                     data_size,
                     texture_entry_size,
                     int(texture_entry_size > 0),
@@ -581,6 +634,36 @@ class UnknownsDatabase:
                     json.dumps(sorted(entity_tags)),
                 ),
             )
+
+    def record_kill_object_packet(
+        self,
+        *,
+        session_id: int | None,
+        observed_at_seconds: float,
+        message_sequence: int,
+        capture_reason: str,
+        message: KillObjectMessage,
+    ) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO kill_object_packets (
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    local_ids_json
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    json.dumps(list(message.local_ids)),
+                ),
+            )
+            return int(cursor.lastrowid)
 
     def read_stats(self, *, session_id: int | None = None) -> UnknownStats:
         packet_clause, packet_params = self._scope_clause(session_id)

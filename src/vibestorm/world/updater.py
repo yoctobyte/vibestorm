@@ -11,6 +11,7 @@ from vibestorm.udp.messages import (
     format_object_update_interest,
     parse_coarse_location_update,
     parse_improved_terse_object_update,
+    parse_kill_object,
     parse_object_update,
     parse_object_update_summary,
     parse_sim_stats,
@@ -133,8 +134,9 @@ class WorldUpdater:
                     object_count=len(terse.objects),
                 ),
             )
-            rich_entries = sum(1 for obj in terse.objects if obj.texture_entry_size > 0)
-            local_ids = [str(obj.local_id) for obj in terse.objects if obj.local_id is not None][:4]
+            self.world_view.apply_improved_terse_object_update(terse)
+            rich_entries = sum(1 for obj in terse.objects if obj.texture_entry is not None)
+            local_ids = [str(obj.local_id) for obj in terse.objects][:4]
             return WorldUpdateEvent(
                 kind="world.improved_terse_object_update",
                 detail=(
@@ -143,6 +145,14 @@ class WorldUpdater:
                     f"rich_entries={rich_entries}"
                     + (f" local_ids={','.join(local_ids)}" if local_ids else "")
                 ),
+            )
+
+        if dispatched.summary.name == "KillObject":
+            kill = parse_kill_object(dispatched)
+            self.world_view.apply_kill_object(kill)
+            return WorldUpdateEvent(
+                kind="world.kill_object",
+                detail=f"local_ids={','.join(str(lid) for lid in kill.local_ids)}",
             )
 
         return None
