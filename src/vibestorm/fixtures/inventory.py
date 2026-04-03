@@ -7,7 +7,13 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from vibestorm.udp.messages import MessageDecodeError, parse_object_update, parse_object_update_summary
+from vibestorm.udp.messages import (
+    MessageDecodeError,
+    format_object_update_interest,
+    infer_object_update_label,
+    parse_object_update,
+    parse_object_update_summary,
+)
 from vibestorm.udp.template import DecodedMessageNumber, MessageDispatch, MessageTemplateSummary
 
 
@@ -82,6 +88,7 @@ def build_fixture_inventory(root: Path) -> dict[str, object]:
                         "variant": obj.variant,
                         "full_id": str(obj.full_id),
                         "local_id": obj.local_id,
+                        "label": infer_object_update_label(obj),
                         "update_flags": obj.update_flags,
                         "position": list(obj.position) if obj.position is not None else None,
                         "rotation": list(obj.rotation) if obj.rotation is not None else None,
@@ -94,6 +101,17 @@ def build_fixture_inventory(root: Path) -> dict[str, object]:
                         "media_url_size": obj.media_url_size,
                         "ps_block_size": obj.ps_block_size,
                         "extra_params_size": obj.extra_params_size,
+                        "interesting_payloads": [
+                            {
+                                "field_name": payload.field_name,
+                                "size": payload.size,
+                                "non_zero_bytes": payload.non_zero_bytes,
+                                "preview_hex": payload.preview_hex,
+                                "text_preview": payload.text_preview,
+                            }
+                            for payload in obj.interesting_payloads
+                        ],
+                        "interest_summary": format_object_update_interest(obj),
                     },
                 )
                 if any(
@@ -108,6 +126,10 @@ def build_fixture_inventory(root: Path) -> dict[str, object]:
                     ),
                 ):
                     backlog.setdefault("object-update-rich-tail", []).append(str(metadata_path.relative_to(root)))
+                if obj.interesting_payloads:
+                    backlog.setdefault("object-update-interesting-unknowns", []).append(
+                        str(metadata_path.relative_to(root)),
+                    )
             entry["object_update"] = object_update_entry
 
         captures.append(entry)
@@ -129,6 +151,16 @@ def build_fixture_inventory(root: Path) -> dict[str, object]:
             FixtureBacklogItem(
                 key="object-update-rich-tail",
                 summary="Known ObjectUpdate variants with non-empty tail data such as TextureEntry or ExtraParams.",
+                count=len(fixtures),
+                fixtures=fixtures,
+            ),
+        )
+    if "object-update-interesting-unknowns" in backlog:
+        fixtures = tuple(sorted(backlog["object-update-interesting-unknowns"]))
+        backlog_items.append(
+            FixtureBacklogItem(
+                key="object-update-interesting-unknowns",
+                summary="ObjectUpdate captures with non-zero tail payloads worth reverse-engineering further.",
                 count=len(fixtures),
                 fixtures=fixtures,
             ),

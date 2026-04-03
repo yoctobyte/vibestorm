@@ -2,6 +2,12 @@
 
 Use this file structure for any meaningful work handoff between agents or contributors.
 
+Preferred destination for day-to-day handoff updates:
+
+- `docs/current-handoff.md`
+
+Use this template when a fresh structured handoff document is warranted.
+
 ## Summary
 
 - what changed

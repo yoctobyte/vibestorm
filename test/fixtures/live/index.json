@@ -14,6 +14,21 @@
       ],
       "key": "object-update-rich-tail",
       "summary": "Known ObjectUpdate variants with non-empty tail data such as TextureEntry or ExtraParams."
+    },
+    {
+      "count": 8,
+      "fixtures": [
+        "ObjectUpdate/001-seq000927.json",
+        "ObjectUpdate/002-seq000929.json",
+        "ObjectUpdate/003-seq000930.json",
+        "ObjectUpdate/004-seq000938.json",
+        "ObjectUpdate/005-seq000939.json",
+        "ObjectUpdate/006-seq000944.json",
+        "ObjectUpdate/007-seq000945.json",
+        "ObjectUpdate/008-seq000958.json"
+      ],
+      "key": "object-update-interesting-unknowns",
+      "summary": "ObjectUpdate captures with non-zero tail payloads worth reverse-engineering further."
     }
   ],
   "capture_count": 8,
@@ -31,6 +46,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -70,6 +96,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -109,6 +146,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -148,6 +196,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -187,6 +246,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -226,6 +296,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -265,6 +346,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -304,6 +396,17 @@
         "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
         "local_id": 367911629,
         "media_url_size": 0,
         "name_values": {},
@@ -331,6 +434,6 @@
       "sequence": 958
     }
   ],
-  "generated_at": "2026-04-03T10:50:38.263687+00:00",
+  "generated_at": "2026-04-03T17:17:11.292329+00:00",
   "root": "test/fixtures/live"
 }

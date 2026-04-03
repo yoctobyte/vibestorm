@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from vibestorm.udp.messages import (
     MessageDecodeError,
     RegionHandshakeMessage,
+    format_object_update_interest,
     parse_coarse_location_update,
     parse_object_update,
     parse_object_update_summary,
@@ -104,12 +105,21 @@ class WorldUpdater:
                 or obj.extra_params_size > 0
                 for obj in object_update.objects
             )
+            interest_details = [
+                detail
+                for obj in object_update.objects
+                for detail in [format_object_update_interest(obj)]
+                if detail is not None
+            ]
+            detail = (
+                f"region_handle={object_update.region_handle} "
+                f"objects={len(object_update.objects)} dilation={object_update.time_dilation}"
+            )
+            if interest_details:
+                detail += " " + " ; ".join(interest_details)
             return WorldUpdateEvent(
                 kind="world.object_update_rich" if has_rich_tail else "world.object_update",
-                detail=(
-                    f"region_handle={object_update.region_handle} "
-                    f"objects={len(object_update.objects)} dilation={object_update.time_dilation}"
-                ),
+                detail=detail,
             )
 
         return None

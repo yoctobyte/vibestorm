@@ -4,186 +4,115 @@ Last updated: 2026-04-03
 
 ## Current Summary
 
-Vibestorm has moved past pure planning and basic scaffolding into live local OpenSim integration.
+Vibestorm is now in active local OpenSim protocol reverse-engineering and implementation mode.
 
-Confirmed working now:
+The repo already supports:
 
-- local OpenSim can be launched from the repo
-- Vibestorm can log in against local OpenSim
-- seed capability resolution works
-- `EventQueueGet` polling works for the current local empty-state path
-- UDP handshake probing works
-- a durable UDP session can stay alive for 60 seconds against local OpenSim
-- experimental client-side cube spawn appears to work against local OpenSim
-- default session console output now emphasizes world status rather than transport/debug noise
-- a first keyed object-entity slice is now populated from `ObjectUpdate`
-- live fixture analysis has now identified a stable single-prim `ObjectUpdate` variant with decoded position
-- live fixture analysis has now identified a basic avatar-style `ObjectUpdate` variant with decoded position and name values
-- rich prim `ObjectUpdate` packets now also expose a stable default texture UUID from `TextureEntry`
-- captured fixture directories can now be indexed into a structured backlog automatically
+- XML-RPC login bootstrap
+- capability seed resolution
+- `EventQueueGet` polling
+- UDP handshake and bounded live sessions
+- zerocode and reliable/ACK handling
+- message-template driven dispatch
+- normalized world-state updates for region, time, coarse agents, and first object entities
+- file-based packet capture for selected messages
+- SQLite-backed evidence collection at `local/unknowns.sqlite3`
+- nearby chat capture for timestamped in-world notes
 
-User-confirmed status:
+## What Is Stable
 
-- logging in works
-- local OpenSim session completes a 60-second run with continued simulator traffic
-- spawning a test cube through the client appears to work
+- `./run.sh opensim`
+- `./run.sh bootstrap`
+- `./run.sh caps`
+- `./run.sh eventq`
+- `./run.sh udp`
+- `./run.sh handshake`
+- `./run.sh session`
+- `./run.sh session 180 --verbose`
+- `./run.sh unknowns`
+- `./run.sh fixtures`
 
-## What Has Been Done
+The local OpenSim target is the current source of truth for live protocol experimentation.
 
-### Protocol and bootstrap groundwork
+## Current Technical Shape
 
-- login/bootstrap models and XML-RPC login client are implemented
-- capability resolution is implemented
-- LLSD helpers are implemented
-- event queue polling client is implemented
-- UDP packet parsing and packet building are implemented
-- message template loading and dispatch are implemented
-- semantic parsing/builders exist for the current handshake-era messages
-- zerocode decode and encode support are implemented
+Main implemented areas:
 
-### Local OpenSim setup
+- `src/vibestorm/login/`: login/bootstrap
+- `src/vibestorm/caps/`: seed capability resolution and LLSD support
+- `src/vibestorm/event_queue/`: `EventQueueGet` polling
+- `src/vibestorm/udp/`: packet parsing, template dispatch, semantic message helpers, session loop
+- `src/vibestorm/world/`: normalized world-state models and updater
+- `src/vibestorm/fixtures/`: fixture inventory and SQLite unknowns database
 
-- a local OpenSim runtime is bundled under `local/opensim/runtime`
-- local config and region files were materialized for repeatable testing
-- a repeatable local avatar exists for testing
-- project docs capture the verified local host details and working commands
+Current object/world coverage:
 
-### Durable session slice
+- region handshake and region metadata
+- sim stats
+- simulator time
+- coarse agent positions
+- first keyed object entities from `ObjectUpdate`
+- known `prim_basic` and `avatar_basic` `ObjectUpdate` variants
+- first conservative texture UUID extraction from rich prim `TextureEntry`
 
-- a `LiveCircuitSession` exists in `src/vibestorm/udp/session.py`
-- the session sends `UseCircuitCode` and `CompleteAgentMovement`
-- the session handles `RegionHandshake` and sends `RegionHandshakeReply`
-- the session answers `StartPingCheck` with `CompletePingCheck`
-- the session sends periodic `AgentUpdate` after `AgentMovementComplete`
-- the session tracks reliable outbound packets and inbound ACKs
-- explicit `PacketAck` sending is implemented
-- duplicate reliable inbound packets are detected and not reprocessed semantically
-- live session events are streamed through the CLI for debugging
-- the CLI now exposes a bounded `session-run` path
+## Current Gaps
 
-### World-view slice
+The next meaningful work is not transport stabilization. It is coverage and interpretation.
 
-- a UI-agnostic `WorldView` exists in `src/vibestorm/world/models.py`
-- message-to-world application is now split into `src/vibestorm/world/updater.py`
-- session traffic now feeds normalized state for:
-  - region info
-  - sim stats
-  - simulator time
-  - coarse agent locations
-  - object update summaries
-  - first keyed object entities from stable `ObjectUpdate` fields
-- keyed prim objects now also decode world position from the known 60-byte `ObjectData` variant
-- basic avatar-style object updates now decode position plus `FirstName` / `LastName` / `Title` name values
-- rich prim object updates now expose a first decoded texture asset reference via `default_texture_id`
-- coarse locations now also populate keyed agent-presence entries by UUID where available
-- `session-run` now prints compact world summaries at the end of a run
-- `session-run` now prints a short startup banner before the live loop begins
-- `session-run` defaults to world-facing output; `--verbose` enables live event and transport diagnostics
-- `session-run` can optionally send an experimental `ObjectAdd` to spawn a test cube for local debugging
-- live packet capture now supports a smart anomaly-focused mode for `ObjectUpdate` fixture collection
-- smart capture now skips both known prim and known avatar `ObjectUpdate` variants by default
-- smart capture now still retains known prim packets when they carry non-empty rich tail data such as `TextureEntry`
-- `./run.sh fixtures` now rebuilds `test/fixtures/live/index.json` as a structured capture inventory/backlog
+Main gaps:
 
-### Developer ergonomics
+- multi-object `ObjectUpdate` semantic decoding
+- better census of all visible scene objects
+- deeper object update families such as `ImprovedTerseObjectUpdate`, `ObjectUpdateCached`, and `KillObject`
+- full `TextureEntry` decoding
+- `ExtraParams` and related rich-tail fields
+- reliable extraction of ordinary prim names
+- clearer mapping of raw flag fields like `update_flags`
 
-- `run.sh` was added at the repo root as the main testing wrapper
-- `run.sh` supports:
-  - `opensim`
-  - `bootstrap`
-  - `caps`
-  - `eventq`
-  - `udp`
-  - `handshake`
-  - `session`
-  - `test`
-- `opensim.sh` was added at the repo root as a direct OpenSim launcher
+## Current Evidence Workflow
 
-### Tests and verification
-
-- unit coverage exists for login, LLSD, event queue, UDP packets, template dispatch, semantic message helpers, session logic, and zerocode handling
-- `PYTHONPATH=src python3 -m unittest discover -s test -v` passed during the latest implementation pass
-- `python3 -m compileall src test` passed during the latest implementation pass
-- local OpenSim session verification succeeded for a full 60-second run with:
-  - `received=94-95`
-  - `ping_requests_handled=11`
-  - `agent_updates_sent=54-55`
-  - `pending_reliable=0`
-  - recurring live traffic including `SimStats`, `SimulatorViewerTimeMessage`, and `CoarseLocationUpdate`
-  - final world summary including region, sim stats, time, coarse agents, and object update counts
-- local OpenSim session verification with experimental cube spawn also succeeded for a full 60-second run with:
-  - `received=97`
-  - `ping_requests_handled=11`
-  - `agent_updates_sent=55`
-  - `pending_reliable=0`
-  - `ObjectUpdate=3`
-  - `PacketAck=3`
-  - final world summary showing:
-    - `world[region]=Vibestorm Test grid=(1000,1000)`
-    - `world[sim_stats]=updates:20 capacity:15000 stats:41`
-    - `world[time]=updates:23 sun_phase:0.326 sec_per_day:14400`
-    - `world[coarse_agents]=updates:13 count:1`
-    - `world[object_update]=events:3 objects:1 region_handle:1099511628032000`
-
-## Current Working Commands
-
-Start local OpenSim:
-
-```bash
-./opensim.sh
-```
-
-or:
-
-```bash
-./run.sh opensim
-```
-
-Run the live client session test:
-
-```bash
-./run.sh session
-```
-
-Run the test suite:
-
-```bash
-./run.sh test
-```
-
-## What Is Next
-
-The durable-session core is now proven against local OpenSim. The next priority is expanding useful protocol coverage on top of that stable transport base.
-
-Immediate next tasks:
-
-1. decode more of the known prim `ObjectUpdate` tail, especially full `TextureEntry`, face overrides, and extra params
-2. expand keyed world entities beyond coarse agent presence and first object metadata
-3. capture and classify any remaining anomalous/live `ObjectUpdate` variants beyond the known prim and avatar forms
-4. connect decoded texture/material references to later asset-fetch work
-5. keep the world model frontend-agnostic for future console/2D/3D/web heads
-
-## Likely Next Coding Targets
-
-- richer keyed agent/entity storage
-- fixture capture for stable live packets
-- deeper `ObjectUpdate` decoding for world-state work, especially identity + position-bearing fields
-- normalized object and coarse-avatar models
-
-## Out Of Scope For The Immediate Next Step
-
-- inventory support
-- renderer work
-- UI expansion
-- Linden-hosted grid testing
-- broad protocol coverage beyond what is needed for a durable local session
-
-## Resume Here
-
-If continuing work from this point, use this order:
+Use this loop for reverse-engineering work:
 
 1. start OpenSim with `./run.sh opensim`
-2. run `./run.sh session`
-3. confirm the 60-second session remains stable
-4. inspect final `world[...]` summary output
-5. continue from world-state building rather than transport stabilization
+2. run a live session with `./run.sh session 180 --verbose`
+3. narrate manipulations in local chat when useful
+4. inspect `./run.sh unknowns`
+5. optionally enable fixture capture and rebuild with `./run.sh fixtures`
+6. update `docs/reverse-engineered-protocol.md` when a field becomes trustworthy
+
+Important note:
+
+- `local/unknowns.sqlite3` is a dev evidence store and should be treated as disposable
+- clear or replace it before a serious analysis pass so stale test data does not distort conclusions
+
+## Canonical Docs
+
+Read these first when resuming work:
+
+1. `README.md`
+2. `docs/README.md`
+3. `docs/current-handoff.md`
+4. `docs/reverse-engineered-protocol.md`
+5. `docs/local-opensim.md`
+6. `AGENTS.md`
+
+Historical planning and dated progress notes live under `docs/archive/`.
+
+## Multi-Agent Collaboration
+
+The repo is now explicitly set up for multi-agent use.
+
+Expectations:
+
+- treat the repo as a shared workspace
+- leave notes for the next agent in `docs/current-handoff.md`
+- update `docs/reverse-engineered-protocol.md` when protocol understanding changes
+- avoid relying on tool-specific hidden context
+
+This should work cleanly across Codex, Claude Code, Antigravity, or any similar agentic tool.
+
+## Recommended Next Step
+
+Run a fresh clean session against a reset evidence DB and answer this question first:
+
+How many scene objects are we actually receiving from the simulator, and how many are being missed because they arrive through unsupported multi-object or alternative object-update packet shapes?

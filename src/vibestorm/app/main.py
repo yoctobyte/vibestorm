@@ -12,6 +12,9 @@ class AppStatus:
 def get_status() -> AppStatus:
     """Return the current high-level application status."""
     return AppStatus(
-        phase="phase-1-scaffold",
-        message="Protocol implementation is pending; package structure is in place.",
+        phase="phase-2-protocol-runtime",
+        message=(
+            "Login bootstrap, capabilities, event queue polling, UDP session handling, "
+            "and normalized world-state updates are implemented."
+        ),
     )

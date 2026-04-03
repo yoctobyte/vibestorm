@@ -66,6 +66,11 @@ class FixtureInventoryTests(unittest.TestCase):
                 "11223344-0000-0000-0000-000000000000",
             )
             self.assertEqual(inventory["backlog"][0]["key"], "object-update-rich-tail")
+            self.assertEqual(
+                inventory["captures"][0]["object_update"]["interesting_payloads"][0]["field_name"],
+                "TextureEntry",
+            )
+            self.assertIn("object-update-interesting-unknowns", {item["key"] for item in inventory["backlog"]})
 
     def test_write_fixture_inventory_outputs_index_file(self) -> None:
         with TemporaryDirectory() as tmpdir:

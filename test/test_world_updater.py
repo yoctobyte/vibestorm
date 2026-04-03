@@ -176,6 +176,8 @@ class WorldUpdaterTests(unittest.TestCase):
 
         assert event is not None
         self.assertEqual(event.kind, "world.object_update_rich")
+        self.assertIn("local_id=7", event.detail)
+        self.assertIn("TextureEntry:4", event.detail)
 
     def test_apply_dispatch_falls_back_to_object_summary_on_partial_decode(self) -> None:
         world = WorldView()

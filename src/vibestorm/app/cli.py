@@ -12,6 +12,7 @@ from vibestorm import __version__
 from vibestorm.app.main import get_status
 from vibestorm.caps.client import CapabilityClient
 from vibestorm.event_queue.client import EventQueueClient
+from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.login.client import LoginClient
 from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
@@ -115,6 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print live session events and transport diagnostics.",
     )
+
+    unknowns_parser = subparsers.add_parser(
+        "unknowns-report",
+        help="Summarize collected interesting unknown payloads from the SQLite database.",
+    )
+    unknowns_parser.add_argument("--limit", type=int, default=20)
     return parser
 
 
@@ -393,6 +400,7 @@ def main() -> int:
             f"spawn_cube={args.spawn_cube} "
             f"capture={args.capture_dir if args.capture_dir else 'off'} "
             f"capture_mode={args.capture_mode} "
+            f"unknowns_db={DEFAULT_UNKNOWNS_DB_PATH} "
             f"verbose={args.verbose}",
             flush=True,
         )
@@ -412,6 +420,49 @@ def main() -> int:
             ),
         )
         print_lines(format_session_report(report, verbose=args.verbose))
+        return 0
+
+    if args.command == "unknowns-report":
+        database = UnknownsDatabase(DEFAULT_UNKNOWNS_DB_PATH)
+        stats = database.read_stats()
+        print(f"db={DEFAULT_UNKNOWNS_DB_PATH}")
+        print(f"packets={stats.packet_count}")
+        print(f"entities={stats.entity_count}")
+        print(f"distinct_objects={stats.distinct_objects}")
+        print(f"distinct_fingerprints={stats.distinct_fingerprints}")
+        print(f"multi_object_packets={stats.multi_object_packets}")
+        print(f"partial_packets={stats.partial_packets}")
+        print(f"rich_entities={stats.rich_entities}")
+        for item in database.summarize_object_update_packets(limit=args.limit):
+            line = (
+                f"packet_group[count]={item['seen_count']} "
+                f"status={item['decode_status']} "
+                f"reason={item['capture_reason']} "
+                f"multi_object={item['multi_object_count']} "
+                f"first={item['first_seen_at_seconds']:.3f} "
+                f"last={item['last_seen_at_seconds']:.3f}"
+            )
+            print(line)
+            if item["sample_decode_error"] is not None:
+                print(f"decode_error={item['sample_decode_error']}")
+        for item in database.summarize_payload_fingerprints(limit=args.limit):
+            line = (
+                f"fingerprint[count]={item['seen_count']} "
+                f"variant={item['variant']} "
+                f"label={item['label'] or '-'} "
+                f"object={item['sample_full_id']} "
+                f"first={item['first_seen_at_seconds']:.3f} "
+                f"last={item['last_seen_at_seconds']:.3f}"
+            )
+            print(line)
+            print(f"summary={item['sample_interest_summary']}")
+        for item in reversed(database.recent_nearby_chat(limit=min(args.limit, 20))):
+            print(
+                f"chat[{item['observed_at_seconds']:.3f}]="
+                f"{item['from_name']}: {item['message']} "
+                f"(type={item['chat_type']} audible={item['audible']} "
+                f"pos=({item['position'][0]:.2f},{item['position'][1]:.2f},{item['position'][2]:.2f}))",
+            )
         return 0
 
     status = get_status()

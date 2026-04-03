@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Callable
 
 from vibestorm.login.models import LoginBootstrap
+from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
+    MessageDecodeError,
     encode_agent_update,
     encode_agent_throttle,
     encode_complete_agent_movement,
@@ -23,11 +25,15 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_agent_movement_complete,
+    parse_chat_from_simulator,
+    parse_object_update,
+    parse_object_update_summary,
     parse_packet_ack,
     parse_region_handshake,
     parse_start_ping_check,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
+from vibestorm.udp.template import DecodedMessageNumber, MessageDispatch, MessageTemplateSummary
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
 from vibestorm.world.models import WorldView
 from vibestorm.world.updater import WorldUpdater
@@ -46,6 +52,7 @@ class SessionConfig:
     capture_messages: tuple[str, ...] = ()
     max_captured_per_message: int = 8
     capture_mode: str = "smart"
+    unknowns_db_path: Path | None = DEFAULT_UNKNOWNS_DB_PATH
 
 
 @dataclass(slots=True, frozen=True)
@@ -103,9 +110,12 @@ class LiveCircuitSession:
     world_view: WorldView = field(default_factory=WorldView)
     world_updater: WorldUpdater = field(init=False)
     captured_messages: Counter[str] = field(default_factory=Counter)
+    unknowns_db: UnknownsDatabase | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.world_updater = WorldUpdater(self.world_view)
+        if self.config.unknowns_db_path is not None:
+            self.unknowns_db = UnknownsDatabase(self.config.unknowns_db_path)
 
     def start(self, now: float) -> list[bytes]:
         if self.started:
@@ -170,6 +180,32 @@ class LiveCircuitSession:
             self._record_event(now, "session.closed", self.close_reason)
             return []
 
+        if dispatched.summary.name == "ChatFromSimulator":
+            chat = parse_chat_from_simulator(dispatched)
+            self._record_event(
+                now,
+                "chat.local",
+                (
+                    f"from={chat.from_name!r} type={chat.chat_type} audible={chat.audible} "
+                    f"pos=({chat.position[0]:.2f},{chat.position[1]:.2f},{chat.position[2]:.2f}) "
+                    f"message={chat.message!r}"
+                ),
+            )
+            if self.unknowns_db is not None:
+                self.unknowns_db.record_nearby_chat(
+                    observed_at_seconds=now - (self.started_at if self.started_at is not None else now),
+                    message_sequence=view.header.sequence,
+                    from_name=chat.from_name,
+                    source_id=str(chat.source_id),
+                    owner_id=str(chat.owner_id),
+                    source_type=chat.source_type,
+                    chat_type=chat.chat_type,
+                    audible=chat.audible,
+                    position=chat.position,
+                    message=chat.message,
+                )
+            return self._flush_transport_packets(now)
+
         if dispatched.summary.name == "StartPingCheck":
             ping = parse_start_ping_check(dispatched)
             self.ping_requests_handled += 1
@@ -232,6 +268,12 @@ class LiveCircuitSession:
             world_event = self.world_updater.apply_dispatch(dispatched)
             if world_event is not None:
                 self._record_event(now, world_event.kind, world_event.detail)
+                self._record_object_update_observation(
+                    dispatched=dispatched,
+                    sequence=view.header.sequence,
+                    at_seconds=now - (self.started_at if self.started_at is not None else now),
+                    reason=world_event.kind,
+                )
                 self._capture_incoming_message(
                     message_name=dispatched.summary.name,
                     sequence=view.header.sequence,
@@ -436,19 +478,21 @@ class LiveCircuitSession:
         metadata_path = target_dir / f"{stem}.json"
 
         payload_path.write_bytes(message_body)
+        metadata = {
+            "message_name": message_name,
+            "sequence": sequence,
+            "is_reliable": is_reliable,
+            "appended_acks": list(appended_acks),
+            "at_seconds": round(at_seconds, 6),
+            "body_size": len(message_body),
+            "capture_reason": reason,
+            "capture_mode": self.config.capture_mode,
+            "source": "live_session_capture",
+            "message_body": message_body,
+        }
         metadata_path.write_text(
             json.dumps(
-                {
-                    "message_name": message_name,
-                    "sequence": sequence,
-                    "is_reliable": is_reliable,
-                    "appended_acks": list(appended_acks),
-                    "at_seconds": round(at_seconds, 6),
-                    "body_size": len(message_body),
-                    "capture_reason": reason,
-                    "capture_mode": self.config.capture_mode,
-                    "source": "live_session_capture",
-                },
+                self._build_capture_metadata(**metadata),
                 indent=2,
                 sort_keys=True,
             )
@@ -456,6 +500,143 @@ class LiveCircuitSession:
             encoding="utf-8",
         )
         self.captured_messages[message_name] += 1
+
+    def _build_capture_metadata(self, **metadata: object) -> dict[str, object]:
+        message_body = metadata.pop("message_body", None)
+        if metadata.get("message_name") != "ObjectUpdate" or not isinstance(message_body, bytes):
+            return metadata
+
+        dispatch = MessageDispatch(
+            summary=MessageTemplateSummary(
+                name="ObjectUpdate",
+                frequency="High",
+                message_number=12,
+                trust="Trusted",
+                encoding="Zerocoded",
+                deprecation=None,
+            ),
+            message_number=DecodedMessageNumber(
+                frequency="High",
+                message_number=12,
+                encoded_length=1,
+            ),
+            body=message_body,
+        )
+        try:
+            summary = parse_object_update_summary(dispatch)
+        except Exception:
+            return metadata
+
+        object_update: dict[str, object] = {
+            "region_handle": summary.region_handle,
+            "time_dilation": summary.time_dilation,
+            "object_count": summary.object_count,
+        }
+        try:
+            parsed = parse_object_update(dispatch)
+        except Exception as exc:
+            object_update["decode_status"] = "partial"
+            object_update["decode_error"] = str(exc)
+        else:
+            obj = parsed.objects[0]
+            object_update.update(
+                {
+                    "decode_status": "decoded",
+                    "variant": obj.variant,
+                    "full_id": str(obj.full_id),
+                    "local_id": obj.local_id,
+                    "update_flags": obj.update_flags,
+                    "name_values": obj.name_values,
+                    "texture_entry_size": obj.texture_entry_size,
+                    "texture_anim_size": obj.texture_anim_size,
+                    "data_size": obj.data_size,
+                    "text_size": obj.text_size,
+                    "media_url_size": obj.media_url_size,
+                    "ps_block_size": obj.ps_block_size,
+                    "extra_params_size": obj.extra_params_size,
+                    "interesting_payloads": [
+                        {
+                            "field_name": payload.field_name,
+                            "size": payload.size,
+                            "non_zero_bytes": payload.non_zero_bytes,
+                            "preview_hex": payload.preview_hex,
+                            "text_preview": payload.text_preview,
+                        }
+                        for payload in obj.interesting_payloads
+                    ],
+                },
+            )
+        metadata["object_update"] = object_update
+        return metadata
+
+    def _record_object_update_observation(
+        self,
+        *,
+        dispatched: MessageDispatch,
+        sequence: int,
+        at_seconds: float,
+        reason: str,
+    ) -> None:
+        if self.unknowns_db is None or dispatched.summary.name != "ObjectUpdate":
+            return
+        try:
+            summary = parse_object_update_summary(dispatched)
+        except MessageDecodeError as exc:
+            self.unknowns_db.record_object_update_packet(
+                observed_at_seconds=at_seconds,
+                message_sequence=sequence,
+                capture_reason=reason,
+                region_handle=None,
+                object_count=None,
+                decode_status="malformed",
+                decode_error=str(exc),
+                packet_tags=["malformed"],
+            )
+            return
+        try:
+            parsed = parse_object_update(dispatched)
+        except MessageDecodeError as exc:
+            packet_tags = ["summary_only", reason]
+            if summary.object_count > 1:
+                packet_tags.append("multi_object")
+            self.unknowns_db.record_object_update_packet(
+                observed_at_seconds=at_seconds,
+                message_sequence=sequence,
+                capture_reason=reason,
+                region_handle=summary.region_handle,
+                object_count=summary.object_count,
+                decode_status="summary_only",
+                decode_error=str(exc),
+                packet_tags=packet_tags,
+            )
+            return
+
+        packet_tags = ["decoded", reason, f"object_count:{len(parsed.objects)}"]
+        if len(parsed.objects) == 1:
+            packet_tags.append("single_object")
+        else:
+            packet_tags.append("multi_object")
+        if any(obj.interesting_payloads for obj in parsed.objects):
+            packet_tags.append("interesting")
+        packet_id = self.unknowns_db.record_object_update_packet(
+            observed_at_seconds=at_seconds,
+            message_sequence=sequence,
+            capture_reason=reason,
+            region_handle=parsed.region_handle,
+            object_count=len(parsed.objects),
+            decode_status="decoded",
+            decode_error=None,
+            packet_tags=packet_tags,
+        )
+        for obj in parsed.objects:
+            self.unknowns_db.record_object_update_entity(
+                packet_id=packet_id,
+                observed_at_seconds=at_seconds,
+                message_sequence=sequence,
+                capture_reason=reason,
+                region_handle=parsed.region_handle,
+                entry=obj,
+            )
 
 
 async def run_live_session(

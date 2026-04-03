@@ -41,15 +41,17 @@ Defaults come from the local OpenSim notes and can be overridden with env vars:
   VIBESTORM_SPAWN_CUBE
   VIBESTORM_CAPTURE_DIR
   VIBESTORM_CAPTURE_MODE
-
 Examples:
   ./run.sh opensim
   ./run.sh session
+  ./run.sh session 180
+  ./run.sh session 180 --verbose
   ./run.sh bootstrap
   VIBESTORM_SESSION_DURATION=15 ./run.sh session
   VIBESTORM_SPAWN_CUBE=1 ./run.sh session
   VIBESTORM_CAPTURE_DIR=test/fixtures/live ./run.sh session --capture-message ObjectUpdate
   VIBESTORM_CAPTURE_DIR=test/fixtures/live VIBESTORM_CAPTURE_MODE=all ./run.sh session --capture-message ObjectUpdate
+  ./run.sh unknowns
   VIBESTORM_PASSWORD=secret ./run.sh handshake
 EOF
 }
@@ -105,6 +107,11 @@ case "$command" in
     ;;
   session)
     cd "$ROOT_DIR"
+    duration="$SESSION_DURATION"
+    if [[ $# -gt 0 && "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      duration="$1"
+      shift
+    fi
     session_args=()
     if [[ "$SPAWN_CUBE" == "1" ]]; then
       session_args+=(--spawn-cube)
@@ -115,7 +122,7 @@ case "$command" in
     session_args+=(--capture-mode "$CAPTURE_MODE")
     python_runner -m vibestorm.app.cli session-run \
       "${cli_base_args[@]}" \
-      --duration "$SESSION_DURATION" \
+      --duration "$duration" \
       --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
       "${session_args[@]}" \
       "$@"
@@ -127,6 +134,10 @@ case "$command" in
   fixtures)
     cd "$ROOT_DIR"
     python_runner tools/build_fixture_inventory.py "$@"
+    ;;
+  unknowns)
+    cd "$ROOT_DIR"
+    python_runner -m vibestorm.app.cli unknowns-report "$@"
     ;;
   *)
     printf 'Unknown command: %s\n\n' "$command" >&2

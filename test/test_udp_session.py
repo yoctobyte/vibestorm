@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 from struct import pack
 from tempfile import TemporaryDirectory
@@ -293,7 +294,10 @@ class LiveCircuitSessionTests(unittest.TestCase):
             self.assertEqual(len(payloads), 1)
             self.assertEqual(len(metadata), 1)
             self.assertEqual(payloads[0].read_bytes(), body)
-            self.assertIn('"message_name": "ObjectUpdate"', metadata[0].read_text(encoding="utf-8"))
+            captured = json.loads(metadata[0].read_text(encoding="utf-8"))
+            self.assertEqual(captured["message_name"], "ObjectUpdate")
+            self.assertEqual(captured["object_update"]["decode_status"], "decoded")
+            self.assertEqual(captured["object_update"]["interesting_payloads"], [])
 
     def test_object_update_capture_smart_mode_skips_known_messages(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -444,3 +448,123 @@ class LiveCircuitSessionTests(unittest.TestCase):
             capture_dir = Path(tmpdir) / "ObjectUpdate"
             self.assertTrue(capture_dir.exists())
             self.assertEqual(len(list(capture_dir.glob("*.body.bin"))), 1)
+            metadata = json.loads(next(capture_dir.glob("*.json")).read_text(encoding="utf-8"))
+            self.assertEqual(metadata["object_update"]["interesting_payloads"][0]["field_name"], "TextureEntry")
+
+    def test_interesting_object_updates_are_recorded_in_unknowns_db(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    unknowns_db_path=Path(tmpdir) / "unknowns.sqlite3",
+                ),
+            )
+            session.start(10.0)
+
+            object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+            body = (
+                (123456789).to_bytes(8, "little")
+                + (42).to_bytes(2, "little")
+                + bytes([1])
+                + (7).to_bytes(4, "little")
+                + bytes([3])
+                + object_id.bytes
+                + (99).to_bytes(4, "little")
+                + bytes([9, 3, 1])
+                + pack("<fff", 1.0, 2.0, 3.0)
+                + bytes([len(object_data)])
+                + object_data
+                + (0).to_bytes(4, "little")
+                + (5).to_bytes(4, "little")
+                + (b"\x00" * 22)
+                + (4).to_bytes(2, "little")
+                + b"\x11\x22\x33\x44"
+                + bytes([0])
+                + (0).to_bytes(2, "little")
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (b"\x00" * 4)
+                + bytes([0, 0, 0])
+                + (b"\x00" * 66)
+            )
+            inbound = build_packet(bytes([0x0C]) + body, sequence=79)
+
+            session.handle_incoming(inbound, 10.2)
+
+            from vibestorm.fixtures.unknowns_db import UnknownsDatabase
+
+            database = UnknownsDatabase(Path(tmpdir) / "unknowns.sqlite3")
+            stats = database.read_stats()
+            packet_summaries = database.summarize_object_update_packets(limit=5)
+            summaries = database.summarize_payload_fingerprints(limit=5)
+            self.assertEqual(stats.packet_count, 1)
+            self.assertEqual(stats.entity_count, 1)
+            self.assertEqual(stats.rich_entities, 1)
+            self.assertEqual(packet_summaries[0]["decode_status"], "decoded")
+            self.assertEqual(summaries[0]["sample_payloads"][0]["field_name"], "TextureEntry")
+
+    def test_partial_object_updates_are_recorded_in_unknowns_db(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    unknowns_db_path=Path(tmpdir) / "unknowns.sqlite3",
+                ),
+            )
+            session.start(10.0)
+
+            body = (123456789).to_bytes(8, "little") + (42).to_bytes(2, "little") + bytes([3]) + b"\x00" * 5
+            inbound = build_packet(bytes([0x0C]) + body, sequence=91)
+
+            session.handle_incoming(inbound, 10.2)
+
+            from vibestorm.fixtures.unknowns_db import UnknownsDatabase
+
+            database = UnknownsDatabase(Path(tmpdir) / "unknowns.sqlite3")
+            stats = database.read_stats()
+            packet_summaries = database.summarize_object_update_packets(limit=5)
+            self.assertEqual(stats.packet_count, 1)
+            self.assertEqual(stats.entity_count, 0)
+            self.assertEqual(stats.multi_object_packets, 1)
+            self.assertEqual(stats.partial_packets, 1)
+            self.assertEqual(packet_summaries[0]["decode_status"], "summary_only")
+
+    def test_nearby_chat_is_recorded_in_unknowns_db(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    unknowns_db_path=Path(tmpdir) / "unknowns.sqlite3",
+                ),
+            )
+            session.start(10.0)
+
+            source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            owner_id = UUID("11111111-2222-3333-4444-555555555555")
+            from_name = b"Vibestorm Admin"
+            text = "testing local chat note".encode("utf-8")
+            body = (
+                bytes([len(from_name)])
+                + from_name
+                + source_id.bytes
+                + owner_id.bytes
+                + bytes([1, 1, 2])
+                + pack("<fff", 128.0, 128.0, 25.0)
+                + len(text).to_bytes(2, "little")
+                + text
+            )
+            inbound = build_packet(bytes([0xFF, 0xFF, 0x00, 0x8B]) + body, sequence=90)
+
+            session.handle_incoming(inbound, 10.2)
+
+            from vibestorm.fixtures.unknowns_db import UnknownsDatabase
+
+            database = UnknownsDatabase(Path(tmpdir) / "unknowns.sqlite3")
+            chat = database.recent_nearby_chat(limit=5)
+            self.assertEqual(len(chat), 1)
+            self.assertEqual(chat[0]["message"], "testing local chat note")
+            self.assertTrue(any(event.kind == "chat.local" for event in session.events))

@@ -18,6 +18,7 @@ from vibestorm.udp.messages import (
     parse_object_update_summary,
     parse_packet_ack,
     parse_agent_movement_complete,
+    parse_chat_from_simulator,
     parse_complete_ping_check,
     parse_region_handshake,
     parse_sim_stats,
@@ -273,6 +274,7 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.objects[0].variant, "prim_basic")
         self.assertEqual(parsed.objects[0].position, (1.0, 2.0, 3.0))
         self.assertEqual(parsed.objects[0].texture_entry_size, 0)
+        self.assertEqual(parsed.objects[0].interesting_payloads, ())
 
     def test_parse_avatar_style_object_update(self) -> None:
         avatar_id = UUID("11111111-2222-3333-4444-555555555555")
@@ -357,3 +359,71 @@ class SemanticMessageTests(unittest.TestCase):
 
         self.assertEqual(parsed.objects[0].texture_entry_size, 64)
         self.assertEqual(parsed.objects[0].default_texture_id, texture_id)
+        self.assertEqual(parsed.objects[0].interesting_payloads[0].field_name, "TextureEntry")
+        self.assertEqual(parsed.objects[0].interesting_payloads[0].size, 64)
+
+    def test_parse_prim_object_update_collects_interesting_unknown_payloads(self) -> None:
+        full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+        text_payload = b"cube with hovertext"
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([3])
+            + full_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([9, 3, 1])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (b"\x00" * 22)
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (0).to_bytes(2, "little")
+            + (0).to_bytes(2, "little")
+            + bytes([len(text_payload)])
+            + text_payload
+            + bytes([255, 0, 0, 255])
+            + bytes([0])
+            + bytes([0])
+            + bytes([0])
+            + (b"\x00" * 66)
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+
+        parsed = parse_object_update(dispatched)
+
+        payloads = {payload.field_name: payload for payload in parsed.objects[0].interesting_payloads}
+        self.assertEqual(payloads["Text"].text_preview, "cube with hovertext")
+        self.assertEqual(payloads["TextColor"].preview_hex, "ff0000ff")
+
+    def test_parse_chat_from_simulator(self) -> None:
+        source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        owner_id = UUID("11111111-2222-3333-4444-555555555555")
+        from_name = b"Vibestorm Admin"
+        chat_text = "testing hovertext capture".encode("utf-8")
+        body = (
+            bytes([len(from_name)])
+            + from_name
+            + source_id.bytes
+            + owner_id.bytes
+            + bytes([1, 1, 2])
+            + pack("<fff", 128.0, 129.0, 25.0)
+            + len(chat_text).to_bytes(2, "little")
+            + chat_text
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x8B]) + body)
+
+        parsed = parse_chat_from_simulator(dispatched)
+
+        self.assertEqual(parsed.from_name, "Vibestorm Admin")
+        self.assertEqual(parsed.source_id, source_id)
+        self.assertEqual(parsed.owner_id, owner_id)
+        self.assertEqual(parsed.chat_type, 1)
+        self.assertEqual(parsed.audible, 2)
+        self.assertEqual(parsed.position, (128.0, 129.0, 25.0))
+        self.assertEqual(parsed.message, "testing hovertext capture")

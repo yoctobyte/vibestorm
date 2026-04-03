@@ -2,7 +2,7 @@
 
 Vibestorm is a staged Second Life client project.
 
-The current focus is protocol-core groundwork:
+The current focus is protocol-core runtime work:
 
 - login bootstrap
 - UDP transport and message decoding
@@ -11,16 +11,36 @@ The current focus is protocol-core groundwork:
 
 ## Status
 
-Planning is in place. Phase 1 scaffolding exists, but protocol implementation is still pending.
+The project has moved past initial scaffolding. The current codebase already includes:
+
+- XML-RPC login/bootstrap
+- seed capability resolution
+- `EventQueueGet` polling
+- UDP packet parsing, zerocode support, and message dispatch
+- bounded live session handling with ACK/reliability tracking
+- normalized region, coarse avatar, sim stats, time, and object-update models
+
+The main remaining work is deeper message coverage and richer world decoding, especially around
+object-update tails, appearance/state, and broader simulator behavior.
 
 ## Layout
 
-- `docs/`: plans, decisions, research, handoff templates
+- `docs/`: current docs plus archived planning/progress notes
 - `spec/`: message and capability coverage tracking
 - `third_party/secondlife/`: fetched canonical protocol artifacts
 - `tools/`: reproducible helper scripts
 - `src/vibestorm/`: Python package
 - `test/`: fixtures and tests
+
+## Read First
+
+For current repo state and collaboration context:
+
+- `projectstate.md`
+- `docs/current-handoff.md`
+- `docs/reverse-engineered-protocol.md`
+- `docs/local-opensim.md`
+- `AGENTS.md`
 
 ## Getting Started
 
@@ -40,11 +60,24 @@ pip install -e ".[dev]"
 vibestorm --help
 ```
 
+## Current CLI Surface
+
+- `vibestorm login-bootstrap`
+- `vibestorm resolve-seed-caps`
+- `vibestorm event-queue-once`
+- `vibestorm udp-probe`
+- `vibestorm handshake-probe`
+- `vibestorm session-run`
+
+`session-run` is the most complete workflow today. It logs in, establishes the UDP circuit, runs
+a bounded session loop, updates normalized world state, and can optionally capture selected inbound
+messages for later fixture work.
+
 ## Next Step
 
-Implement the first protocol-core slice:
+Build deeper message coverage on top of the existing runtime:
 
-1. packet header parsing
-2. zerocode decode
-3. message-template loading
-4. login/bootstrap models
+1. fuller `ObjectUpdate` tail decoding
+2. object lifecycle coverage such as `KillObject`
+3. richer avatar/chat/world message handling
+4. continued live-capture driven fixture expansion

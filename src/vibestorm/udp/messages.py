@@ -110,10 +110,31 @@ class SimulatorViewerTimeMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class ChatFromSimulatorMessage:
+    from_name: str
+    source_id: UUID
+    owner_id: UUID
+    source_type: int
+    chat_type: int
+    audible: int
+    position: tuple[float, float, float]
+    message: str
+
+
+@dataclass(slots=True, frozen=True)
 class ObjectUpdateSummary:
     region_handle: int
     time_dilation: int
     object_count: int
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectUpdatePayloadSummary:
+    field_name: str
+    size: int
+    non_zero_bytes: int
+    preview_hex: str
+    text_preview: str | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -141,6 +162,7 @@ class ObjectUpdateEntry:
     ps_block_size: int
     extra_params_size: int
     default_texture_id: UUID | None
+    interesting_payloads: tuple[ObjectUpdatePayloadSummary, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -201,6 +223,66 @@ def _parse_name_values(payload: bytes) -> dict[str, str]:
         else:
             values[key] = " ".join(parts[1:])
     return values
+
+
+def _summarize_payload(field_name: str, payload: bytes) -> ObjectUpdatePayloadSummary | None:
+    if not payload:
+        return None
+
+    non_zero_bytes = sum(1 for byte in payload if byte != 0)
+    if non_zero_bytes == 0:
+        return None
+
+    preview_hex = payload[:16].hex()
+    text_preview: str | None = None
+    if all(byte in b"\t\n\r" or 32 <= byte <= 126 for byte in payload[:64]):
+        text = payload[:64].decode("utf-8", errors="replace").replace("\x00", "").strip()
+        if text:
+            text_preview = text.replace("\n", "\\n")
+
+    return ObjectUpdatePayloadSummary(
+        field_name=field_name,
+        size=len(payload),
+        non_zero_bytes=non_zero_bytes,
+        preview_hex=preview_hex,
+        text_preview=text_preview,
+    )
+
+
+def infer_object_update_label(entry: ObjectUpdateEntry) -> str | None:
+    if "FirstName" in entry.name_values or "LastName" in entry.name_values:
+        first = entry.name_values.get("FirstName", "").strip()
+        last = entry.name_values.get("LastName", "").strip()
+        full_name = " ".join(part for part in (first, last) if part)
+        if full_name:
+            return full_name
+
+    for key in ("Name", "Title", "Description", "TouchName", "SitName"):
+        value = entry.name_values.get(key, "").strip()
+        if value:
+            return value
+
+    return None
+
+
+def format_object_update_interest(entry: ObjectUpdateEntry) -> str | None:
+    if not entry.interesting_payloads:
+        return None
+
+    parts = [f"local_id={entry.local_id}", f"variant={entry.variant}"]
+    label = infer_object_update_label(entry)
+    if label is not None:
+        parts.append(f"label={label!r}")
+
+    field_parts: list[str] = []
+    for payload in entry.interesting_payloads:
+        field = f"{payload.field_name}:{payload.size}"
+        if payload.text_preview is not None:
+            field += f" text={payload.text_preview!r}"
+        field += f" hex={payload.preview_hex}"
+        field_parts.append(field)
+    parts.append("interesting=" + ", ".join(field_parts))
+    return " ".join(parts)
 
 
 def parse_packet_ack(message: MessageDispatch) -> PacketAckMessage:
@@ -422,6 +504,52 @@ def parse_simulator_viewer_time(message: MessageDispatch) -> SimulatorViewerTime
     )
 
 
+def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMessage:
+    if message.summary.name != "ChatFromSimulator":
+        raise MessageDecodeError(f"expected ChatFromSimulator, got {message.summary.name}")
+
+    body = message.body
+    if len(body) < 1 + 16 + 16 + 3 + 12 + 2:
+        raise MessageDecodeError("ChatFromSimulator body is too short")
+
+    from_name_length = body[0]
+    offset = 1
+    from_name_end = offset + from_name_length
+    if len(body) < from_name_end + 16 + 16 + 3 + 12 + 2:
+        raise MessageDecodeError("ChatFromSimulator FromName is truncated")
+    from_name = body[offset:from_name_end].decode("utf-8", errors="replace")
+    offset = from_name_end
+
+    source_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    owner_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    source_type = body[offset]
+    chat_type = body[offset + 1]
+    audible = body[offset + 2]
+    offset += 3
+    position = tuple(unpack_from("<fff", body, offset))
+    offset += 12
+    if len(body) < offset + 2:
+        raise MessageDecodeError("ChatFromSimulator Message length is truncated")
+    message_length = int.from_bytes(body[offset : offset + 2], "little")
+    offset += 2
+    message_end = offset + message_length
+    if len(body) < message_end:
+        raise MessageDecodeError("ChatFromSimulator Message payload is truncated")
+    chat_message = body[offset:message_end].decode("utf-8", errors="replace")
+    return ChatFromSimulatorMessage(
+        from_name=from_name,
+        source_id=source_id,
+        owner_id=owner_id,
+        source_type=source_type,
+        chat_type=chat_type,
+        audible=audible,
+        position=position,  # type: ignore[arg-type]
+        message=chat_message,
+    )
+
+
 def parse_object_update_summary(message: MessageDispatch) -> ObjectUpdateSummary:
     if message.summary.name != "ObjectUpdate":
         raise MessageDecodeError(f"expected ObjectUpdate, got {message.summary.name}")
@@ -479,6 +607,8 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
     ps_block_size = 0
     extra_params_size = 0
     default_texture_id: UUID | None = None
+    interesting_payloads: list[ObjectUpdatePayloadSummary] = []
+    trailing_payload = b""
 
     if pcode == 9 and len(object_data) == 60:
         position = tuple(unpack_from("<fff", object_data, 0))
@@ -497,7 +627,7 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
             1,
             "ObjectUpdate.TextureAnim",
         )
-        _, tail_offset = _read_variable_field_best_effort(
+        name_value_payload, tail_offset = _read_variable_field_best_effort(
             message.body,
             tail_offset,
             2,
@@ -517,6 +647,7 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
         )
         if len(message.body) < tail_offset + 4:
             raise MessageDecodeError("ObjectUpdate text color is truncated")
+        text_color_payload = message.body[tail_offset : tail_offset + 4]
         tail_offset += 4
         media_url_payload, tail_offset = _read_variable_field_best_effort(
             message.body,
@@ -545,6 +676,23 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
         media_url_size = len(media_url_payload)
         ps_block_size = len(ps_block_payload)
         extra_params_size = len(extra_params_payload)
+        name_values = _parse_name_values(name_value_payload)
+        trailing_payload = message.body[tail_offset:]
+        for field_name, payload in (
+            ("TextureEntry", texture_entry_payload),
+            ("TextureAnim", texture_anim_payload),
+            ("NameValue", name_value_payload),
+            ("Data", data_payload),
+            ("Text", text_payload),
+            ("TextColor", text_color_payload),
+            ("MediaURL", media_url_payload),
+            ("PSBlock", ps_block_payload),
+            ("ExtraParams", extra_params_payload),
+            ("Trailing", trailing_payload),
+        ):
+            summary = _summarize_payload(field_name, payload)
+            if summary is not None:
+                interesting_payloads.append(summary)
     elif pcode == 47 and len(object_data) == 76:
         position = tuple(unpack_from("<fff", object_data, 16))
         variant = "avatar_basic"
@@ -570,6 +718,15 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
         name_values = _parse_name_values(name_value_payload)
         texture_entry_size = len(texture_entry_payload)
         texture_anim_size = len(texture_anim_payload)
+        trailing_payload = message.body[tail_offset:]
+        for field_name, payload in (
+            ("TextureEntry", texture_entry_payload),
+            ("TextureAnim", texture_anim_payload),
+            ("Trailing", trailing_payload),
+        ):
+            summary = _summarize_payload(field_name, payload)
+            if summary is not None:
+                interesting_payloads.append(summary)
     else:
         raise MessageDecodeError(
             f"unsupported ObjectUpdate variant pcode={pcode} object_data_size={len(object_data)}",
@@ -603,6 +760,7 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
                 ps_block_size=ps_block_size,
                 extra_params_size=extra_params_size,
                 default_texture_id=default_texture_id,
+                interesting_payloads=tuple(interesting_payloads),
             ),
         ),
     )
