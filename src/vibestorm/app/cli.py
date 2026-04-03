@@ -122,6 +122,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Summarize collected interesting unknown payloads from the SQLite database.",
     )
     unknowns_parser.add_argument("--limit", type=int, default=20)
+    unknowns_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Report across all recorded sessions instead of the latest session.",
+    )
+    unknowns_parser.add_argument(
+        "--session-id",
+        type=int,
+        help="Report one specific recorded session.",
+    )
     return parser
 
 
@@ -424,8 +434,33 @@ def main() -> int:
 
     if args.command == "unknowns-report":
         database = UnknownsDatabase(DEFAULT_UNKNOWNS_DB_PATH)
-        stats = database.read_stats()
         print(f"db={DEFAULT_UNKNOWNS_DB_PATH}")
+        session_id: int | None = None
+        if args.session_id is not None:
+            session = database.get_session(args.session_id)
+            if session is None:
+                print(f"session=missing id={args.session_id}")
+                return 1
+            session_id = session.session_id
+            print(
+                f"session=selected id={session.session_id} "
+                f"started_at={session.started_at_utc} "
+                f"sim={session.sim_ip or '-'}:{session.sim_port if session.sim_port is not None else '-'}",
+            )
+        elif args.all:
+            print("session=all")
+        else:
+            session = database.latest_session()
+            if session is None:
+                print("session=all legacy_or_empty")
+            else:
+                session_id = session.session_id
+                print(
+                    f"session=latest id={session.session_id} "
+                    f"started_at={session.started_at_utc} "
+                    f"sim={session.sim_ip or '-'}:{session.sim_port if session.sim_port is not None else '-'}",
+                )
+        stats = database.read_stats(session_id=session_id)
         print(f"packets={stats.packet_count}")
         print(f"entities={stats.entity_count}")
         print(f"distinct_objects={stats.distinct_objects}")
@@ -433,7 +468,25 @@ def main() -> int:
         print(f"multi_object_packets={stats.multi_object_packets}")
         print(f"partial_packets={stats.partial_packets}")
         print(f"rich_entities={stats.rich_entities}")
-        for item in database.summarize_object_update_packets(limit=args.limit):
+        print(f"terse_packets={stats.terse_packet_count}")
+        print(f"terse_entities={stats.terse_entity_count}")
+        print(f"terse_distinct_local_ids={stats.terse_distinct_local_ids}")
+        print(f"terse_rich_entities={stats.terse_rich_entities}")
+        print(f"unknown_udp_messages={stats.unknown_udp_messages}")
+        print(f"inbound_messages={stats.inbound_messages}")
+        for item in database.summarize_inbound_messages(limit=args.limit, session_id=session_id):
+            print(
+                f"inbound[count]={item['seen_count']} "
+                f"name={item['message_name']} "
+                f"freq={item['frequency']} "
+                f"msg=0x{item['wire_message_number']:08X} "
+                f"reliable={item['reliable_count']} "
+                f"body={item['min_body_size']}"
+                + (f"..{item['max_body_size']}" if item['max_body_size'] != item['min_body_size'] else "")
+                + f" first={item['first_seen_at_seconds']:.3f} "
+                + f"last={item['last_seen_at_seconds']:.3f}"
+            )
+        for item in database.summarize_object_update_packets(limit=args.limit, session_id=session_id):
             line = (
                 f"packet_group[count]={item['seen_count']} "
                 f"status={item['decode_status']} "
@@ -445,7 +498,24 @@ def main() -> int:
             print(line)
             if item["sample_decode_error"] is not None:
                 print(f"decode_error={item['sample_decode_error']}")
-        for item in database.summarize_payload_fingerprints(limit=args.limit):
+        for item in database.summarize_improved_terse_packets(limit=args.limit, session_id=session_id):
+            print(
+                f"terse_packet_group[count]={item['seen_count']} "
+                f"reason={item['capture_reason']} "
+                f"objects={item['total_objects']} "
+                f"first={item['first_seen_at_seconds']:.3f} "
+                f"last={item['last_seen_at_seconds']:.3f}"
+            )
+        for item in database.summarize_improved_terse_local_ids(limit=args.limit, session_id=session_id):
+            print(
+                f"terse_local_id[count]={item['seen_count']} "
+                f"local_id={item['local_id']} "
+                f"texture={item['max_texture_entry_size']} "
+                f"first={item['first_seen_at_seconds']:.3f} "
+                f"last={item['last_seen_at_seconds']:.3f} "
+                f"hex={item['sample_data_preview_hex']}"
+            )
+        for item in database.summarize_payload_fingerprints(limit=args.limit, session_id=session_id):
             line = (
                 f"fingerprint[count]={item['seen_count']} "
                 f"variant={item['variant']} "
@@ -456,7 +526,23 @@ def main() -> int:
             )
             print(line)
             print(f"summary={item['sample_interest_summary']}")
-        for item in reversed(database.recent_nearby_chat(limit=min(args.limit, 20))):
+        for item in reversed(
+            database.recent_unknown_udp_messages(limit=min(args.limit, 20), session_id=session_id),
+        ):
+            message_number = (
+                "-" if item["raw_message_number"] is None else f"0x{item['raw_message_number']:08X}"
+            )
+            print(
+                f"udp_unknown[{item['observed_at_seconds']:.3f}]="
+                f"seq={item['message_sequence']} stage={item['failure_stage']} "
+                f"msg={message_number} size={item['payload_size']} "
+                f"hex={item['preview_hex']} error={item['error_text']}",
+            )
+        for item in reversed(
+            database.recent_nearby_chat(limit=min(args.limit * 3, 60), session_id=session_id),
+        ):
+            if not item["message"]:
+                continue
             print(
                 f"chat[{item['observed_at_seconds']:.3f}]="
                 f"{item['from_name']}: {item['message']} "

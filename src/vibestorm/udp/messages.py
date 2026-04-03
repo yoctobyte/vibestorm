@@ -110,6 +110,22 @@ class SimulatorViewerTimeMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class ImprovedTerseObjectEntry:
+    local_id: int | None
+    data_size: int
+    texture_entry_size: int
+    data_preview_hex: str
+    texture_entry_preview_hex: str
+
+
+@dataclass(slots=True, frozen=True)
+class ImprovedTerseObjectUpdateMessage:
+    region_handle: int
+    time_dilation: int
+    objects: tuple[ImprovedTerseObjectEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
 class ChatFromSimulatorMessage:
     from_name: str
     source_id: UUID
@@ -504,6 +520,46 @@ def parse_simulator_viewer_time(message: MessageDispatch) -> SimulatorViewerTime
     )
 
 
+def parse_improved_terse_object_update(message: MessageDispatch) -> ImprovedTerseObjectUpdateMessage:
+    if message.summary.name != "ImprovedTerseObjectUpdate":
+        raise MessageDecodeError(f"expected ImprovedTerseObjectUpdate, got {message.summary.name}")
+    if len(message.body) < 11:
+        raise MessageDecodeError("ImprovedTerseObjectUpdate body is too short")
+
+    region_handle = unpack_from("<Q", message.body, 0)[0]
+    time_dilation = unpack_from("<H", message.body, 8)[0]
+    object_count = message.body[10]
+    offset = 11
+    objects: list[ImprovedTerseObjectEntry] = []
+    for _ in range(object_count):
+        data_payload, offset = _read_variable_field(
+            message.body,
+            offset,
+            1,
+            "ImprovedTerseObjectUpdate.ObjectData.Data",
+        )
+        texture_entry_payload, offset = _read_variable_field(
+            message.body,
+            offset,
+            2,
+            "ImprovedTerseObjectUpdate.ObjectData.TextureEntry",
+        )
+        objects.append(
+            ImprovedTerseObjectEntry(
+                local_id=unpack_from("<I", data_payload, 0)[0] if len(data_payload) >= 4 else None,
+                data_size=len(data_payload),
+                texture_entry_size=len(texture_entry_payload),
+                data_preview_hex=data_payload[:16].hex(),
+                texture_entry_preview_hex=texture_entry_payload[:16].hex(),
+            ),
+        )
+    return ImprovedTerseObjectUpdateMessage(
+        region_handle=region_handle,
+        time_dilation=time_dilation,
+        objects=tuple(objects),
+    )
+
+
 def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMessage:
     if message.summary.name != "ChatFromSimulator":
         raise MessageDecodeError(f"expected ChatFromSimulator, got {message.summary.name}")
@@ -517,7 +573,7 @@ def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMess
     from_name_end = offset + from_name_length
     if len(body) < from_name_end + 16 + 16 + 3 + 12 + 2:
         raise MessageDecodeError("ChatFromSimulator FromName is truncated")
-    from_name = body[offset:from_name_end].decode("utf-8", errors="replace")
+    from_name = body[offset:from_name_end].decode("utf-8", errors="replace").rstrip("\x00")
     offset = from_name_end
 
     source_id = UUID(bytes=body[offset : offset + 16])
@@ -537,7 +593,7 @@ def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMess
     message_end = offset + message_length
     if len(body) < message_end:
         raise MessageDecodeError("ChatFromSimulator Message payload is truncated")
-    chat_message = body[offset:message_end].decode("utf-8", errors="replace")
+    chat_message = body[offset:message_end].decode("utf-8", errors="replace").rstrip("\x00")
     return ChatFromSimulatorMessage(
         from_name=from_name,
         source_id=source_id,

@@ -26,6 +26,7 @@ from vibestorm.udp.messages import (
     encode_use_circuit_code,
     parse_agent_movement_complete,
     parse_chat_from_simulator,
+    parse_improved_terse_object_update,
     parse_object_update,
     parse_object_update_summary,
     parse_packet_ack,
@@ -33,7 +34,12 @@ from vibestorm.udp.messages import (
     parse_start_ping_check,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
-from vibestorm.udp.template import DecodedMessageNumber, MessageDispatch, MessageTemplateSummary
+from vibestorm.udp.template import (
+    DecodedMessageNumber,
+    MessageDispatch,
+    MessageTemplateSummary,
+    decode_message_number,
+)
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
 from vibestorm.world.models import WorldView
 from vibestorm.world.updater import WorldUpdater
@@ -111,6 +117,7 @@ class LiveCircuitSession:
     world_updater: WorldUpdater = field(init=False)
     captured_messages: Counter[str] = field(default_factory=Counter)
     unknowns_db: UnknownsDatabase | None = field(init=False, default=None)
+    db_session_id: int | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.world_updater = WorldUpdater(self.world_view)
@@ -122,6 +129,13 @@ class LiveCircuitSession:
             return []
         self.started = True
         self.started_at = now
+        if self.unknowns_db is not None and self.db_session_id is None:
+            self.db_session_id = self.unknowns_db.begin_session(
+                sim_ip=self.bootstrap.sim_ip,
+                sim_port=self.bootstrap.sim_port,
+                agent_id=str(self.bootstrap.agent_id),
+                configured_duration_seconds=self.config.duration_seconds,
+            )
         self._record_event(now, "session.started", f"sim={self.bootstrap.sim_ip}:{self.bootstrap.sim_port}")
         packets = [
             self._build_outbound_packet(
@@ -155,9 +169,30 @@ class LiveCircuitSession:
         if view.appended_acks:
             self._record_event(now, "transport.appended_ack", ",".join(str(ack) for ack in view.appended_acks))
 
-        dispatched = self.dispatcher.dispatch(view.message)
+        try:
+            dispatched = self.dispatcher.dispatch(view.message)
+        except Exception as exc:
+            self._record_unknown_dispatch_failure(
+                message=view.message,
+                sequence=view.header.sequence,
+                at_seconds=now - (self.started_at if self.started_at is not None else now),
+                error_text=str(exc),
+            )
+            return self._flush_transport_packets(now)
         self.total_received += 1
         self.received_messages[dispatched.summary.name] += 1
+        if self.unknowns_db is not None:
+            self.unknowns_db.record_inbound_message(
+                session_id=self.db_session_id,
+                observed_at_seconds=now - (self.started_at if self.started_at is not None else now),
+                message_sequence=view.header.sequence,
+                message_name=dispatched.summary.name,
+                frequency=dispatched.summary.frequency,
+                wire_message_number=dispatched.message_number.message_number,
+                body_size=len(dispatched.body),
+                is_reliable=view.header.is_reliable,
+                payload_preview_hex=dispatched.body[:24].hex(),
+            )
         if view.header.is_reliable and view.header.sequence not in self.queued_acks:
             self.queued_acks.append(view.header.sequence)
         if view.header.is_reliable:
@@ -193,6 +228,7 @@ class LiveCircuitSession:
             )
             if self.unknowns_db is not None:
                 self.unknowns_db.record_nearby_chat(
+                    session_id=self.db_session_id,
                     observed_at_seconds=now - (self.started_at if self.started_at is not None else now),
                     message_sequence=view.header.sequence,
                     from_name=chat.from_name,
@@ -269,6 +305,12 @@ class LiveCircuitSession:
             if world_event is not None:
                 self._record_event(now, world_event.kind, world_event.detail)
                 self._record_object_update_observation(
+                    dispatched=dispatched,
+                    sequence=view.header.sequence,
+                    at_seconds=now - (self.started_at if self.started_at is not None else now),
+                    reason=world_event.kind,
+                )
+                self._record_improved_terse_observation(
                     dispatched=dispatched,
                     sequence=view.header.sequence,
                     at_seconds=now - (self.started_at if self.started_at is not None else now),
@@ -583,6 +625,7 @@ class LiveCircuitSession:
             summary = parse_object_update_summary(dispatched)
         except MessageDecodeError as exc:
             self.unknowns_db.record_object_update_packet(
+                session_id=self.db_session_id,
                 observed_at_seconds=at_seconds,
                 message_sequence=sequence,
                 capture_reason=reason,
@@ -600,6 +643,7 @@ class LiveCircuitSession:
             if summary.object_count > 1:
                 packet_tags.append("multi_object")
             self.unknowns_db.record_object_update_packet(
+                session_id=self.db_session_id,
                 observed_at_seconds=at_seconds,
                 message_sequence=sequence,
                 capture_reason=reason,
@@ -619,6 +663,7 @@ class LiveCircuitSession:
         if any(obj.interesting_payloads for obj in parsed.objects):
             packet_tags.append("interesting")
         packet_id = self.unknowns_db.record_object_update_packet(
+            session_id=self.db_session_id,
             observed_at_seconds=at_seconds,
             message_sequence=sequence,
             capture_reason=reason,
@@ -631,12 +676,95 @@ class LiveCircuitSession:
         for obj in parsed.objects:
             self.unknowns_db.record_object_update_entity(
                 packet_id=packet_id,
+                session_id=self.db_session_id,
                 observed_at_seconds=at_seconds,
                 message_sequence=sequence,
                 capture_reason=reason,
                 region_handle=parsed.region_handle,
                 entry=obj,
             )
+
+    def _record_improved_terse_observation(
+        self,
+        *,
+        dispatched: MessageDispatch,
+        sequence: int,
+        at_seconds: float,
+        reason: str,
+    ) -> None:
+        if self.unknowns_db is None or dispatched.summary.name != "ImprovedTerseObjectUpdate":
+            return
+        try:
+            parsed = parse_improved_terse_object_update(dispatched)
+        except MessageDecodeError:
+            return
+
+        packet_tags = [reason, f"object_count:{len(parsed.objects)}"]
+        if any(obj.local_id is not None for obj in parsed.objects):
+            packet_tags.append("has_local_id")
+        if any(obj.texture_entry_size > 0 for obj in parsed.objects):
+            packet_tags.append("has_texture_entry")
+        packet_id = self.unknowns_db.record_improved_terse_packet(
+            session_id=self.db_session_id,
+            observed_at_seconds=at_seconds,
+            message_sequence=sequence,
+            capture_reason=reason,
+            region_handle=parsed.region_handle,
+            object_count=len(parsed.objects),
+            time_dilation=parsed.time_dilation,
+            packet_tags=packet_tags,
+        )
+        for obj in parsed.objects:
+            self.unknowns_db.record_improved_terse_entity(
+                packet_id=packet_id,
+                session_id=self.db_session_id,
+                observed_at_seconds=at_seconds,
+                message_sequence=sequence,
+                capture_reason=reason,
+                region_handle=parsed.region_handle,
+                local_id=obj.local_id,
+                data_size=obj.data_size,
+                texture_entry_size=obj.texture_entry_size,
+                data_preview_hex=obj.data_preview_hex,
+                texture_entry_preview_hex=obj.texture_entry_preview_hex,
+            )
+
+    def _record_unknown_dispatch_failure(
+        self,
+        *,
+        message: bytes,
+        sequence: int,
+        at_seconds: float,
+        error_text: str,
+    ) -> None:
+        event = SessionEvent(at_seconds=at_seconds, kind="udp.unknown", detail=error_text)
+        self.events.append(event)
+        if len(self.events) > self.config.max_logged_events:
+            self.events.pop(0)
+        if self.on_event is not None:
+            self.on_event(event)
+        if self.unknowns_db is None:
+            return
+        raw_message_number: int | None = None
+        encoded_length: int | None = None
+        failure_stage = "dispatch"
+        try:
+            decoded = decode_message_number(message)
+        except Exception:
+            failure_stage = "message_number_decode"
+        else:
+            raw_message_number = decoded.message_number
+            encoded_length = decoded.encoded_length
+        self.unknowns_db.record_unknown_udp_message(
+            session_id=self.db_session_id,
+            observed_at_seconds=at_seconds,
+            message_sequence=sequence,
+            failure_stage=failure_stage,
+            raw_message_number=raw_message_number,
+            encoded_length=encoded_length,
+            payload=message,
+            error_text=error_text,
+        )
 
 
 async def run_live_session(

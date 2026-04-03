@@ -179,6 +179,37 @@ class WorldUpdaterTests(unittest.TestCase):
         self.assertIn("local_id=7", event.detail)
         self.assertIn("TextureEntry:4", event.detail)
 
+    def test_apply_dispatch_tracks_improved_terse_object_update_summary(self) -> None:
+        world = WorldView()
+        updater = WorldUpdater(world)
+        dispatched = self._dispatch(
+            "ImprovedTerseObjectUpdate",
+            (
+                (1099511628032000).to_bytes(8, "little")
+                + (65535).to_bytes(2, "little")
+                + bytes([2])
+                + bytes([4])
+                + b"\x01\x02\x03\x04"
+                + (4).to_bytes(2, "little")
+                + b"\x11\x22\x33\x44"
+                + bytes([3])
+                + b"\x99\x88\x77"
+                + (0).to_bytes(2, "little")
+            ),
+            frequency="High",
+            message_number=15,
+        )
+
+        event = updater.apply_dispatch(dispatched)
+
+        assert event is not None
+        self.assertEqual(event.kind, "world.improved_terse_object_update")
+        self.assertIn("objects=2", event.detail)
+        self.assertIn("rich_entries=1", event.detail)
+        self.assertIn("local_ids=67305985", event.detail)
+        assert world.latest_object_update is not None
+        self.assertEqual(world.latest_object_update.object_count, 2)
+
     def test_apply_dispatch_falls_back_to_object_summary_on_partial_decode(self) -> None:
         world = WorldView()
         updater = WorldUpdater(world)

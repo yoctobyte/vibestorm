@@ -15,8 +15,11 @@ The repo already supports:
 - zerocode and reliable/ACK handling
 - message-template driven dispatch
 - normalized world-state updates for region, time, coarse agents, and first object entities
+- first structural `ImprovedTerseObjectUpdate` handling with best-effort terse `local_id` extraction
 - file-based packet capture for selected messages
 - SQLite-backed evidence collection at `local/unknowns.sqlite3`
+- session-scoped evidence rows inside the SQLite store
+- aggregate inbound-message census and unknown UDP dispatch-failure logging
 - nearby chat capture for timestamped in-world notes
 
 ## What Is Stable
@@ -54,6 +57,7 @@ Current object/world coverage:
 - first keyed object entities from `ObjectUpdate`
 - known `prim_basic` and `avatar_basic` `ObjectUpdate` variants
 - first conservative texture UUID extraction from rich prim `TextureEntry`
+- structural `ImprovedTerseObjectUpdate` parsing with per-entry payload and texture-entry sizing
 
 ## Current Gaps
 
@@ -63,7 +67,8 @@ Main gaps:
 
 - multi-object `ObjectUpdate` semantic decoding
 - better census of all visible scene objects
-- deeper object update families such as `ImprovedTerseObjectUpdate`, `ObjectUpdateCached`, and `KillObject`
+- semantic decoding of terse object payloads beyond the first inferred `local_id`
+- deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - full `TextureEntry` decoding
 - `ExtraParams` and related rich-tail fields
 - reliable extraction of ordinary prim names
@@ -80,10 +85,17 @@ Use this loop for reverse-engineering work:
 5. optionally enable fixture capture and rebuild with `./run.sh fixtures`
 6. update `docs/reverse-engineered-protocol.md` when a field becomes trustworthy
 
+The current evidence workflow is session-aware:
+
+- by default `unknowns-report` targets the latest recorded session
+- use `./run.sh unknowns -- --all` to aggregate across the whole DB
+- use `./run.sh unknowns -- --session-id N` when comparing two specific live runs
+
 Important note:
 
-- `local/unknowns.sqlite3` is a dev evidence store and should be treated as disposable
-- clear or replace it before a serious analysis pass so stale test data does not distort conclusions
+- `local/unknowns.sqlite3` is now intended to accumulate session evidence for later forensic comparison
+- prefer preserving old sessions and using session-aware reporting instead of clearing the DB between runs
+- if the DB has been polluted with test or synthetic data, move it aside and start a fresh file rather than deleting useful historical evidence
 
 ## Canonical Docs
 
@@ -113,6 +125,6 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 
 ## Recommended Next Step
 
-Run a fresh clean session against a reset evidence DB and answer this question first:
+Run a fresh clean live session and answer this question first:
 
-How many scene objects are we actually receiving from the simulator, and how many are being missed because they arrive through unsupported multi-object or alternative object-update packet shapes?
+How many scene objects are we actually receiving through `ImprovedTerseObjectUpdate`, and how many are still being missed because the terse inner payload remains undecoded or because they arrive through other unsupported object-update packet shapes?

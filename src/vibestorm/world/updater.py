@@ -6,9 +6,11 @@ from dataclasses import dataclass
 
 from vibestorm.udp.messages import (
     MessageDecodeError,
+    ObjectUpdateSummary,
     RegionHandshakeMessage,
     format_object_update_interest,
     parse_coarse_location_update,
+    parse_improved_terse_object_update,
     parse_object_update,
     parse_object_update_summary,
     parse_sim_stats,
@@ -120,6 +122,27 @@ class WorldUpdater:
             return WorldUpdateEvent(
                 kind="world.object_update_rich" if has_rich_tail else "world.object_update",
                 detail=detail,
+            )
+
+        if dispatched.summary.name == "ImprovedTerseObjectUpdate":
+            terse = parse_improved_terse_object_update(dispatched)
+            self.world_view.apply_object_update_summary(
+                ObjectUpdateSummary(
+                    region_handle=terse.region_handle,
+                    time_dilation=terse.time_dilation,
+                    object_count=len(terse.objects),
+                ),
+            )
+            rich_entries = sum(1 for obj in terse.objects if obj.texture_entry_size > 0)
+            local_ids = [str(obj.local_id) for obj in terse.objects if obj.local_id is not None][:4]
+            return WorldUpdateEvent(
+                kind="world.improved_terse_object_update",
+                detail=(
+                    f"region_handle={terse.region_handle} "
+                    f"objects={len(terse.objects)} dilation={terse.time_dilation} "
+                    f"rich_entries={rich_entries}"
+                    + (f" local_ids={','.join(local_ids)}" if local_ids else "")
+                ),
             )
 
         return None

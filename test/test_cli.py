@@ -30,6 +30,7 @@ def test_session_parser_uses_hardcoded_unknowns_db() -> None:
 
 def test_unknowns_report_parser_accepts_limit_argument() -> None:
     parser = build_parser()
-    args = parser.parse_args(["unknowns-report", "--limit", "5"])
+    args = parser.parse_args(["unknowns-report", "--limit", "5", "--all"])
 
     assert args.limit == 5
+    assert args.all is True

@@ -383,6 +383,74 @@ struct PacketAck {
 }
 ```
 
+### `ImprovedTerseObjectUpdate`
+
+This is now the most important missing object/world message family in local OpenSim sessions.
+
+Recent live evidence:
+
+- it appeared 60 times in a 120-second local session
+- only 3 `ObjectUpdate` packets appeared in the same session
+- this strongly suggests `ImprovedTerseObjectUpdate` carries a large share of visible scene state
+- the local `message_template.msg` confirms the outer blocks:
+  - `RegionData.RegionHandle U64`
+  - `RegionData.TimeDilation U16`
+  - repeated `ObjectData.Data Variable 1`
+  - repeated `ObjectData.TextureEntry Variable 2`
+- in a later 30-second scoped session, the first four bytes of `Data` for a terse entry were
+  `b9 e2 ed 15`, which decode as little-endian `367911609`
+- that matches the already-known avatar `local_id=367911609` for `Tester` from a full `ObjectUpdate`
+- current confidence: the first 4 bytes of terse `Data` are very likely `local_id`
+
+Current decoded fields:
+
+| Field | Type | Confidence |
+| --- | --- | --- |
+| `region_handle` | `U64` | `confirmed` |
+| `time_dilation` | `U16` | `confirmed` |
+| `object_count` | `U8` | `confirmed` |
+| `ObjectData.Data[0:4]` | `U32 local_id` | `inferred` |
+| repeated `Data` variable fields | variable bytes | `confirmed` structurally |
+| repeated `TextureEntry` variable fields | variable bytes | `confirmed` structurally |
+
+What is still unknown:
+
+- the semantic layout inside each `Data` payload
+- how the remaining `Data` bytes map to transforms / velocities / state flags
+- whether `TextureEntry` here follows the same default-texture convention as richer `ObjectUpdate`
+
+```text
+struct ImprovedTerseObjectUpdate {
+    0x00  U64   region_handle_le;
+    0x08  U16   time_dilation_le;
+    0x0A  U8    object_count;
+    0x0B  TerseEntry entries[object_count];
+}
+
+struct TerseEntry {
+    0x00  Var1   data;
+    0x..  Var2   texture_entry;
+}
+```
+
+Current best-effort inner view:
+
+```text
+struct TerseEntry.Data {
+    0x00  U32   local_id_le;      // inferred from live correlation, not yet fully proven
+    0x04  U8[]  remainder;        // unknown; likely terse transform/state payload
+}
+```
+
+Current implementation only trusts:
+
+- outer message framing
+- object count
+- per-entry `local_id` when `Data` is at least 4 bytes
+- per-entry `data_size`
+- per-entry `texture_entry_size`
+- short hex previews for both payloads
+
 ## `ObjectUpdate`
 
 This is the most important reverse-engineering area right now.

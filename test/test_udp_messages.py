@@ -14,6 +14,7 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_coarse_location_update,
+    parse_improved_terse_object_update,
     parse_object_update,
     parse_object_update_summary,
     parse_packet_ack,
@@ -427,3 +428,55 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.audible, 2)
         self.assertEqual(parsed.position, (128.0, 129.0, 25.0))
         self.assertEqual(parsed.message, "testing hovertext capture")
+
+    def test_parse_chat_from_simulator_trims_nul_terminators(self) -> None:
+        source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        owner_id = UUID("11111111-2222-3333-4444-555555555555")
+        from_name = b"Vibestorm Tester\x00"
+        chat_text = b"rezzed another cube\x00"
+        body = (
+            bytes([len(from_name)])
+            + from_name
+            + source_id.bytes
+            + owner_id.bytes
+            + bytes([1, 1, 1])
+            + pack("<fff", 128.0, 129.0, 25.0)
+            + len(chat_text).to_bytes(2, "little")
+            + chat_text
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x8B]) + body)
+
+        parsed = parse_chat_from_simulator(dispatched)
+
+        self.assertEqual(parsed.from_name, "Vibestorm Tester")
+        self.assertEqual(parsed.message, "rezzed another cube")
+
+    def test_parse_improved_terse_object_update(self) -> None:
+        data_payload = bytes.fromhex("01020304aabbccdd")
+        texture_payload = bytes.fromhex("11223344")
+        body = (
+            (1099511628032000).to_bytes(8, "little")
+            + (65535).to_bytes(2, "little")
+            + bytes([2])
+            + bytes([len(data_payload)])
+            + data_payload
+            + len(texture_payload).to_bytes(2, "little")
+            + texture_payload
+            + bytes([3])
+            + b"\x99\x88\x77"
+            + (0).to_bytes(2, "little")
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0F]) + body)
+
+        parsed = parse_improved_terse_object_update(dispatched)
+
+        self.assertEqual(parsed.region_handle, 1099511628032000)
+        self.assertEqual(parsed.time_dilation, 65535)
+        self.assertEqual(len(parsed.objects), 2)
+        self.assertEqual(parsed.objects[0].local_id, 0x04030201)
+        self.assertEqual(parsed.objects[0].data_size, len(data_payload))
+        self.assertEqual(parsed.objects[0].texture_entry_size, len(texture_payload))
+        self.assertEqual(parsed.objects[0].texture_entry_preview_hex, "11223344")
+        self.assertIsNone(parsed.objects[1].local_id)
+        self.assertEqual(parsed.objects[1].data_size, 3)
+        self.assertEqual(parsed.objects[1].texture_entry_size, 0)
