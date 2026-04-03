@@ -4,16 +4,22 @@ from uuid import UUID
 
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
+    encode_object_add,
     encode_agent_update,
+    encode_agent_throttle,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_packet_ack,
     encode_region_handshake_reply,
     encode_use_circuit_code,
+    parse_coarse_location_update,
+    parse_object_update_summary,
     parse_packet_ack,
     parse_agent_movement_complete,
     parse_complete_ping_check,
     parse_region_handshake,
+    parse_sim_stats,
+    parse_simulator_viewer_time,
     parse_start_ping_check,
     parse_use_circuit_code,
 )
@@ -56,6 +62,20 @@ class SemanticMessageTests(unittest.TestCase):
         payload = encode_agent_update(agent_id, session_id)
         dispatched = self.dispatcher.dispatch(payload)
         self.assertEqual(dispatched.summary.name, "AgentUpdate")
+
+    def test_encode_agent_throttle_dispatches(self) -> None:
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        payload = encode_agent_throttle(agent_id, session_id, 0x12345678)
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "AgentThrottle")
+
+    def test_encode_object_add_dispatches(self) -> None:
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        payload = encode_object_add(agent_id, session_id)
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "ObjectAdd")
 
     def test_encode_and_parse_use_circuit_code(self) -> None:
         session_id = UUID("11111111-2222-3333-4444-555555555555")
@@ -128,3 +148,59 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertTrue(parsed.is_estate_manager)
         self.assertEqual(parsed.cache_id, cache_id)
         self.assertEqual(parsed.region_id, region_id)
+
+    def test_parse_sim_stats(self) -> None:
+        body = (
+            (1000).to_bytes(4, "little")
+            + (1001).to_bytes(4, "little")
+            + (9).to_bytes(4, "little")
+            + (45000).to_bytes(4, "little")
+            + bytes([2])
+            + (1).to_bytes(4, "little")
+            + bytes.fromhex("00002041")
+            + (2).to_bytes(4, "little")
+            + bytes.fromhex("0000a041")
+            + (1234).to_bytes(4, "little", signed=True)
+            + bytes([1])
+            + (77).to_bytes(8, "little")
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x8C]) + body)
+        parsed = parse_sim_stats(dispatched)
+        self.assertEqual(parsed.region_x, 1000)
+        self.assertEqual(len(parsed.stats), 2)
+        self.assertEqual(parsed.stats[1].stat_id, 2)
+        self.assertEqual(parsed.pid, 1234)
+        self.assertEqual(parsed.region_flags_extended, (77,))
+
+    def test_parse_coarse_location_update(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        body = bytes([2, 128, 129, 8, 130, 131, 9]) + (-1).to_bytes(2, "little", signed=True) + (1).to_bytes(2, "little", signed=True) + bytes([1]) + agent_id.bytes
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0x06]) + body)
+        parsed = parse_coarse_location_update(dispatched)
+        self.assertEqual(len(parsed.locations), 2)
+        self.assertEqual(parsed.locations[0].x, 128)
+        self.assertEqual(parsed.you_index, -1)
+        self.assertEqual(parsed.agent_ids, (agent_id,))
+
+    def test_parse_simulator_viewer_time(self) -> None:
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (86400).to_bytes(4, "little")
+            + (31536000).to_bytes(4, "little")
+            + bytes.fromhex("0000803f0000000000000000")
+            + bytes.fromhex("0000003f")
+            + bytes.fromhex("000000000000803f00000000")
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x96]) + body)
+        parsed = parse_simulator_viewer_time(dispatched)
+        self.assertEqual(parsed.usec_since_start, 123456789)
+        self.assertEqual(parsed.sec_per_day, 86400)
+        self.assertEqual(parsed.sun_phase, 0.5)
+
+    def test_parse_object_update_summary(self) -> None:
+        body = (123456789).to_bytes(8, "little") + (42).to_bytes(2, "little") + bytes([3]) + b"\x00" * 5
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+        parsed = parse_object_update_summary(dispatched)
+        self.assertEqual(parsed.region_handle, 123456789)
+        self.assertEqual(parsed.time_dilation, 42)
+        self.assertEqual(parsed.object_count, 3)

@@ -14,11 +14,13 @@ Confirmed working now:
 - `EventQueueGet` polling works for the current local empty-state path
 - UDP handshake probing works
 - a durable UDP session can stay alive for 60 seconds against local OpenSim
+- experimental client-side cube spawn appears to work against local OpenSim
 
 User-confirmed status:
 
 - logging in works
 - local OpenSim session completes a 60-second run with continued simulator traffic
+- spawning a test cube through the client appears to work
 
 ## What Has Been Done
 
@@ -53,6 +55,19 @@ User-confirmed status:
 - live session events are streamed through the CLI for debugging
 - the CLI now exposes a bounded `session-run` path
 
+### World-view slice
+
+- a UI-agnostic `WorldView` exists in `src/vibestorm/world/models.py`
+- session traffic now feeds normalized state for:
+  - region info
+  - sim stats
+  - simulator time
+  - coarse agent locations
+  - object update summaries
+- coarse locations now also populate keyed agent-presence entries by UUID where available
+- `session-run` now prints compact world summaries at the end of a run
+- `session-run` can optionally send an experimental `ObjectAdd` to spawn a test cube for local debugging
+
 ### Developer ergonomics
 
 - `run.sh` was added at the repo root as the main testing wrapper
@@ -73,11 +88,25 @@ User-confirmed status:
 - `PYTHONPATH=src python3 -m unittest discover -s test -v` passed during the latest implementation pass
 - `python3 -m compileall src test` passed during the latest implementation pass
 - local OpenSim session verification succeeded for a full 60-second run with:
-  - `received=94`
+  - `received=94-95`
+  - `ping_requests_handled=11`
+  - `agent_updates_sent=54-55`
+  - `pending_reliable=0`
+  - recurring live traffic including `SimStats`, `SimulatorViewerTimeMessage`, and `CoarseLocationUpdate`
+  - final world summary including region, sim stats, time, coarse agents, and object update counts
+- local OpenSim session verification with experimental cube spawn also succeeded for a full 60-second run with:
+  - `received=97`
   - `ping_requests_handled=11`
   - `agent_updates_sent=55`
   - `pending_reliable=0`
-  - recurring live traffic including `SimStats`, `SimulatorViewerTimeMessage`, and `CoarseLocationUpdate`
+  - `ObjectUpdate=3`
+  - `PacketAck=3`
+  - final world summary showing:
+    - `world[region]=Vibestorm Test grid=(1000,1000)`
+    - `world[sim_stats]=updates:20 capacity:15000 stats:41`
+    - `world[time]=updates:23 sun_phase:0.326 sec_per_day:14400`
+    - `world[coarse_agents]=updates:13 count:1`
+    - `world[object_update]=events:3 objects:1 region_handle:1099511628032000`
 
 ## Current Working Commands
 
@@ -111,23 +140,19 @@ The durable-session core is now proven against local OpenSim. The next priority 
 
 Immediate next tasks:
 
-1. add `AgentThrottle` so viewer traffic looks closer to a normal session
-2. add parse-only support for recurring live messages:
-   - `SimStats`
-   - `SimulatorViewerTimeMessage`
-   - `CoarseLocationUpdate`
-   - `ObjectUpdate`
-3. capture stable live fixtures from the now-working session loop
-4. promote more messages from parse-only to handled where they affect world/session state
-5. build the first normalized world-state model from recurring simulator traffic
+1. move message-to-world application into a dedicated updater/adapter layer
+2. expand keyed world entities beyond coarse agent presence
+3. deepen `ObjectUpdate` decoding toward identities and positions
+4. capture stable live fixtures from the now-working session loop, including with spawned test geometry
+5. keep the world model frontend-agnostic for future console/2D/3D/web heads
 
 ## Likely Next Coding Targets
 
-- `AgentThrottle` builder and session integration
-- parse helpers for recurring world/session messages
+- world updater module that applies parsed messages into `WorldView`
+- richer keyed agent/entity storage
 - fixture capture for stable live packets
-- first-pass `ObjectUpdate` decoding for world-state work
-- normalized coarse-avatar and sim-stat models
+- deeper `ObjectUpdate` decoding for world-state work
+- normalized object and coarse-avatar models
 
 ## Out Of Scope For The Immediate Next Step
 
@@ -144,5 +169,5 @@ If continuing work from this point, use this order:
 1. start OpenSim with `./run.sh opensim`
 2. run `./run.sh session`
 3. confirm the 60-second session remains stable
-4. expand recurring live message decoding
-5. capture fixtures and move toward world-state building
+4. inspect final `world[...]` summary output
+5. continue from world-state building rather than transport stabilization

@@ -113,13 +113,14 @@ class LiveCircuitSessionTests(unittest.TestCase):
         immediate = session.handle_incoming(inbound, 10.2)
         later = session.drain_due_packets(11.3)
 
-        self.assertEqual(immediate, [])
+        self.assertEqual(len(immediate), 1)
+        self.assertEqual(self.dispatcher.dispatch(split_packet(decode_zerocode(immediate[0])).message).summary.name, "AgentThrottle")
         self.assertEqual(len(later), 1)
-        decoded = decode_zerocode(later[0])
-        view = split_packet(decoded)
+        second = split_packet(decode_zerocode(later[0]))
         self.assertTrue(later[0][0] & LL_ZERO_CODE_FLAG)
-        self.assertEqual(self.dispatcher.dispatch(view.message).summary.name, "AgentUpdate")
+        self.assertEqual(self.dispatcher.dispatch(second.message).summary.name, "AgentUpdate")
         self.assertEqual(session.agent_update_count, 1)
+        self.assertTrue(session.throttle_sent)
         self.assertTrue(any(event.kind == "movement.complete" for event in session.events))
 
     def test_reliable_packets_record_appended_ack_event(self) -> None:
@@ -191,3 +192,53 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertGreaterEqual(len(seen), 2)
         self.assertEqual(seen[-1].kind, "session.completed")
         self.assertEqual(session.events[-1].kind, "session.completed")
+
+    def test_spawn_test_cube_emits_object_add(self) -> None:
+        session = LiveCircuitSession(
+            self.bootstrap,
+            self.dispatcher,
+            config=SessionConfig(agent_update_interval_seconds=1.0, spawn_test_cube=True, spawn_delay_seconds=0.0),
+        )
+        session.start(10.0)
+        session.movement_completed = True
+
+        packets = session.drain_due_packets(10.1)
+
+        self.assertGreaterEqual(len(packets), 1)
+        names = [self.dispatcher.dispatch(split_packet(decode_zerocode(packet)).message).summary.name for packet in packets]
+        self.assertIn("ObjectAdd", names)
+        self.assertTrue(session.test_cube_spawned)
+
+    def test_simstats_records_summary_event(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        body = (
+            (1000).to_bytes(4, "little")
+            + (1001).to_bytes(4, "little")
+            + (9).to_bytes(4, "little")
+            + (45000).to_bytes(4, "little")
+            + bytes([1])
+            + (1).to_bytes(4, "little")
+            + bytes.fromhex("00002041")
+            + (1234).to_bytes(4, "little", signed=True)
+            + bytes([1])
+            + (77).to_bytes(8, "little")
+        )
+        inbound = build_packet(bytes([0xFF, 0xFF, 0x00, 0x8C]) + body, sequence=41)
+        session.handle_incoming(inbound, 10.2)
+
+        self.assertTrue(any(event.kind == "sim.stats" for event in session.events))
+        assert session.world_view.latest_sim_stats is not None
+        self.assertEqual(session.world_view.latest_sim_stats.object_capacity, 45000)
+
+    def test_coarse_location_records_summary_event(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        body = bytes([2, 128, 129, 8, 130, 131, 9]) + (-1).to_bytes(2, "little", signed=True) + (1).to_bytes(2, "little", signed=True) + bytes([1]) + self.bootstrap.agent_id.bytes
+        inbound = build_packet(bytes([0xFF, 0x06]) + body, sequence=42)
+        session.handle_incoming(inbound, 10.2)
+
+        self.assertTrue(any(event.kind == "world.coarse_location" for event in session.events))
+        self.assertEqual(len(session.world_view.coarse_agents), 2)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import socket
 from collections import Counter
 from dataclasses import dataclass, field
@@ -12,18 +13,25 @@ from vibestorm.login.models import LoginBootstrap
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
     encode_agent_update,
+    encode_agent_throttle,
     encode_complete_agent_movement,
     encode_complete_ping_check,
+    encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_agent_movement_complete,
+    parse_coarse_location_update,
+    parse_object_update_summary,
     parse_packet_ack,
     parse_region_handshake,
+    parse_sim_stats,
+    parse_simulator_viewer_time,
     parse_start_ping_check,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
+from vibestorm.world.models import WorldView
 
 
 @dataclass(slots=True, frozen=True)
@@ -31,6 +39,8 @@ class SessionConfig:
     duration_seconds: float = 60.0
     receive_timeout_seconds: float = 0.25
     agent_update_interval_seconds: float = 1.0
+    spawn_test_cube: bool = False
+    spawn_delay_seconds: float = 2.0
     region_handshake_reply_flags: int = 0
     max_logged_events: int = 64
 
@@ -56,6 +66,7 @@ class SessionReport:
     pending_reliable_sequences: tuple[int, ...]
     last_region_name: str | None
     close_reason: str | None
+    world_view: WorldView
     events: tuple[SessionEvent, ...]
 
 
@@ -81,9 +92,12 @@ class LiveCircuitSession:
     close_reason: str | None = None
     camera_center: tuple[float, float, float] = (128.0, 128.0, 25.0)
     movement_completed: bool = False
+    throttle_sent: bool = False
+    test_cube_spawned: bool = False
     started: bool = False
     started_at: float | None = None
     events: list[SessionEvent] = field(default_factory=list)
+    world_view: WorldView = field(default_factory=WorldView)
 
     def start(self, now: float) -> list[bytes]:
         if self.started:
@@ -181,6 +195,11 @@ class LiveCircuitSession:
                 self.camera_center[2],
             )
             self.handshake_reply_sent = True
+            self.world_view.set_region(
+                name=handshake.sim_name,
+                grid_x=self.bootstrap.region_x // 256,
+                grid_y=self.bootstrap.region_y // 256,
+            )
             packets = [
                 self._build_outbound_packet(
                     encode_region_handshake_reply(
@@ -206,6 +225,38 @@ class LiveCircuitSession:
                 "movement.complete",
                 f"region_handle={movement.region_handle} position={movement.position}",
             )
+        elif dispatched.summary.name == "SimStats":
+            stats = parse_sim_stats(dispatched)
+            self.world_view.apply_sim_stats(stats)
+            self._record_event(
+                now,
+                "sim.stats",
+                f"region=({stats.region_x},{stats.region_y}) object_capacity={stats.object_capacity} stats={len(stats.stats)} pid={stats.pid}",
+            )
+        elif dispatched.summary.name == "SimulatorViewerTimeMessage":
+            time_info = parse_simulator_viewer_time(dispatched)
+            self.world_view.apply_simulator_time(time_info)
+            self._record_event(
+                now,
+                "sim.time",
+                f"usec_since_start={time_info.usec_since_start} sec_per_day={time_info.sec_per_day} sun_phase={time_info.sun_phase:.3f}",
+            )
+        elif dispatched.summary.name == "CoarseLocationUpdate":
+            coarse = parse_coarse_location_update(dispatched)
+            self.world_view.apply_coarse_location_update(coarse)
+            self._record_event(
+                now,
+                "world.coarse_location",
+                f"locations={len(coarse.locations)} agents={len(coarse.agent_ids)} you={coarse.you_index} prey={coarse.prey_index}",
+            )
+        elif dispatched.summary.name == "ObjectUpdate":
+            object_update = parse_object_update_summary(dispatched)
+            self.world_view.apply_object_update_summary(object_update)
+            self._record_event(
+                now,
+                "world.object_update",
+                f"region_handle={object_update.region_handle} objects={object_update.object_count} dilation={object_update.time_dilation}",
+            )
 
         return self._flush_transport_packets(now)
 
@@ -216,11 +267,15 @@ class LiveCircuitSession:
             self.last_agent_update_at = now
             return []
         if now - self.last_agent_update_at < self.config.agent_update_interval_seconds:
-            return []
+            packets = self._drain_throttle_packets(now)
+            packets.extend(self._drain_test_cube_packets(now))
+            return packets
 
         self.last_agent_update_at = now
+        packets = self._drain_throttle_packets(now)
+        packets.extend(self._drain_test_cube_packets(now))
         self.agent_update_count += 1
-        return [
+        packets.append(
             self._build_outbound_packet(
                 encode_agent_update(
                     self.bootstrap.agent_id,
@@ -231,7 +286,8 @@ class LiveCircuitSession:
                 now=now,
                 label="AgentUpdate",
             ),
-        ]
+        )
+        return packets
 
     def build_report(self, elapsed_seconds: float) -> SessionReport:
         return SessionReport(
@@ -247,6 +303,7 @@ class LiveCircuitSession:
             pending_reliable_sequences=tuple(sorted(self.pending_reliable)),
             last_region_name=self.last_region_name,
             close_reason=self.close_reason,
+            world_view=self.world_view,
             events=tuple(self.events),
         )
 
@@ -300,6 +357,59 @@ class LiveCircuitSession:
             )
         packets.extend(self.drain_due_packets(now))
         return packets
+
+    def _drain_throttle_packets(self, now: float) -> list[bytes]:
+        if self.throttle_sent:
+            return []
+        self.throttle_sent = True
+        return [
+            self._build_outbound_packet(
+                encode_agent_throttle(
+                    self.bootstrap.agent_id,
+                    self.bootstrap.session_id,
+                    self.bootstrap.circuit_code,
+                ),
+                zerocoded=True,
+                now=now,
+                label="AgentThrottle",
+            ),
+        ]
+
+    def _drain_test_cube_packets(self, now: float) -> list[bytes]:
+        if not self.config.spawn_test_cube or self.test_cube_spawned or self.started_at is None:
+            return []
+        if now - self.started_at < self.config.spawn_delay_seconds:
+            return []
+
+        rng = random.Random(int(now * 1000) ^ self.bootstrap.circuit_code)
+        center_x = self.camera_center[0] + rng.uniform(-5.0, 5.0)
+        center_y = self.camera_center[1] + rng.uniform(-5.0, 5.0)
+        center_z = max(self.camera_center[2], 22.0) + rng.uniform(0.5, 2.5)
+        scale = (
+            rng.uniform(0.5, 2.0),
+            rng.uniform(0.5, 2.0),
+            rng.uniform(0.5, 2.0),
+        )
+        self.test_cube_spawned = True
+        self._record_event(
+            now,
+            "world.spawn_test_cube",
+            f"position=({center_x:.2f},{center_y:.2f},{center_z:.2f}) scale=({scale[0]:.2f},{scale[1]:.2f},{scale[2]:.2f})",
+        )
+        return [
+            self._build_outbound_packet(
+                encode_object_add(
+                    self.bootstrap.agent_id,
+                    self.bootstrap.session_id,
+                    ray_start=(center_x, center_y, center_z + 5.0),
+                    ray_end=(center_x, center_y, center_z),
+                    scale=scale,
+                ),
+                zerocoded=True,
+                now=now,
+                label="ObjectAdd",
+            ),
+        ]
 
     def _record_event(self, now: float, kind: str, detail: str) -> None:
         started_at = self.started_at if self.started_at is not None else now

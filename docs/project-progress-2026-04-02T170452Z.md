@@ -4,7 +4,7 @@ Timestamp: 2026-04-02T17:04:52Z
 
 ## Summary
 
-Vibestorm has moved from idea-only state into a documented and partially implemented protocol-core workspace.
+Vibestorm has moved from idea-only state into a documented, tested, and locally verified OpenSim client workspace with a stable 60-second UDP session and a first UI-agnostic world-view layer.
 
 ## Completed
 
@@ -27,6 +27,13 @@ Vibestorm has moved from idea-only state into a documented and partially impleme
 - Vibestorm now performs live XML-RPC login bootstrap against local OpenSim
 - Vibestorm now resolves seed capabilities and polls `EventQueueGet`
 - Vibestorm now performs a live UDP handshake probe and decodes simulator replies
+- Vibestorm now maintains a durable 60-second local OpenSim session
+- explicit reliable `PacketAck` handling is implemented and verified
+- duplicate reliable packets are suppressed semantically
+- `AgentThrottle` is now sent during steady-state session startup
+- recurring live messages now decode into normalized world/session summaries
+- a first `WorldView` model exists and is fed by live session traffic
+- experimental client-side `ObjectAdd` spawning appears to work against local OpenSim
 
 ## Current Technical State
 
@@ -51,6 +58,13 @@ Implemented:
   - `AgentMovementComplete`
   - `RegionHandshake`
   - `RegionHandshakeReply` builder
+  - `PacketAck`
+  - `AgentThrottle` builder
+  - `SimStats`
+  - `SimulatorViewerTimeMessage`
+  - `CoarseLocationUpdate`
+  - `ObjectUpdate` summary parsing
+- world-state normalization in `src/vibestorm/world/models.py`
 
 Verified:
 
@@ -59,12 +73,11 @@ Verified:
 
 Not implemented yet:
 
-- stable session object that keeps one UDP socket open
-- reliable resend and ACK bookkeeping
-- live `RegionHandshakeReply` send path
-- periodic `AgentUpdate` send loop
-- full object update decoding
-- persistent connected-session state machine
+- deeper `ObjectUpdate` decoding for object identities and positions
+- dedicated adapter layer between parsed messages and `WorldView`
+- stable fixture capture from live sessions
+- richer keyed world entity store beyond first coarse-agent presence
+- frontend heads over the normalized world model
 
 ### Local OpenSim Host
 
@@ -91,8 +104,34 @@ Completed:
 
 Current caveat:
 
-- Vibestorm is not yet maintaining a durable full viewer session after the initial handshake burst
-- the local probes prove real connectivity and message flow, but the steady-state viewer loop is not implemented yet
+- the durable session core now works, but world-state breadth is still shallow
+- object and avatar state are still summary-level rather than full structured entities
+- the experimental cube spawn path is still based on inferred primitive defaults and should be treated as provisional until the object payload is validated more rigorously
+
+## Latest Verified Live Result
+
+User-reported 60-second session run with experimental cube spawn enabled:
+
+- `status=completed`
+- `elapsed=60.00`
+- `received=97`
+- `movement_completed=True`
+- `ping_requests_handled=11`
+- `packet_acks_received=3`
+- `agent_updates_sent=55`
+- `pending_reliable=0`
+- `world[region]=Vibestorm Test grid=(1000,1000)`
+- `world[sim_stats]=updates:20 capacity:15000 stats:41`
+- `world[time]=updates:23 sun_phase:0.326 sec_per_day:14400`
+- `world[coarse_agents]=updates:13 count:1`
+- `world[coarse_agent]=11111111-2222-3333-4444-555555555555 pos=(128,128,6) you=True prey=False`
+- `world[object_update]=events:3 objects:1 region_handle:1099511628032000`
+
+Interpretation:
+
+- the transport/session layer is stable for a full minute
+- the world-view summaries are being populated from live traffic
+- the extra `ObjectUpdate` activity strongly suggests the test cube spawn path worked
 
 ## Important Files
 
@@ -105,8 +144,8 @@ Current caveat:
 
 ## Immediate Next Steps
 
-1. send `RegionHandshakeReply` in the live handshake flow
-2. add periodic `AgentUpdate`
-3. add reliable ACK bookkeeping and packet sequencing state
-4. hold the UDP socket open as a session instead of one-shot probes
-5. decode and normalize `ObjectUpdate` payloads
+1. split message-to-world application into a dedicated updater module
+2. deepen `ObjectUpdate` decoding into object identities and positions
+3. store coarse-agent state as durable keyed entities
+4. capture reusable live fixtures from the stable session path
+5. prepare the normalized world model for future frontend heads

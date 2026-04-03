@@ -10,6 +10,7 @@ PASSWORD="${VIBESTORM_PASSWORD:-changeme123}"
 START_LOCATION="${VIBESTORM_START_LOCATION:-uri:Vibestorm Test&128&128&25}"
 SESSION_DURATION="${VIBESTORM_SESSION_DURATION:-60}"
 AGENT_UPDATE_INTERVAL="${VIBESTORM_AGENT_UPDATE_INTERVAL:-1.0}"
+SPAWN_CUBE="${VIBESTORM_SPAWN_CUBE:-0}"
 
 usage() {
   cat <<EOF
@@ -34,12 +35,14 @@ Defaults come from the local OpenSim notes and can be overridden with env vars:
   VIBESTORM_START_LOCATION
   VIBESTORM_SESSION_DURATION
   VIBESTORM_AGENT_UPDATE_INTERVAL
+  VIBESTORM_SPAWN_CUBE
 
 Examples:
   ./run.sh opensim
   ./run.sh session
   ./run.sh bootstrap
   VIBESTORM_SESSION_DURATION=15 ./run.sh session
+  VIBESTORM_SPAWN_CUBE=1 ./run.sh session
   VIBESTORM_PASSWORD=secret ./run.sh handshake
 EOF
 }
@@ -95,10 +98,15 @@ case "$command" in
     ;;
   session)
     cd "$ROOT_DIR"
+    session_args=()
+    if [[ "$SPAWN_CUBE" == "1" ]]; then
+      session_args+=(--spawn-cube)
+    fi
     python_runner -m vibestorm.app.cli session-run \
       "${cli_base_args[@]}" \
       --duration "$SESSION_DURATION" \
       --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
+      "${session_args[@]}" \
       "$@"
     ;;
   test)

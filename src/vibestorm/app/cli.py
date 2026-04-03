@@ -90,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--start", default="last")
     session_parser.add_argument("--duration", type=float, default=15.0)
     session_parser.add_argument("--agent-update-interval", type=float, default=1.0)
+    session_parser.add_argument("--spawn-cube", action="store_true")
     return parser
 
 
@@ -276,6 +277,7 @@ def main() -> int:
                 config=SessionConfig(
                     duration_seconds=args.duration,
                     agent_update_interval_seconds=args.agent_update_interval,
+                    spawn_test_cube=args.spawn_cube,
                 ),
                 on_event=print_session_event,
             ),
@@ -294,6 +296,40 @@ def main() -> int:
             print(f"region_name={report.last_region_name}")
         if report.close_reason is not None:
             print(f"close_reason={report.close_reason}")
+        if report.world_view.region is not None:
+            print(
+                f"world[region]={report.world_view.region.name} "
+                f"grid=({report.world_view.region.grid_x},{report.world_view.region.grid_y})",
+            )
+        if report.world_view.latest_sim_stats is not None:
+            print(
+                f"world[sim_stats]=updates:{report.world_view.sim_stats_updates} "
+                f"capacity:{report.world_view.latest_sim_stats.object_capacity} "
+                f"stats:{report.world_view.latest_sim_stats.stats_count}",
+            )
+        if report.world_view.latest_time is not None:
+            print(
+                f"world[time]=updates:{report.world_view.time_updates} "
+                f"sun_phase:{report.world_view.latest_time.sun_phase:.3f} "
+                f"sec_per_day:{report.world_view.latest_time.sec_per_day}",
+            )
+        if report.world_view.coarse_agents:
+            print(
+                f"world[coarse_agents]=updates:{report.world_view.coarse_location_updates} "
+                f"count:{len(report.world_view.coarse_agents)}",
+            )
+            for agent in report.world_view.coarse_agents:
+                print(
+                    f"world[coarse_agent]={agent.agent_id} "
+                    f"pos=({agent.x},{agent.y},{agent.z}) "
+                    f"you={agent.is_you} prey={agent.is_prey}",
+                )
+        if report.world_view.latest_object_update is not None:
+            print(
+                f"world[object_update]=events:{report.world_view.object_update_events} "
+                f"objects:{report.world_view.latest_object_update.object_count} "
+                f"region_handle:{report.world_view.latest_object_update.region_handle}",
+            )
         for name in sorted(report.message_counts):
             print(f"message[{name}]={report.message_counts[name]}")
         return 0
