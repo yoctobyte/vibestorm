@@ -193,13 +193,25 @@ def format_world_status(world_view: WorldView) -> list[str]:
                 line += f" texture={obj.default_texture_id}"
             lines.append(line)
     if world_view.terse_objects:
-        lines.append(f"world[terse_only]=tracked:{len(world_view.terse_objects)}")
+        lines.append(
+            f"world[terse_only]=tracked:{len(world_view.terse_objects)} "
+            f"avatars:{world_view.terse_avatar_count} "
+            f"prims:{world_view.terse_prim_count}",
+        )
         for obj in sorted(world_view.terse_objects.values(), key=lambda item: item.local_id)[:3]:
             line = (
                 f"world[terse]={obj.local_id} "
                 f"avatar={obj.is_avatar} state={obj.state} "
                 f"pos=({obj.position[0]:.2f},{obj.position[1]:.2f},{obj.position[2]:.2f})"
             )
+            coarse_match = world_view.nearest_coarse_agent_for_terse(obj.local_id)
+            if coarse_match is not None:
+                nearest_agent, distance = coarse_match
+                line += (
+                    f" nearest_coarse={nearest_agent.agent_id} "
+                    f"nearest_you={nearest_agent.is_you} "
+                    f"xy_distance={distance:.2f}"
+                )
             if obj.texture_entry_size > 0:
                 line += f" texture_entry_size={obj.texture_entry_size}"
             lines.append(line)
@@ -524,6 +536,8 @@ def main() -> int:
             print(
                 f"terse_local_id[{item['status']}][count]={item['seen_count']} "
                 f"local_id={item['local_id']} "
+                f"avatar={item['is_avatar']} "
+                f"state={item['latest_state']} "
                 f"texture={item['max_texture_entry_size']} "
                 f"first={item['first_seen_at_seconds']:.3f} "
                 f"last={item['last_seen_at_seconds']:.3f} "

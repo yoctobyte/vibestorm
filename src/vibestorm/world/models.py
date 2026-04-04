@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import sqrt
 from uuid import UUID
 
 from vibestorm.udp.messages import (
@@ -128,6 +129,33 @@ class WorldView:
     coarse_location_updates: int = 0
     object_update_events: int = 0
     object_properties_family_events: int = 0
+
+    @property
+    def terse_avatar_count(self) -> int:
+        return sum(1 for obj in self.terse_objects.values() if obj.is_avatar)
+
+    @property
+    def terse_prim_count(self) -> int:
+        return sum(1 for obj in self.terse_objects.values() if not obj.is_avatar)
+
+    def nearest_coarse_agent_for_terse(self, local_id: int) -> tuple[CoarseAgentLocation, float] | None:
+        terse = self.terse_objects.get(local_id)
+        if terse is None or not terse.is_avatar or not self.coarse_agents:
+            return None
+
+        nearest: CoarseAgentLocation | None = None
+        nearest_distance: float | None = None
+        for agent in self.coarse_agents:
+            dx = terse.position[0] - float(agent.x)
+            dy = terse.position[1] - float(agent.y)
+            distance = sqrt((dx * dx) + (dy * dy))
+            if nearest_distance is None or distance < nearest_distance:
+                nearest = agent
+                nearest_distance = distance
+
+        if nearest is None or nearest_distance is None:
+            return None
+        return nearest, nearest_distance
 
     def set_region(self, *, name: str, grid_x: int, grid_y: int) -> None:
         self.region = RegionInfo(name=name, grid_x=grid_x, grid_y=grid_y)

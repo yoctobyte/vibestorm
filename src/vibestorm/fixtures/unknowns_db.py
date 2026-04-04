@@ -1158,6 +1158,8 @@ class UnknownsDatabase:
                         COUNT(*) AS seen_count,
                         MIN(t.observed_at_seconds) AS first_seen_at_seconds,
                         MAX(t.observed_at_seconds) AS last_seen_at_seconds,
+                        MAX(t.is_avatar) AS is_avatar,
+                        MAX(t.state) AS latest_state,
                         MAX(t.texture_entry_size) AS max_texture_entry_size,
                         MIN(t.data_preview_hex) AS sample_data_preview_hex
                     FROM improved_terse_entities t
@@ -1178,6 +1180,8 @@ class UnknownsDatabase:
                     terse.seen_count,
                     terse.first_seen_at_seconds,
                     terse.last_seen_at_seconds,
+                    terse.is_avatar,
+                    terse.latest_state,
                     terse.max_texture_entry_size,
                     terse.sample_data_preview_hex,
                     COALESCE(full_objects.full_seen_count, 0) AS full_seen_count,
@@ -1195,6 +1199,8 @@ class UnknownsDatabase:
                 "seen_count": int(row["seen_count"]),
                 "first_seen_at_seconds": float(row["first_seen_at_seconds"]),
                 "last_seen_at_seconds": float(row["last_seen_at_seconds"]),
+                "is_avatar": bool(row["is_avatar"]),
+                "latest_state": int(row["latest_state"] or 0),
                 "max_texture_entry_size": int(row["max_texture_entry_size"] or 0),
                 "sample_data_preview_hex": row["sample_data_preview_hex"],
                 "full_seen_count": int(row["full_seen_count"] or 0),

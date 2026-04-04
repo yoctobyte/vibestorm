@@ -46,6 +46,14 @@ class CliSessionReportTests(unittest.TestCase):
                     is_you=True,
                     is_prey=False,
                 ),
+                CoarseAgentLocation(
+                    agent_id=UUID("22222222-3333-4444-5555-666666666666"),
+                    x=130,
+                    y=131,
+                    z=26,
+                    is_you=False,
+                    is_prey=False,
+                ),
             ),
             objects={
                 UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"): WorldObject(
@@ -81,7 +89,7 @@ class CliSessionReportTests(unittest.TestCase):
                 11: TerseWorldObject(
                     local_id=11,
                     state=33,
-                    is_avatar=False,
+                    is_avatar=True,
                     region_handle=1099511628032000,
                     time_dilation=42,
                     position=(130.0, 131.0, 26.0),
@@ -119,7 +127,7 @@ class CliSessionReportTests(unittest.TestCase):
         self.assertIn("world[region]=Vibestorm Test grid=(1000,1000)", lines)
         self.assertIn("world[object_update]=events:3 objects:1 region_handle:1099511628032000", lines)
         self.assertIn("world[objects]=tracked:1", lines)
-        self.assertIn("world[terse_only]=tracked:1", lines)
+        self.assertIn("world[terse_only]=tracked:1 avatars:1 prims:0", lines)
         self.assertTrue(
             any(
                 "variant=prim_basic" in line
@@ -128,7 +136,15 @@ class CliSessionReportTests(unittest.TestCase):
                 for line in lines
             ),
         )
-        self.assertTrue(any(line.startswith("world[terse]=11 ") for line in lines))
+        self.assertTrue(
+            any(
+                line.startswith("world[terse]=11 ")
+                and "nearest_coarse=22222222-3333-4444-5555-666666666666" in line
+                and "nearest_you=False" in line
+                and "xy_distance=0.00" in line
+                for line in lines
+            ),
+        )
         self.assertNotIn("packet_acks_received=3", lines)
         self.assertFalse(any(line.startswith("message[") for line in lines))
 

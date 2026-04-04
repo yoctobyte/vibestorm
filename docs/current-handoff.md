@@ -64,6 +64,8 @@ What changed recently:
 - rich prim `ObjectUpdate.ExtraParams` also needed a 2-byte length-prefixed read in the real capture path; the previous 1-byte assumption was too narrow
 - session mode now has optional camera sweep support, exposed in `run.sh` via `VIBESTORM_CAMERA_SWEEP=1`
 - `tools/run_session_forensics.sh` now runs a sweep-enabled capture session and appends `./run.sh unknowns` into one timestamped text artifact under `local/session-reports/`
+- session output now splits terse-only placeholders into avatar vs prim counts via `world[terse_only]=tracked:N avatars:A prims:P`, which makes sweep-session census gaps easier to classify without opening the DB first
+- session output now also correlates terse-only avatar placeholders with the nearest coarse agent using horizontal distance (`xy_distance`), which was enough in recent live runs to identify long-lived terse-only local ID `492042976` as the second avatar rather than a missing prim
 
 ## Verification
 

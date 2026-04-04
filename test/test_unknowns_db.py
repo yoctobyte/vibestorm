@@ -353,8 +353,12 @@ class UnknownsDatabaseTests(unittest.TestCase):
             by_id = {item["local_id"]: item for item in summary}
             self.assertEqual(by_id[101]["status"], "terse_only")
             self.assertEqual(by_id[101]["full_seen_count"], 0)
+            self.assertFalse(by_id[101]["is_avatar"])
+            self.assertEqual(by_id[101]["latest_state"], 1)
             self.assertEqual(by_id[202]["status"], "promoted")
             self.assertEqual(by_id[202]["full_seen_count"], 1)
+            self.assertFalse(by_id[202]["is_avatar"])
+            self.assertEqual(by_id[202]["latest_state"], 1)
             self.assertEqual(by_id[202]["sample_full_id"], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
     def test_latest_session_filters_new_runs_without_deleting_old_rows(self) -> None:
