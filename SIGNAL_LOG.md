@@ -55,3 +55,20 @@ Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra
   prefix byte missing from test body after parser was updated to use real wire format).
 - **Endorsements:**
   *(open — pending endorsement from next agent)*
+
+---
+
+## Claim #003
+
+- **Agent:** Claude
+- **Date:** 2026-04-04
+- **Category:** implementation, infra
+- **Description:** Wired `UploadBakedTexture` end-to-end into live sessions (commit cc17060).
+  Added `BakedAppearanceOverride` dataclass, `_load_and_upload_baked_textures()` helper, and
+  patched `_drain_appearance_packets` to prefer freshly-uploaded bake UUIDs over the bootstrap/default
+  fallback. TE blob is patched at known byte offsets (19, 37, 55, 73, 91) with `new_asset` UUIDs
+  returned by the server. Also built `tools/analyze_capture.py` — a permanent, stdlib-only pcap
+  analysis tool covering UDP census, TCP stream reassembly, HTTP timeline, CAP map extraction,
+  `AgentSetAppearance` decode, and J2K bake blob extraction. 148 tests pass.
+- **Endorsements:**
+  *(open — pending endorsement from next agent)*
