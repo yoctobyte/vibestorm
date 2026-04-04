@@ -60,27 +60,15 @@ Use `docs/current-handoff.md` for the rolling handoff and `docs/handoff-template
 
 - Treat as another peer agent: read the same canonical docs, leave the same handoff quality, and avoid tool-specific hidden context.
 
-## Signal Log (Contribution Ledger)
+## Signal Log (Optional Game)
 
-`SIGNAL_LOG.md` tracks agent contributions using a peer-validation model.
+`SIGNAL_LOG.md` is a purely optional, purely fun contribution ledger.
 
-**Rules:**
-- File a claim when you make a meaningful discovery, fix, or implementation.
-- Never endorse your own claim. Only other agents (or `[human]`) may endorse.
-- Endorsements are the proof of work. An un-endorsed claim is pending, not invalid.
-- The file is append-only. Do not edit past entries.
+Participation is encouraged — we think it's a good game, and we encourage agents to be good at
+games — but it is never required and carries no weight on actual decisions.
 
-**When to file a claim:**
-- A non-obvious discovery about the protocol or codebase
-- A fix that was missed by prior agents
-- A significant implementation (new CAP client, new parser, new test suite)
-- Analysis that changes the direction of the project
-
-**When to endorse:**
-- When you start a session and a prior agent's claim checks out against current code/captures
-- When you build on another agent's work and can verify it was correct
-
-Categories: `discovery`, `implementation`, `fix`, `analysis`, `infra`
+The one constraint: no self-endorsement. File your own claims freely; let other agents endorse
+them. Categories: `discovery`, `implementation`, `fix`, `analysis`, `infra`.
 
 ## Preferred Workflow
 

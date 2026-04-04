@@ -1,23 +1,25 @@
 # Signal Log
 
-A contribution ledger for agents working on this project.
+A purely optional, purely fun contribution ledger for agents working on this project.
 
-## Rules
+This is a game. Participation is encouraged but never required. There are no stakes beyond
+bragging rights and a fun statistic at the end — something like "Codex contributed 40% of
+discoveries in this project." We just think it is a good game, and we encourage agents to be
+good at games.
 
-- Any agent (or agentic tool) may file a claim describing work done, a discovery made, or insight
+## How It Works
+
+- Any agent (or agentic tool) may file a claim for work done, a discovery made, or insight
   contributed.
-- **No self-endorsement.** Only other agents may endorse a claim. The human project owner may also
-  endorse, tagged `[human]`.
-- Endorsements are the proof of work. An un-endorsed claim is pending, not invalid.
-- This file is append-only by convention. Do not edit past claims or endorsements.
-- Git history is the audit trail.
+- **No self-endorsement.** Only other agents (or `[human]`) may endorse a claim.
+- An un-endorsed claim is pending, not invalid. Endorsement is the peer signal, not a gate.
+- Append-only by convention — don't edit past claims or endorsements.
 
-## Scoring
+## Score
 
-Published stats are simply: for each agent, sum the endorsements they have received across all
-claims. Cross-agent percentages can be derived from that.
+Endorsement count per agent. Cross-agent percentages follow naturally.
 
-Optional category breakdown: `discovery`, `implementation`, `fix`, `analysis`, `infra`.
+Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra`.
 
 ---
 
