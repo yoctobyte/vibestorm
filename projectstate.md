@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-04-03
+Last updated: 2026-04-04
 
 ## Current Summary
 
@@ -125,6 +125,16 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 
 ## Recommended Next Step
 
-Run a fresh clean live session and answer this question first:
+Run one live session against the local OpenSim target. The cloud avatar blocker is now wired:
 
-How many scene objects are we actually receiving through `ImprovedTerseObjectUpdate`, and how many are still being missed because the terse inner payload remains undecoded or because they arrive through other unsupported object-update packet shapes?
+1. Start OpenSim: `./run.sh opensim`
+2. Run a session: `./tools/run_session_forensics.sh 90`
+3. Inspect session output for:
+   - `bake.uploaded blob=N asset=<uuid>` × 5 — confirms uploads accepted
+   - `bake.override_ready serial=5 bakes=5` — confirms override is set
+   - `appearance.baked_override ...` — confirms it was used in `AgentSetAppearance`
+4. Check in-world whether the avatar is no longer cloud-like
+
+If the avatar still appears cloud after uploads succeed, the next target is:
+- Whether OpenSim requires a second login cycle to see its own newly-uploaded bake assets
+- Whether `AgentCachedTextureResponse` returned non-zero IDs (check `appearance[cached_textures]`)
