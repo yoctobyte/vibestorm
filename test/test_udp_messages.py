@@ -5,9 +5,14 @@ from uuid import UUID
 
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
+    AgentWearableEntry,
+    encode_agent_cached_texture,
     encode_object_add,
+    encode_agent_is_now_wearing,
+    encode_agent_set_appearance,
     encode_agent_update,
     encode_agent_throttle,
+    encode_agent_wearables_request,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_packet_ack,
@@ -23,7 +28,10 @@ from vibestorm.udp.messages import (
     parse_object_properties_family,
     parse_object_update_summary,
     parse_packet_ack,
+    parse_agent_cached_texture_response,
     parse_agent_movement_complete,
+    parse_agent_wearables_update,
+    parse_avatar_appearance,
     parse_chat_from_simulator,
     parse_complete_ping_check,
     parse_region_handshake,
@@ -136,6 +144,44 @@ class SemanticMessageTests(unittest.TestCase):
         dispatched = self.dispatcher.dispatch(payload)
         self.assertEqual(dispatched.summary.name, "AgentThrottle")
 
+    def test_encode_agent_wearables_request_dispatches(self) -> None:
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        payload = encode_agent_wearables_request(agent_id, session_id)
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "AgentWearablesRequest")
+
+    def test_encode_agent_is_now_wearing_dispatches(self) -> None:
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        payload = encode_agent_is_now_wearing(
+            agent_id,
+            session_id,
+            (
+                AgentWearableEntry(
+                    item_id=UUID("00000000-0000-0000-0000-000000000001"),
+                    asset_id=UUID("00000000-0000-0000-0000-000000000002"),
+                    wearable_type=4,
+                ),
+            ),
+        )
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "AgentIsNowWearing")
+
+    def test_encode_agent_set_appearance_dispatches(self) -> None:
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        payload = encode_agent_set_appearance(agent_id, session_id, serial_num=7)
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "AgentSetAppearance")
+
+    def test_encode_agent_cached_texture_dispatches(self) -> None:
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        payload = encode_agent_cached_texture(agent_id, session_id, serial_num=7)
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "AgentCachedTexture")
+
     def test_encode_object_add_dispatches(self) -> None:
         session_id = UUID("11111111-2222-3333-4444-555555555555")
         agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
@@ -187,6 +233,81 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.region_handle, 123456789)
         self.assertEqual(parsed.timestamp, 42)
         self.assertEqual(parsed.channel_version, "sim")
+
+    def test_parse_agent_wearables_update(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        item_id = UUID("00000000-0000-0000-0000-000000000010")
+        asset_id = UUID("00000000-0000-0000-0000-000000000020")
+        body = (
+            agent_id.bytes
+            + session_id.bytes
+            + (7).to_bytes(4, "little")
+            + bytes([1])
+            + item_id.bytes
+            + asset_id.bytes
+            + bytes([5])
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x01, 0x7E]) + body)
+        parsed = parse_agent_wearables_update(dispatched)
+        self.assertEqual(parsed.serial_num, 7)
+        self.assertEqual(len(parsed.wearables), 1)
+        self.assertEqual(parsed.wearables[0].item_id, item_id)
+        self.assertEqual(parsed.wearables[0].asset_id, asset_id)
+        self.assertEqual(parsed.wearables[0].wearable_type, 5)
+
+    def test_parse_agent_cached_texture_response(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        texture_id = UUID("00000000-0000-0000-0000-000000000030")
+        body = (
+            agent_id.bytes
+            + session_id.bytes
+            + (7).to_bytes(4, "little", signed=True)
+            + bytes([1])
+            + texture_id.bytes
+            + bytes([8, 0])
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x01, 0x81]) + body)
+        parsed = parse_agent_cached_texture_response(dispatched)
+        self.assertEqual(parsed.serial_num, 7)
+        self.assertEqual(len(parsed.textures), 1)
+        self.assertEqual(parsed.textures[0].texture_id, texture_id)
+        self.assertEqual(parsed.textures[0].texture_index, 8)
+        self.assertEqual(parsed.textures[0].host_name, "")
+
+    def test_parse_avatar_appearance(self) -> None:
+        sender_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        texture_entry = UUID("89556747-24cb-43ed-920b-47caed15465f").bytes
+        visual_params = bytes([1, 2, 3, 4])
+        attachment_id = UUID("00000000-0000-0000-0000-000000000040")
+        body = (
+            sender_id.bytes
+            + bytes([0])
+            + len(texture_entry).to_bytes(2, "little")
+            + texture_entry
+            + bytes([len(visual_params)])
+            + visual_params
+            + bytes([1])
+            + bytes([2])
+            + (7).to_bytes(4, "little", signed=True)
+            + (9).to_bytes(4, "little")
+            + bytes([1])
+            + pack("<fff", 0.0, 0.0, 1.5)
+            + bytes([1])
+            + attachment_id.bytes
+            + bytes([3])
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x9E]) + body)
+        parsed = parse_avatar_appearance(dispatched)
+        self.assertEqual(parsed.sender_id, sender_id)
+        self.assertEqual(parsed.texture_entry, texture_entry)
+        self.assertEqual(parsed.visual_params, visual_params)
+        self.assertEqual(parsed.appearance_version, 2)
+        self.assertEqual(parsed.cof_version, 7)
+        self.assertEqual(parsed.appearance_flags, 9)
+        self.assertEqual(parsed.hover_height, (0.0, 0.0, 1.5))
+        self.assertEqual(parsed.attachments, ((attachment_id, 3),))
 
     def test_parse_region_handshake(self) -> None:
         sim_name = b"TestSim"

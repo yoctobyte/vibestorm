@@ -155,7 +155,95 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertEqual(self.dispatcher.dispatch(second.message).summary.name, "AgentUpdate")
         self.assertEqual(session.agent_update_count, 1)
         self.assertTrue(session.throttle_sent)
+        self.assertFalse(session.wearables_request_sent)
         self.assertTrue(any(event.kind == "movement.complete" for event in session.events))
+
+    def test_agent_wearables_update_triggers_cached_texture_request_then_appearance(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        movement_body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + bytes.fromhex("0000803f0000004000004040")
+            + bytes.fromhex("000080bf000000000000803f")
+            + (123456789).to_bytes(8, "little")
+            + (42).to_bytes(4, "little")
+            + (3).to_bytes(2, "little")
+            + b"sim"
+        )
+        session.handshake_reply_sent = True
+        session.handle_incoming(build_packet(bytes([0xFF, 0xFF, 0x00, 0xFA]) + movement_body, sequence=41), 10.2)
+
+        item_id = UUID("00000000-0000-0000-0000-000000000010")
+        asset_id = UUID("00000000-0000-0000-0000-000000000020")
+        wearables_body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + (7).to_bytes(4, "little")
+            + bytes([1])
+            + item_id.bytes
+            + asset_id.bytes
+            + bytes([5])
+        )
+
+        immediate = session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x01, 0x7E]) + wearables_body, sequence=42),
+            10.4,
+        )
+
+        self.assertEqual(len(immediate), 1)
+        first = split_packet(immediate[0])
+        self.assertEqual(self.dispatcher.dispatch(first.message).summary.name, "AgentCachedTexture")
+        self.assertTrue(session.cached_texture_request_sent)
+
+        later = session.drain_due_packets(11.5)
+        self.assertEqual(len(later), 3)
+        first = split_packet(decode_zerocode(later[0]))
+        second = split_packet(decode_zerocode(later[1]))
+        third = split_packet(decode_zerocode(later[2]))
+        self.assertEqual(self.dispatcher.dispatch(first.message).summary.name, "AgentIsNowWearing")
+        self.assertEqual(self.dispatcher.dispatch(second.message).summary.name, "AgentSetAppearance")
+        self.assertEqual(self.dispatcher.dispatch(third.message).summary.name, "AgentUpdate")
+        self.assertTrue(session.appearance_sent)
+        self.assertTrue(any(event.kind == "appearance.wearables_update" for event in session.events))
+
+    def test_cached_texture_response_and_avatar_appearance_emit_events(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        cached_body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + (7).to_bytes(4, "little", signed=True)
+            + bytes([1])
+            + UUID("00000000-0000-0000-0000-000000000030").bytes
+            + bytes([8, 0])
+        )
+        session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x01, 0x81]) + cached_body, sequence=43),
+            10.5,
+        )
+
+        appearance_body = (
+            self.bootstrap.agent_id.bytes
+            + bytes([0])
+            + (16).to_bytes(2, "little")
+            + UUID("89556747-24cb-43ed-920b-47caed15465f").bytes
+            + bytes([4, 1, 2, 3, 4])
+            + bytes([0])
+            + bytes([1])
+            + pack("<fff", 0.0, 0.0, 1.5)
+            + bytes([0])
+        )
+        session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x00, 0x9E]) + appearance_body, sequence=44),
+            10.6,
+        )
+
+        self.assertTrue(any(event.kind == "appearance.cached_texture_response" for event in session.events))
+        self.assertTrue(any(event.kind == "appearance.avatar" for event in session.events))
+        self.assertIsNotNone(session.latest_avatar_appearance)
 
     def test_camera_sweep_changes_agent_update_camera_center_and_axis(self) -> None:
         session = LiveCircuitSession(

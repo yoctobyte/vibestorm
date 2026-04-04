@@ -68,6 +68,11 @@ class LoginClient:
                 region_x=int(response["region_x"]),
                 region_y=int(response["region_y"]),
                 message=str(response.get("message", "")),
+                inventory_root_folder_id=_extract_inventory_root_folder_id(response),
+                current_outfit_folder_id=_extract_folder_id_by_name(response, "Current Outfit"),
+                my_outfits_folder_id=_extract_folder_id_by_name(response, "My Outfits"),
+                initial_outfit_name=_extract_initial_outfit_field(response, "folder_name"),
+                initial_outfit_gender=_extract_initial_outfit_field(response, "gender"),
             )
         except KeyError as exc:
             raise LoginError(f"login response missing field: {exc.args[0]}") from exc
@@ -87,8 +92,57 @@ class LoginClient:
             "viewer_digest": request.viewer_digest,
             "agree_to_tos": request.agree_to_tos,
             "read_critical": request.read_critical,
+            "options": list(request.options),
         }
 
 
 def sl_password_hash(password: str) -> str:
     return "$1$" + hashlib.md5(password.encode("utf-8")).hexdigest()
+
+
+def _extract_inventory_root_folder_id(response: dict[str, object]) -> UUID | None:
+    inventory_root = response.get("inventory-root")
+    if not isinstance(inventory_root, list) or not inventory_root:
+        return None
+    first = inventory_root[0]
+    if not isinstance(first, dict):
+        return None
+    raw_folder_id = first.get("folder_id")
+    if raw_folder_id is None:
+        return None
+    try:
+        return UUID(str(raw_folder_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _extract_folder_id_by_name(response: dict[str, object], folder_name: str) -> UUID | None:
+    skeleton = response.get("inventory-skeleton")
+    if not isinstance(skeleton, list):
+        return None
+    for entry in skeleton:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("name", "")) != folder_name:
+            continue
+        raw_folder_id = entry.get("folder_id")
+        if raw_folder_id is None:
+            return None
+        try:
+            return UUID(str(raw_folder_id))
+        except (TypeError, ValueError, AttributeError):
+            return None
+    return None
+
+
+def _extract_initial_outfit_field(response: dict[str, object], field_name: str) -> str | None:
+    initial_outfit = response.get("initial-outfit")
+    if not isinstance(initial_outfit, list) or not initial_outfit:
+        return None
+    first = initial_outfit[0]
+    if not isinstance(first, dict):
+        return None
+    value = first.get(field_name)
+    if value is None:
+        return None
+    return str(value)

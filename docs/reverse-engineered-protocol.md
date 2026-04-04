@@ -140,6 +140,12 @@ Current implication:
   not just missing object decoding
 - likely relevant messages include wearable request/response, cached texture exchange, and
   `AgentSetAppearance`
+- the real viewer login trace also requests inventory/bootstrap `options` up front, and the login
+  response already contains the inventory root plus skeleton entries for `Current Outfit` and
+  `My Outfits`
+- that means Current Outfit discovery does not require a first guess or a hardcoded folder name:
+  a viewer-like client can retain the folder IDs directly from login, then use
+  `FetchInventoryDescendents2` to inspect contents
 
 ## Additional LLUDP Update Families
 
@@ -320,15 +326,31 @@ This part is stable and backed by tests and live dispatch.
 
 Minimum live connection flow:
 
-1. login response yields simulator address, IDs, `circuit_code`, and seed capability
-2. client sends `UseCircuitCode`
-3. client sends `CompleteAgentMovement`
-4. simulator sends `AgentMovementComplete`
-5. simulator sends `RegionHandshake`
-6. client sends `RegionHandshakeReply`
-7. simulator sends periodic `StartPingCheck`
-8. client sends `CompletePingCheck`
-9. client sends periodic `AgentUpdate`
+1. `login_to_simulator` XML-RPC yields simulator address, IDs, `circuit_code`, and `seed_capability`
+2. client POSTs to the seed capability and advertises its UDP port via `X-SecondLife-UDP-Listen-Port`
+3. client starts early CAPS traffic, including `EventQueueGet` and `SimulatorFeatures`
+4. client sends `UseCircuitCode`
+5. client sends `CompleteAgentMovement`
+6. simulator sends `AgentMovementComplete`
+7. simulator sends `RegionHandshake`
+8. client sends `RegionHandshakeReply`
+9. simulator sends periodic `StartPingCheck`
+10. client sends `CompletePingCheck`
+11. client sends periodic `AgentUpdate`
+
+This ordering is now backed by a real Firestorm-to-local-OpenSim capture in
+`local/viewer-captures/20260404T100148Z-viewer-login.*`.
+
+Vibestorm now mirrors the minimum pre-UDP CAPS prelude in its live session path:
+
+1. bind the UDP socket first to learn the actual local UDP port
+2. resolve the seed capability with `X-SecondLife-UDP-Listen-Port`
+3. perform one early `EventQueueGet`
+4. fetch `SimulatorFeatures`
+5. then start the UDP circuit with `UseCircuitCode`
+
+The important implication is that earlier UDP-only success should be treated as simulator
+permissiveness, not proof that the CAPS prelude is unnecessary in the general case.
 
 Observed related messages:
 
@@ -344,6 +366,9 @@ Observed related messages:
 | `PacketAck` | both | explicit ACK transport message | `confirmed` |
 | `AgentThrottle` | client -> sim | viewer bandwidth throttle settings | `confirmed` in code path, lightly interpreted |
 | `AgentUpdate` | client -> sim | steady-state movement/camera/control update | `confirmed` |
+| seed-cap POST | client -> sim | resolve CAPS endpoints and advertise UDP listen port | `confirmed` from real viewer capture |
+| `EventQueueGet` | client -> sim | begin CAPS event polling | `confirmed` from real viewer capture |
+| `SimulatorFeatures` | client -> sim | fetch region/viewer feature flags | `confirmed` from real viewer capture |
 
 ## Known Message Semantics
 

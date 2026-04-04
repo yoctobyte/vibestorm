@@ -55,6 +55,55 @@ class AgentMovementCompleteMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class AgentWearableEntry:
+    item_id: UUID
+    asset_id: UUID
+    wearable_type: int
+
+
+@dataclass(slots=True, frozen=True)
+class AgentWearablesUpdateMessage:
+    agent_id: UUID
+    session_id: UUID
+    serial_num: int
+    wearables: tuple[AgentWearableEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class WearableCacheEntry:
+    cache_id: UUID
+    texture_index: int
+
+
+@dataclass(slots=True, frozen=True)
+class AgentCachedTextureResponseEntry:
+    texture_id: UUID
+    texture_index: int
+    host_name: str
+
+
+@dataclass(slots=True, frozen=True)
+class AgentCachedTextureResponseMessage:
+    agent_id: UUID
+    session_id: UUID
+    serial_num: int
+    textures: tuple[AgentCachedTextureResponseEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class AvatarAppearanceMessage:
+    sender_id: UUID
+    is_trial: bool
+    texture_entry: bytes
+    visual_params: bytes
+    appearance_version: int | None
+    cof_version: int | None
+    appearance_flags: int | None
+    hover_height: tuple[float, float, float] | None
+    attachments: tuple[tuple[UUID, int], ...]
+
+
+@dataclass(slots=True, frozen=True)
 class RegionHandshakeMessage:
     region_flags: int
     sim_access: int
@@ -576,6 +625,166 @@ def parse_agent_movement_complete(message: MessageDispatch) -> AgentMovementComp
         region_handle=region_handle,
         timestamp=timestamp,
         channel_version=channel_version,
+    )
+
+
+def parse_agent_wearables_update(message: MessageDispatch) -> AgentWearablesUpdateMessage:
+    if message.summary.name != "AgentWearablesUpdate":
+        raise MessageDecodeError(f"expected AgentWearablesUpdate, got {message.summary.name}")
+    body = message.body
+    if len(body) < 37:
+        raise MessageDecodeError("AgentWearablesUpdate body is too short")
+
+    offset = 0
+    agent_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    session_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    serial_num = unpack_from("<I", body, offset)[0]
+    offset += 4
+    count = body[offset]
+    offset += 1
+
+    wearables: list[AgentWearableEntry] = []
+    for _ in range(count):
+        if offset + 33 > len(body):
+            raise MessageDecodeError("AgentWearablesUpdate wearable block is truncated")
+        wearables.append(
+            AgentWearableEntry(
+                item_id=UUID(bytes=body[offset : offset + 16]),
+                asset_id=UUID(bytes=body[offset + 16 : offset + 32]),
+                wearable_type=body[offset + 32],
+            ),
+        )
+        offset += 33
+
+    return AgentWearablesUpdateMessage(
+        agent_id=agent_id,
+        session_id=session_id,
+        serial_num=serial_num,
+        wearables=tuple(wearables),
+    )
+
+
+def parse_agent_cached_texture_response(message: MessageDispatch) -> AgentCachedTextureResponseMessage:
+    if message.summary.name != "AgentCachedTextureResponse":
+        raise MessageDecodeError(f"expected AgentCachedTextureResponse, got {message.summary.name}")
+    body = message.body
+    if len(body) < 37:
+        raise MessageDecodeError("AgentCachedTextureResponse body is too short")
+
+    offset = 0
+    agent_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    session_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    serial_num = unpack_from("<i", body, offset)[0]
+    offset += 4
+    count = body[offset]
+    offset += 1
+
+    textures: list[AgentCachedTextureResponseEntry] = []
+    for _ in range(count):
+        if offset + 18 > len(body):
+            raise MessageDecodeError("AgentCachedTextureResponse block is truncated")
+        texture_id = UUID(bytes=body[offset : offset + 16])
+        texture_index = body[offset + 16]
+        host_len = body[offset + 17]
+        offset += 18
+        if offset + host_len > len(body):
+            raise MessageDecodeError("AgentCachedTextureResponse host name is truncated")
+        host_name = body[offset : offset + host_len].decode("utf-8", errors="replace")
+        offset += host_len
+        textures.append(
+            AgentCachedTextureResponseEntry(
+                texture_id=texture_id,
+                texture_index=texture_index,
+                host_name=host_name,
+            ),
+        )
+
+    return AgentCachedTextureResponseMessage(
+        agent_id=agent_id,
+        session_id=session_id,
+        serial_num=serial_num,
+        textures=tuple(textures),
+    )
+
+
+def parse_avatar_appearance(message: MessageDispatch) -> AvatarAppearanceMessage:
+    if message.summary.name != "AvatarAppearance":
+        raise MessageDecodeError(f"expected AvatarAppearance, got {message.summary.name}")
+    body = message.body
+    if len(body) < 19:
+        raise MessageDecodeError("AvatarAppearance body is too short")
+
+    offset = 0
+    sender_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    is_trial = bool(body[offset])
+    offset += 1
+
+    texture_len = unpack_from("<H", body, offset)[0]
+    offset += 2
+    if offset + texture_len > len(body):
+        raise MessageDecodeError("AvatarAppearance texture entry is truncated")
+    texture_entry = body[offset : offset + texture_len]
+    offset += texture_len
+
+    if offset >= len(body):
+        raise MessageDecodeError("AvatarAppearance visual params count is missing")
+    visual_count = body[offset]
+    offset += 1
+    if offset + visual_count > len(body):
+        raise MessageDecodeError("AvatarAppearance visual params are truncated")
+    visual_params = body[offset : offset + visual_count]
+    offset += visual_count
+
+    appearance_version: int | None = None
+    cof_version: int | None = None
+    appearance_flags: int | None = None
+    hover_height: tuple[float, float, float] | None = None
+
+    if offset < len(body):
+        app_count = body[offset]
+        offset += 1
+        if app_count > 0:
+            if offset + 9 > len(body):
+                raise MessageDecodeError("AvatarAppearance appearance data is truncated")
+            appearance_version = body[offset]
+            cof_version = unpack_from("<i", body, offset + 1)[0]
+            appearance_flags = unpack_from("<I", body, offset + 5)[0]
+            offset += 9 * app_count
+
+    if offset < len(body):
+        hover_count = body[offset]
+        offset += 1
+        if hover_count > 0:
+            if offset + 12 > len(body):
+                raise MessageDecodeError("AvatarAppearance hover data is truncated")
+            hover_height = tuple(unpack_from("<fff", body, offset))  # type: ignore[arg-type]
+            offset += 12 * hover_count
+
+    attachments: list[tuple[UUID, int]] = []
+    if offset < len(body):
+        attach_count = body[offset]
+        offset += 1
+        for _ in range(attach_count):
+            if offset + 17 > len(body):
+                raise MessageDecodeError("AvatarAppearance attachment block is truncated")
+            attachments.append((UUID(bytes=body[offset : offset + 16]), body[offset + 16]))
+            offset += 17
+
+    return AvatarAppearanceMessage(
+        sender_id=sender_id,
+        is_trial=is_trial,
+        texture_entry=texture_entry,
+        visual_params=visual_params,
+        appearance_version=appearance_version,
+        cof_version=cof_version,
+        appearance_flags=appearance_flags,
+        hover_height=hover_height,
+        attachments=tuple(attachments),
     )
 
 
@@ -1350,6 +1559,104 @@ def encode_agent_throttle(
         + pack("<I", gen_counter)
         + bytes([len(throttle_bytes)])
         + throttle_bytes
+    )
+
+
+DEFAULT_AVATAR_TEXTURE_ID = UUID("89556747-24cb-43ed-920b-47caed15465f")
+DEFAULT_AVATAR_SIZE = (0.45, 0.6, 1.9)
+DEFAULT_AVATAR_BAKE_INDICES = (8, 9, 10, 11, 19, 20, 40, 41, 42, 43, 44)
+DEFAULT_AVATAR_VISUAL_PARAMS = bytes(
+    [
+        33, 61, 85, 23, 58, 127, 63, 85, 63, 42, 0, 85, 63, 36, 85, 95, 153, 63, 34, 0, 63,
+        109, 88, 132, 63, 136, 81, 85, 103, 136, 127, 0, 150, 150, 150, 127, 0, 0, 0, 0, 0, 127,
+        0, 0, 255, 127, 114, 127, 99, 63, 127, 140, 127, 127, 0, 0, 0, 191, 0, 104, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 145, 216, 133, 0, 127, 0, 127, 170, 0, 0, 127, 127, 109, 85, 127, 127, 63,
+        85, 42, 150, 150, 150, 150, 150, 150, 150, 25, 150, 150, 150, 0, 127, 0, 0, 144, 85, 127,
+        132, 127, 85, 0, 127, 127, 127, 127, 127, 127, 59, 127, 85, 127, 127, 106, 47, 79, 127,
+        127, 204, 2, 141, 66, 0, 0, 127, 127, 0, 0, 0, 0, 127, 0, 159, 0, 0, 178, 127, 36, 85,
+        131, 127, 127, 127, 153, 95, 0, 140, 75, 27, 127, 127, 0, 150, 150, 198, 0, 0, 63, 30,
+        127, 165, 209, 198, 127, 127, 153, 204, 51, 51, 255, 255, 255, 204, 0, 255, 150, 150, 150,
+        150, 150, 150, 150, 150, 150, 150, 0, 150, 150, 150, 150, 150, 0, 127, 127, 150, 150,
+        150, 150, 150, 150, 150, 150, 0, 0, 150, 51, 132, 150, 150, 150,
+    ],
+)
+DEFAULT_AVATAR_TEXTURE_ENTRY = DEFAULT_AVATAR_TEXTURE_ID.bytes
+
+
+def encode_agent_wearables_request(agent_id: UUID, session_id: UUID) -> bytes:
+    return b"\xFF\xFF\x01\x7D" + agent_id.bytes + session_id.bytes
+
+
+def encode_agent_is_now_wearing(
+    agent_id: UUID,
+    session_id: UUID,
+    wearables: tuple[AgentWearableEntry, ...],
+) -> bytes:
+    return (
+        b"\xFF\xFF\x01\x7F"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([len(wearables)])
+        + b"".join(entry.item_id.bytes + bytes([entry.wearable_type]) for entry in wearables)
+    )
+
+
+def encode_agent_set_appearance(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    serial_num: int,
+    size: tuple[float, float, float] = DEFAULT_AVATAR_SIZE,
+    cache_items: tuple[WearableCacheEntry, ...] = (),
+    texture_entry: bytes = DEFAULT_AVATAR_TEXTURE_ENTRY,
+    visual_params: bytes = DEFAULT_AVATAR_VISUAL_PARAMS,
+) -> bytes:
+    if not 0 <= serial_num <= 0xFFFFFFFF:
+        raise ValueError("serial_num must fit in U32")
+    if len(cache_items) > 0xFF:
+        raise ValueError("cache item count must fit in U8")
+    if len(texture_entry) > 0xFFFF:
+        raise ValueError("texture entry length must fit in U16")
+    if len(visual_params) > 0xFF:
+        raise ValueError("visual params count must fit in U8")
+
+    return (
+        b"\xFF\xFF\x00\x54"
+        + agent_id.bytes
+        + session_id.bytes
+        + pack("<I", serial_num)
+        + pack("<fff", *size)
+        + bytes([len(cache_items)])
+        + b"".join(item.cache_id.bytes + bytes([item.texture_index]) for item in cache_items)
+        + pack("<H", len(texture_entry))
+        + texture_entry
+        + bytes([len(visual_params)])
+        + visual_params
+    )
+
+
+def encode_agent_cached_texture(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    serial_num: int,
+    cache_items: tuple[WearableCacheEntry, ...] = tuple(
+        WearableCacheEntry(cache_id=UUID(int=0), texture_index=index)
+        for index in DEFAULT_AVATAR_BAKE_INDICES
+    ),
+) -> bytes:
+    if not -(1 << 31) <= serial_num < (1 << 31):
+        raise ValueError("serial_num must fit in S32")
+    if len(cache_items) > 0xFF:
+        raise ValueError("cache item count must fit in U8")
+
+    return (
+        b"\xFF\xFF\x01\x80"
+        + agent_id.bytes
+        + session_id.bytes
+        + pack("<i", serial_num)
+        + bytes([len(cache_items)])
+        + b"".join(item.cache_id.bytes + bytes([item.texture_index]) for item in cache_items)
     )
 
 

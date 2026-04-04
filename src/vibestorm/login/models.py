@@ -6,6 +6,37 @@ from dataclasses import dataclass
 from uuid import UUID
 
 
+DEFAULT_LOGIN_OPTIONS: tuple[str, ...] = (
+    "inventory-root",
+    "inventory-skeleton",
+    "inventory-lib-root",
+    "inventory-lib-owner",
+    "inventory-skel-lib",
+    "initial-outfit",
+    "gestures",
+    "display_names",
+    "event_categories",
+    "event_notifications",
+    "classified_categories",
+    "adult_compliant",
+    "buddy-list",
+    "newuser-config",
+    "ui-config",
+    "advanced-mode",
+    "max-agent-groups",
+    "map-server-url",
+    "voice-config",
+    "tutorial_setting",
+    "login-flags",
+    "global-textures",
+    "currency",
+    "max_groups",
+    "search",
+    "destination_guide_url",
+    "avatar_picker_url",
+)
+
+
 @dataclass(slots=True, frozen=True)
 class LoginCredentials:
     first: str
@@ -27,6 +58,7 @@ class LoginRequest:
     viewer_digest: str = ""
     agree_to_tos: bool = True
     read_critical: bool = True
+    options: tuple[str, ...] = DEFAULT_LOGIN_OPTIONS
 
 
 @dataclass(slots=True, frozen=True)
@@ -41,3 +73,8 @@ class LoginBootstrap:
     region_x: int
     region_y: int
     message: str
+    inventory_root_folder_id: UUID | None = None
+    current_outfit_folder_id: UUID | None = None
+    my_outfits_folder_id: UUID | None = None
+    initial_outfit_name: str | None = None
+    initial_outfit_gender: str | None = None

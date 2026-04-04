@@ -13,12 +13,22 @@ from pathlib import Path
 from typing import Callable
 
 from vibestorm.login.models import LoginBootstrap
+from vibestorm.caps.client import CapabilityClient, CapabilityError
+from vibestorm.caps.inventory_client import InventoryCapabilityClient, InventoryCapabilityError, InventoryFolderRequest
+from vibestorm.event_queue.client import EventQueueClient, EventQueueError
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
+    AvatarAppearanceMessage,
     MessageDecodeError,
+    AgentWearablesUpdateMessage,
+    DEFAULT_AVATAR_SIZE,
+    encode_agent_cached_texture,
     encode_agent_update,
+    encode_agent_is_now_wearing,
+    encode_agent_set_appearance,
     encode_agent_throttle,
+    encode_agent_wearables_request,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_object_add,
@@ -26,6 +36,9 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_agent_movement_complete,
+    parse_agent_cached_texture_response,
+    parse_agent_wearables_update,
+    parse_avatar_appearance,
     parse_chat_from_simulator,
     parse_improved_terse_object_update,
     parse_kill_object,
@@ -67,6 +80,7 @@ class SessionConfig:
     max_captured_per_message: int = 8
     capture_mode: str = "smart"
     unknowns_db_path: Path | None = DEFAULT_UNKNOWNS_DB_PATH
+    caps_prelude: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -121,6 +135,11 @@ class LiveCircuitSession:
     base_camera_center: tuple[float, float, float] | None = None
     movement_completed: bool = False
     throttle_sent: bool = False
+    wearables_request_sent: bool = False
+    cached_texture_request_sent: bool = False
+    appearance_sent: bool = False
+    wearables_update: AgentWearablesUpdateMessage | None = None
+    latest_avatar_appearance: AvatarAppearanceMessage | None = None
     test_cube_spawned: bool = False
     started: bool = False
     started_at: float | None = None
@@ -314,6 +333,33 @@ class LiveCircuitSession:
                 "movement.complete",
                 f"region_handle={movement.region_handle} position={movement.position}",
             )
+        elif dispatched.summary.name == "AgentWearablesUpdate":
+            wearables_update = parse_agent_wearables_update(dispatched)
+            self.wearables_update = wearables_update
+            self._record_event(
+                now,
+                "appearance.wearables_update",
+                f"serial={wearables_update.serial_num} count={len(wearables_update.wearables)}",
+            )
+        elif dispatched.summary.name == "AgentCachedTextureResponse":
+            cached = parse_agent_cached_texture_response(dispatched)
+            non_zero = sum(1 for item in cached.textures if item.texture_id.int != 0)
+            self._record_event(
+                now,
+                "appearance.cached_texture_response",
+                f"serial={cached.serial_num} count={len(cached.textures)} non_zero={non_zero}",
+            )
+        elif dispatched.summary.name == "AvatarAppearance":
+            appearance = parse_avatar_appearance(dispatched)
+            self.latest_avatar_appearance = appearance
+            self._record_event(
+                now,
+                "appearance.avatar",
+                (
+                    f"sender={appearance.sender_id} texture={len(appearance.texture_entry)} "
+                    f"visual={len(appearance.visual_params)} attachments={len(appearance.attachments)}"
+                ),
+            )
         else:
             world_event = self.world_updater.apply_dispatch(dispatched)
             if world_event is not None:
@@ -368,11 +414,13 @@ class LiveCircuitSession:
             return []
         if now - self.last_agent_update_at < self.config.agent_update_interval_seconds:
             packets = self._drain_throttle_packets(now)
+            packets.extend(self._drain_appearance_packets(now))
             packets.extend(self._drain_test_cube_packets(now))
             return packets
 
         self.last_agent_update_at = now
         packets = self._drain_throttle_packets(now)
+        packets.extend(self._drain_appearance_packets(now))
         packets.extend(self._drain_test_cube_packets(now))
         self._update_camera_sweep(now)
         self.agent_update_count += 1
@@ -476,6 +524,73 @@ class LiveCircuitSession:
                 zerocoded=True,
                 now=now,
                 label="AgentThrottle",
+            ),
+        ]
+
+    def _drain_appearance_packets(self, now: float) -> list[bytes]:
+        if not self.handshake_reply_sent or not self.movement_completed:
+            return []
+
+        if not self.wearables_request_sent:
+            self.wearables_request_sent = True
+            return [
+                self._build_outbound_packet(
+                    encode_agent_wearables_request(
+                        self.bootstrap.agent_id,
+                        self.bootstrap.session_id,
+                    ),
+                    reliable=True,
+                    now=now,
+                    label="AgentWearablesRequest",
+                ),
+            ]
+
+        if self.wearables_update is None:
+            return []
+
+        if not self.cached_texture_request_sent:
+            self.cached_texture_request_sent = True
+            return [
+                self._build_outbound_packet(
+                    encode_agent_cached_texture(
+                        self.bootstrap.agent_id,
+                        self.bootstrap.session_id,
+                        serial_num=self.wearables_update.serial_num,
+                    ),
+                    reliable=True,
+                    now=now,
+                    label="AgentCachedTexture",
+                ),
+            ]
+
+        if self.appearance_sent:
+            return []
+
+        self.appearance_sent = True
+        serial_num = max(self.wearables_update.serial_num, 1)
+        return [
+            self._build_outbound_packet(
+                encode_agent_is_now_wearing(
+                    self.bootstrap.agent_id,
+                    self.bootstrap.session_id,
+                    self.wearables_update.wearables,
+                ),
+                reliable=True,
+                zerocoded=True,
+                now=now,
+                label="AgentIsNowWearing",
+            ),
+            self._build_outbound_packet(
+                encode_agent_set_appearance(
+                    self.bootstrap.agent_id,
+                    self.bootstrap.session_id,
+                    serial_num=serial_num,
+                    size=DEFAULT_AVATAR_SIZE,
+                ),
+                reliable=True,
+                zerocoded=True,
+                now=now,
+                label="AgentSetAppearance",
             ),
         ]
 
@@ -952,6 +1067,10 @@ async def run_live_session(
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.setblocking(False)
+        sock.bind(("0.0.0.0", 0))
+
+        if session_config.caps_prelude:
+            await _run_caps_prelude(session, sock, start_time)
 
         for packet in session.start(start_time):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
@@ -981,3 +1100,106 @@ async def run_live_session(
     elif session.close_reason is None:
         session._record_event(loop.time(), "session.incomplete", "duration elapsed before movement complete")
     return session.build_report(loop.time() - start_time)
+
+
+async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, now: float) -> None:
+    local_port = int(sock.getsockname()[1])
+    capability_client = CapabilityClient(timeout_seconds=5.0)
+    event_queue_client = EventQueueClient(timeout_seconds=5.0)
+    inventory_client = InventoryCapabilityClient(timeout_seconds=5.0)
+    requested_caps = ["EventQueueGet", "SimulatorFeatures", "FetchInventoryDescendents2"]
+
+    session._record_event(now, "caps.seed.start", f"udp_port={local_port}")
+    try:
+        resolved = await capability_client.resolve_seed_caps(
+            session.bootstrap.seed_capability,
+            requested_caps,
+            udp_listen_port=local_port,
+        )
+    except CapabilityError as exc:
+        session._record_event(now, "caps.seed.error", str(exc))
+        return
+
+    session._record_event(
+        now,
+        "caps.seed.ok",
+        ",".join(name for name in requested_caps if name in resolved) or "none",
+    )
+
+    event_queue_url = resolved.get("EventQueueGet")
+    if event_queue_url:
+        try:
+            poll_result = await event_queue_client.poll_once(
+                event_queue_url,
+                udp_listen_port=local_port,
+            )
+        except EventQueueError as exc:
+            session._record_event(now, "caps.event_queue.error", str(exc))
+        else:
+            session._record_event(now, "caps.event_queue", poll_result.status)
+
+    simulator_features_url = resolved.get("SimulatorFeatures")
+    if simulator_features_url:
+        try:
+            payload = await capability_client.fetch_capability_value(
+                simulator_features_url,
+                udp_listen_port=local_port,
+            )
+        except CapabilityError as exc:
+            session._record_event(now, "caps.simulator_features.error", str(exc))
+        else:
+            feature_count = len(payload) if isinstance(payload, dict) else 0
+            session._record_event(now, "caps.simulator_features", f"keys={feature_count}")
+
+    inventory_url = resolved.get("FetchInventoryDescendents2")
+    inventory_requests: list[InventoryFolderRequest] = []
+    if inventory_url and session.bootstrap.inventory_root_folder_id is not None:
+        inventory_requests.append(
+            InventoryFolderRequest(
+                folder_id=session.bootstrap.inventory_root_folder_id,
+                owner_id=session.bootstrap.agent_id,
+            )
+        )
+    if (
+        inventory_url
+        and session.bootstrap.current_outfit_folder_id is not None
+        and session.bootstrap.current_outfit_folder_id != session.bootstrap.inventory_root_folder_id
+    ):
+        inventory_requests.append(
+            InventoryFolderRequest(
+                folder_id=session.bootstrap.current_outfit_folder_id,
+                owner_id=session.bootstrap.agent_id,
+            )
+        )
+    if inventory_url and inventory_requests:
+        try:
+            payload = await inventory_client.fetch_inventory_descendents(
+                inventory_url,
+                inventory_requests,
+                udp_listen_port=local_port,
+            )
+        except InventoryCapabilityError as exc:
+            session._record_event(now, "caps.inventory.error", str(exc))
+        else:
+            session._record_event(now, "caps.inventory", _summarize_inventory_payload(payload))
+
+
+def _summarize_inventory_payload(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return "invalid"
+    folders = payload.get("folders")
+    if not isinstance(folders, list):
+        return "folders=0"
+    summaries: list[str] = []
+    for index, folder in enumerate(folders):
+        if not isinstance(folder, dict):
+            continue
+        folder_id = str(folder.get("folder_id", "?"))
+        categories = folder.get("categories")
+        items = folder.get("items")
+        item_count = len(items) if isinstance(items, list) else 0
+        category_count = len(categories) if isinstance(categories, list) else 0
+        summaries.append(f"{index}:{folder_id} items={item_count} categories={category_count}")
+    if not summaries:
+        return "folders=0"
+    return "; ".join(summaries)

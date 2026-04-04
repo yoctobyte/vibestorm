@@ -64,6 +64,11 @@ What changed recently:
 - rich prim `ObjectUpdate.ExtraParams` also needed a 2-byte length-prefixed read in the real capture path; the previous 1-byte assumption was too narrow
 - session mode now has optional camera sweep support, exposed in `run.sh` via `VIBESTORM_CAMERA_SWEEP=1`
 - `tools/run_session_forensics.sh` now runs a sweep-enabled capture session and appends `./run.sh unknowns` into one timestamped text artifact under `local/session-reports/`
+- `tools/capture_viewer_session.sh` now captures one real viewer session into `local/viewer-captures/`; when targeting loopback OpenSim it defaults to `lo` instead of `any`
+- a real Firestorm capture against local OpenSim now confirms the pre-UDP bootstrap order: XML-RPC `login_to_simulator`, then seed-cap POST carrying `X-SecondLife-UDP-Listen-Port`, then early CAPS requests including `EventQueueGet` and `SimulatorFeatures`, and only then UDP
+- Vibestorm live sessions now perform the same minimum pre-UDP CAPS prelude before `UseCircuitCode`: bind UDP socket, resolve seed caps with the real local UDP port, poll `EventQueueGet` once, fetch `SimulatorFeatures`, then start the UDP circuit
+- Vibestorm login requests now also ask for Firestorm-style inventory/bootstrap `options`, and `LoginBootstrap` retains `inventory_root_folder_id`, `current_outfit_folder_id`, `my_outfits_folder_id`, and the initial outfit name/gender from the XML-RPC response
+- the CAPS prelude now also resolves `FetchInventoryDescendents2` and performs one startup inventory fetch for the inventory root and Current Outfit Folder when those folder IDs are available from login
 - session output now splits terse-only placeholders into avatar vs prim counts via `world[terse_only]=tracked:N avatars:A prims:P`, which makes sweep-session census gaps easier to classify without opening the DB first
 - session output now also correlates terse-only avatar placeholders with the nearest coarse agent using horizontal distance (`xy_distance`), which was enough in recent live runs to identify long-lived terse-only local ID `492042976` as the second avatar rather than a missing prim
 
@@ -74,6 +79,9 @@ Most recent local verification in this repo:
 - `bash -n run.sh`
 - `PYTHONPATH=src python3 -m compileall src test`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_udp_messages.py' -v`
+- `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_caps_client.py' -v`
+- `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_inventory_caps_client.py' -v`
+- `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_event_queue_runtime.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_udp_session.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_unknowns_db.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_world_updater.py' -v`
@@ -81,24 +89,20 @@ Most recent local verification in this repo:
 Current result after reconstructing the interrupted session:
 
 - `test_udp_messages.py`: passing
+- `test_caps_client.py`: passing
+- `test_event_queue_runtime.py`: passing
 - `test_udp_session.py`: passing
 - `test_world_updater.py`: passing
 - `test_unknowns_db.py`: now passing after fixing one order-dependent assertion in the test itself
 
 ## Recommended Next Step
 
-Continue UDP implementation using the now-verified terse/kill baseline:
+Validate the widened login/bootstrap + inventory prelude against live OpenSim behavior:
 
-1. implement and test `ObjectUpdateCached`
-2. implement and test `ObjectUpdateCompressed`
-3. add source-backed `ObjectPropertiesFamily`
-4. add source-backed `ObjectExtraParams`
-5. then run a fresh real OpenSim session and compare live traffic against the source-derived structs
-
-Status note:
-
-- steps 1, 2, 3, and the first real-capture-backed pass on 4 are now done on the current dirty branch
-- the next highest-value work is validating additional `ExtraParams` subtypes beyond the captured sculpt-like case, then deciding whether those decoded details should be persisted into the evidence DB
+1. run one fresh `./tools/run_session_forensics.sh 90`
+2. confirm early session events now include `caps.seed.*`, `caps.event_queue`, `caps.simulator_features`, and `caps.inventory`
+3. check whether avatar appearance/world coverage improves relative to the earlier UDP-first runs
+4. if cloud/Ruth behavior persists, inspect the `caps.inventory` summary and compare the current outfit contents against the Firestorm capture next
 
 ## Notes For The Next Agent
 

@@ -3,7 +3,7 @@ import socket
 from uuid import UUID
 
 from vibestorm.login.client import LoginClient, LoginError, sl_password_hash
-from vibestorm.login.models import LoginCredentials, LoginRequest
+from vibestorm.login.models import DEFAULT_LOGIN_OPTIONS, LoginCredentials, LoginRequest
 
 
 class LoginHelpersTests(unittest.TestCase):
@@ -19,6 +19,7 @@ class LoginClientSyncTests(unittest.TestCase):
         )
         payload = LoginClient()._request_payload(request)
         self.assertEqual(payload["passwd"], "$1$c9cdcb06301f9c79e2d20c2fdeda0a02")
+        self.assertEqual(payload["options"], list(DEFAULT_LOGIN_OPTIONS))
 
     def test_login_sync_maps_response(self) -> None:
         client = LoginClient()
@@ -43,6 +44,25 @@ class LoginClientSyncTests(unittest.TestCase):
                     "seed_capability": "http://127.0.0.1:9000/CAPS/example/",
                     "region_x": 256000,
                     "region_y": 256000,
+                    "inventory-root": [
+                        {"folder_id": "49cb1ed7-e8b2-4de5-84d7-4222f540634c"},
+                    ],
+                    "inventory-skeleton": [
+                        {
+                            "name": "Current Outfit",
+                            "folder_id": "d427dc3a-047a-4b9f-9aaf-15ccce179bf2",
+                        },
+                        {
+                            "name": "My Outfits",
+                            "folder_id": "256d4a5d-cb0d-7e27-ca95-ac42b50ec733",
+                        },
+                    ],
+                    "initial-outfit": [
+                        {
+                            "folder_name": "Nightclub Female",
+                            "gender": "female",
+                        },
+                    ],
                 }
 
         import xmlrpc.client
@@ -59,6 +79,11 @@ class LoginClientSyncTests(unittest.TestCase):
         self.assertEqual(result.circuit_code, 7)
         self.assertEqual(result.sim_ip, "127.0.0.1")
         self.assertEqual(result.region_x, 256000)
+        self.assertEqual(result.inventory_root_folder_id, UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c"))
+        self.assertEqual(result.current_outfit_folder_id, UUID("d427dc3a-047a-4b9f-9aaf-15ccce179bf2"))
+        self.assertEqual(result.my_outfits_folder_id, UUID("256d4a5d-cb0d-7e27-ca95-ac42b50ec733"))
+        self.assertEqual(result.initial_outfit_name, "Nightclub Female")
+        self.assertEqual(result.initial_outfit_gender, "female")
 
     def test_login_sync_raises_on_failure(self) -> None:
         client = LoginClient()

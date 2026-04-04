@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from uuid import UUID
 
 
 class LlsdError(ValueError):
@@ -100,6 +101,10 @@ def _parse_value(element: ET.Element) -> object:
 
 
 def _format_value(value: object) -> ET.Element:
+    if isinstance(value, UUID):
+        element = ET.Element("uuid")
+        element.text = str(value)
+        return element
     if isinstance(value, bool):
         element = ET.Element("boolean")
         element.text = "true" if value else "false"
@@ -111,5 +116,24 @@ def _format_value(value: object) -> ET.Element:
     if isinstance(value, str):
         element = ET.Element("string")
         element.text = value
+        return element
+    if value is None:
+        return ET.Element("undef")
+    if isinstance(value, list):
+        element = ET.Element("array")
+        for entry in value:
+            element.append(_format_value(entry))
+        return element
+    if isinstance(value, tuple):
+        element = ET.Element("array")
+        for entry in value:
+            element.append(_format_value(entry))
+        return element
+    if isinstance(value, dict):
+        element = ET.Element("map")
+        for key, entry in value.items():
+            key_element = ET.SubElement(element, "key")
+            key_element.text = str(key)
+            element.append(_format_value(entry))
         return element
     raise LlsdError(f"unsupported LLSD serialization type: {type(value).__name__}")

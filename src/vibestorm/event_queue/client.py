@@ -27,15 +27,42 @@ class EventQueueClient:
 
     timeout_seconds: float = 35.0
 
-    async def poll_once(self, url: str, ack: int = 0, done: bool = False) -> EventQueuePollResult:
-        return await asyncio.to_thread(self._poll_once_sync, url, ack, done)
+    async def poll_once(
+        self,
+        url: str,
+        ack: int = 0,
+        done: bool = False,
+        *,
+        udp_listen_port: int | None = None,
+        user_agent: str = "Vibestorm",
+    ) -> EventQueuePollResult:
+        return await asyncio.to_thread(self._poll_once_sync, url, ack, done, udp_listen_port, user_agent)
 
-    def _poll_once_sync(self, url: str, ack: int, done: bool) -> EventQueuePollResult:
+    def _poll_once_sync(
+        self,
+        url: str,
+        ack: int,
+        done: bool,
+        udp_listen_port: int | None = None,
+        user_agent: str = "Vibestorm",
+    ) -> EventQueuePollResult:
         body = format_xml_map({"ack": ack, "done": done})
         request = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": "application/llsd+xml"},
+            headers={
+                "Accept": "application/llsd+xml",
+                "Accept-Encoding": "deflate, gzip",
+                "Connection": "keep-alive",
+                "Keep-Alive": "300",
+                "Content-Type": "application/llsd+xml",
+                "User-Agent": user_agent,
+                **(
+                    {"X-SecondLife-UDP-Listen-Port": str(udp_listen_port)}
+                    if udp_listen_port is not None
+                    else {}
+                ),
+            },
             method="POST",
         )
         try:
