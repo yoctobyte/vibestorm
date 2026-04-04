@@ -11,18 +11,32 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from uuid import UUID
 
 from vibestorm.login.models import LoginBootstrap
 from vibestorm.caps.client import CapabilityClient, CapabilityError
-from vibestorm.caps.inventory_client import InventoryCapabilityClient, InventoryCapabilityError, InventoryFolderRequest
+from vibestorm.caps.inventory_client import (
+    InventoryCapabilityClient,
+    InventoryCapabilityError,
+    InventoryFetchSnapshot,
+    InventoryFolderRequest,
+    InventoryItemRequest,
+    parse_inventory_items_payload,
+    parse_inventory_descendents_payload,
+)
 from vibestorm.event_queue.client import EventQueueClient, EventQueueError
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
+    AgentCachedTextureResponseMessage,
     AvatarAppearanceMessage,
     MessageDecodeError,
     AgentWearablesUpdateMessage,
     DEFAULT_AVATAR_SIZE,
+    DEFAULT_AVATAR_TEXTURE_ENTRY,
+    DEFAULT_AVATAR_VISUAL_PARAMS,
+    DEFAULT_AVATAR_BAKE_INDICES,
+    WearableCacheEntry,
     encode_agent_cached_texture,
     encode_agent_update,
     encode_agent_is_now_wearing,
@@ -31,6 +45,7 @@ from vibestorm.udp.messages import (
     encode_agent_wearables_request,
     encode_complete_agent_movement,
     encode_complete_ping_check,
+    encode_logout_request,
     encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
@@ -105,6 +120,13 @@ class SessionReport:
     last_region_name: str | None
     close_reason: str | None
     world_view: WorldView
+    resolved_capabilities: tuple[str, ...]
+    bootstrap_packed_appearance_present: bool
+    inventory_fetch: InventoryFetchSnapshot | None
+    wearables_update: AgentWearablesUpdateMessage | None
+    cached_texture_response: AgentCachedTextureResponseMessage | None
+    avatar_appearance: AvatarAppearanceMessage | None
+    self_avatar_appearance: AvatarAppearanceMessage | None
     events: tuple[SessionEvent, ...]
 
 
@@ -138,8 +160,13 @@ class LiveCircuitSession:
     wearables_request_sent: bool = False
     cached_texture_request_sent: bool = False
     appearance_sent: bool = False
+    logout_sent: bool = False
     wearables_update: AgentWearablesUpdateMessage | None = None
     latest_avatar_appearance: AvatarAppearanceMessage | None = None
+    latest_self_avatar_appearance: AvatarAppearanceMessage | None = None
+    latest_cached_texture_response: AgentCachedTextureResponseMessage | None = None
+    latest_inventory_fetch: InventoryFetchSnapshot | None = None
+    resolved_capabilities: tuple[str, ...] = ()
     test_cube_spawned: bool = False
     started: bool = False
     started_at: float | None = None
@@ -168,6 +195,20 @@ class LiveCircuitSession:
                 configured_duration_seconds=self.config.duration_seconds,
             )
         self._record_event(now, "session.started", f"sim={self.bootstrap.sim_ip}:{self.bootstrap.sim_port}")
+        if self.bootstrap.initial_packed_appearance is not None:
+            packed = self.bootstrap.initial_packed_appearance
+            self._record_event(
+                now,
+                "appearance.bootstrap",
+                " ".join(
+                    [
+                        f"serial={packed.serial_num if packed.serial_num is not None else '-'}",
+                        f"height={packed.avatar_height if packed.avatar_height is not None else '-'}",
+                        f"texture={len(packed.texture_entry) if packed.texture_entry is not None else 0}",
+                        f"visual={len(packed.visual_params) if packed.visual_params is not None else 0}",
+                    ]
+                ),
+            )
         packets = [
             self._build_outbound_packet(
                 encode_use_circuit_code(
@@ -343,6 +384,7 @@ class LiveCircuitSession:
             )
         elif dispatched.summary.name == "AgentCachedTextureResponse":
             cached = parse_agent_cached_texture_response(dispatched)
+            self.latest_cached_texture_response = cached
             non_zero = sum(1 for item in cached.textures if item.texture_id.int != 0)
             self._record_event(
                 now,
@@ -352,6 +394,8 @@ class LiveCircuitSession:
         elif dispatched.summary.name == "AvatarAppearance":
             appearance = parse_avatar_appearance(dispatched)
             self.latest_avatar_appearance = appearance
+            if appearance.sender_id == self.bootstrap.agent_id:
+                self.latest_self_avatar_appearance = appearance
             self._record_event(
                 now,
                 "appearance.avatar",
@@ -456,8 +500,32 @@ class LiveCircuitSession:
             last_region_name=self.last_region_name,
             close_reason=self.close_reason,
             world_view=self.world_view,
+            resolved_capabilities=self.resolved_capabilities,
+            bootstrap_packed_appearance_present=self.bootstrap.initial_packed_appearance is not None,
+            inventory_fetch=self.latest_inventory_fetch,
+            wearables_update=self.wearables_update,
+            cached_texture_response=self.latest_cached_texture_response,
+            avatar_appearance=self.latest_avatar_appearance,
+            self_avatar_appearance=self.latest_self_avatar_appearance,
             events=tuple(self.events),
         )
+
+    def build_shutdown_packets(self, now: float) -> list[bytes]:
+        if self.logout_sent or not self.started:
+            return []
+        self.logout_sent = True
+        self._record_event(now, "session.logout_request", "client requested logout")
+        return [
+            self._build_outbound_packet(
+                encode_logout_request(
+                    self.bootstrap.agent_id,
+                    self.bootstrap.session_id,
+                ),
+                reliable=True,
+                now=now,
+                label="LogoutRequest",
+            )
+        ]
 
     def _build_outbound_packet(
         self,
@@ -550,12 +618,25 @@ class LiveCircuitSession:
 
         if not self.cached_texture_request_sent:
             self.cached_texture_request_sent = True
+            bootstrap_cache_by_index = {
+                entry.texture_index: entry.cache_id
+                for entry in self.bootstrap.initial_baked_cache_entries
+                if entry.cache_id.int != 0
+            }
+            cache_items = tuple(
+                WearableCacheEntry(
+                    cache_id=bootstrap_cache_by_index.get(index, UUID(int=0)),
+                    texture_index=index,
+                )
+                for index in DEFAULT_AVATAR_BAKE_INDICES
+            )
             return [
                 self._build_outbound_packet(
                     encode_agent_cached_texture(
                         self.bootstrap.agent_id,
                         self.bootstrap.session_id,
                         serial_num=self.wearables_update.serial_num,
+                        cache_items=cache_items,
                     ),
                     reliable=True,
                     now=now,
@@ -567,7 +648,34 @@ class LiveCircuitSession:
             return []
 
         self.appearance_sent = True
-        serial_num = max(self.wearables_update.serial_num, 1)
+        bootstrap_appearance = self.bootstrap.initial_packed_appearance
+        serial_candidates = [self.wearables_update.serial_num, 1]
+        if bootstrap_appearance is not None and bootstrap_appearance.serial_num is not None:
+            serial_candidates.append(bootstrap_appearance.serial_num)
+        serial_num = max(serial_candidates)
+        source_appearance = self.latest_self_avatar_appearance
+        texture_entry = (
+            source_appearance.texture_entry
+            if source_appearance is not None and source_appearance.texture_entry
+            else (
+                bootstrap_appearance.texture_entry
+                if bootstrap_appearance is not None and bootstrap_appearance.texture_entry
+                else DEFAULT_AVATAR_TEXTURE_ENTRY
+            )
+        )
+        visual_params = (
+            source_appearance.visual_params
+            if source_appearance is not None and source_appearance.visual_params
+            else (
+                bootstrap_appearance.visual_params
+                if bootstrap_appearance is not None and bootstrap_appearance.visual_params
+                else DEFAULT_AVATAR_VISUAL_PARAMS
+            )
+        )
+        if bootstrap_appearance is not None and bootstrap_appearance.avatar_height is not None:
+            size = (DEFAULT_AVATAR_SIZE[0], DEFAULT_AVATAR_SIZE[1], bootstrap_appearance.avatar_height)
+        else:
+            size = DEFAULT_AVATAR_SIZE
         return [
             self._build_outbound_packet(
                 encode_agent_is_now_wearing(
@@ -585,7 +693,9 @@ class LiveCircuitSession:
                     self.bootstrap.agent_id,
                     self.bootstrap.session_id,
                     serial_num=serial_num,
-                    size=DEFAULT_AVATAR_SIZE,
+                    size=size,
+                    texture_entry=texture_entry,
+                    visual_params=visual_params,
                 ),
                 reliable=True,
                 zerocoded=True,
@@ -1095,6 +1205,25 @@ async def run_live_session(
             for packet in session.handle_incoming(payload, loop.time()):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
+        for packet in session.build_shutdown_packets(loop.time()):
+            await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+
+        logout_deadline = loop.time() + 0.75
+        while loop.time() < logout_deadline:
+            remaining = logout_deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                payload, _ = await asyncio.wait_for(
+                    loop.sock_recvfrom(sock, 65535),
+                    timeout=min(session_config.receive_timeout_seconds, remaining),
+                )
+            except TimeoutError:
+                break
+
+            for packet in session.handle_incoming(payload, loop.time()):
+                await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+
     if session.close_reason is None and session.movement_completed:
         session._record_event(loop.time(), "session.completed", "duration elapsed")
     elif session.close_reason is None:
@@ -1107,7 +1236,15 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
     capability_client = CapabilityClient(timeout_seconds=5.0)
     event_queue_client = EventQueueClient(timeout_seconds=5.0)
     inventory_client = InventoryCapabilityClient(timeout_seconds=5.0)
-    requested_caps = ["EventQueueGet", "SimulatorFeatures", "FetchInventoryDescendents2"]
+    requested_caps = [
+        "EventQueueGet",
+        "SimulatorFeatures",
+        "FetchInventoryDescendents2",
+        "FetchInventory2",
+        "UploadBakedTexture",
+        "ViewerAsset",
+        "GetTexture",
+    ]
 
     session._record_event(now, "caps.seed.start", f"udp_port={local_port}")
     try:
@@ -1125,6 +1262,7 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         "caps.seed.ok",
         ",".join(name for name in requested_caps if name in resolved) or "none",
     )
+    session.resolved_capabilities = tuple(name for name in requested_caps if name in resolved)
 
     event_queue_url = resolved.get("EventQueueGet")
     if event_queue_url:
@@ -1181,25 +1319,52 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         except InventoryCapabilityError as exc:
             session._record_event(now, "caps.inventory.error", str(exc))
         else:
-            session._record_event(now, "caps.inventory", _summarize_inventory_payload(payload))
+            session.latest_inventory_fetch = parse_inventory_descendents_payload(
+                payload,
+                inventory_root_folder_id=session.bootstrap.inventory_root_folder_id,
+                current_outfit_folder_id=session.bootstrap.current_outfit_folder_id,
+            )
+            fetch_inventory2_url = resolved.get("FetchInventory2")
+            link_targets = session.latest_inventory_fetch.current_outfit_link_targets
+            if fetch_inventory2_url and link_targets:
+                try:
+                    items_payload = await inventory_client.fetch_inventory_items(
+                        fetch_inventory2_url,
+                        [InventoryItemRequest(item_id=item_id) for item_id in link_targets],
+                        udp_listen_port=local_port,
+                    )
+                except InventoryCapabilityError as exc:
+                    session._record_event(now, "caps.inventory_items.error", str(exc))
+                else:
+                    session.latest_inventory_fetch = InventoryFetchSnapshot(
+                        folders=session.latest_inventory_fetch.folders,
+                        inventory_root_folder_id=session.latest_inventory_fetch.inventory_root_folder_id,
+                        current_outfit_folder_id=session.latest_inventory_fetch.current_outfit_folder_id,
+                        resolved_items=parse_inventory_items_payload(items_payload),
+                    )
+            session._record_event(now, "caps.inventory", _summarize_inventory_snapshot(session.latest_inventory_fetch))
 
 
-def _summarize_inventory_payload(payload: object) -> str:
-    if not isinstance(payload, dict):
-        return "invalid"
-    folders = payload.get("folders")
-    if not isinstance(folders, list):
+def _summarize_inventory_snapshot(snapshot: InventoryFetchSnapshot) -> str:
+    if snapshot.folder_count == 0:
         return "folders=0"
-    summaries: list[str] = []
-    for index, folder in enumerate(folders):
-        if not isinstance(folder, dict):
-            continue
-        folder_id = str(folder.get("folder_id", "?"))
-        categories = folder.get("categories")
-        items = folder.get("items")
-        item_count = len(items) if isinstance(items, list) else 0
-        category_count = len(categories) if isinstance(categories, list) else 0
-        summaries.append(f"{index}:{folder_id} items={item_count} categories={category_count}")
-    if not summaries:
-        return "folders=0"
-    return "; ".join(summaries)
+    parts = [f"folders={snapshot.folder_count}", f"items={snapshot.total_item_count}"]
+    cof = snapshot.current_outfit_folder
+    if cof is not None:
+        sample_names = ",".join(cof.sample_item_names(limit=3)) or "-"
+        inv_types = ",".join(str(value) for value in cof.inventory_types) or "-"
+        parts.append(
+            f"cof_items={cof.item_count} cof_links={cof.link_item_count} "
+            f"cof_inv_types={inv_types} cof_sample={sample_names}"
+        )
+    if snapshot.resolved_items:
+        resolved_names = ",".join(snapshot.resolved_item_names(limit=4)) or "-"
+        resolved_types = ",".join(str(value) for value in snapshot.resolved_item_types) or "-"
+        parts.append(
+            f"resolved_items={snapshot.resolved_item_count} "
+            f"resolved_types={resolved_types} resolved_sample={resolved_names}"
+        )
+    root = snapshot.inventory_root_folder
+    if root is not None:
+        parts.append(f"root_items={root.item_count} root_categories={len(root.categories)}")
+    return " ".join(parts)

@@ -1221,14 +1221,16 @@ def parse_kill_object(message: MessageDispatch) -> KillObjectMessage:
     if message.summary.name != "KillObject":
         raise MessageDecodeError(f"expected KillObject, got {message.summary.name}")
 
-    # Use the template to find the ObjectData block count
-    # But since it's a Variable block of U32 IDs:
-    # Each block is 4 bytes.
-    if len(message.body) % 4 != 0:
-        raise MessageDecodeError("KillObject body length must be a multiple of 4")
+    if not message.body:
+        raise MessageDecodeError("KillObject body is too short")
 
-    count = len(message.body) // 4
-    local_ids = tuple(unpack_from("<I", message.body, i * 4)[0] for i in range(count))
+    count = message.body[0]
+    expected_length = 1 + (count * 4)
+    if len(message.body) != expected_length:
+        raise MessageDecodeError("KillObject body length does not match block count")
+
+    offset = 1
+    local_ids = tuple(unpack_from("<I", message.body, offset + (i * 4))[0] for i in range(count))
     return KillObjectMessage(local_ids=local_ids)
 
 
@@ -1780,6 +1782,10 @@ def encode_complete_agent_movement(agent_id: UUID, session_id: UUID, circuit_cod
     if not 0 <= circuit_code <= 0xFFFFFFFF:
         raise ValueError("circuit_code must fit in U32")
     return b"\xFF\xFF\x00\xF9" + agent_id.bytes + session_id.bytes + pack("<I", circuit_code)
+
+
+def encode_logout_request(agent_id: UUID, session_id: UUID) -> bytes:
+    return b"\xFF\xFF\x00\xFC" + agent_id.bytes + session_id.bytes
 
 
 def encode_region_handshake_reply(agent_id: UUID, session_id: UUID, flags: int) -> bytes:

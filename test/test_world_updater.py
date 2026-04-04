@@ -295,7 +295,7 @@ class WorldUpdaterTests(unittest.TestCase):
         )
         kill = self._dispatch(
             "KillObject",
-            (7).to_bytes(4, "little") + (99).to_bytes(4, "little"),
+            bytes([2]) + (7).to_bytes(4, "little") + (99).to_bytes(4, "little"),
             frequency="High",
             message_number=16,
         )

@@ -5,7 +5,7 @@ from struct import pack, unpack_from
 from tempfile import TemporaryDirectory
 from uuid import UUID
 
-from vibestorm.login.models import LoginBootstrap
+from vibestorm.login.models import BootstrapBakedCacheEntry, BootstrapPackedAppearance, LoginBootstrap
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, LL_ZERO_CODE_FLAG, build_packet, split_packet
 from vibestorm.udp.session import LiveCircuitSession, SessionConfig, SessionEvent
@@ -208,6 +208,63 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertTrue(session.appearance_sent)
         self.assertTrue(any(event.kind == "appearance.wearables_update" for event in session.events))
 
+    def test_agent_cached_texture_uses_bootstrap_baked_cache_ids(self) -> None:
+        bootstrap = LoginBootstrap(
+            agent_id=self.bootstrap.agent_id,
+            session_id=self.bootstrap.session_id,
+            secure_session_id=self.bootstrap.secure_session_id,
+            circuit_code=self.bootstrap.circuit_code,
+            sim_ip=self.bootstrap.sim_ip,
+            sim_port=self.bootstrap.sim_port,
+            seed_capability=self.bootstrap.seed_capability,
+            region_x=self.bootstrap.region_x,
+            region_y=self.bootstrap.region_y,
+            message=self.bootstrap.message,
+            initial_baked_cache_entries=(
+                BootstrapBakedCacheEntry(
+                    texture_index=8,
+                    cache_id=UUID("12345678-1111-2222-3333-444444444444"),
+                ),
+            ),
+        )
+        session = LiveCircuitSession(bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.handshake_reply_sent = True
+        session.movement_completed = True
+        session.wearables_request_sent = True
+
+        wearables_body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + (7).to_bytes(4, "little")
+            + bytes([1])
+            + UUID("00000000-0000-0000-0000-000000000010").bytes
+            + UUID("00000000-0000-0000-0000-000000000020").bytes
+            + bytes([5])
+        )
+        packets = session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x01, 0x7E]) + wearables_body, sequence=42),
+            10.4,
+        )
+
+        self.assertGreaterEqual(len(packets), 1)
+        body = None
+        for packet in packets:
+            raw_packet = decode_zerocode(packet) if packet[0] & LL_ZERO_CODE_FLAG else packet
+            dispatched = self.dispatcher.dispatch(split_packet(raw_packet).message)
+            if dispatched.summary.name == "AgentCachedTexture":
+                body = dispatched.body
+                break
+
+        self.assertIsNotNone(body)
+        assert body is not None
+        count = body[36]
+        self.assertEqual(count, 11)
+        first_cache_id = UUID(bytes=body[37:53])
+        first_texture_index = body[53]
+        self.assertEqual(first_texture_index, 8)
+        self.assertEqual(first_cache_id, UUID("12345678-1111-2222-3333-444444444444"))
+
     def test_cached_texture_response_and_avatar_appearance_emit_events(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)
@@ -244,6 +301,125 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertTrue(any(event.kind == "appearance.cached_texture_response" for event in session.events))
         self.assertTrue(any(event.kind == "appearance.avatar" for event in session.events))
         self.assertIsNotNone(session.latest_avatar_appearance)
+        self.assertIsNotNone(session.latest_self_avatar_appearance)
+
+    def test_self_avatar_appearance_is_used_for_agent_set_appearance(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.handshake_reply_sent = True
+        session.movement_completed = True
+
+        item_id = UUID("00000000-0000-0000-0000-000000000111")
+        asset_id = UUID("00000000-0000-0000-0000-000000000222")
+        wearables_body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + (7).to_bytes(4, "little")
+            + bytes([1])
+            + item_id.bytes
+            + asset_id.bytes
+            + bytes([5])
+        )
+        session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x01, 0x7E]) + wearables_body, sequence=42),
+            10.4,
+        )
+
+        appearance_texture = UUID("00000000-0000-0000-0000-000000000333").bytes
+        appearance_visuals = bytes([9, 8, 7, 6])
+        appearance_body = (
+            self.bootstrap.agent_id.bytes
+            + bytes([0])
+            + (16).to_bytes(2, "little")
+            + appearance_texture
+            + bytes([len(appearance_visuals)])
+            + appearance_visuals
+            + bytes([0])
+            + bytes([0])
+            + bytes([0])
+        )
+        session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x00, 0x9E]) + appearance_body, sequence=43),
+            10.5,
+        )
+
+        session.cached_texture_request_sent = True
+        packets = session.drain_due_packets(11.5)
+        appearance_packet = split_packet(decode_zerocode(packets[1]))
+        dispatched = self.dispatcher.dispatch(appearance_packet.message)
+        self.assertEqual(dispatched.summary.name, "AgentSetAppearance")
+        body = dispatched.body
+        texture_len = int.from_bytes(body[49:51], "little")
+        self.assertEqual(texture_len, 16)
+        self.assertEqual(body[51:67], appearance_texture)
+        visual_count = body[67]
+        self.assertEqual(visual_count, len(appearance_visuals))
+        self.assertEqual(body[68:72], appearance_visuals)
+
+    def test_bootstrap_packed_appearance_is_used_when_self_avatar_appearance_is_missing(self) -> None:
+        bootstrap = LoginBootstrap(
+            agent_id=self.bootstrap.agent_id,
+            session_id=self.bootstrap.session_id,
+            secure_session_id=self.bootstrap.secure_session_id,
+            circuit_code=self.bootstrap.circuit_code,
+            sim_ip=self.bootstrap.sim_ip,
+            sim_port=self.bootstrap.sim_port,
+            seed_capability=self.bootstrap.seed_capability,
+            region_x=self.bootstrap.region_x,
+            region_y=self.bootstrap.region_y,
+            message=self.bootstrap.message,
+            initial_packed_appearance=BootstrapPackedAppearance(
+                serial_num=12,
+                avatar_height=1.93,
+                texture_entry=b"\x10\x20\x30\x40",
+                visual_params=b"\x50\x60\x70",
+            ),
+        )
+        session = LiveCircuitSession(bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.handshake_reply_sent = True
+        session.movement_completed = True
+
+        wearables_body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + (7).to_bytes(4, "little")
+            + bytes([1])
+            + UUID("00000000-0000-0000-0000-000000000111").bytes
+            + UUID("00000000-0000-0000-0000-000000000222").bytes
+            + bytes([5])
+        )
+        session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x01, 0x7E]) + wearables_body, sequence=42),
+            10.4,
+        )
+
+        session.cached_texture_request_sent = True
+        packets = session.drain_due_packets(11.5)
+        appearance_packet = split_packet(decode_zerocode(packets[1]))
+        dispatched = self.dispatcher.dispatch(appearance_packet.message)
+        self.assertEqual(dispatched.summary.name, "AgentSetAppearance")
+        body = dispatched.body
+        self.assertEqual(int.from_bytes(body[32:36], "little", signed=True), 12)
+        self.assertAlmostEqual(unpack_from("<f", body, 44)[0], 1.93, places=5)
+        texture_len = int.from_bytes(body[49:51], "little")
+        self.assertEqual(texture_len, 4)
+        self.assertEqual(body[51:55], b"\x10\x20\x30\x40")
+        visual_count = body[55]
+        self.assertEqual(visual_count, 3)
+        self.assertEqual(body[56:59], b"\x50\x60\x70")
+
+    def test_shutdown_sends_logout_request(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        packets = session.build_shutdown_packets(12.0)
+
+        self.assertEqual(len(packets), 1)
+        packet = split_packet(packets[0])
+        self.assertTrue(packet.header.is_reliable)
+        self.assertEqual(self.dispatcher.dispatch(packet.message).summary.name, "LogoutRequest")
+        self.assertTrue(session.logout_sent)
 
     def test_camera_sweep_changes_agent_update_camera_center_and_axis(self) -> None:
         session = LiveCircuitSession(
@@ -900,7 +1076,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
             )
             session.handle_incoming(build_packet(bytes([0x0C]) + object_body, sequence=94), 10.2)
 
-            kill_body = (7).to_bytes(4, "little") + (9).to_bytes(4, "little")
+            kill_body = bytes([2]) + (7).to_bytes(4, "little") + (9).to_bytes(4, "little")
             session.handle_incoming(build_packet(bytes([0x10]) + kill_body, sequence=95), 10.3)
 
             from vibestorm.fixtures.unknowns_db import UnknownsDatabase

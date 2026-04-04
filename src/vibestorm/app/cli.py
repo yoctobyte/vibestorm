@@ -229,6 +229,11 @@ def format_session_report(report: SessionReport, *, verbose: bool = False) -> li
         lines.append(f"region_name={report.last_region_name}")
     if report.close_reason is not None:
         lines.append(f"close_reason={report.close_reason}")
+    if report.resolved_capabilities:
+        lines.append(f"caps[seed]={','.join(report.resolved_capabilities)}")
+    if report.inventory_fetch is not None:
+        lines.extend(format_inventory_status(report))
+    lines.extend(format_appearance_status(report))
     lines.extend(format_world_status(report.world_view))
     if verbose:
         lines.extend(
@@ -243,6 +248,84 @@ def format_session_report(report: SessionReport, *, verbose: bool = False) -> li
         )
         for name in sorted(report.message_counts):
             lines.append(f"message[{name}]={report.message_counts[name]}")
+    return lines
+
+
+def format_inventory_status(report: SessionReport) -> list[str]:
+    snapshot = report.inventory_fetch
+    if snapshot is None:
+        return []
+    lines = [
+        f"appearance[inventory]=folders:{snapshot.folder_count} items:{snapshot.total_item_count}",
+    ]
+    cof = snapshot.current_outfit_folder
+    if cof is not None:
+        sample_names = ",".join(cof.sample_item_names(limit=3)) or "-"
+        inv_types = ",".join(str(value) for value in cof.inventory_types) or "-"
+        lines.append(
+            f"appearance[cof]=folder={cof.folder_id} items:{cof.item_count} "
+            f"links:{cof.link_item_count} inv_types:{inv_types} sample:{sample_names}",
+        )
+    if snapshot.resolved_items:
+        resolved_names = ",".join(snapshot.resolved_item_names(limit=4)) or "-"
+        resolved_types = ",".join(str(value) for value in snapshot.resolved_item_types) or "-"
+        lines.append(
+            f"appearance[cof_resolved]=items:{snapshot.resolved_item_count} "
+            f"types:{resolved_types} sample:{resolved_names}",
+        )
+    elif cof is not None and cof.link_item_count > 0:
+        lines.append("appearance[cof_resolved]=items:0 types:- sample:-")
+    root = snapshot.inventory_root_folder
+    if root is not None:
+        lines.append(
+            f"appearance[inventory_root]=folder={root.folder_id} items:{root.item_count} "
+            f"categories:{len(root.categories)}",
+        )
+    return lines
+
+
+def format_appearance_status(report: SessionReport) -> list[str]:
+    lines: list[str] = []
+    if report.bootstrap_packed_appearance_present:
+        lines.append("appearance[bootstrap]=packed:1")
+    if report.wearables_update is not None:
+        wearable_types = ",".join(str(entry.wearable_type) for entry in report.wearables_update.wearables[:6]) or "-"
+        lines.append(
+            f"appearance[wearables]=serial:{report.wearables_update.serial_num} "
+            f"count:{len(report.wearables_update.wearables)} types:{wearable_types}",
+        )
+    if report.cached_texture_response is not None:
+        non_zero = sum(1 for item in report.cached_texture_response.textures if item.texture_id.int != 0)
+        lines.append(
+            f"appearance[cached_textures]=serial:{report.cached_texture_response.serial_num} "
+            f"count:{len(report.cached_texture_response.textures)} non_zero:{non_zero}",
+        )
+    if report.avatar_appearance is not None:
+        version = report.avatar_appearance.appearance_version
+        cof_version = report.avatar_appearance.cof_version
+        flags = report.avatar_appearance.appearance_flags
+        lines.append(
+            f"appearance[avatar]=sender:{report.avatar_appearance.sender_id} "
+            f"texture:{len(report.avatar_appearance.texture_entry)} "
+            f"visual:{len(report.avatar_appearance.visual_params)} "
+            f"attachments:{len(report.avatar_appearance.attachments)} "
+            f"version:{version if version is not None else '-'} "
+            f"cof:{cof_version if cof_version is not None else '-'} "
+            f"flags:{flags if flags is not None else '-'}",
+        )
+    if report.self_avatar_appearance is not None:
+        version = report.self_avatar_appearance.appearance_version
+        cof_version = report.self_avatar_appearance.cof_version
+        flags = report.self_avatar_appearance.appearance_flags
+        lines.append(
+            f"appearance[self_avatar]=sender:{report.self_avatar_appearance.sender_id} "
+            f"texture:{len(report.self_avatar_appearance.texture_entry)} "
+            f"visual:{len(report.self_avatar_appearance.visual_params)} "
+            f"attachments:{len(report.self_avatar_appearance.attachments)} "
+            f"version:{version if version is not None else '-'} "
+            f"cof:{cof_version if cof_version is not None else '-'} "
+            f"flags:{flags if flags is not None else '-'}",
+        )
     return lines
 
 

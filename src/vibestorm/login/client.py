@@ -9,7 +9,12 @@ import xmlrpc.client
 from dataclasses import dataclass
 from uuid import UUID
 
-from vibestorm.login.models import LoginBootstrap, LoginRequest
+from vibestorm.login.models import (
+    BootstrapBakedCacheEntry,
+    BootstrapPackedAppearance,
+    LoginBootstrap,
+    LoginRequest,
+)
 
 
 class LoginError(RuntimeError):
@@ -73,6 +78,8 @@ class LoginClient:
                 my_outfits_folder_id=_extract_folder_id_by_name(response, "My Outfits"),
                 initial_outfit_name=_extract_initial_outfit_field(response, "folder_name"),
                 initial_outfit_gender=_extract_initial_outfit_field(response, "gender"),
+                initial_baked_cache_entries=_extract_initial_baked_cache_entries(response),
+                initial_packed_appearance=_extract_initial_packed_appearance(response),
             )
         except KeyError as exc:
             raise LoginError(f"login response missing field: {exc.args[0]}") from exc
@@ -146,3 +153,93 @@ def _extract_initial_outfit_field(response: dict[str, object], field_name: str) 
     if value is None:
         return None
     return str(value)
+
+
+def _extract_initial_baked_cache_entries(response: dict[str, object]) -> tuple[BootstrapBakedCacheEntry, ...]:
+    packed = response.get("packed_appearance")
+    if not isinstance(packed, dict):
+        return ()
+
+    entries: list[BootstrapBakedCacheEntry] = []
+    seen_indices: set[int] = set()
+    for key in ("bakedcache", "bc8"):
+        raw_entries = packed.get(key)
+        if not isinstance(raw_entries, list):
+            continue
+        for raw_entry in raw_entries:
+            if not isinstance(raw_entry, dict):
+                continue
+            texture_index = _extract_int(raw_entry.get("textureindex"))
+            cache_id = _extract_uuid(raw_entry.get("cacheid"))
+            if texture_index is None or cache_id is None or texture_index in seen_indices:
+                continue
+            seen_indices.add(texture_index)
+            entries.append(
+                BootstrapBakedCacheEntry(
+                    texture_index=texture_index,
+                    cache_id=cache_id,
+                    texture_id=_extract_uuid(raw_entry.get("textureid")),
+                )
+            )
+    entries.sort(key=lambda entry: entry.texture_index)
+    return tuple(entries)
+
+
+def _extract_initial_packed_appearance(response: dict[str, object]) -> BootstrapPackedAppearance | None:
+    packed = response.get("packed_appearance")
+    if not isinstance(packed, dict):
+        return None
+
+    texture_entry = _extract_binary(packed.get("te8"))
+    visual_params = _extract_binary(packed.get("visualparams"))
+    serial_num = _extract_int(packed.get("serial"))
+    avatar_height = _extract_float(packed.get("height"))
+
+    if texture_entry is None and visual_params is None and serial_num is None and avatar_height is None:
+        return None
+
+    return BootstrapPackedAppearance(
+        serial_num=serial_num,
+        avatar_height=avatar_height,
+        texture_entry=texture_entry,
+        visual_params=visual_params,
+    )
+
+
+def _extract_uuid(value: object) -> UUID | None:
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _extract_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_binary(value: object) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, xmlrpc.client.Binary):
+        return bytes(value.data)
+    return None

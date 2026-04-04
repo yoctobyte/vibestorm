@@ -69,8 +69,38 @@ What changed recently:
 - Vibestorm live sessions now perform the same minimum pre-UDP CAPS prelude before `UseCircuitCode`: bind UDP socket, resolve seed caps with the real local UDP port, poll `EventQueueGet` once, fetch `SimulatorFeatures`, then start the UDP circuit
 - Vibestorm login requests now also ask for Firestorm-style inventory/bootstrap `options`, and `LoginBootstrap` retains `inventory_root_folder_id`, `current_outfit_folder_id`, `my_outfits_folder_id`, and the initial outfit name/gender from the XML-RPC response
 - the CAPS prelude now also resolves `FetchInventoryDescendents2` and performs one startup inventory fetch for the inventory root and Current Outfit Folder when those folder IDs are available from login
+- startup inventory responses are now parsed into structured folder/item snapshots instead of being reduced to a plain event string
+- Current Outfit link resolution now queries `FetchInventory2` with both plausible link targets (`asset_id` and `item_id`) because local OpenSim/viewer evidence is not yet consistent enough to trust only one field
+- session output now includes compact appearance/bootstrap summaries:
+  - `appearance[inventory]=...`
+  - `appearance[cof]=...`
+  - `appearance[cof_resolved]=...`
+  - `appearance[wearables]=...`
+  - `appearance[cached_textures]=...`
+  - `appearance[avatar]=...`
+- session output now also includes `caps[seed]=...` so a live run can immediately tell whether `UploadBakedTexture`, `ViewerAsset`, and `GetTexture` were advertised by the simulator
+- these summaries are intended to answer the current cloud-state question quickly: whether the Current Outfit Folder fetch returned link items, whether those links resolved to source inventory items, whether `AgentWearablesUpdate` arrived, whether cached textures came back non-zero, whether baked/asset caps are present, and whether `AvatarAppearance` is flowing without needing a verbose event log
+- `appearance[avatar]` and `appearance[self_avatar]` now also print decoded `version`, `cof`, and `flags`, so viewer-side clues like `processAvatarAppearance ... version -1` can be compared directly against Vibestorm session output
+- bounded sessions now send a reliable `LogoutRequest` before closing the socket and briefly drain replies, instead of silently disappearing at timeout
 - session output now splits terse-only placeholders into avatar vs prim counts via `world[terse_only]=tracked:N avatars:A prims:P`, which makes sweep-session census gaps easier to classify without opening the DB first
 - session output now also correlates terse-only avatar placeholders with the nearest coarse agent using horizontal distance (`xy_distance`), which was enough in recent live runs to identify long-lived terse-only local ID `492042976` as the second avatar rather than a missing prim
+- in one recent post-bootstrap live run, the second avatar also promoted to a full `ObjectUpdate` instead of staying terse-only for the whole session; the corresponding `unknowns` report for session `302` showed:
+  - full avatar object for `cb792342-6ae5-4f80-a24d-3a7f0f3b350b`
+  - terse local IDs for both avatars marked `promoted`
+  - `ObjectUpdateCached` appearing alongside the normal object traffic
+- login/bootstrap now preserves packed self-appearance from XML-RPC `packed_appearance` when present:
+  - `te8`
+  - `visualparams`
+  - `serial`
+  - `height`
+- live sessions now use that bootstrap packed appearance as the fallback baseline for outbound `AgentSetAppearance` instead of immediately dropping back to the old synthetic texture/visual-param defaults
+- session output now prints `appearance[bootstrap]=packed:1` when that bootstrap packed appearance is present, so live runs can tell immediately whether the login reply gave us a stronger self-appearance baseline
+- Vibestorm now also has a standalone source-backed `UploadBakedTexture` capability client implementing the exact OpenSim two-step flow:
+  - LLSD prelude `POST` to `UploadBakedTexture`
+  - parse returned one-shot `uploader` URL
+  - raw binary `POST` to that uploader URL
+  - parse final LLSD completion response
+- that upload client is deliberately not yet auto-wired into live sessions because we still do not have a trustworthy source of real baked texture bytes to upload
 
 ## Verification
 
@@ -82,9 +112,11 @@ Most recent local verification in this repo:
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_caps_client.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_inventory_caps_client.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_event_queue_runtime.py' -v`
+- `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_cli_session_report.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_udp_session.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_unknowns_db.py' -v`
 - `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_world_updater.py' -v`
+- `PYTHONPATH=src python3 -m unittest discover -s test -p 'test_upload_baked_texture_client.py' -v`
 
 Current result after reconstructing the interrupted session:
 
@@ -97,14 +129,25 @@ Current result after reconstructing the interrupted session:
 
 ## Recommended Next Step
 
-Validate the widened login/bootstrap + inventory prelude against live OpenSim behavior:
+Use one fresh live session to answer whether the login `packed_appearance` baseline materially changes the cloud state before auto-wiring baked upload:
 
 1. run one fresh `./tools/run_session_forensics.sh 90`
-2. confirm early session events now include `caps.seed.*`, `caps.event_queue`, `caps.simulator_features`, and `caps.inventory`
-3. check whether avatar appearance/world coverage improves relative to the earlier UDP-first runs
-4. if cloud/Ruth behavior persists, inspect the `caps.inventory` summary and compare the current outfit contents against the Firestorm capture next
+2. inspect whether session output now includes:
+   - `appearance[bootstrap]=packed:1`
+   - `appearance[wearables]`
+   - `appearance[cached_textures]`
+   - `appearance[self_avatar]`
+3. check whether the avatar is still cloud-like in-world
+4. if cloud/Ruth behavior persists with:
+   - `appearance[bootstrap]=packed:1`
+   - `appearance[cached_textures]=... non_zero:0`
+   then the next concrete implementation target is to connect a real baked-texture byte source to the new `UploadBakedTexture` client
 
 ## Notes For The Next Agent
+
+- For a deeper fresh-eyes reasoning pass, prefer `docs/claude-handoff-2026-04-04.md` in addition to
+  this file. It compresses the current cloud/appearance blocker, relevant OpenSim source paths, and
+  the highest-value next questions.
 
 - Keep prior sessions in `local/unknowns.sqlite3` unless there is a specific reason to discard them.
 - Use session filtering rather than deletion for routine forensics:
@@ -118,3 +161,15 @@ Validate the widened login/bootstrap + inventory prelude against live OpenSim be
 - The old terse guess is now stronger than that: the parser matches the OpenSim source-backed prim/avatar block layout and tests assert the decoded motion fields.
 - External docs now point at OpenSim interest-management and culling settings as a plausible reason that some sessions show terse traffic while others do not.
 - OpenSim mirror snippets suggest `KillObject` is not just a simple delete message; it is part of a race-sensitive unsubscribe lifecycle and may batch multiple local IDs. That batching is now covered by local tests.
+- The latest appearance runs are materially better than the early UDP-only baseline:
+  - both avatars can now promote to full `ObjectUpdate`
+  - self `AvatarAppearance` is present on the wire
+  - but the avatar still remains cloud-like and `AgentCachedTextureResponse` still reports only zero texture IDs
+- New local implementation detail:
+  - if login provided `packed_appearance.te8` / `visualparams`, Vibestorm now keeps and reuses them instead of immediately falling back to its synthetic default `AgentSetAppearance`
+- Current working hypothesis:
+  - remaining blocker is baked texture handling, not base object delivery
+  - likely next protocol surface is a real baked-texture source feeding `UploadBakedTexture`, plus any supporting asset fetch path (`ViewerAsset` / `GetTexture`)
+- New practical note:
+  - the old session loop did not explicitly log out
+  - current uncommitted work now sends `LogoutRequest`, which should make simulator/viewer teardown behavior more comparable to a real client

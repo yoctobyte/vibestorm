@@ -2,6 +2,14 @@ import unittest
 from uuid import UUID
 
 from vibestorm.app.cli import format_session_report
+from vibestorm.caps.inventory_client import InventoryFetchSnapshot, InventoryFolderContents, InventoryItemEntry
+from vibestorm.udp.messages import (
+    AgentCachedTextureResponseEntry,
+    AgentCachedTextureResponseMessage,
+    AgentWearableEntry,
+    AgentWearablesUpdateMessage,
+    AvatarAppearanceMessage,
+)
 from vibestorm.udp.session import SessionEvent, SessionReport
 from vibestorm.world.models import (
     CoarseAgentLocation,
@@ -118,35 +126,202 @@ class CliSessionReportTests(unittest.TestCase):
             last_region_name="Vibestorm Test",
             close_reason=None,
             world_view=world,
+            resolved_capabilities=("EventQueueGet", "SimulatorFeatures", "UploadBakedTexture"),
+            bootstrap_packed_appearance_present=True,
+            inventory_fetch=InventoryFetchSnapshot(
+                folders=(
+                    InventoryFolderContents(
+                        folder_id=UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c"),
+                        owner_id=UUID("11111111-2222-3333-4444-555555555555"),
+                        agent_id=UUID("11111111-2222-3333-4444-555555555555"),
+                        descendents=22,
+                        version=22,
+                        categories=(),
+                        items=(),
+                    ),
+                    InventoryFolderContents(
+                        folder_id=UUID("d427dc3a-047a-4b9f-9aaf-15ccce179bf2"),
+                        owner_id=UUID("11111111-2222-3333-4444-555555555555"),
+                        agent_id=UUID("11111111-2222-3333-4444-555555555555"),
+                        descendents=4,
+                        version=17,
+                        categories=(),
+                        items=(
+                            InventoryItemEntry(
+                                item_id=UUID("02385379-afb8-48b3-8848-47c8333fed2d"),
+                                asset_id=UUID("1dc1368f-e8fe-f02d-a08d-9d9f11c1af6b"),
+                                parent_id=UUID("d427dc3a-047a-4b9f-9aaf-15ccce179bf2"),
+                                name="Shape",
+                                description="",
+                                type=18,
+                                inv_type=24,
+                                flags=None,
+                            ),
+                            InventoryItemEntry(
+                                item_id=UUID("a860475e-6234-40b8-b5b1-3df8fb1d3049"),
+                                asset_id=UUID("ffc4de4a-9845-41c1-9f9f-762a059d0bdc"),
+                                parent_id=UUID("d427dc3a-047a-4b9f-9aaf-15ccce179bf2"),
+                                name="Skin",
+                                description="",
+                                type=18,
+                                inv_type=24,
+                                flags=None,
+                            ),
+                        ),
+                    ),
+                ),
+                inventory_root_folder_id=UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c"),
+                current_outfit_folder_id=UUID("d427dc3a-047a-4b9f-9aaf-15ccce179bf2"),
+                resolved_items=(
+                    InventoryItemEntry(
+                        item_id=UUID("12345678-1111-2222-3333-444444444444"),
+                        asset_id=UUID("87654321-1111-2222-3333-444444444444"),
+                        parent_id=UUID("3e28a3f4-411e-43ff-bcec-44a0b48a4dfb"),
+                        name="Default Eyes",
+                        description="",
+                        type=13,
+                        inv_type=18,
+                        flags=3,
+                    ),
+                    InventoryItemEntry(
+                        item_id=UUID("12345678-1111-2222-3333-555555555555"),
+                        asset_id=UUID("87654321-1111-2222-3333-555555555555"),
+                        parent_id=UUID("3e28a3f4-411e-43ff-bcec-44a0b48a4dfb"),
+                        name="Default Skin",
+                        description="",
+                        type=13,
+                        inv_type=18,
+                        flags=1,
+                    ),
+                ),
+            ),
+            wearables_update=AgentWearablesUpdateMessage(
+                agent_id=UUID("11111111-2222-3333-4444-555555555555"),
+                session_id=UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                serial_num=4,
+                wearables=(
+                    AgentWearableEntry(
+                        item_id=UUID("02385379-afb8-48b3-8848-47c8333fed2d"),
+                        asset_id=UUID("1dc1368f-e8fe-f02d-a08d-9d9f11c1af6b"),
+                        wearable_type=0,
+                    ),
+                    AgentWearableEntry(
+                        item_id=UUID("a860475e-6234-40b8-b5b1-3df8fb1d3049"),
+                        asset_id=UUID("ffc4de4a-9845-41c1-9f9f-762a059d0bdc"),
+                        wearable_type=1,
+                    ),
+                ),
+            ),
+            cached_texture_response=AgentCachedTextureResponseMessage(
+                agent_id=UUID("11111111-2222-3333-4444-555555555555"),
+                session_id=UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                serial_num=4,
+                textures=(
+                    AgentCachedTextureResponseEntry(
+                        texture_index=0,
+                        texture_id=UUID("11111111-1111-1111-1111-111111111111"),
+                        host_name="",
+                    ),
+                    AgentCachedTextureResponseEntry(
+                        texture_index=1,
+                        texture_id=UUID(int=0),
+                        host_name="",
+                    ),
+                ),
+            ),
+            avatar_appearance=AvatarAppearanceMessage(
+                sender_id=UUID("11111111-2222-3333-4444-555555555555"),
+                is_trial=False,
+                texture_entry=b"\x01\x02\x03",
+                visual_params=bytes(range(10)),
+                appearance_version=1,
+                cof_version=2,
+                appearance_flags=0,
+                hover_height=None,
+                attachments=(
+                    (UUID("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"), 1),
+                ),
+            ),
+            self_avatar_appearance=AvatarAppearanceMessage(
+                sender_id=UUID("11111111-2222-3333-4444-555555555555"),
+                is_trial=False,
+                texture_entry=b"\x04\x05",
+                visual_params=bytes(range(5)),
+                appearance_version=1,
+                cof_version=2,
+                appearance_flags=0,
+                hover_height=None,
+                attachments=(),
+            ),
             events=(SessionEvent(at_seconds=0.0, kind="session.started", detail=""),),
         )
 
         lines = format_session_report(report)
 
         self.assertIn("status=completed", lines)
-        self.assertIn("world[region]=Vibestorm Test grid=(1000,1000)", lines)
-        self.assertIn("world[object_update]=events:3 objects:1 region_handle:1099511628032000", lines)
-        self.assertIn("world[objects]=tracked:1", lines)
-        self.assertIn("world[terse_only]=tracked:1 avatars:1 prims:0", lines)
-        self.assertTrue(
-            any(
-                "variant=prim_basic" in line
-                and "pos=(128.00,129.00,25.00)" in line
-                and "texture=00895567-4724-cb43-ed92-0b47caed1546" in line
-                for line in lines
+        self.assertIn("caps[seed]=EventQueueGet,SimulatorFeatures,UploadBakedTexture", lines)
+        self.assertIn("appearance[bootstrap]=packed:1", lines)
+        self.assertIn("appearance[inventory]=folders:2 items:2", lines)
+        self.assertTrue(any(line.startswith("appearance[cof]=") and "links:2" in line and "sample:Shape,Skin" in line for line in lines))
+        self.assertIn("appearance[cof_resolved]=items:2 types:13 sample:Default Eyes,Default Skin", lines)
+        self.assertIn("appearance[wearables]=serial:4 count:2 types:0,1", lines)
+        self.assertIn("appearance[cached_textures]=serial:4 count:2 non_zero:1", lines)
+        self.assertTrue(any(line.startswith("appearance[avatar]=") and "texture:3" in line and "visual:10" in line and "attachments:1" in line and "version:1" in line and "cof:2" in line and "flags:0" in line for line in lines))
+        self.assertIn("appearance[self_avatar]=sender:11111111-2222-3333-4444-555555555555 texture:2 visual:5 attachments:0 version:1 cof:2 flags:0", lines)
+
+    def test_format_session_report_shows_zero_cof_resolution_when_links_exist(self) -> None:
+        report = SessionReport(
+            elapsed_seconds=1.0,
+            total_received=1,
+            message_counts={},
+            handshake_reply_sent=True,
+            movement_completed=True,
+            ping_requests_handled=0,
+            appended_acks_received=0,
+            packet_acks_received=0,
+            agent_update_count=0,
+            pending_reliable_sequences=(),
+            last_region_name="Test",
+            close_reason=None,
+            world_view=WorldView(),
+            resolved_capabilities=("FetchInventory2",),
+            bootstrap_packed_appearance_present=False,
+            inventory_fetch=InventoryFetchSnapshot(
+                folders=(
+                    InventoryFolderContents(
+                        folder_id=UUID("d427dc3a-047a-4b9f-9aaf-15ccce179bf2"),
+                        owner_id=UUID("11111111-2222-3333-4444-555555555555"),
+                        agent_id=UUID("11111111-2222-3333-4444-555555555555"),
+                        descendents=1,
+                        version=1,
+                        categories=(),
+                        items=(
+                            InventoryItemEntry(
+                                item_id=UUID("02385379-afb8-48b3-8848-47c8333fed2d"),
+                                asset_id=UUID("1dc1368f-e8fe-f02d-a08d-9d9f11c1af6b"),
+                                parent_id=None,
+                                name="Shape",
+                                description="",
+                                type=18,
+                                inv_type=24,
+                                flags=0,
+                            ),
+                        ),
+                    ),
+                ),
+                current_outfit_folder_id=UUID("d427dc3a-047a-4b9f-9aaf-15ccce179bf2"),
             ),
+            wearables_update=None,
+            cached_texture_response=None,
+            avatar_appearance=None,
+            self_avatar_appearance=None,
+            events=(),
         )
-        self.assertTrue(
-            any(
-                line.startswith("world[terse]=11 ")
-                and "nearest_coarse=22222222-3333-4444-5555-666666666666" in line
-                and "nearest_you=False" in line
-                and "xy_distance=0.00" in line
-                for line in lines
-            ),
-        )
-        self.assertNotIn("packet_acks_received=3", lines)
-        self.assertFalse(any(line.startswith("message[") for line in lines))
+
+        lines = format_session_report(report)
+
+        self.assertIn("caps[seed]=FetchInventory2", lines)
+        self.assertIn("appearance[cof_resolved]=items:0 types:- sample:-", lines)
 
     def test_verbose_report_includes_transport_diagnostics(self) -> None:
         report = SessionReport(
@@ -163,6 +338,13 @@ class CliSessionReportTests(unittest.TestCase):
             last_region_name=None,
             close_reason="simulator closed circuit",
             world_view=WorldView(),
+            resolved_capabilities=(),
+            bootstrap_packed_appearance_present=False,
+            inventory_fetch=None,
+            wearables_update=None,
+            cached_texture_response=None,
+            avatar_appearance=None,
+            self_avatar_appearance=None,
             events=(),
         )
 

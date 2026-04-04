@@ -45,6 +45,21 @@ class LoginCredentials:
 
 
 @dataclass(slots=True, frozen=True)
+class BootstrapBakedCacheEntry:
+    texture_index: int
+    cache_id: UUID
+    texture_id: UUID | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class BootstrapPackedAppearance:
+    serial_num: int | None = None
+    avatar_height: float | None = None
+    texture_entry: bytes | None = None
+    visual_params: bytes | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class LoginRequest:
     login_uri: str
     credentials: LoginCredentials
@@ -78,3 +93,5 @@ class LoginBootstrap:
     my_outfits_folder_id: UUID | None = None
     initial_outfit_name: str | None = None
     initial_outfit_gender: str | None = None
+    initial_baked_cache_entries: tuple[BootstrapBakedCacheEntry, ...] = ()
+    initial_packed_appearance: BootstrapPackedAppearance | None = None

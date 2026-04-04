@@ -146,6 +146,28 @@ Current implication:
 - that means Current Outfit discovery does not require a first guess or a hardcoded folder name:
   a viewer-like client can retain the folder IDs directly from login, then use
   `FetchInventoryDescendents2` to inspect contents
+- current live Vibestorm runs are now strong enough to show:
+  - `AgentWearablesUpdate` does arrive
+  - self `AvatarAppearance` does arrive
+  - both avatars can promote to full `ObjectUpdate`
+  - but `AgentCachedTextureResponse` still returns only zero texture IDs and the avatar still stays cloud-like
+- the current strongest next-step hypothesis is therefore baked texture upload rather than more UDP world decoding
+- local OpenSim `UploadBakedTextureModule` confirms the capability flow:
+  - client `POST`s to `UploadBakedTexture`
+  - server returns a one-shot uploader URL in LLSD (`state=upload`, `uploader=<url>`)
+  - client `POST`s raw baked texture bytes to that uploader URL
+  - server caches the uploaded asset locally and returns `state=complete` plus `new_asset`
+- Vibestorm now includes a source-backed `UploadBakedTexture` capability client for that exact two-step LLSD-plus-binary flow, but it is not yet fired automatically during live sessions because we still need a trustworthy source of real baked texture bytes
+- local OpenSim login `packed_appearance` is also more useful than the early Vibestorm client was treating it:
+  - it can carry `te8` baked texture entry bytes
+  - it can carry `visualparams`
+  - it can carry `serial` and `height`
+  - it can carry `bakedcache` / `bc8`
+- Vibestorm now preserves those `packed_appearance` fields from XML-RPC login and uses them as the fallback baseline for outbound `AgentSetAppearance` whenever no richer self `AvatarAppearance` has been received yet
+- local OpenSim `AvatarFactoryModule.UpdateBakedTextureCache()` confirms why cache misses matter:
+  - if `cacheItems` are absent, baked cache update is skipped
+  - if cache items are present but the baked texture assets are missing locally, OpenSim zeroes the cache entries and sends `RebakeAvatarTextures`
+  - this is consistent with the current live symptom: zero cached textures plus persistent cloud state
 
 ## Additional LLUDP Update Families
 
