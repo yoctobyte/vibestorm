@@ -15,6 +15,7 @@ from uuid import UUID
 
 from vibestorm.login.models import LoginBootstrap
 from vibestorm.caps.client import CapabilityClient, CapabilityError
+from vibestorm.caps.upload_baked_texture_client import UploadBakedTextureClient, UploadBakedTextureError
 from vibestorm.caps.inventory_client import (
     InventoryCapabilityClient,
     InventoryCapabilityError,
@@ -106,6 +107,16 @@ class SessionEvent:
 
 
 @dataclass(slots=True, frozen=True)
+class BakedAppearanceOverride:
+    """Uploaded baked textures and appearance data ready to send in AgentSetAppearance."""
+    texture_entry: bytes
+    wearable_cache_items: tuple[WearableCacheEntry, ...]
+    visual_params: bytes
+    serial_num: int
+    size: tuple[float, float, float]
+
+
+@dataclass(slots=True, frozen=True)
 class SessionReport:
     elapsed_seconds: float
     total_received: int
@@ -166,6 +177,7 @@ class LiveCircuitSession:
     latest_self_avatar_appearance: AvatarAppearanceMessage | None = None
     latest_cached_texture_response: AgentCachedTextureResponseMessage | None = None
     latest_inventory_fetch: InventoryFetchSnapshot | None = None
+    baked_appearance_override: BakedAppearanceOverride | None = None
     resolved_capabilities: tuple[str, ...] = ()
     test_cube_spawned: bool = False
     started: bool = False
@@ -648,34 +660,45 @@ class LiveCircuitSession:
             return []
 
         self.appearance_sent = True
-        bootstrap_appearance = self.bootstrap.initial_packed_appearance
-        serial_candidates = [self.wearables_update.serial_num, 1]
-        if bootstrap_appearance is not None and bootstrap_appearance.serial_num is not None:
-            serial_candidates.append(bootstrap_appearance.serial_num)
-        serial_num = max(serial_candidates)
-        source_appearance = self.latest_self_avatar_appearance
-        texture_entry = (
-            source_appearance.texture_entry
-            if source_appearance is not None and source_appearance.texture_entry
-            else (
-                bootstrap_appearance.texture_entry
-                if bootstrap_appearance is not None and bootstrap_appearance.texture_entry
-                else DEFAULT_AVATAR_TEXTURE_ENTRY
-            )
-        )
-        visual_params = (
-            source_appearance.visual_params
-            if source_appearance is not None and source_appearance.visual_params
-            else (
-                bootstrap_appearance.visual_params
-                if bootstrap_appearance is not None and bootstrap_appearance.visual_params
-                else DEFAULT_AVATAR_VISUAL_PARAMS
-            )
-        )
-        if bootstrap_appearance is not None and bootstrap_appearance.avatar_height is not None:
-            size = (DEFAULT_AVATAR_SIZE[0], DEFAULT_AVATAR_SIZE[1], bootstrap_appearance.avatar_height)
+        baked = self.baked_appearance_override
+        if baked is not None:
+            # We have freshly-uploaded baked textures — use them verbatim.
+            texture_entry = baked.texture_entry
+            visual_params = baked.visual_params
+            serial_num = baked.serial_num
+            size = baked.size
+            cache_items = baked.wearable_cache_items
+            self._record_event(now, "appearance.baked_override", f"serial={serial_num} te={len(texture_entry)} vp={len(visual_params)} bakes={len(cache_items)}")
         else:
-            size = DEFAULT_AVATAR_SIZE
+            bootstrap_appearance = self.bootstrap.initial_packed_appearance
+            serial_candidates = [self.wearables_update.serial_num, 1]
+            if bootstrap_appearance is not None and bootstrap_appearance.serial_num is not None:
+                serial_candidates.append(bootstrap_appearance.serial_num)
+            serial_num = max(serial_candidates)
+            source_appearance = self.latest_self_avatar_appearance
+            texture_entry = (
+                source_appearance.texture_entry
+                if source_appearance is not None and source_appearance.texture_entry
+                else (
+                    bootstrap_appearance.texture_entry
+                    if bootstrap_appearance is not None and bootstrap_appearance.texture_entry
+                    else DEFAULT_AVATAR_TEXTURE_ENTRY
+                )
+            )
+            visual_params = (
+                source_appearance.visual_params
+                if source_appearance is not None and source_appearance.visual_params
+                else (
+                    bootstrap_appearance.visual_params
+                    if bootstrap_appearance is not None and bootstrap_appearance.visual_params
+                    else DEFAULT_AVATAR_VISUAL_PARAMS
+                )
+            )
+            if bootstrap_appearance is not None and bootstrap_appearance.avatar_height is not None:
+                size = (DEFAULT_AVATAR_SIZE[0], DEFAULT_AVATAR_SIZE[1], bootstrap_appearance.avatar_height)
+            else:
+                size = DEFAULT_AVATAR_SIZE
+            cache_items = ()
         return [
             self._build_outbound_packet(
                 encode_agent_is_now_wearing(
@@ -694,6 +717,7 @@ class LiveCircuitSession:
                     self.bootstrap.session_id,
                     serial_num=serial_num,
                     size=size,
+                    cache_items=cache_items,
                     texture_entry=texture_entry,
                     visual_params=visual_params,
                 ),
@@ -1231,6 +1255,85 @@ async def run_live_session(
     return session.build_report(loop.time() - start_time)
 
 
+_BAKED_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "baked-cache"
+_APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
+
+
+async def _load_and_upload_baked_textures(
+    session: LiveCircuitSession,
+    upload_baked_url: str,
+    local_port: int,
+    now: float,
+) -> BakedAppearanceOverride | None:
+    """Load J2K blobs from local/baked-cache, upload via UploadBakedTexture CAP, build override."""
+    if not _APPEARANCE_FIXTURE.exists():
+        session._record_event(now, "bake.skip", "appearance-fixture.json not found")
+        return None
+
+    with _APPEARANCE_FIXTURE.open() as fh:
+        fixture = json.load(fh)
+
+    te_bytes = bytes.fromhex(fixture["te_hex"])
+    te_offsets = {entry["blob_index"]: entry["te_offset"] for entry in fixture["te_uuid_offsets"]}
+    wearable_data = fixture["wearable_data"]
+    visual_params = bytes(fixture["visual_params"])
+    serial_num = fixture["serial_num"]
+    sz = fixture["size_vec"]
+    size: tuple[float, float, float] = (float(sz[0]), float(sz[1]), float(sz[2]))
+
+    blob_count = len(fixture["blob_files"])
+    client = UploadBakedTextureClient(timeout_seconds=30.0)
+    patched_te = bytearray(te_bytes)
+    uploaded_count = 0
+
+    for blob_index in range(blob_count):
+        blob_path = _BAKED_CACHE_DIR / f"bake-{blob_index}.j2k"
+        if not blob_path.exists():
+            session._record_event(now, "bake.skip", f"blob {blob_index} missing: {blob_path.name}")
+            continue
+        texture_bytes = blob_path.read_bytes()
+        try:
+            result = await client.upload_via_capability(
+                upload_baked_url,
+                texture_bytes,
+                udp_listen_port=local_port,
+            )
+        except UploadBakedTextureError as exc:
+            session._record_event(now, "bake.upload_error", f"blob={blob_index} err={exc}")
+            continue
+
+        new_asset_id = result.new_asset_id
+        if new_asset_id is None:
+            session._record_event(now, "bake.upload_no_asset", f"blob={blob_index} state={result.state}")
+            continue
+
+        session._record_event(now, "bake.uploaded", f"blob={blob_index} asset={new_asset_id}")
+        te_offset = te_offsets.get(blob_index)
+        if te_offset is not None:
+            asset_uuid = UUID(new_asset_id)
+            patched_te[te_offset : te_offset + 16] = asset_uuid.bytes
+        uploaded_count += 1
+
+    if uploaded_count == 0:
+        session._record_event(now, "bake.override_skipped", "no blobs uploaded successfully")
+        return None
+
+    cache_items = tuple(
+        WearableCacheEntry(
+            texture_index=entry["texture_index"],
+            cache_id=UUID(entry["cache_id"]),
+        )
+        for entry in wearable_data
+    )
+    return BakedAppearanceOverride(
+        texture_entry=bytes(patched_te),
+        wearable_cache_items=cache_items,
+        visual_params=visual_params,
+        serial_num=serial_num,
+        size=size,
+    )
+
+
 async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, now: float) -> None:
     local_port = int(sock.getsockname()[1])
     capability_client = CapabilityClient(timeout_seconds=5.0)
@@ -1343,6 +1446,19 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
                         resolved_items=parse_inventory_items_payload(items_payload),
                     )
             session._record_event(now, "caps.inventory", _summarize_inventory_snapshot(session.latest_inventory_fetch))
+
+    upload_baked_url = resolved.get("UploadBakedTexture")
+    if upload_baked_url:
+        override = await _load_and_upload_baked_textures(session, upload_baked_url, local_port, now)
+        if override is not None:
+            session.baked_appearance_override = override
+            session._record_event(
+                now,
+                "bake.override_ready",
+                f"serial={override.serial_num} bakes={len(override.wearable_cache_items)}",
+            )
+    else:
+        session._record_event(now, "bake.skip", "UploadBakedTexture CAP not resolved")
 
 
 def _summarize_inventory_snapshot(snapshot: InventoryFetchSnapshot) -> str:
