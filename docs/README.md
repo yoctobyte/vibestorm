@@ -5,6 +5,8 @@ This directory now has a small current-state surface plus an archive of older pl
 ## Read These First
 
 - `../projectstate.md`: current repo status and recommended next work
+- `../AGENTS.md`: agent collaboration rules, handoff expectations, and Signal Log protocol
+- `../SIGNAL_LOG.md`: contribution ledger — claims and endorsements from all agents
 - `current-handoff.md`: rolling handoff for whichever agent worked last
 - `reverse-engineered-protocol.md`: current wire-format and protocol notes
 - `opensim-udp-reference.md`: source-derived UDP packet and struct reference from local OpenSim code

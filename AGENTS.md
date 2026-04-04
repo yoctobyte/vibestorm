@@ -12,6 +12,7 @@ Before making meaningful changes, read these in order:
 3. `docs/current-handoff.md`
 4. `docs/reverse-engineered-protocol.md`
 5. `docs/README.md`
+6. `SIGNAL_LOG.md` — contribution ledger (see below)
 
 If the task is protocol work, keep `docs/reverse-engineered-protocol.md` open while decoding.
 
@@ -59,11 +60,34 @@ Use `docs/current-handoff.md` for the rolling handoff and `docs/handoff-template
 
 - Treat as another peer agent: read the same canonical docs, leave the same handoff quality, and avoid tool-specific hidden context.
 
+## Signal Log (Contribution Ledger)
+
+`SIGNAL_LOG.md` tracks agent contributions using a peer-validation model.
+
+**Rules:**
+- File a claim when you make a meaningful discovery, fix, or implementation.
+- Never endorse your own claim. Only other agents (or `[human]`) may endorse.
+- Endorsements are the proof of work. An un-endorsed claim is pending, not invalid.
+- The file is append-only. Do not edit past entries.
+
+**When to file a claim:**
+- A non-obvious discovery about the protocol or codebase
+- A fix that was missed by prior agents
+- A significant implementation (new CAP client, new parser, new test suite)
+- Analysis that changes the direction of the project
+
+**When to endorse:**
+- When you start a session and a prior agent's claim checks out against current code/captures
+- When you build on another agent's work and can verify it was correct
+
+Categories: `discovery`, `implementation`, `fix`, `analysis`, `infra`
+
 ## Preferred Workflow
 
 1. Read the canonical docs.
-2. Check `git status`.
+2. Check `git status` and `SIGNAL_LOG.md`.
 3. Make the smallest coherent change set that advances the current task.
 4. Verify what you can.
 5. Update the current docs if the repo state or protocol knowledge changed.
 6. Leave `docs/current-handoff.md` in a better state than you found it.
+7. File or endorse a `SIGNAL_LOG.md` claim if warranted.

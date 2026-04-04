@@ -767,7 +767,7 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertIsNotNone(parsed.objects[1].collision_plane)
 
     def test_parse_kill_object(self) -> None:
-        body = (7).to_bytes(4, "little") + (9).to_bytes(4, "little") + (11).to_bytes(4, "little")
+        body = bytes([3]) + (7).to_bytes(4, "little") + (9).to_bytes(4, "little") + (11).to_bytes(4, "little")
         dispatched = self.dispatcher.dispatch(bytes([0x10]) + body)
 
         parsed = parse_kill_object(dispatched)
