@@ -94,6 +94,52 @@ Current synthesis from those references plus live captures:
 - OpenSim session-to-session differences in visible update traffic may be caused by interest-management configuration and scene activity, not only by client bugs
 - OpenSim server-side logic appears to choose packet families largely from update flags plus policy/culling state, not from one single global mode
 - `KillObject` handling is important enough that OpenSim keeps a kill record specifically to prevent post-kill update races
+- object delivery appears to be primarily server-push after setup, not a pure client object-pull model:
+  the client influences delivery with `AgentUpdate` camera/far state, throttles, and appearance-related
+  messages, but `ScenePresence.SendInitialData()` and later reprioritization logic decide what the server
+  actually sends
+
+## OpenSim Session / Delivery Notes
+
+Source-backed notes from the local checkout:
+
+- `ScenePresence.SendInitialData()` waits for:
+  - region handshake completion state
+  - viewer seed/capability flags
+  - a short extra delay
+- after that, OpenSim actively sends:
+  - layer data
+  - initial land info
+  - other agents' avatar full data
+  - object updates, either by reprioritization/culling path or by iterating scene entities directly
+- when `ObjectsCullingByDistance` is enabled, initial object delivery goes through
+  `ControllingClient.ReprioritizeUpdates()`
+- when culling is not enabled, `SendInitialData()` iterates scene entities and sends either full updates
+  or cache probes depending on viewer-cache flags
+
+This matters for Vibestorm because it argues against the simple model “the client must explicitly fetch
+each object.” The stronger current model is:
+
+1. the client must behave enough like a viewer to complete setup
+2. the client can influence interest with camera/far/throttle/appearance traffic
+3. the server still chooses what to push, and whether that arrives as full, cached, compressed, or terse
+
+### Appearance / Cloud-State Notes
+
+The local OpenSim source also reinforces that avatar appearance is a separate session concern:
+
+- `LLClientView.HandlerAgentWearablesRequest()` triggers `OnRequestWearables`
+- `LLClientView.HandlerAgentSetAppearance()` parses and forwards client appearance data
+- `ScenePresence.SendOtherAgentsAvatarFullToMe()` sends other avatars' full data, appearance, animations,
+  and attachments to the client
+- `ScenePresence.SendAppearanceToAgentNF()` calls `ControllingClient.SendAppearance(...)`
+
+Current implication:
+
+- Vibestorm not progressing beyond a cloud/Ruth-like state is likely missing client appearance behavior,
+  not just missing object decoding
+- likely relevant messages include wearable request/response, cached texture exchange, and
+  `AgentSetAppearance`
 
 ## Additional LLUDP Update Families
 
