@@ -53,6 +53,8 @@ What changed recently:
 - protocol docs now also record SL/OpenSim public-source clues about interest management, culling, and object-update families
 - docs now include `protocol-hypothesis.md` as the clearer named compact working model
 - protocol docs now include OpenSim `LLClientView` source-history clues for update-family selection and kill-record handling
+- local OpenSim source slices now exist under `referencedocs/UDP`, enabling source-derived UDP struct documentation
+- source-derived notes now also cover `ChatFromSimulator`, `LayerData`, `ObjectPropertiesFamily`, `AgentUpdate`, `AgentThrottle`, and `ObjectExtraParams`
 
 ## Verification
 
@@ -92,6 +94,7 @@ Run a fresh real OpenSim session and inspect the latest recorded session in `loc
 - If test or synthetic data polluted the main DB, move it aside and start a new DB file instead of deleting useful historical sessions.
 - Keep `docs/reverse-engineered-protocol.md` current when a field becomes trustworthy.
 - Prefer `docs/protocol-hypothesis.md` when a future agent wants the short version first.
+- Use `docs/opensim-udp-reference.md` when the task is “what does the current OpenSim UDP source actually serialize?”
 - The most important current protocol lead is that terse entry `Data[0:4]` appears to be little-endian `local_id`.
 - External docs now point at OpenSim interest-management and culling settings as a plausible reason that some sessions show terse traffic while others do not.
 - OpenSim mirror snippets suggest `KillObject` is not just a simple delete message; it is part of a race-sensitive unsubscribe lifecycle and may batch multiple local IDs.
