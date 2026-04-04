@@ -89,10 +89,85 @@ Current synthesis from those references plus live captures:
 - `ObjectUpdate` is the rich full-state lane
 - `ImprovedTerseObjectUpdate` is a partial-update lane carrying compact per-object state blobs
 - `ObjectUpdateCached` is a cache-oriented lane keyed by `local_id` plus `CRC` and `UpdateFlags`
+- `ObjectUpdateCompressed` is a dense lane carrying packed bitstream `Data` per object, heavily relying on property packing
 - object appearance and disappearance must be interpreted as part of interest-list subscribe/unsubscribe behavior, not only as create/delete events
 - OpenSim session-to-session differences in visible update traffic may be caused by interest-management configuration and scene activity, not only by client bugs
 - OpenSim server-side logic appears to choose packet families largely from update flags plus policy/culling state, not from one single global mode
 - `KillObject` handling is important enough that OpenSim keeps a kill record specifically to prevent post-kill update races
+
+## Additional LLUDP Update Families
+
+### `ObjectUpdateCached`
+Structure:
+```
+{ RegionData Single { RegionHandle U64 } { TimeDilation U16 } }
+{ ObjectData Variable { ID U32 } { CRC U32 } { UpdateFlags U32 } }
+```
+- Each object essentially supplies a local ID, a CRC to confirm the client has local cache integrity, and associated update flags.
+
+### `ObjectUpdateCompressed`
+Structure:
+```
+{ RegionData Single { RegionHandle U64 } { TimeDilation U16 } }
+{ ObjectData Variable { UpdateFlags U32 } { Data Variable 2 } }
+```
+- A significantly heavier packet structure since `Data Variable 2` contains a packed bitstream. Instead of fields, compression logic operates directly on this binary chunk.
+
+### `ObjectPropertiesFamily`
+Structure from local OpenSim source:
+```
+{ ObjectData Single
+    { RequestFlags U32 }
+    { ObjectID UUID }
+    { OwnerID UUID }
+    { GroupID UUID }
+    { BaseMask U32 }
+    { OwnerMask U32 }
+    { GroupMask U32 }
+    { EveryoneMask U32 }
+    { NextOwnerMask U32 }
+    { OwnershipCost S32 }
+    { SaleType U8 }
+    { SalePrice S32 }
+    { Category U32 }
+    { LastOwnerID UUID }
+    { Name ? }
+    { Description ? }
+}
+```
+- OpenSim source currently serializes `Name` and `Description` with short-length UTF-8 helpers.
+- The public SL message template still labels those fields as `Variable 1`.
+- Vibestorm currently parses this family tolerantly and accepts either short-length or byte-length strings.
+- Current local implementation uses it to enrich an already-known `WorldObject` with latest object-property metadata keyed by `ObjectID`.
+
+### `ObjectExtraParams`
+Current implementation status:
+- standalone `ObjectExtraParams` is parsed as:
+  - `AgentID UUID`
+  - `SessionID UUID`
+  - repeated object blocks:
+    - `ObjectLocalID U32`
+    - `ParamType U16`
+    - `ParamInUse BOOL/U8`
+    - `ParamSize U32`
+    - `ParamData Variable 1`
+- rich `ObjectUpdate.ExtraParams` is currently interpreted as an inner count-prefixed blob:
+  - `ParamCount U8`
+  - repeated entries:
+    - `ParamType U16`
+    - `ParamSize U32`
+    - `ParamData[ParamSize]`
+- the rich-object field itself is now read tolerantly as a 2-byte or 1-byte length-prefixed field, because a real captured OpenSim sculpt-like packet used a 2-byte length there
+- the standalone packet shape is source-backed by local OpenSim handler usage plus the SL message template
+- the inner rich-object blob shape is now backed by a real captured OpenSim sculpt-like packet:
+  - outer payload length `0x0018` = 24
+  - count `0x01`
+  - type `0x0030`
+  - size `0x00000011` = 17
+  - payload bytes that look like `UUID + 1-byte subtype`
+- this strongly suggests a sculpt-related extra-param block in local OpenSim traffic
+- Vibestorm currently decodes the rich blob into structured `extra_params_entries` on `ObjectUpdateEntry` when parsing succeeds
+- this area still needs more live captures for non-sculpt subtypes such as flexible/light/projector-style cases
 
 ## Confidence Scale
 
@@ -478,27 +553,19 @@ Recent live evidence:
   - `RegionData.TimeDilation U16`
   - repeated `ObjectData.Data Variable 1`
   - repeated `ObjectData.TextureEntry Variable 2`
-- in a later 30-second scoped session, the first four bytes of `Data` for a terse entry were
-  `b9 e2 ed 15`, which decode as little-endian `367911609`
-- that matches the already-known avatar `local_id=367911609` for `Tester` from a full `ObjectUpdate`
-- current confidence: the first 4 bytes of terse `Data` are very likely `local_id`
+- the semantic layout inside each `Data` payload is now confirmed from OpenSim `LLClientView.cs`
+- it branches into two layouts: Avatar (60 bytes) and Prim (44 bytes)
+- `TextureEntry` uses a custom 4-byte header (`totlen`, `len`) before the TE payload
 
 Current decoded fields:
 
-| Field | Type | Confidence |
-| --- | --- | --- |
-| `region_handle` | `U64` | `confirmed` |
-| `time_dilation` | `U16` | `confirmed` |
-| `object_count` | `U8` | `confirmed` |
-| `ObjectData.Data[0:4]` | `U32 local_id` | `inferred` |
-| repeated `Data` variable fields | variable bytes | `confirmed` structurally |
-| repeated `TextureEntry` variable fields | variable bytes | `confirmed` structurally |
-
-What is still unknown:
-
-- the semantic layout inside each `Data` payload
-- how the remaining `Data` bytes map to transforms / velocities / state flags
-- whether `TextureEntry` here follows the same default-texture convention as richer `ObjectUpdate`
+| Field | Type | Confidence | Notes |
+| --- | --- | --- | --- |
+| `region_handle` | `U64` | `confirmed` | |
+| `time_dilation` | `U16` | `confirmed` | |
+| `object_count` | `U8` | `confirmed` | |
+| `data` | variable | `confirmed` | branches by `data_size` (60 or 44) |
+| `texture_entry` | variable | `confirmed` | |
 
 ```text
 struct ImprovedTerseObjectUpdate {
@@ -514,23 +581,40 @@ struct TerseEntry {
 }
 ```
 
-Current best-effort inner view:
+### Terse Data Layout (Avatar)
+Size: 60 bytes.
 
-```text
-struct TerseEntry.Data {
-    0x00  U32   local_id_le;      // inferred from live correlation, not yet fully proven
-    0x04  U8[]  remainder;        // unknown; likely terse transform/state payload
-}
-```
+| Offset | Size | Meaning | Confidence |
+| --- | --- | --- | --- |
+| `0` | `4` | `local_id` (U32 LE) | `confirmed` |
+| `4` | `1` | `state` (U8) | `confirmed` |
+| `5` | `1` | `is_avatar` (`0x01`) | `confirmed` |
+| `6` | `16` | `collision_plane` (Vector4) | `confirmed` |
+| `22` | `12` | `position` (Vector3) | `confirmed` |
+| `34` | `6` | `velocity` (3x U16) | `confirmed` |
+| `40` | `6` | `acceleration` (3x U16) | `confirmed` |
+| `46` | `8` | `rotation` (4x U16) | `confirmed` |
+| `54` | `6` | `angular_velocity` (3x U16) | `confirmed` |
 
-Current implementation only trusts:
+### Terse Data Layout (Prim)
+Size: 44 bytes.
 
-- outer message framing
-- object count
-- per-entry `local_id` when `Data` is at least 4 bytes
-- per-entry `data_size`
-- per-entry `texture_entry_size`
-- short hex previews for both payloads
+| Offset | Size | Meaning | Confidence |
+| --- | --- | --- | --- |
+| `0` | `4` | `local_id` (U32 LE) | `confirmed` |
+| `4` | `1` | `state` (U8 - attach flags) | `confirmed` |
+| `5` | `1` | `is_avatar` (`0x00`) | `confirmed` |
+| `6` | `12` | `position` (Vector3) | `confirmed` |
+| `18` | `6` | `velocity` (3x U16) | `confirmed` |
+| `24` | `6` | `acceleration` (3x U16) | `confirmed` |
+| `30` | `8` | `rotation` (4x U16) | `confirmed` |
+| `38` | `6` | `angular_velocity` (3x U16) | `confirmed` |
+
+### Terse Vector/Quaternion Compression
+OpenSim uses `Utils.FloatToUInt16Bytes` which clamps values to a range (`1.0`, `64.0`, or `128.0`) and maps them to `0..65535`.
+- Range `1.0`: `(val + 1.0) * 32767.5`
+- Range `64.0`: `(val + 64.0) * 511.9921875`
+- Range `128.0`: `(val + 128.0) * 255.99609375`
 
 ## `ObjectUpdate`
 
@@ -760,17 +844,42 @@ What remains unknown:
 
 Current tail fields that are structurally recognized but not semantically decoded:
 
-| Field | Current handling | Confidence |
-| --- | --- | --- |
-| 22-byte pre-tail block | skipped as raw unknown bytes | `unknown` |
-| `TextureAnim` | size tracked, payload summarized when non-zero | `unknown` |
-| `Data` | size tracked, payload summarized when non-zero | `unknown` |
-| `Text` | size tracked, ASCII preview emitted when non-zero | `inferred` |
-| text color | 4 raw bytes retained when non-zero | `inferred` |
-| `MediaURL` | size tracked, payload summarized when non-zero | `unknown` |
-| `PSBlock` | size tracked, payload summarized when non-zero | `unknown` |
-| `ExtraParams` | size tracked, payload summarized when non-zero | `unknown` |
-| trailing bytes | summarized when non-zero | `unknown` |
+| Field | Current handling | Confidence | Notes |
+| --- | --- | --- | --- |
+| 22-byte pre-tail block | **Confirmed** (Path/Profile) | `confirmed` | 18 profile/path parameters |
+| `TextureEntry` | size tracked, payload summarized | `confirmed` | |
+| `TextureAnim` | size tracked, payload summarized when non-zero | `unknown` | |
+| `Data` | size tracked, payload summarized when non-zero | `unknown` | |
+| `Text` | size tracked, ASCII preview emitted when non-zero | `inferred` | |
+| text color | 4 raw bytes retained when non-zero | `inferred` | |
+| `MediaURL` | size tracked, payload summarized when non-zero | `unknown` | |
+| `PSBlock` | size tracked, payload summarized when non-zero | `unknown` | |
+| `ExtraParams` | size tracked, payload summarized when non-zero | `unknown` | |
+| trailing bytes | summarized when non-zero | `unknown` | |
+
+### The 22-byte "Pre-Tail" Block
+This block consists of the following 18 fields (mostly U8 and S8) used for path and profile definitions:
+
+1. `PathCurve` (U8)
+2. `PathBegin` (U16)
+3. `PathEnd` (U16)
+4. `PathScaleX` (U8)
+5. `PathScaleY` (U8)
+6. `PathShearX` (U8)
+7. `PathShearY` (U8)
+8. `PathTwist` (S8)
+9. `PathTwistBegin` (S8)
+10. `PathRadiusOffset` (S8)
+11. `PathTaperX` (S8)
+12. `PathTaperY` (S8)
+13. `PathRevolutions` (U8)
+14. `PathSkew` (S8)
+15. `ProfileCurve` (U8)
+16. `ProfileBegin` (U16)
+17. `ProfileEnd` (U16)
+18. `ProfileHollow` (U16)
+
+Total byte size is exactly 22. (Confirmed).
 
 ### Current Live `ObjectUpdate` Evidence
 

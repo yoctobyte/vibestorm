@@ -87,9 +87,8 @@ Current inner payload guess:
 Confidence:
 
 - outer framing: `confirmed-here`
-- partial-update role: `presumed`
-- `local_id` at `Data[0:4]`: `presumed`
-- remainder layout: `guessed`
+- partial-update role: `confirmed-here`
+- inner payload layout (Avatar/Prim): `confirmed-here`
 
 ### `ObjectUpdateCached`
 
@@ -143,9 +142,9 @@ Evidence:
 
 Confidence:
 
-- lifecycle role: `presumed`
-- multi-ID batching: `presumed`
-- exact current wire layout in our stack: `guessed`
+- lifecycle role: `confirmed-here`
+- multi-ID batching: `confirmed-here`
+- exact wire layout: `confirmed-here`
 
 ## Interest Management Hypothesis
 

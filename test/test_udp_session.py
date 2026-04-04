@@ -1,7 +1,7 @@
 import unittest
 import json
 from pathlib import Path
-from struct import pack
+from struct import pack, unpack_from
 from tempfile import TemporaryDirectory
 from uuid import UUID
 
@@ -13,6 +13,38 @@ from vibestorm.udp.zerocode import decode_zerocode
 
 
 class LiveCircuitSessionTests(unittest.TestCase):
+    @staticmethod
+    def _encode_v16(value: float, range_val: float) -> bytes:
+        if range_val == 1.0:
+            encoded = int(round((value + 1.0) * 32767.5))
+        elif range_val == 64.0:
+            encoded = int(round((value + 64.0) * 511.9921875))
+        elif range_val == 128.0:
+            encoded = int(round((value + 128.0) * 255.99609375))
+        else:
+            raise AssertionError(f"unsupported range {range_val}")
+        encoded = max(0, min(65535, encoded))
+        return encoded.to_bytes(2, "little")
+
+    def _build_terse_prim_data(self, local_id: int) -> bytes:
+        return (
+            local_id.to_bytes(4, "little")
+            + bytes([0x21])
+            + bytes([0])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + self._encode_v16(0.0, 128.0) * 3
+            + self._encode_v16(0.0, 64.0) * 3
+            + self._encode_v16(0.0, 1.0) * 3
+            + self._encode_v16(1.0, 1.0)
+            + self._encode_v16(0.0, 64.0) * 3
+        )
+
+    @staticmethod
+    def _decode_agent_update_camera(message: bytes) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        camera_center = tuple(unpack_from("<fff", message, 58))
+        camera_at_axis = tuple(unpack_from("<fff", message, 70))
+        return camera_center, camera_at_axis
+
     def setUp(self) -> None:
         self.dispatcher = MessageDispatcher.from_repo_root(Path.cwd())
         self.bootstrap = LoginBootstrap(
@@ -124,6 +156,62 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertEqual(session.agent_update_count, 1)
         self.assertTrue(session.throttle_sent)
         self.assertTrue(any(event.kind == "movement.complete" for event in session.events))
+
+    def test_camera_sweep_changes_agent_update_camera_center_and_axis(self) -> None:
+        session = LiveCircuitSession(
+            self.bootstrap,
+            self.dispatcher,
+            config=SessionConfig(agent_update_interval_seconds=1.0, camera_sweep=True),
+        )
+        session.start(10.0)
+
+        body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + bytes.fromhex("0000803f0000004000004040")
+            + bytes.fromhex("000080bf000000000000803f")
+            + (123456789).to_bytes(8, "little")
+            + (42).to_bytes(4, "little")
+            + (3).to_bytes(2, "little")
+            + b"sim"
+        )
+        session.handle_incoming(build_packet(bytes([0xFF, 0xFF, 0x00, 0xFA]) + body, sequence=41), 10.2)
+
+        later = session.drain_due_packets(11.3)
+
+        self.assertEqual(len(later), 1)
+        agent_update = split_packet(decode_zerocode(later[0])).message
+        camera_center, camera_at_axis = self._decode_agent_update_camera(agent_update)
+        self.assertNotEqual(camera_center, (1.0, 2.0, 3.0))
+        self.assertNotEqual(camera_at_axis, (1.0, 0.0, 0.0))
+
+    def test_agent_update_stays_at_movement_position_without_camera_sweep(self) -> None:
+        session = LiveCircuitSession(
+            self.bootstrap,
+            self.dispatcher,
+            config=SessionConfig(agent_update_interval_seconds=1.0, camera_sweep=False),
+        )
+        session.start(10.0)
+
+        body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + bytes.fromhex("0000803f0000004000004040")
+            + bytes.fromhex("000080bf000000000000803f")
+            + (123456789).to_bytes(8, "little")
+            + (42).to_bytes(4, "little")
+            + (3).to_bytes(2, "little")
+            + b"sim"
+        )
+        session.handle_incoming(build_packet(bytes([0xFF, 0xFF, 0x00, 0xFA]) + body, sequence=41), 10.2)
+
+        later = session.drain_due_packets(11.3)
+
+        self.assertEqual(len(later), 1)
+        agent_update = split_packet(decode_zerocode(later[0])).message
+        camera_center, camera_at_axis = self._decode_agent_update_camera(agent_update)
+        self.assertEqual(camera_center, (1.0, 2.0, 3.0))
+        self.assertEqual(camera_at_axis, (1.0, 0.0, 0.0))
 
     def test_reliable_packets_record_appended_ack_event(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
@@ -651,17 +739,20 @@ class LiveCircuitSessionTests(unittest.TestCase):
             )
             session.start(10.0)
 
+            prim_a = self._build_terse_prim_data(367911609)
+            prim_b = self._build_terse_prim_data(367911629)
+            texture_payload = b"\x08\x00\x04\x00\x00\x00\x11\x22\x33\x44"
             body = (
                 (1099511628032000).to_bytes(8, "little")
                 + (65535).to_bytes(2, "little")
                 + bytes([2])
-                + bytes([8])
-                + bytes.fromhex("b9e2ed1500010000")
+                + bytes([len(prim_a)])
+                + prim_a
                 + (0).to_bytes(2, "little")
-                + bytes([8])
-                + bytes.fromhex("cde2ed1500010000")
-                + (4).to_bytes(2, "little")
-                + b"\x11\x22\x33\x44"
+                + bytes([len(prim_b)])
+                + prim_b
+                + len(texture_payload).to_bytes(2, "little")
+                + texture_payload
             )
             inbound = build_packet(bytes([0x0F]) + body, sequence=93)
 
@@ -681,3 +772,279 @@ class LiveCircuitSessionTests(unittest.TestCase):
             self.assertEqual(stats.terse_rich_entities, 1)
             self.assertEqual(packet_summary[0]["total_objects"], 2)
             self.assertEqual({item["local_id"] for item in local_id_summary}, {367911609, 367911629})
+
+    def test_kill_object_is_recorded_in_unknowns_db_and_world_state(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    unknowns_db_path=Path(tmpdir) / "unknowns.sqlite3",
+                ),
+            )
+            session.start(10.0)
+
+            object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+            object_body = (
+                (123456789).to_bytes(8, "little")
+                + (42).to_bytes(2, "little")
+                + bytes([1])
+                + (7).to_bytes(4, "little")
+                + bytes([3])
+                + object_id.bytes
+                + (99).to_bytes(4, "little")
+                + bytes([9, 3, 1])
+                + pack("<fff", 1.0, 2.0, 3.0)
+                + bytes([len(object_data)])
+                + object_data
+                + (0).to_bytes(4, "little")
+                + (5).to_bytes(4, "little")
+                + (b"\x00" * 22)
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (0).to_bytes(2, "little")
+                + (0).to_bytes(2, "little")
+                + bytes([0])
+                + (b"\x00" * 4)
+                + bytes([0, 0, 0])
+                + (b"\x00" * 66)
+            )
+            session.handle_incoming(build_packet(bytes([0x0C]) + object_body, sequence=94), 10.2)
+
+            kill_body = (7).to_bytes(4, "little") + (9).to_bytes(4, "little")
+            session.handle_incoming(build_packet(bytes([0x10]) + kill_body, sequence=95), 10.3)
+
+            from vibestorm.fixtures.unknowns_db import UnknownsDatabase
+
+            database = UnknownsDatabase(Path(tmpdir) / "unknowns.sqlite3")
+            session_info = database.latest_session()
+            assert session_info is not None
+            with database._connect() as connection:
+                row = connection.execute(
+                    """
+                    SELECT local_ids_json
+                    FROM kill_object_packets
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (session_info.session_id,),
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            self.assertEqual(json.loads(row["local_ids_json"]), [7, 9])
+            self.assertNotIn(object_id, session.world_view.objects)
+            self.assertNotIn(7, session.world_view.local_id_to_full_id)
+            self.assertTrue(any(event.kind == "world.kill_object" for event in session.events))
+
+    def test_object_update_cached_is_recorded_in_unknowns_db(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    unknowns_db_path=Path(tmpdir) / "unknowns.sqlite3",
+                ),
+            )
+            session.start(10.0)
+
+            body = (
+                (123456789).to_bytes(8, "little")
+                + (42).to_bytes(2, "little")
+                + bytes([2])
+                + (7).to_bytes(4, "little")
+                + (0x11111111).to_bytes(4, "little")
+                + (5).to_bytes(4, "little")
+                + (9).to_bytes(4, "little")
+                + (0x22222222).to_bytes(4, "little")
+                + (6).to_bytes(4, "little")
+            )
+            session.handle_incoming(build_packet(bytes([0x0E]) + body, sequence=96), 10.2)
+
+            from vibestorm.fixtures.unknowns_db import UnknownsDatabase
+
+            database = UnknownsDatabase(Path(tmpdir) / "unknowns.sqlite3")
+            session_info = database.latest_session()
+            assert session_info is not None
+            with database._connect() as connection:
+                packet_row = connection.execute(
+                    """
+                    SELECT region_handle, time_dilation, packet_tags_json
+                    FROM cached_packets
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (session_info.session_id,),
+                ).fetchone()
+                entity_rows = connection.execute(
+                    """
+                    SELECT local_id, crc, update_flags
+                    FROM cached_entities
+                    WHERE session_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (session_info.session_id,),
+                ).fetchall()
+
+            assert packet_row is not None
+            self.assertEqual(packet_row["region_handle"], 123456789)
+            self.assertEqual(packet_row["time_dilation"], 42)
+            self.assertIn("object_count:2", json.loads(packet_row["packet_tags_json"]))
+            self.assertEqual([(row["local_id"], row["crc"], row["update_flags"]) for row in entity_rows], [
+                (7, 0x11111111, 5),
+                (9, 0x22222222, 6),
+            ])
+            self.assertTrue(any(event.kind == "world.object_update_cached" for event in session.events))
+
+    def test_object_update_compressed_is_recorded_in_unknowns_db(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            session = LiveCircuitSession(
+                self.bootstrap,
+                self.dispatcher,
+                config=SessionConfig(
+                    unknowns_db_path=Path(tmpdir) / "unknowns.sqlite3",
+                ),
+            )
+            session.start(10.0)
+
+            data_a = b"\x11\x22\x33"
+            data_b = b"\xaa\xbb\xcc\xdd"
+            body = (
+                (123456789).to_bytes(8, "little")
+                + (42).to_bytes(2, "little")
+                + bytes([2])
+                + (5).to_bytes(4, "little")
+                + len(data_a).to_bytes(2, "little")
+                + data_a
+                + (6).to_bytes(4, "little")
+                + len(data_b).to_bytes(2, "little")
+                + data_b
+            )
+            session.handle_incoming(build_packet(bytes([0x0D]) + body, sequence=97), 10.2)
+
+            from vibestorm.fixtures.unknowns_db import UnknownsDatabase
+
+            database = UnknownsDatabase(Path(tmpdir) / "unknowns.sqlite3")
+            session_info = database.latest_session()
+            assert session_info is not None
+            with database._connect() as connection:
+                packet_row = connection.execute(
+                    """
+                    SELECT region_handle, time_dilation, packet_tags_json
+                    FROM compressed_packets
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (session_info.session_id,),
+                ).fetchone()
+                entity_rows = connection.execute(
+                    """
+                    SELECT update_flags, data_size, data_preview_hex
+                    FROM compressed_entities
+                    WHERE session_id = ?
+                    ORDER BY id ASC
+                    """,
+                    (session_info.session_id,),
+                ).fetchall()
+
+            assert packet_row is not None
+            self.assertEqual(packet_row["region_handle"], 123456789)
+            self.assertEqual(packet_row["time_dilation"], 42)
+            self.assertIn("object_count:2", json.loads(packet_row["packet_tags_json"]))
+            self.assertEqual([(row["update_flags"], row["data_size"], row["data_preview_hex"]) for row in entity_rows], [
+                (5, 3, "112233"),
+                (6, 4, "aabbccdd"),
+            ])
+            self.assertTrue(any(event.kind == "world.object_update_compressed" for event in session.events))
+
+    def test_object_properties_family_updates_known_world_object(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+        object_body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([3])
+            + object_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([9, 3, 1])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (b"\x00" * 22)
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (0).to_bytes(2, "little")
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (b"\x00" * 4)
+            + bytes([0, 0, 0])
+            + (b"\x00" * 66)
+        )
+        session.handle_incoming(build_packet(bytes([0x0C]) + object_body, sequence=98), 10.2)
+
+        properties_body = (
+            (5).to_bytes(4, "little")
+            + object_id.bytes
+            + UUID("11111111-2222-3333-4444-555555555555").bytes
+            + UUID("99999999-8888-7777-6666-555555555555").bytes
+            + (1).to_bytes(4, "little")
+            + (2).to_bytes(4, "little")
+            + (3).to_bytes(4, "little")
+            + (4).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (0).to_bytes(4, "little", signed=True)
+            + bytes([2])
+            + (150).to_bytes(4, "little", signed=True)
+            + (7).to_bytes(4, "little")
+            + UUID("12345678-1234-5678-1234-567812345678").bytes
+            + (11).to_bytes(2, "little")
+            + b"Source Cube"
+            + (11).to_bytes(2, "little")
+            + b"hover entry"
+        )
+        session.handle_incoming(build_packet(bytes([0xFF, 0x0A]) + properties_body, sequence=99), 10.3)
+
+        assert session.world_view.latest_object_properties_family is not None
+        self.assertEqual(session.world_view.latest_object_properties_family.name, "Source Cube")
+        self.assertIn(object_id, session.world_view.objects)
+        self.assertIsNotNone(session.world_view.objects[object_id].properties_family)
+        assert session.world_view.objects[object_id].properties_family is not None
+        self.assertEqual(session.world_view.objects[object_id].properties_family.description, "hover entry")
+        self.assertTrue(any(event.kind == "world.object_properties_family" for event in session.events))
+
+    def test_object_extra_params_emits_event(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        data_a = b"\x11\x22\x33"
+        data_b = b"\xaa\xbb\xcc\xdd"
+        body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + (7).to_bytes(4, "little")
+            + (0x10).to_bytes(2, "little")
+            + bytes([1])
+            + len(data_a).to_bytes(4, "little")
+            + bytes([len(data_a)])
+            + data_a
+            + (9).to_bytes(4, "little")
+            + (0x20).to_bytes(2, "little")
+            + bytes([0])
+            + len(data_b).to_bytes(4, "little")
+            + bytes([len(data_b)])
+            + data_b
+        )
+
+        session.handle_incoming(build_packet(bytes([0xFF, 0xFF, 0x00, 0x63]) + body, sequence=100), 10.2)
+
+        self.assertTrue(any(event.kind == "world.object_extra_params" for event in session.events))

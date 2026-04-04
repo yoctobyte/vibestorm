@@ -12,7 +12,11 @@ from vibestorm.udp.messages import (
     parse_coarse_location_update,
     parse_improved_terse_object_update,
     parse_kill_object,
+    parse_object_extra_params,
     parse_object_update,
+    parse_object_update_cached,
+    parse_object_update_compressed,
+    parse_object_properties_family,
     parse_object_update_summary,
     parse_sim_stats,
     parse_simulator_viewer_time,
@@ -153,6 +157,53 @@ class WorldUpdater:
             return WorldUpdateEvent(
                 kind="world.kill_object",
                 detail=f"local_ids={','.join(str(lid) for lid in kill.local_ids)}",
+            )
+
+        if dispatched.summary.name == "ObjectUpdateCached":
+            cached = parse_object_update_cached(dispatched)
+            local_ids = [str(obj.local_id) for obj in cached.objects[:4]]
+            return WorldUpdateEvent(
+                kind="world.object_update_cached",
+                detail=(
+                    f"region_handle={cached.region_handle} "
+                    f"objects={len(cached.objects)} dilation={cached.time_dilation}"
+                    + (f" local_ids={','.join(local_ids)}" if local_ids else "")
+                ),
+            )
+
+        if dispatched.summary.name == "ObjectUpdateCompressed":
+            compressed = parse_object_update_compressed(dispatched)
+            data_sizes = [str(len(obj.data)) for obj in compressed.objects[:4]]
+            return WorldUpdateEvent(
+                kind="world.object_update_compressed",
+                detail=(
+                    f"region_handle={compressed.region_handle} "
+                    f"objects={len(compressed.objects)} dilation={compressed.time_dilation}"
+                    + (f" data_sizes={','.join(data_sizes)}" if data_sizes else "")
+                ),
+            )
+
+        if dispatched.summary.name == "ObjectPropertiesFamily":
+            properties = parse_object_properties_family(dispatched)
+            self.world_view.apply_object_properties_family(properties)
+            return WorldUpdateEvent(
+                kind="world.object_properties_family",
+                detail=(
+                    f"object_id={properties.object_id} "
+                    f"name={properties.name!r} sale_type={properties.sale_type} "
+                    f"category={properties.category}"
+                ),
+            )
+
+        if dispatched.summary.name == "ObjectExtraParams":
+            extra_params = parse_object_extra_params(dispatched)
+            object_ids = [str(obj.object_local_id) for obj in extra_params.objects[:4]]
+            return WorldUpdateEvent(
+                kind="world.object_extra_params",
+                detail=(
+                    f"objects={len(extra_params.objects)}"
+                    + (f" local_ids={','.join(object_ids)}" if object_ids else "")
+                ),
             )
 
         return None

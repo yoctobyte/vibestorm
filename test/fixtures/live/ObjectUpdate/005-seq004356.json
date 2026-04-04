@@ -1,0 +1,45 @@
+{
+  "appended_acks": [],
+  "at_seconds": 140.845533,
+  "body_size": 312,
+  "capture_mode": "all",
+  "capture_reason": "world.object_update_rich",
+  "is_reliable": true,
+  "message_name": "ObjectUpdate",
+  "object_update": {
+    "data_size": 0,
+    "decode_status": "decoded",
+    "extra_params_size": 0,
+    "full_id": "f0a56ca4-f404-41f3-829e-da09664b8527",
+    "interesting_payloads": [
+      {
+        "field_name": "TextureEntry",
+        "non_zero_bytes": 20,
+        "preview_hex": "008955674724cb43ed920b47caed1546",
+        "size": 64,
+        "text_preview": null
+      },
+      {
+        "field_name": "Trailing",
+        "non_zero_bytes": 21,
+        "preview_hex": "1801300011000000be293869d0d90a69",
+        "size": 91,
+        "text_preview": null
+      }
+    ],
+    "local_id": 492042959,
+    "media_url_size": 0,
+    "name_values": {},
+    "object_count": 1,
+    "ps_block_size": 0,
+    "region_handle": 1099511628032000,
+    "text_size": 0,
+    "texture_anim_size": 0,
+    "texture_entry_size": 64,
+    "time_dilation": 65535,
+    "update_flags": 133136,
+    "variant": "prim_basic"
+  },
+  "sequence": 4356,
+  "source": "live_session_capture"
+}

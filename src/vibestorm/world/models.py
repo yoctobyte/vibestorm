@@ -6,8 +6,10 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 from vibestorm.udp.messages import (
+    ExtraParamEntry,
     ImprovedTerseObjectUpdateMessage,
     KillObjectMessage,
+    ObjectPropertiesFamilyMessage,
     ObjectUpdateMessage,
     ObjectUpdateSummary,
     SimStatsMessage,
@@ -88,7 +90,25 @@ class WorldObject:
     media_url_size: int
     ps_block_size: int
     extra_params_size: int
+    extra_params_entries: tuple[ExtraParamEntry, ...]
     default_texture_id: UUID | None
+    properties_family: ObjectPropertiesFamilyMessage | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class TerseWorldObject:
+    local_id: int
+    state: int
+    is_avatar: bool
+    region_handle: int
+    time_dilation: int
+    position: tuple[float, float, float]
+    velocity: tuple[float, float, float]
+    acceleration: tuple[float, float, float]
+    rotation: tuple[float, float, float, float]
+    angular_velocity: tuple[float, float, float]
+    collision_plane: tuple[float, float, float, float] | None = None
+    texture_entry_size: int = 0
 
 
 @dataclass(slots=True)
@@ -97,14 +117,17 @@ class WorldView:
     latest_sim_stats: SimStatSnapshot | None = None
     latest_time: SimulatorTimeSnapshot | None = None
     latest_object_update: ObjectUpdateSnapshot | None = None
+    latest_object_properties_family: ObjectPropertiesFamilyMessage | None = None
     coarse_agents: tuple[CoarseAgentLocation, ...] = ()
     agent_presences: dict[UUID, AgentPresence] = field(default_factory=dict)
     objects: dict[UUID, WorldObject] = field(default_factory=dict)
+    terse_objects: dict[int, TerseWorldObject] = field(default_factory=dict)
     local_id_to_full_id: dict[int, UUID] = field(default_factory=dict)
     sim_stats_updates: int = 0
     time_updates: int = 0
     coarse_location_updates: int = 0
     object_update_events: int = 0
+    object_properties_family_events: int = 0
 
     def set_region(self, *, name: str, grid_x: int, grid_y: int) -> None:
         self.region = RegionInfo(name=name, grid_x=grid_x, grid_y=grid_y)
@@ -190,15 +213,32 @@ class WorldView:
                 media_url_size=obj.media_url_size,
                 ps_block_size=obj.ps_block_size,
                 extra_params_size=obj.extra_params_size,
+                extra_params_entries=obj.extra_params_entries,
                 default_texture_id=obj.default_texture_id,
+                properties_family=self.objects.get(obj.full_id).properties_family if obj.full_id in self.objects else None,
             )
             self.objects[obj.full_id] = new_obj
             self.local_id_to_full_id[obj.local_id] = obj.full_id
+            self.terse_objects.pop(obj.local_id, None)
 
     def apply_improved_terse_object_update(self, message: ImprovedTerseObjectUpdateMessage) -> None:
         for entry in message.objects:
             full_id = self.local_id_to_full_id.get(entry.local_id)
             if full_id is None:
+                self.terse_objects[entry.local_id] = TerseWorldObject(
+                    local_id=entry.local_id,
+                    state=entry.state,
+                    is_avatar=entry.is_avatar,
+                    region_handle=message.region_handle,
+                    time_dilation=message.time_dilation,
+                    position=entry.position,
+                    velocity=entry.velocity,
+                    acceleration=entry.acceleration,
+                    rotation=entry.rotation,
+                    angular_velocity=entry.angular_velocity,
+                    collision_plane=entry.collision_plane,
+                    texture_entry_size=len(entry.texture_entry) if entry.texture_entry else 0,
+                )
                 continue
 
             obj = self.objects[full_id]
@@ -228,9 +268,11 @@ class WorldView:
                 media_url_size=obj.media_url_size,
                 ps_block_size=obj.ps_block_size,
                 extra_params_size=obj.extra_params_size,
+                extra_params_entries=obj.extra_params_entries,
                 default_texture_id=UUID(bytes=entry.texture_entry[:16])
                 if entry.texture_entry and len(entry.texture_entry) >= 16
                 else obj.default_texture_id,
+                properties_family=obj.properties_family,
             )
 
     def apply_kill_object(self, message: KillObjectMessage) -> None:
@@ -238,3 +280,40 @@ class WorldView:
             full_id = self.local_id_to_full_id.pop(local_id, None)
             if full_id is not None:
                 self.objects.pop(full_id, None)
+            self.terse_objects.pop(local_id, None)
+
+    def apply_object_properties_family(self, message: ObjectPropertiesFamilyMessage) -> None:
+        self.latest_object_properties_family = message
+        self.object_properties_family_events += 1
+        existing = self.objects.get(message.object_id)
+        if existing is None:
+            return
+        self.objects[message.object_id] = WorldObject(
+            full_id=existing.full_id,
+            local_id=existing.local_id,
+            parent_id=existing.parent_id,
+            pcode=existing.pcode,
+            material=existing.material,
+            click_action=existing.click_action,
+            scale=existing.scale,
+            state=existing.state,
+            crc=existing.crc,
+            update_flags=existing.update_flags,
+            region_handle=existing.region_handle,
+            time_dilation=existing.time_dilation,
+            object_data_size=existing.object_data_size,
+            position=existing.position,
+            rotation=existing.rotation,
+            variant=existing.variant,
+            name_values=existing.name_values,
+            texture_entry_size=existing.texture_entry_size,
+            texture_anim_size=existing.texture_anim_size,
+            data_size=existing.data_size,
+            text_size=existing.text_size,
+            media_url_size=existing.media_url_size,
+            ps_block_size=existing.ps_block_size,
+            extra_params_size=existing.extra_params_size,
+            extra_params_entries=existing.extra_params_entries,
+            default_texture_id=existing.default_texture_id,
+            properties_family=message,
+        )

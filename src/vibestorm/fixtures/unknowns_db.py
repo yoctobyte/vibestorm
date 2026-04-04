@@ -11,6 +11,8 @@ from pathlib import Path
 from vibestorm.udp.messages import (
     ImprovedTerseObjectEntry,
     KillObjectMessage,
+    ObjectUpdateCachedEntry,
+    ObjectUpdateCompressedEntry,
     ObjectUpdateEntry,
     format_object_update_interest,
     infer_object_update_label,
@@ -146,6 +148,72 @@ ON improved_terse_entities(packet_id);
 
 CREATE INDEX IF NOT EXISTS idx_improved_terse_entities_local_id
 ON improved_terse_entities(local_id);
+
+CREATE TABLE IF NOT EXISTS cached_packets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    observed_at_seconds REAL NOT NULL,
+    message_sequence INTEGER NOT NULL,
+    capture_reason TEXT NOT NULL,
+    region_handle INTEGER NOT NULL,
+    time_dilation INTEGER NOT NULL,
+    packet_tags_json TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cached_packets_sequence
+ON cached_packets(message_sequence);
+
+CREATE TABLE IF NOT EXISTS cached_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    packet_id INTEGER NOT NULL,
+    session_id INTEGER,
+    observed_at_seconds REAL NOT NULL,
+    message_sequence INTEGER NOT NULL,
+    capture_reason TEXT NOT NULL,
+    region_handle INTEGER NOT NULL,
+    local_id INTEGER NOT NULL,
+    crc INTEGER NOT NULL,
+    update_flags INTEGER NOT NULL,
+    FOREIGN KEY(packet_id) REFERENCES cached_packets(id),
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cached_entities_packet_id
+ON cached_entities(packet_id);
+
+CREATE TABLE IF NOT EXISTS compressed_packets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    observed_at_seconds REAL NOT NULL,
+    message_sequence INTEGER NOT NULL,
+    capture_reason TEXT NOT NULL,
+    region_handle INTEGER NOT NULL,
+    time_dilation INTEGER NOT NULL,
+    packet_tags_json TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_compressed_packets_sequence
+ON compressed_packets(message_sequence);
+
+CREATE TABLE IF NOT EXISTS compressed_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    packet_id INTEGER NOT NULL,
+    session_id INTEGER,
+    observed_at_seconds REAL NOT NULL,
+    message_sequence INTEGER NOT NULL,
+    capture_reason TEXT NOT NULL,
+    region_handle INTEGER NOT NULL,
+    update_flags INTEGER NOT NULL,
+    data_size INTEGER NOT NULL,
+    data_preview_hex TEXT NOT NULL,
+    FOREIGN KEY(packet_id) REFERENCES compressed_packets(id),
+    FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_compressed_entities_packet_id
+ON compressed_entities(packet_id);
 
 CREATE TABLE IF NOT EXISTS nearby_chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -665,6 +733,157 @@ class UnknownsDatabase:
             )
             return int(cursor.lastrowid)
 
+    def record_cached_packet(
+        self,
+        *,
+        session_id: int | None,
+        observed_at_seconds: float,
+        message_sequence: int,
+        capture_reason: str,
+        region_handle: int,
+        time_dilation: int,
+        packet_tags: list[str],
+    ) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO cached_packets (
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    time_dilation,
+                    packet_tags_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    time_dilation,
+                    json.dumps(sorted(packet_tags)),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def record_cached_entity(
+        self,
+        *,
+        packet_id: int,
+        session_id: int | None,
+        observed_at_seconds: float,
+        message_sequence: int,
+        capture_reason: str,
+        region_handle: int,
+        entry: ObjectUpdateCachedEntry,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO cached_entities (
+                    packet_id,
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    local_id,
+                    crc,
+                    update_flags
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    packet_id,
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    entry.local_id,
+                    entry.crc,
+                    entry.update_flags,
+                ),
+            )
+
+    def record_compressed_packet(
+        self,
+        *,
+        session_id: int | None,
+        observed_at_seconds: float,
+        message_sequence: int,
+        capture_reason: str,
+        region_handle: int,
+        time_dilation: int,
+        packet_tags: list[str],
+    ) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO compressed_packets (
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    time_dilation,
+                    packet_tags_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    time_dilation,
+                    json.dumps(sorted(packet_tags)),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def record_compressed_entity(
+        self,
+        *,
+        packet_id: int,
+        session_id: int | None,
+        observed_at_seconds: float,
+        message_sequence: int,
+        capture_reason: str,
+        region_handle: int,
+        entry: ObjectUpdateCompressedEntry,
+    ) -> None:
+        data_preview_hex = entry.data[:16].hex()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO compressed_entities (
+                    packet_id,
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    update_flags,
+                    data_size,
+                    data_preview_hex
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    packet_id,
+                    session_id,
+                    observed_at_seconds,
+                    message_sequence,
+                    capture_reason,
+                    region_handle,
+                    entry.update_flags,
+                    len(entry.data),
+                    data_preview_hex,
+                ),
+            )
+
     def read_stats(self, *, session_id: int | None = None) -> UnknownStats:
         packet_clause, packet_params = self._scope_clause(session_id)
         entity_clause, entity_params = self._scope_clause(session_id)
@@ -911,6 +1130,76 @@ class UnknownsDatabase:
                 "last_seen_at_seconds": float(row["last_seen_at_seconds"]),
                 "max_texture_entry_size": int(row["max_texture_entry_size"] or 0),
                 "sample_data_preview_hex": row["sample_data_preview_hex"],
+            }
+            for row in rows
+        ]
+
+    def summarize_improved_terse_local_id_correlations(
+        self,
+        *,
+        limit: int = 20,
+        session_id: int | None = None,
+    ) -> list[dict[str, object]]:
+        terse_clause, terse_params = self._scope_clause(session_id)
+        full_clause, full_params = self._scope_clause(session_id)
+        terse_where_parts = ["t.local_id IS NOT NULL"]
+        if terse_clause:
+            terse_where_parts.append(terse_clause.removeprefix(" WHERE ").replace("session_id", "t.session_id"))
+        terse_where_sql = " WHERE " + " AND ".join(terse_where_parts)
+        full_where_sql = ""
+        if full_clause:
+            full_where_sql = " WHERE " + full_clause.removeprefix(" WHERE ").replace("session_id", "e.session_id")
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                WITH terse AS (
+                    SELECT
+                        t.local_id AS local_id,
+                        COUNT(*) AS seen_count,
+                        MIN(t.observed_at_seconds) AS first_seen_at_seconds,
+                        MAX(t.observed_at_seconds) AS last_seen_at_seconds,
+                        MAX(t.texture_entry_size) AS max_texture_entry_size,
+                        MIN(t.data_preview_hex) AS sample_data_preview_hex
+                    FROM improved_terse_entities t
+                    {terse_where_sql}
+                    GROUP BY t.local_id
+                ),
+                full_objects AS (
+                    SELECT
+                        e.local_id AS local_id,
+                        COUNT(*) AS full_seen_count,
+                        MIN(e.full_id) AS sample_full_id
+                    FROM object_update_entities e
+                    {full_where_sql}
+                    GROUP BY e.local_id
+                )
+                SELECT
+                    terse.local_id,
+                    terse.seen_count,
+                    terse.first_seen_at_seconds,
+                    terse.last_seen_at_seconds,
+                    terse.max_texture_entry_size,
+                    terse.sample_data_preview_hex,
+                    COALESCE(full_objects.full_seen_count, 0) AS full_seen_count,
+                    full_objects.sample_full_id AS sample_full_id
+                FROM terse
+                LEFT JOIN full_objects ON full_objects.local_id = terse.local_id
+                ORDER BY terse.seen_count DESC, terse.last_seen_at_seconds DESC
+                LIMIT ?
+                """,
+                (*terse_params, *full_params, limit),
+            ).fetchall()
+        return [
+            {
+                "local_id": int(row["local_id"]),
+                "seen_count": int(row["seen_count"]),
+                "first_seen_at_seconds": float(row["first_seen_at_seconds"]),
+                "last_seen_at_seconds": float(row["last_seen_at_seconds"]),
+                "max_texture_entry_size": int(row["max_texture_entry_size"] or 0),
+                "sample_data_preview_hex": row["sample_data_preview_hex"],
+                "full_seen_count": int(row["full_seen_count"] or 0),
+                "sample_full_id": row["sample_full_id"],
+                "status": "promoted" if int(row["full_seen_count"] or 0) > 0 else "terse_only",
             }
             for row in rows
         ]

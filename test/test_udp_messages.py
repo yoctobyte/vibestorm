@@ -15,7 +15,12 @@ from vibestorm.udp.messages import (
     encode_use_circuit_code,
     parse_coarse_location_update,
     parse_improved_terse_object_update,
+    parse_kill_object,
+    parse_object_extra_params,
     parse_object_update,
+    parse_object_update_cached,
+    parse_object_update_compressed,
+    parse_object_properties_family,
     parse_object_update_summary,
     parse_packet_ack,
     parse_agent_movement_complete,
@@ -26,10 +31,67 @@ from vibestorm.udp.messages import (
     parse_simulator_viewer_time,
     parse_start_ping_check,
     parse_use_circuit_code,
+    parse_shape_extra_params,
 )
 
 
 class SemanticMessageTests(unittest.TestCase):
+    @staticmethod
+    def _encode_v16(value: float, range_val: float) -> bytes:
+        if range_val == 1.0:
+            encoded = int(round((value + 1.0) * 32767.5))
+        elif range_val == 64.0:
+            encoded = int(round((value + 64.0) * 511.9921875))
+        elif range_val == 128.0:
+            encoded = int(round((value + 128.0) * 255.99609375))
+        else:
+            raise AssertionError(f"unsupported range {range_val}")
+        encoded = max(0, min(65535, encoded))
+        return encoded.to_bytes(2, "little")
+
+    def _build_terse_prim_data(self) -> bytes:
+        return (
+            (0x04030201).to_bytes(4, "little")
+            + bytes([0x21])  # attachment/state byte
+            + bytes([0])  # is_avatar
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + self._encode_v16(4.0, 128.0)
+            + self._encode_v16(5.0, 128.0)
+            + self._encode_v16(6.0, 128.0)
+            + self._encode_v16(0.5, 64.0)
+            + self._encode_v16(1.5, 64.0)
+            + self._encode_v16(2.5, 64.0)
+            + self._encode_v16(0.0, 1.0)
+            + self._encode_v16(0.0, 1.0)
+            + self._encode_v16(0.0, 1.0)
+            + self._encode_v16(1.0, 1.0)
+            + self._encode_v16(3.0, 64.0)
+            + self._encode_v16(4.0, 64.0)
+            + self._encode_v16(5.0, 64.0)
+        )
+
+    def _build_terse_avatar_data(self) -> bytes:
+        return (
+            (0x08070605).to_bytes(4, "little")
+            + bytes([0x07])  # state
+            + bytes([1])  # is_avatar
+            + pack("<ffff", 0.0, 0.0, 0.0, 1.0)
+            + pack("<fff", 10.0, 20.0, 30.0)
+            + self._encode_v16(1.0, 128.0)
+            + self._encode_v16(2.0, 128.0)
+            + self._encode_v16(3.0, 128.0)
+            + self._encode_v16(0.0, 64.0)
+            + self._encode_v16(0.0, 64.0)
+            + self._encode_v16(0.0, 64.0)
+            + self._encode_v16(0.0, 1.0)
+            + self._encode_v16(0.0, 1.0)
+            + self._encode_v16(0.0, 1.0)
+            + self._encode_v16(1.0, 1.0)
+            + self._encode_v16(0.0, 64.0)
+            + self._encode_v16(0.0, 64.0)
+            + self._encode_v16(0.0, 64.0)
+        )
+
     def setUp(self) -> None:
         self.dispatcher = MessageDispatcher.from_repo_root(Path.cwd())
 
@@ -152,6 +214,30 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertTrue(parsed.is_estate_manager)
         self.assertEqual(parsed.cache_id, cache_id)
         self.assertEqual(parsed.region_id, region_id)
+
+    def test_parse_region_handshake_trims_trailing_nul(self) -> None:
+        sim_name = b"TestSim\x00"
+        agent_owner = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        cache_id = UUID("11111111-2222-3333-4444-555555555555")
+        region_id = UUID("99999999-8888-7777-6666-555555555555")
+        body = bytearray()
+        body += (9).to_bytes(4, "little")
+        body += bytes([13])
+        body += bytes([len(sim_name)])
+        body += sim_name
+        body += agent_owner.bytes
+        body += bytes([1])
+        body += bytes.fromhex("0000a041")
+        body += bytes.fromhex("0000803f")
+        body += cache_id.bytes
+        body += b"\x00" * (16 * 8)
+        body += b"\x00" * (4 * 8)
+        body += region_id.bytes
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x94]) + bytes(body))
+
+        parsed = parse_region_handshake(dispatched)
+
+        self.assertEqual(parsed.sim_name, "TestSim")
 
     def test_parse_sim_stats(self) -> None:
         body = (
@@ -402,6 +488,73 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(payloads["Text"].text_preview, "cube with hovertext")
         self.assertEqual(payloads["TextColor"].preview_hex, "ff0000ff")
 
+    def test_parse_prim_object_update_decodes_extra_params_blob(self) -> None:
+        full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+        extra_params = (
+            bytes([2])
+            + (0x10).to_bytes(2, "little")
+            + bytes([1])
+            + (3).to_bytes(4, "little")
+            + b"\x11\x22\x33"
+            + (0x20).to_bytes(2, "little")
+            + bytes([0])
+            + (4).to_bytes(4, "little")
+            + b"\xaa\xbb\xcc\xdd"
+        )
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([3])
+            + full_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([9, 3, 1])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (b"\x00" * 22)
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (0).to_bytes(2, "little")
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (b"\x00" * 4)
+            + bytes([0])
+            + bytes([0])
+            + len(extra_params).to_bytes(1, "little")
+            + extra_params
+            + (b"\x00" * 66)
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+
+        parsed = parse_object_update(dispatched)
+
+        self.assertEqual(len(parsed.objects[0].extra_params_entries), 2)
+        self.assertEqual(parsed.objects[0].extra_params_entries[0].param_type, 0x10)
+        self.assertEqual(parsed.objects[0].extra_params_entries[1].param_data, b"\xaa\xbb\xcc\xdd")
+        payloads = {payload.field_name: payload for payload in parsed.objects[0].interesting_payloads}
+        self.assertIn("ExtraParamsDecoded", payloads)
+
+    def test_parse_captured_prim_object_update_decodes_sculpt_extra_params(self) -> None:
+        body = (Path.cwd() / "test/fixtures/live/ObjectUpdate/005-seq004356.body.bin").read_bytes()
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+
+        parsed = parse_object_update(dispatched)
+
+        self.assertEqual(parsed.objects[0].local_id, 492042959)
+        self.assertEqual(parsed.objects[0].extra_params_size, 24)
+        self.assertEqual(len(parsed.objects[0].extra_params_entries), 1)
+        self.assertEqual(parsed.objects[0].extra_params_entries[0].param_type, 0x30)
+        self.assertTrue(parsed.objects[0].extra_params_entries[0].param_in_use)
+        self.assertEqual(len(parsed.objects[0].extra_params_entries[0].param_data), 17)
+        payloads = {payload.field_name: payload for payload in parsed.objects[0].interesting_payloads}
+        self.assertIn("ExtraParamsDecoded", payloads)
+        self.assertNotIn("Trailing", payloads)
+
     def test_parse_chat_from_simulator(self) -> None:
         source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         owner_id = UUID("11111111-2222-3333-4444-555555555555")
@@ -452,18 +605,19 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.message, "rezzed another cube")
 
     def test_parse_improved_terse_object_update(self) -> None:
-        data_payload = bytes.fromhex("01020304aabbccdd")
-        texture_payload = bytes.fromhex("11223344")
+        prim_data = self._build_terse_prim_data()
+        avatar_data = self._build_terse_avatar_data()
+        texture_payload = b"\x08\x00\x04\x00\x00\x00\x11\x22\x33\x44"
         body = (
             (1099511628032000).to_bytes(8, "little")
             + (65535).to_bytes(2, "little")
             + bytes([2])
-            + bytes([len(data_payload)])
-            + data_payload
+            + bytes([len(prim_data)])
+            + prim_data
             + len(texture_payload).to_bytes(2, "little")
             + texture_payload
-            + bytes([3])
-            + b"\x99\x88\x77"
+            + bytes([len(avatar_data)])
+            + avatar_data
             + (0).to_bytes(2, "little")
         )
         dispatched = self.dispatcher.dispatch(bytes([0x0F]) + body)
@@ -474,9 +628,226 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.time_dilation, 65535)
         self.assertEqual(len(parsed.objects), 2)
         self.assertEqual(parsed.objects[0].local_id, 0x04030201)
-        self.assertEqual(parsed.objects[0].data_size, len(data_payload))
-        self.assertEqual(parsed.objects[0].texture_entry_size, len(texture_payload))
-        self.assertEqual(parsed.objects[0].texture_entry_preview_hex, "11223344")
-        self.assertIsNone(parsed.objects[1].local_id)
-        self.assertEqual(parsed.objects[1].data_size, 3)
-        self.assertEqual(parsed.objects[1].texture_entry_size, 0)
+        self.assertFalse(parsed.objects[0].is_avatar)
+        self.assertEqual(parsed.objects[0].state, 0x21)
+        self.assertAlmostEqual(parsed.objects[0].position[0], 1.0, places=4)
+        self.assertAlmostEqual(parsed.objects[0].position[1], 2.0, places=4)
+        self.assertAlmostEqual(parsed.objects[0].position[2], 3.0, places=4)
+        assert parsed.objects[0].texture_entry is not None
+        self.assertEqual(parsed.objects[0].texture_entry, b"\x11\x22\x33\x44")
+
+        self.assertEqual(parsed.objects[1].local_id, 0x08070605)
+        self.assertTrue(parsed.objects[1].is_avatar)
+        self.assertEqual(parsed.objects[1].state, 0x07)
+        self.assertAlmostEqual(parsed.objects[1].position[0], 10.0, places=4)
+        self.assertAlmostEqual(parsed.objects[1].position[1], 20.0, places=4)
+        self.assertAlmostEqual(parsed.objects[1].position[2], 30.0, places=4)
+        self.assertIsNone(parsed.objects[1].texture_entry)
+        self.assertIsNotNone(parsed.objects[1].collision_plane)
+
+    def test_parse_kill_object(self) -> None:
+        body = (7).to_bytes(4, "little") + (9).to_bytes(4, "little") + (11).to_bytes(4, "little")
+        dispatched = self.dispatcher.dispatch(bytes([0x10]) + body)
+
+        parsed = parse_kill_object(dispatched)
+
+        self.assertEqual(parsed.local_ids, (7, 9, 11))
+
+    def test_parse_object_update_cached(self) -> None:
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([2])
+            + (7).to_bytes(4, "little")
+            + (0x11111111).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (9).to_bytes(4, "little")
+            + (0x22222222).to_bytes(4, "little")
+            + (6).to_bytes(4, "little")
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0E]) + body)
+
+        parsed = parse_object_update_cached(dispatched)
+
+        self.assertEqual(parsed.region_handle, 123456789)
+        self.assertEqual(parsed.time_dilation, 42)
+        self.assertEqual(len(parsed.objects), 2)
+        self.assertEqual(parsed.objects[0].local_id, 7)
+        self.assertEqual(parsed.objects[0].crc, 0x11111111)
+        self.assertEqual(parsed.objects[0].update_flags, 5)
+        self.assertEqual(parsed.objects[1].local_id, 9)
+
+    def test_parse_object_update_compressed(self) -> None:
+        data_a = b"\x11\x22\x33"
+        data_b = b"\xaa\xbb\xcc\xdd"
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([2])
+            + (5).to_bytes(4, "little")
+            + len(data_a).to_bytes(2, "little")
+            + data_a
+            + (6).to_bytes(4, "little")
+            + len(data_b).to_bytes(2, "little")
+            + data_b
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0D]) + body)
+
+        parsed = parse_object_update_compressed(dispatched)
+
+        self.assertEqual(parsed.region_handle, 123456789)
+        self.assertEqual(parsed.time_dilation, 42)
+        self.assertEqual(len(parsed.objects), 2)
+        self.assertEqual(parsed.objects[0].update_flags, 5)
+        self.assertEqual(parsed.objects[0].data, data_a)
+        self.assertEqual(parsed.objects[1].update_flags, 6)
+        self.assertEqual(parsed.objects[1].data, data_b)
+
+    def test_parse_object_properties_family_with_short_lengths(self) -> None:
+        object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        owner_id = UUID("11111111-2222-3333-4444-555555555555")
+        group_id = UUID("99999999-8888-7777-6666-555555555555")
+        last_owner_id = UUID("12345678-1234-5678-1234-567812345678")
+        name = "Source Cube".encode("utf-8")
+        description = "OpenSim-style short UTF-8".encode("utf-8")
+        body = (
+            (5).to_bytes(4, "little")
+            + object_id.bytes
+            + owner_id.bytes
+            + group_id.bytes
+            + (1).to_bytes(4, "little")
+            + (2).to_bytes(4, "little")
+            + (3).to_bytes(4, "little")
+            + (4).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (0).to_bytes(4, "little", signed=True)
+            + bytes([2])
+            + (150).to_bytes(4, "little", signed=True)
+            + (7).to_bytes(4, "little")
+            + last_owner_id.bytes
+            + len(name).to_bytes(2, "little")
+            + name
+            + len(description).to_bytes(2, "little")
+            + description
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0x0A]) + body)
+
+        parsed = parse_object_properties_family(dispatched)
+
+        self.assertEqual(parsed.object_id, object_id)
+        self.assertEqual(parsed.owner_id, owner_id)
+        self.assertEqual(parsed.group_id, group_id)
+        self.assertEqual(parsed.sale_type, 2)
+        self.assertEqual(parsed.sale_price, 150)
+        self.assertEqual(parsed.category, 7)
+        self.assertEqual(parsed.last_owner_id, last_owner_id)
+        self.assertEqual(parsed.name, "Source Cube")
+        self.assertEqual(parsed.description, "OpenSim-style short UTF-8")
+
+    def test_parse_object_properties_family_with_byte_lengths(self) -> None:
+        object_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        owner_id = UUID("11111111-2222-3333-4444-555555555555")
+        group_id = UUID("99999999-8888-7777-6666-555555555555")
+        last_owner_id = UUID("12345678-1234-5678-1234-567812345678")
+        name = b"TemplateCube"
+        description = b"Variable1"
+        body = (
+            (5).to_bytes(4, "little")
+            + object_id.bytes
+            + owner_id.bytes
+            + group_id.bytes
+            + (1).to_bytes(4, "little")
+            + (2).to_bytes(4, "little")
+            + (3).to_bytes(4, "little")
+            + (4).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + (0).to_bytes(4, "little", signed=True)
+            + bytes([1])
+            + (25).to_bytes(4, "little", signed=True)
+            + (9).to_bytes(4, "little")
+            + last_owner_id.bytes
+            + bytes([len(name)])
+            + name
+            + bytes([len(description)])
+            + description
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0x0A]) + body)
+
+        parsed = parse_object_properties_family(dispatched)
+
+        self.assertEqual(parsed.object_id, object_id)
+        self.assertEqual(parsed.name, "TemplateCube")
+        self.assertEqual(parsed.description, "Variable1")
+
+    def test_parse_shape_extra_params(self) -> None:
+        payload = (
+            bytes([2])
+            + (0x10).to_bytes(2, "little")
+            + (3).to_bytes(4, "little")
+            + b"\x11\x22\x33"
+            + (0x20).to_bytes(2, "little")
+            + (4).to_bytes(4, "little")
+            + b"\xaa\xbb\xcc\xdd"
+        )
+
+        parsed = parse_shape_extra_params(payload)
+
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0].param_type, 0x10)
+        self.assertTrue(parsed[0].param_in_use)
+        self.assertEqual(parsed[0].param_data, b"\x11\x22\x33")
+        self.assertEqual(parsed[1].param_type, 0x20)
+        self.assertTrue(parsed[1].param_in_use)
+        self.assertEqual(parsed[1].param_data, b"\xaa\xbb\xcc\xdd")
+
+    def test_parse_shape_extra_params_with_param_in_use_layout(self) -> None:
+        payload = (
+            bytes([1])
+            + (0x40).to_bytes(2, "little")
+            + bytes([0])
+            + (2).to_bytes(4, "little")
+            + b"\x44\x55"
+        )
+
+        parsed = parse_shape_extra_params(payload)
+
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].param_type, 0x40)
+        self.assertFalse(parsed[0].param_in_use)
+        self.assertEqual(parsed[0].param_data, b"\x44\x55")
+
+    def test_parse_object_extra_params(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        data_a = b"\x11\x22\x33"
+        data_b = b"\xaa\xbb\xcc\xdd"
+        body = (
+            agent_id.bytes
+            + session_id.bytes
+            + (7).to_bytes(4, "little")
+            + (0x10).to_bytes(2, "little")
+            + bytes([1])
+            + len(data_a).to_bytes(4, "little")
+            + bytes([len(data_a)])
+            + data_a
+            + (9).to_bytes(4, "little")
+            + (0x20).to_bytes(2, "little")
+            + bytes([0])
+            + len(data_b).to_bytes(4, "little")
+            + bytes([len(data_b)])
+            + data_b
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x63]) + body)
+
+        parsed = parse_object_extra_params(dispatched)
+
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertEqual(parsed.session_id, session_id)
+        self.assertEqual(len(parsed.objects), 2)
+        self.assertEqual(parsed.objects[0].object_local_id, 7)
+        self.assertEqual(parsed.objects[0].param_type, 0x10)
+        self.assertTrue(parsed.objects[0].param_in_use)
+        self.assertEqual(parsed.objects[0].param_data, data_a)
+        self.assertEqual(parsed.objects[1].object_local_id, 9)
+        self.assertEqual(parsed.objects[1].param_size, 4)
+        self.assertEqual(parsed.objects[1].param_data, data_b)

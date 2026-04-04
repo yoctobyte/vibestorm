@@ -93,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--start", default="last")
     session_parser.add_argument("--duration", type=float, default=15.0)
     session_parser.add_argument("--agent-update-interval", type=float, default=1.0)
+    session_parser.add_argument("--camera-sweep", action="store_true")
     session_parser.add_argument("--spawn-cube", action="store_true")
     session_parser.add_argument(
         "--capture-dir",
@@ -190,6 +191,17 @@ def format_world_status(world_view: WorldView) -> list[str]:
                     line += f" name={full_name}"
             if obj.default_texture_id is not None:
                 line += f" texture={obj.default_texture_id}"
+            lines.append(line)
+    if world_view.terse_objects:
+        lines.append(f"world[terse_only]=tracked:{len(world_view.terse_objects)}")
+        for obj in sorted(world_view.terse_objects.values(), key=lambda item: item.local_id)[:3]:
+            line = (
+                f"world[terse]={obj.local_id} "
+                f"avatar={obj.is_avatar} state={obj.state} "
+                f"pos=({obj.position[0]:.2f},{obj.position[1]:.2f},{obj.position[2]:.2f})"
+            )
+            if obj.texture_entry_size > 0:
+                line += f" texture_entry_size={obj.texture_entry_size}"
             lines.append(line)
     return lines
 
@@ -407,6 +419,7 @@ def main() -> int:
             "session=starting "
             f"sim={bootstrap.sim_ip}:{bootstrap.sim_port} "
             f"duration={args.duration:.1f}s "
+            f"camera_sweep={args.camera_sweep} "
             f"spawn_cube={args.spawn_cube} "
             f"capture={args.capture_dir if args.capture_dir else 'off'} "
             f"capture_mode={args.capture_mode} "
@@ -421,6 +434,7 @@ def main() -> int:
                 config=SessionConfig(
                     duration_seconds=args.duration,
                     agent_update_interval_seconds=args.agent_update_interval,
+                    camera_sweep=args.camera_sweep,
                     spawn_test_cube=args.spawn_cube,
                     capture_dir=args.capture_dir,
                     capture_messages=tuple(args.capture_message),
@@ -506,14 +520,15 @@ def main() -> int:
                 f"first={item['first_seen_at_seconds']:.3f} "
                 f"last={item['last_seen_at_seconds']:.3f}"
             )
-        for item in database.summarize_improved_terse_local_ids(limit=args.limit, session_id=session_id):
+        for item in database.summarize_improved_terse_local_id_correlations(limit=args.limit, session_id=session_id):
             print(
-                f"terse_local_id[count]={item['seen_count']} "
+                f"terse_local_id[{item['status']}][count]={item['seen_count']} "
                 f"local_id={item['local_id']} "
                 f"texture={item['max_texture_entry_size']} "
                 f"first={item['first_seen_at_seconds']:.3f} "
                 f"last={item['last_seen_at_seconds']:.3f} "
                 f"hex={item['sample_data_preview_hex']}"
+                + (f" full_object={item['sample_full_id']}" if item["sample_full_id"] is not None else "")
             )
         for item in database.summarize_payload_fingerprints(limit=args.limit, session_id=session_id):
             line = (

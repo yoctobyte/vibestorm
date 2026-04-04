@@ -111,11 +111,16 @@ class SimulatorViewerTimeMessage:
 
 @dataclass(slots=True, frozen=True)
 class ImprovedTerseObjectEntry:
-    local_id: int | None
-    data_size: int
-    texture_entry_size: int
-    data_preview_hex: str
-    texture_entry_preview_hex: str
+    local_id: int
+    state: int
+    is_avatar: bool
+    position: tuple[float, float, float]
+    velocity: tuple[float, float, float]
+    acceleration: tuple[float, float, float]
+    rotation: tuple[float, float, float, float]
+    angular_velocity: tuple[float, float, float]
+    collision_plane: tuple[float, float, float, float] | None = None
+    texture_entry: bytes | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -123,6 +128,76 @@ class ImprovedTerseObjectUpdateMessage:
     region_handle: int
     time_dilation: int
     objects: tuple[ImprovedTerseObjectEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectUpdateCachedEntry:
+    local_id: int
+    crc: int
+    update_flags: int
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectUpdateCachedMessage:
+    region_handle: int
+    time_dilation: int
+    objects: tuple[ObjectUpdateCachedEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectUpdateCompressedEntry:
+    update_flags: int
+    data: bytes
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectUpdateCompressedMessage:
+    region_handle: int
+    time_dilation: int
+    objects: tuple[ObjectUpdateCompressedEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectPropertiesFamilyMessage:
+    request_flags: int
+    object_id: UUID
+    owner_id: UUID
+    group_id: UUID
+    base_mask: int
+    owner_mask: int
+    group_mask: int
+    everyone_mask: int
+    next_owner_mask: int
+    ownership_cost: int
+    sale_type: int
+    sale_price: int
+    category: int
+    last_owner_id: UUID
+    name: str
+    description: str
+
+
+@dataclass(slots=True, frozen=True)
+class ExtraParamEntry:
+    param_type: int
+    param_in_use: bool
+    param_data: bytes
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectExtraParamsEntry:
+    object_local_id: int
+    param_type: int
+    param_in_use: bool
+    param_size: int
+    param_data: bytes
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectExtraParamsMessage:
+    agent_id: UUID
+    session_id: UUID
+    objects: tuple[ObjectExtraParamsEntry, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -179,6 +254,7 @@ class ObjectUpdateEntry:
     extra_params_size: int
     default_texture_id: UUID | None
     interesting_payloads: tuple[ObjectUpdatePayloadSummary, ...]
+    extra_params_entries: tuple[ExtraParamEntry, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -223,6 +299,108 @@ def _read_variable_field_best_effort(
     raise MessageDecodeError(f"{field_name} payload is truncated")
 
 
+def _read_utf8_fields_with_fallback(
+    data: bytes,
+    offset: int,
+    field_names: tuple[str, ...],
+    *,
+    preferred_length_sizes: tuple[int, ...] = (2, 1),
+) -> tuple[tuple[str, ...], int]:
+    last_error: MessageDecodeError | None = None
+    for length_size in preferred_length_sizes:
+        try:
+            strings: list[str] = []
+            current = offset
+            for field_name in field_names:
+                payload, current = _read_variable_field(data, current, length_size, field_name)
+                strings.append(payload.decode("utf-8", errors="replace").rstrip("\x00"))
+            if current == len(data):
+                return tuple(strings), current
+        except MessageDecodeError as exc:
+            last_error = exc
+            continue
+
+    for length_size in preferred_length_sizes:
+        try:
+            strings = []
+            current = offset
+            for field_name in field_names:
+                payload, current = _read_variable_field(data, current, length_size, field_name)
+                strings.append(payload.decode("utf-8", errors="replace").rstrip("\x00"))
+            return tuple(strings), current
+        except MessageDecodeError as exc:
+            last_error = exc
+            continue
+
+    raise last_error or MessageDecodeError("variable UTF-8 field is truncated")
+
+
+def _read_variable_field_with_length_fallback(
+    data: bytes,
+    offset: int,
+    field_name: str,
+    *,
+    preferred_length_sizes: tuple[int, ...],
+) -> tuple[bytes, int]:
+    last_error: MessageDecodeError | None = None
+    for length_size in preferred_length_sizes:
+        try:
+            payload, current = _read_variable_field_best_effort(data, offset, length_size, field_name)
+            return payload, current
+        except MessageDecodeError as exc:
+            last_error = exc
+            continue
+    raise last_error or MessageDecodeError(f"{field_name} payload is truncated")
+
+
+def parse_shape_extra_params(payload: bytes) -> tuple[ExtraParamEntry, ...]:
+    if not payload:
+        return ()
+    if len(payload) < 1:
+        raise MessageDecodeError("ExtraParams payload is truncated")
+
+    def _parse(with_in_use: bool) -> tuple[ExtraParamEntry, ...]:
+        count = payload[0]
+        offset = 1
+        entries: list[ExtraParamEntry] = []
+        for _ in range(count):
+            header_size = 7 if with_in_use else 6
+            if len(payload) < offset + header_size:
+                raise MessageDecodeError("ExtraParams entry header is truncated")
+            param_type = unpack_from("<H", payload, offset)[0]
+            offset += 2
+            param_in_use = True
+            if with_in_use:
+                param_in_use = payload[offset] != 0
+                offset += 1
+            param_size = unpack_from("<I", payload, offset)[0]
+            offset += 4
+            if len(payload) < offset + param_size:
+                raise MessageDecodeError("ExtraParams entry payload is truncated")
+            param_data = payload[offset : offset + param_size]
+            offset += param_size
+            entries.append(
+                ExtraParamEntry(
+                    param_type=param_type,
+                    param_in_use=param_in_use,
+                    param_data=param_data,
+                )
+            )
+        if offset != len(payload):
+            raise MessageDecodeError("ExtraParams payload has trailing bytes")
+        return tuple(entries)
+
+    last_error: MessageDecodeError | None = None
+    for with_in_use in (False, True):
+        try:
+            return _parse(with_in_use)
+        except MessageDecodeError as exc:
+            last_error = exc
+            continue
+
+    raise last_error or MessageDecodeError("ExtraParams payload is truncated")
+
+
 def _parse_name_values(payload: bytes) -> dict[str, str]:
     text = payload.rstrip(b"\x00").decode("utf-8", errors="replace")
     values: dict[str, str] = {}
@@ -263,6 +441,33 @@ def _summarize_payload(field_name: str, payload: bytes) -> ObjectUpdatePayloadSu
         preview_hex=preview_hex,
         text_preview=text_preview,
     )
+
+
+def _decompress_v16(val: int, range_val: float) -> float:
+    """Decompress a U16 into a float within a specific range."""
+    # Scale constants from OpenSim Utils.FloatToUInt16Bytes
+    if range_val == 1.0:
+        return (val / 32767.5) - 1.0
+    if range_val == 64.0:
+        return (val / 511.9921875) - 64.0
+    if range_val == 128.0:
+        return (val / 255.99609375) - 128.0
+    return 0.0
+
+
+def _unpack_clamped_vector(data: bytes, offset: int, range_val: float) -> tuple[float, float, float]:
+    vx = _decompress_v16(unpack_from("<H", data, offset)[0], range_val)
+    vy = _decompress_v16(unpack_from("<H", data, offset + 2)[0], range_val)
+    vz = _decompress_v16(unpack_from("<H", data, offset + 4)[0], range_val)
+    return (vx, vy, vz)
+
+
+def _unpack_clamped_quaternion(data: bytes, offset: int) -> tuple[float, float, float, float]:
+    qx = _decompress_v16(unpack_from("<H", data, offset)[0], 1.0)
+    qy = _decompress_v16(unpack_from("<H", data, offset + 2)[0], 1.0)
+    qz = _decompress_v16(unpack_from("<H", data, offset + 4)[0], 1.0)
+    qw = _decompress_v16(unpack_from("<H", data, offset + 6)[0], 1.0)
+    return (qx, qy, qz, qw)
 
 
 def infer_object_update_label(entry: ObjectUpdateEntry) -> str | None:
@@ -387,7 +592,7 @@ def parse_region_handshake(message: MessageDispatch) -> RegionHandshakeMessage:
     name_length = body[5]
     name_start = 6
     name_end = name_start + name_length
-    sim_name = body[name_start:name_end].decode("utf-8", errors="replace")
+    sim_name = body[name_start:name_end].decode("utf-8", errors="replace").rstrip("\x00")
     offset = name_end
     sim_owner = UUID(bytes=body[offset : offset + 16])
     offset += 16
@@ -538,26 +743,284 @@ def parse_improved_terse_object_update(message: MessageDispatch) -> ImprovedTers
             1,
             "ImprovedTerseObjectUpdate.ObjectData.Data",
         )
-        texture_entry_payload, offset = _read_variable_field(
+        texture_entry_raw, offset = _read_variable_field(
             message.body,
             offset,
             2,
             "ImprovedTerseObjectUpdate.ObjectData.TextureEntry",
         )
+
+        data_size = len(data_payload)
+        if data_size not in (44, 60):
+            # Fallback for unknown sizes or truncated data
+            local_id = unpack_from("<I", data_payload, 0)[0] if data_size >= 4 else 0
+            objects.append(
+                ImprovedTerseObjectEntry(
+                    local_id=local_id,
+                    state=0,
+                    is_avatar=False,
+                    position=(0, 0, 0),
+                    velocity=(0, 0, 0),
+                    acceleration=(0, 0, 0),
+                    rotation=(0, 0, 0, 1),
+                    angular_velocity=(0, 0, 0),
+                ),
+            )
+            continue
+
+        local_id = unpack_from("<I", data_payload, 0)[0]
+        state = data_payload[4]
+        is_avatar = data_payload[5] == 1
+        data_offset = 6
+
+        collision_plane: tuple[float, float, float, float] | None = None
+        if is_avatar:
+            collision_plane = tuple(unpack_from("<ffff", data_payload, data_offset))  # type: ignore[arg-type]
+            data_offset += 16
+
+        position = tuple(unpack_from("<fff", data_payload, data_offset))
+        data_offset += 12
+
+        velocity = _unpack_clamped_vector(data_payload, data_offset, 128.0)
+        data_offset += 6
+
+        acceleration = _unpack_clamped_vector(data_payload, data_offset, 64.0)
+        data_offset += 6
+
+        rotation = _unpack_clamped_quaternion(data_payload, data_offset)
+        data_offset += 8
+
+        angular_velocity = _unpack_clamped_vector(data_payload, data_offset, 64.0)
+        # data_offset += 6
+
+        # TextureEntry in terse updates often has a custom 4-byte header in some simulators,
+        # but standard Variable 2 should be handled by the outer reader.
+        # OpenSim: totlen(U16), len(U16), 0,0, payload
+        texture_entry: bytes | None = None
+        if len(texture_entry_raw) > 4:
+            # Skip the custom header if it looks like OpenSim style
+            # (totlen == len + 4)
+            totlen = int.from_bytes(texture_entry_raw[0:2], "little")
+            sublen = int.from_bytes(texture_entry_raw[2:4], "little")
+            if totlen == sublen + 4:
+                texture_entry = texture_entry_raw[6:]
+            else:
+                texture_entry = texture_entry_raw
+
         objects.append(
             ImprovedTerseObjectEntry(
-                local_id=unpack_from("<I", data_payload, 0)[0] if len(data_payload) >= 4 else None,
-                data_size=len(data_payload),
-                texture_entry_size=len(texture_entry_payload),
-                data_preview_hex=data_payload[:16].hex(),
-                texture_entry_preview_hex=texture_entry_payload[:16].hex(),
+                local_id=local_id,
+                state=state,
+                is_avatar=is_avatar,
+                position=position,  # type: ignore[arg-type]
+                velocity=velocity,
+                acceleration=acceleration,
+                rotation=rotation,
+                angular_velocity=angular_velocity,
+                collision_plane=collision_plane,
+                texture_entry=texture_entry,
             ),
         )
+
     return ImprovedTerseObjectUpdateMessage(
         region_handle=region_handle,
         time_dilation=time_dilation,
         objects=tuple(objects),
     )
+
+
+@dataclass(slots=True, frozen=True)
+class KillObjectMessage:
+    local_ids: tuple[int, ...]
+
+
+def parse_object_update_cached(message: MessageDispatch) -> ObjectUpdateCachedMessage:
+    if message.summary.name != "ObjectUpdateCached":
+        raise MessageDecodeError(f"expected ObjectUpdateCached, got {message.summary.name}")
+    if len(message.body) < 11:
+        raise MessageDecodeError("ObjectUpdateCached body is too short")
+
+    region_handle = unpack_from("<Q", message.body, 0)[0]
+    time_dilation = unpack_from("<H", message.body, 8)[0]
+    object_count = message.body[10]
+    offset = 11
+
+    objects: list[ObjectUpdateCachedEntry] = []
+    for _ in range(object_count):
+        if len(message.body) < offset + 12:
+            break
+        local_id, crc, update_flags = unpack_from("<III", message.body, offset)
+        offset += 12
+        objects.append(
+            ObjectUpdateCachedEntry(
+                local_id=local_id,
+                crc=crc,
+                update_flags=update_flags,
+            )
+        )
+
+    return ObjectUpdateCachedMessage(
+        region_handle=region_handle,
+        time_dilation=time_dilation,
+        objects=tuple(objects),
+    )
+
+
+def parse_object_update_compressed(message: MessageDispatch) -> ObjectUpdateCompressedMessage:
+    if message.summary.name != "ObjectUpdateCompressed":
+        raise MessageDecodeError(f"expected ObjectUpdateCompressed, got {message.summary.name}")
+    if len(message.body) < 11:
+        raise MessageDecodeError("ObjectUpdateCompressed body is too short")
+
+    region_handle = unpack_from("<Q", message.body, 0)[0]
+    time_dilation = unpack_from("<H", message.body, 8)[0]
+    object_count = message.body[10]
+    offset = 11
+
+    objects: list[ObjectUpdateCompressedEntry] = []
+    for _ in range(object_count):
+        if len(message.body) < offset + 6:
+            break
+        update_flags = unpack_from("<I", message.body, offset)[0]
+        offset += 4
+        data, offset = _read_variable_field(message.body, offset, 2, "ObjectUpdateCompressed.Data")
+        objects.append(
+            ObjectUpdateCompressedEntry(
+                update_flags=update_flags,
+                data=data,
+            )
+        )
+
+    return ObjectUpdateCompressedMessage(
+        region_handle=region_handle,
+        time_dilation=time_dilation,
+        objects=tuple(objects),
+    )
+
+
+def parse_object_properties_family(message: MessageDispatch) -> ObjectPropertiesFamilyMessage:
+    if message.summary.name != "ObjectPropertiesFamily":
+        raise MessageDecodeError(f"expected ObjectPropertiesFamily, got {message.summary.name}")
+    if len(message.body) < 101:
+        raise MessageDecodeError("ObjectPropertiesFamily body is too short")
+
+    offset = 0
+    request_flags = unpack_from("<I", message.body, offset)[0]
+    offset += 4
+    object_id = UUID(bytes=message.body[offset : offset + 16])
+    offset += 16
+    owner_id = UUID(bytes=message.body[offset : offset + 16])
+    offset += 16
+    group_id = UUID(bytes=message.body[offset : offset + 16])
+    offset += 16
+    base_mask = unpack_from("<I", message.body, offset)[0]
+    offset += 4
+    owner_mask = unpack_from("<I", message.body, offset)[0]
+    offset += 4
+    group_mask = unpack_from("<I", message.body, offset)[0]
+    offset += 4
+    everyone_mask = unpack_from("<I", message.body, offset)[0]
+    offset += 4
+    next_owner_mask = unpack_from("<I", message.body, offset)[0]
+    offset += 4
+    ownership_cost = unpack_from("<i", message.body, offset)[0]
+    offset += 4
+    sale_type = message.body[offset]
+    offset += 1
+    sale_price = unpack_from("<i", message.body, offset)[0]
+    offset += 4
+    category = unpack_from("<I", message.body, offset)[0]
+    offset += 4
+    last_owner_id = UUID(bytes=message.body[offset : offset + 16])
+    offset += 16
+    (name, description), _ = _read_utf8_fields_with_fallback(
+        message.body,
+        offset,
+        ("ObjectPropertiesFamily.Name", "ObjectPropertiesFamily.Description"),
+    )
+
+    return ObjectPropertiesFamilyMessage(
+        request_flags=request_flags,
+        object_id=object_id,
+        owner_id=owner_id,
+        group_id=group_id,
+        base_mask=base_mask,
+        owner_mask=owner_mask,
+        group_mask=group_mask,
+        everyone_mask=everyone_mask,
+        next_owner_mask=next_owner_mask,
+        ownership_cost=ownership_cost,
+        sale_type=sale_type,
+        sale_price=sale_price,
+        category=category,
+        last_owner_id=last_owner_id,
+        name=name,
+        description=description,
+    )
+
+
+def parse_object_extra_params(message: MessageDispatch) -> ObjectExtraParamsMessage:
+    if message.summary.name != "ObjectExtraParams":
+        raise MessageDecodeError(f"expected ObjectExtraParams, got {message.summary.name}")
+    if len(message.body) < 32:
+        raise MessageDecodeError("ObjectExtraParams body is too short")
+
+    offset = 0
+    agent_id = UUID(bytes=message.body[offset : offset + 16])
+    offset += 16
+    session_id = UUID(bytes=message.body[offset : offset + 16])
+    offset += 16
+
+    objects: list[ObjectExtraParamsEntry] = []
+    while offset < len(message.body):
+        if len(message.body) < offset + 11:
+            raise MessageDecodeError("ObjectExtraParams block header is truncated")
+        object_local_id = unpack_from("<I", message.body, offset)[0]
+        offset += 4
+        param_type = unpack_from("<H", message.body, offset)[0]
+        offset += 2
+        param_in_use = message.body[offset] != 0
+        offset += 1
+        param_size = unpack_from("<I", message.body, offset)[0]
+        offset += 4
+        param_data, offset = _read_variable_field(
+            message.body,
+            offset,
+            1,
+            "ObjectExtraParams.ParamData",
+        )
+        if len(param_data) != param_size:
+            raise MessageDecodeError("ObjectExtraParams ParamSize does not match ParamData length")
+        objects.append(
+            ObjectExtraParamsEntry(
+                object_local_id=object_local_id,
+                param_type=param_type,
+                param_in_use=param_in_use,
+                param_size=param_size,
+                param_data=param_data,
+            )
+        )
+
+    return ObjectExtraParamsMessage(
+        agent_id=agent_id,
+        session_id=session_id,
+        objects=tuple(objects),
+    )
+
+
+def parse_kill_object(message: MessageDispatch) -> KillObjectMessage:
+    if message.summary.name != "KillObject":
+        raise MessageDecodeError(f"expected KillObject, got {message.summary.name}")
+
+    # Use the template to find the ObjectData block count
+    # But since it's a Variable block of U32 IDs:
+    # Each block is 4 bytes.
+    if len(message.body) % 4 != 0:
+        raise MessageDecodeError("KillObject body length must be a multiple of 4")
+
+    count = len(message.body) // 4
+    local_ids = tuple(unpack_from("<I", message.body, i * 4)[0] for i in range(count))
+    return KillObjectMessage(local_ids=local_ids)
 
 
 def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMessage:
@@ -663,6 +1126,7 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
     ps_block_size = 0
     extra_params_size = 0
     default_texture_id: UUID | None = None
+    extra_params_entries: tuple[ExtraParamEntry, ...] = ()
     interesting_payloads: list[ObjectUpdatePayloadSummary] = []
     trailing_payload = b""
 
@@ -717,11 +1181,11 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
             1,
             "ObjectUpdate.PSBlock",
         )
-        extra_params_payload, tail_offset = _read_variable_field_best_effort(
+        extra_params_payload, tail_offset = _read_variable_field_with_length_fallback(
             message.body,
             tail_offset,
-            1,
             "ObjectUpdate.ExtraParams",
+            preferred_length_sizes=(2, 1),
         )
         texture_entry_size = len(texture_entry_payload)
         if texture_entry_size >= 16:
@@ -732,6 +1196,11 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
         media_url_size = len(media_url_payload)
         ps_block_size = len(ps_block_payload)
         extra_params_size = len(extra_params_payload)
+        if extra_params_payload:
+            try:
+                extra_params_entries = parse_shape_extra_params(extra_params_payload)
+            except MessageDecodeError:
+                extra_params_entries = ()
         name_values = _parse_name_values(name_value_payload)
         trailing_payload = message.body[tail_offset:]
         for field_name, payload in (
@@ -749,6 +1218,22 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
             summary = _summarize_payload(field_name, payload)
             if summary is not None:
                 interesting_payloads.append(summary)
+        if extra_params_entries:
+            interesting_payloads.append(
+                ObjectUpdatePayloadSummary(
+                    field_name="ExtraParamsDecoded",
+                    size=extra_params_size,
+                    non_zero_bytes=sum(1 for byte in extra_params_payload if byte != 0),
+                    preview_hex=extra_params_payload[:16].hex(),
+                    text_preview=(
+                        f"count={len(extra_params_entries)} "
+                        + ",".join(
+                            f"type={entry.param_type}/size={len(entry.param_data)}/in_use={int(entry.param_in_use)}"
+                            for entry in extra_params_entries[:4]
+                        )
+                    ),
+                )
+            )
     elif pcode == 47 and len(object_data) == 76:
         position = tuple(unpack_from("<fff", object_data, 16))
         variant = "avatar_basic"
@@ -817,6 +1302,7 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
                 extra_params_size=extra_params_size,
                 default_texture_id=default_texture_id,
                 interesting_payloads=tuple(interesting_payloads),
+                extra_params_entries=extra_params_entries,
             ),
         ),
     )

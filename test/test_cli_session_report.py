@@ -9,6 +9,7 @@ from vibestorm.world.models import (
     RegionInfo,
     SimulatorTimeSnapshot,
     SimStatSnapshot,
+    TerseWorldObject,
     WorldObject,
     WorldView,
 )
@@ -72,7 +73,22 @@ class CliSessionReportTests(unittest.TestCase):
                     media_url_size=0,
                     ps_block_size=0,
                     extra_params_size=0,
+                    extra_params_entries=(),
                     default_texture_id=UUID("00895567-4724-cb43-ed92-0b47caed1546"),
+                ),
+            },
+            terse_objects={
+                11: TerseWorldObject(
+                    local_id=11,
+                    state=33,
+                    is_avatar=False,
+                    region_handle=1099511628032000,
+                    time_dilation=42,
+                    position=(130.0, 131.0, 26.0),
+                    velocity=(0.0, 0.0, 0.0),
+                    acceleration=(0.0, 0.0, 0.0),
+                    rotation=(0.0, 0.0, 0.0, 1.0),
+                    angular_velocity=(0.0, 0.0, 0.0),
                 ),
             },
             sim_stats_updates=20,
@@ -103,6 +119,7 @@ class CliSessionReportTests(unittest.TestCase):
         self.assertIn("world[region]=Vibestorm Test grid=(1000,1000)", lines)
         self.assertIn("world[object_update]=events:3 objects:1 region_handle:1099511628032000", lines)
         self.assertIn("world[objects]=tracked:1", lines)
+        self.assertIn("world[terse_only]=tracked:1", lines)
         self.assertTrue(
             any(
                 "variant=prim_basic" in line
@@ -111,6 +128,7 @@ class CliSessionReportTests(unittest.TestCase):
                 for line in lines
             ),
         )
+        self.assertTrue(any(line.startswith("world[terse]=11 ") for line in lines))
         self.assertNotIn("packet_acks_received=3", lines)
         self.assertFalse(any(line.startswith("message[") for line in lines))
 

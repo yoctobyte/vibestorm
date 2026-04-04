@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import random
 import socket
 from collections import Counter
@@ -29,6 +30,8 @@ from vibestorm.udp.messages import (
     parse_improved_terse_object_update,
     parse_kill_object,
     parse_object_update,
+    parse_object_update_cached,
+    parse_object_update_compressed,
     parse_object_update_summary,
     parse_packet_ack,
     parse_region_handshake,
@@ -51,6 +54,10 @@ class SessionConfig:
     duration_seconds: float = 60.0
     receive_timeout_seconds: float = 0.25
     agent_update_interval_seconds: float = 1.0
+    camera_sweep: bool = False
+    camera_sweep_radius: float = 12.0
+    camera_sweep_period_seconds: float = 24.0
+    camera_sweep_height_offset: float = 3.0
     spawn_test_cube: bool = False
     spawn_delay_seconds: float = 2.0
     region_handshake_reply_flags: int = 0
@@ -108,6 +115,10 @@ class LiveCircuitSession:
     last_region_name: str | None = None
     close_reason: str | None = None
     camera_center: tuple[float, float, float] = (128.0, 128.0, 25.0)
+    camera_at_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    camera_left_axis: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    camera_up_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    base_camera_center: tuple[float, float, float] | None = None
     movement_completed: bool = False
     throttle_sent: bool = False
     test_cube_spawned: bool = False
@@ -269,6 +280,7 @@ class LiveCircuitSession:
                 float(self.bootstrap.region_y) + 128.0,
                 self.camera_center[2],
             )
+            self.base_camera_center = self.camera_center
             self.handshake_reply_sent = True
             world_event = self.world_updater.apply_region_handshake(
                 handshake,
@@ -295,6 +307,7 @@ class LiveCircuitSession:
         if dispatched.summary.name == "AgentMovementComplete":
             movement = parse_agent_movement_complete(dispatched)
             self.camera_center = movement.position
+            self.base_camera_center = movement.position
             self.movement_completed = True
             self._record_event(
                 now,
@@ -318,6 +331,18 @@ class LiveCircuitSession:
                     reason=world_event.kind,
                 )
                 self._record_kill_object_observation(
+                    dispatched=dispatched,
+                    sequence=view.header.sequence,
+                    at_seconds=now - (self.started_at if self.started_at is not None else now),
+                    reason=world_event.kind,
+                )
+                self._record_cached_observation(
+                    dispatched=dispatched,
+                    sequence=view.header.sequence,
+                    at_seconds=now - (self.started_at if self.started_at is not None else now),
+                    reason=world_event.kind,
+                )
+                self._record_compressed_observation(
                     dispatched=dispatched,
                     sequence=view.header.sequence,
                     at_seconds=now - (self.started_at if self.started_at is not None else now),
@@ -349,6 +374,7 @@ class LiveCircuitSession:
         self.last_agent_update_at = now
         packets = self._drain_throttle_packets(now)
         packets.extend(self._drain_test_cube_packets(now))
+        self._update_camera_sweep(now)
         self.agent_update_count += 1
         packets.append(
             self._build_outbound_packet(
@@ -356,6 +382,9 @@ class LiveCircuitSession:
                     self.bootstrap.agent_id,
                     self.bootstrap.session_id,
                     camera_center=self.camera_center,
+                    camera_at_axis=self.camera_at_axis,
+                    camera_left_axis=self.camera_left_axis,
+                    camera_up_axis=self.camera_up_axis,
                 ),
                 zerocoded=True,
                 now=now,
@@ -485,6 +514,44 @@ class LiveCircuitSession:
                 label="ObjectAdd",
             ),
         ]
+
+    def _update_camera_sweep(self, now: float) -> None:
+        if not self.config.camera_sweep or self.started_at is None:
+            return
+        base_center = self.base_camera_center or self.camera_center
+        period = max(self.config.camera_sweep_period_seconds, 1.0)
+        phase = ((now - self.started_at) % period) / period
+        theta = phase * (2.0 * math.pi)
+        radius = max(self.config.camera_sweep_radius, 0.0)
+        center_x = base_center[0] + math.cos(theta) * radius
+        center_y = base_center[1] + math.sin(theta) * radius
+        center_z = max(base_center[2], 22.0) + self.config.camera_sweep_height_offset + math.sin(theta * 0.5) * 1.5
+        look_x = base_center[0] - center_x
+        look_y = base_center[1] - center_y
+        look_z = (base_center[2] + 1.5) - center_z
+        magnitude = math.sqrt((look_x * look_x) + (look_y * look_y) + (look_z * look_z))
+        if magnitude <= 0.0001:
+            return
+        at_axis = (look_x / magnitude, look_y / magnitude, look_z / magnitude)
+        left_axis = (-at_axis[1], at_axis[0], 0.0)
+        left_magnitude = math.sqrt((left_axis[0] * left_axis[0]) + (left_axis[1] * left_axis[1]) + (left_axis[2] * left_axis[2]))
+        if left_magnitude <= 0.0001:
+            left_axis = (0.0, 1.0, 0.0)
+        else:
+            left_axis = (
+                left_axis[0] / left_magnitude,
+                left_axis[1] / left_magnitude,
+                left_axis[2] / left_magnitude,
+            )
+        up_axis = (
+            (at_axis[1] * left_axis[2]) - (at_axis[2] * left_axis[1]),
+            (at_axis[2] * left_axis[0]) - (at_axis[0] * left_axis[2]),
+            (at_axis[0] * left_axis[1]) - (at_axis[1] * left_axis[0]),
+        )
+        self.camera_center = (center_x, center_y, center_z)
+        self.camera_at_axis = at_axis
+        self.camera_left_axis = left_axis
+        self.camera_up_axis = up_axis
 
     def _record_event(self, now: float, kind: str, detail: str) -> None:
         started_at = self.started_at if self.started_at is not None else now
@@ -707,9 +774,9 @@ class LiveCircuitSession:
             return
 
         packet_tags = [reason, f"object_count:{len(parsed.objects)}"]
-        if any(obj.local_id is not None for obj in parsed.objects):
+        if parsed.objects:
             packet_tags.append("has_local_id")
-        if any(obj.texture_entry_size > 0 for obj in parsed.objects):
+        if any(obj.texture_entry is not None for obj in parsed.objects):
             packet_tags.append("has_texture_entry")
         packet_id = self.unknowns_db.record_improved_terse_packet(
             session_id=self.db_session_id,
@@ -754,6 +821,78 @@ class LiveCircuitSession:
             capture_reason=reason,
             message=parsed,
         )
+
+    def _record_cached_observation(
+        self,
+        *,
+        dispatched: MessageDispatch,
+        sequence: int,
+        at_seconds: float,
+        reason: str,
+    ) -> None:
+        if self.unknowns_db is None or dispatched.summary.name != "ObjectUpdateCached":
+            return
+        try:
+            parsed = parse_object_update_cached(dispatched)
+        except MessageDecodeError:
+            return
+
+        packet_tags = [reason, f"object_count:{len(parsed.objects)}"]
+        packet_id = self.unknowns_db.record_cached_packet(
+            session_id=self.db_session_id,
+            observed_at_seconds=at_seconds,
+            message_sequence=sequence,
+            capture_reason=reason,
+            region_handle=parsed.region_handle,
+            time_dilation=parsed.time_dilation,
+            packet_tags=packet_tags,
+        )
+        for obj in parsed.objects:
+            self.unknowns_db.record_cached_entity(
+                packet_id=packet_id,
+                session_id=self.db_session_id,
+                observed_at_seconds=at_seconds,
+                message_sequence=sequence,
+                capture_reason=reason,
+                region_handle=parsed.region_handle,
+                entry=obj,
+            )
+
+    def _record_compressed_observation(
+        self,
+        *,
+        dispatched: MessageDispatch,
+        sequence: int,
+        at_seconds: float,
+        reason: str,
+    ) -> None:
+        if self.unknowns_db is None or dispatched.summary.name != "ObjectUpdateCompressed":
+            return
+        try:
+            parsed = parse_object_update_compressed(dispatched)
+        except MessageDecodeError:
+            return
+
+        packet_tags = [reason, f"object_count:{len(parsed.objects)}"]
+        packet_id = self.unknowns_db.record_compressed_packet(
+            session_id=self.db_session_id,
+            observed_at_seconds=at_seconds,
+            message_sequence=sequence,
+            capture_reason=reason,
+            region_handle=parsed.region_handle,
+            time_dilation=parsed.time_dilation,
+            packet_tags=packet_tags,
+        )
+        for obj in parsed.objects:
+            self.unknowns_db.record_compressed_entity(
+                packet_id=packet_id,
+                session_id=self.db_session_id,
+                observed_at_seconds=at_seconds,
+                message_sequence=sequence,
+                capture_reason=reason,
+                region_handle=parsed.region_handle,
+                entry=obj,
+            )
 
     def _record_unknown_dispatch_failure(
         self,

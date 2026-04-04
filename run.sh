@@ -10,6 +10,7 @@ PASSWORD="${VIBESTORM_PASSWORD:-changeme123}"
 START_LOCATION="${VIBESTORM_START_LOCATION:-uri:Vibestorm Test&128&128&25}"
 SESSION_DURATION="${VIBESTORM_SESSION_DURATION:-60}"
 AGENT_UPDATE_INTERVAL="${VIBESTORM_AGENT_UPDATE_INTERVAL:-1.0}"
+CAMERA_SWEEP="${VIBESTORM_CAMERA_SWEEP:-0}"
 SPAWN_CUBE="${VIBESTORM_SPAWN_CUBE:-0}"
 CAPTURE_DIR="${VIBESTORM_CAPTURE_DIR:-}"
 CAPTURE_MODE="${VIBESTORM_CAPTURE_MODE:-smart}"
@@ -38,6 +39,7 @@ Defaults come from the local OpenSim notes and can be overridden with env vars:
   VIBESTORM_START_LOCATION
   VIBESTORM_SESSION_DURATION
   VIBESTORM_AGENT_UPDATE_INTERVAL
+  VIBESTORM_CAMERA_SWEEP
   VIBESTORM_SPAWN_CUBE
   VIBESTORM_CAPTURE_DIR
   VIBESTORM_CAPTURE_MODE
@@ -48,6 +50,7 @@ Examples:
   ./run.sh session 180 --verbose
   ./run.sh bootstrap
   VIBESTORM_SESSION_DURATION=15 ./run.sh session
+  VIBESTORM_CAMERA_SWEEP=1 ./run.sh session
   VIBESTORM_SPAWN_CUBE=1 ./run.sh session
   VIBESTORM_CAPTURE_DIR=test/fixtures/live ./run.sh session --capture-message ObjectUpdate
   VIBESTORM_CAPTURE_DIR=test/fixtures/live VIBESTORM_CAPTURE_MODE=all ./run.sh session --capture-message ObjectUpdate
@@ -113,6 +116,9 @@ case "$command" in
       shift
     fi
     session_args=()
+    if [[ "$CAMERA_SWEEP" == "1" ]]; then
+      session_args+=(--camera-sweep)
+    fi
     if [[ "$SPAWN_CUBE" == "1" ]]; then
       session_args+=(--spawn-cube)
     fi
