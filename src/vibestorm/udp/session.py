@@ -138,6 +138,7 @@ class SessionReport:
     cached_texture_response: AgentCachedTextureResponseMessage | None
     avatar_appearance: AvatarAppearanceMessage | None
     self_avatar_appearance: AvatarAppearanceMessage | None
+    baked_appearance_override: BakedAppearanceOverride | None
     events: tuple[SessionEvent, ...]
 
 
@@ -519,6 +520,7 @@ class LiveCircuitSession:
             cached_texture_response=self.latest_cached_texture_response,
             avatar_appearance=self.latest_avatar_appearance,
             self_avatar_appearance=self.latest_self_avatar_appearance,
+            baked_appearance_override=self.baked_appearance_override,
             events=tuple(self.events),
         )
 

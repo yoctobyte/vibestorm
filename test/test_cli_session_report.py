@@ -253,6 +253,7 @@ class CliSessionReportTests(unittest.TestCase):
                 hover_height=None,
                 attachments=(),
             ),
+            baked_appearance_override=None,
             events=(SessionEvent(at_seconds=0.0, kind="session.started", detail=""),),
         )
 
@@ -315,6 +316,7 @@ class CliSessionReportTests(unittest.TestCase):
             cached_texture_response=None,
             avatar_appearance=None,
             self_avatar_appearance=None,
+            baked_appearance_override=None,
             events=(),
         )
 
@@ -345,6 +347,7 @@ class CliSessionReportTests(unittest.TestCase):
             cached_texture_response=None,
             avatar_appearance=None,
             self_avatar_appearance=None,
+            baked_appearance_override=None,
             events=(),
         )
 

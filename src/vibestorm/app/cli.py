@@ -326,6 +326,24 @@ def format_appearance_status(report: SessionReport) -> list[str]:
             f"cof:{cof_version if cof_version is not None else '-'} "
             f"flags:{flags if flags is not None else '-'}",
         )
+    # Baked texture upload status — always print so we can diagnose cloud state
+    bake_events = [e for e in report.events if e.kind.startswith("bake.")]
+    baked = report.baked_appearance_override
+    if baked is not None:
+        lines.append(
+            f"appearance[baked]=uploaded:{len(baked.wearable_cache_items)} "
+            f"serial:{baked.serial_num} te:{len(baked.texture_entry)} vp:{len(baked.visual_params)}"
+        )
+    elif bake_events:
+        # Summarize what went wrong
+        errors = [e for e in bake_events if "error" in e.kind or "skip" in e.kind]
+        uploaded = [e for e in bake_events if e.kind == "bake.uploaded"]
+        summary = f"uploaded:{len(uploaded)}"
+        if errors:
+            summary += " " + " ".join(e.detail[:60] for e in errors[:3])
+        lines.append(f"appearance[baked]=none {summary}")
+    else:
+        lines.append("appearance[baked]=none no_events")
     return lines
 
 
