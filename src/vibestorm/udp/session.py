@@ -1259,14 +1259,19 @@ async def run_live_session(
     *,
     config: SessionConfig | None = None,
     on_event: Callable[[SessionEvent], None] | None = None,
+    world_view: WorldView | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> SessionReport:
     session_config = config or SessionConfig()
-    session = LiveCircuitSession(
+    init_kwargs: dict = dict(
         bootstrap=bootstrap,
         dispatcher=dispatcher,
         config=session_config,
         on_event=on_event,
     )
+    if world_view is not None:
+        init_kwargs["world_view"] = world_view
+    session = LiveCircuitSession(**init_kwargs)
     loop = asyncio.get_running_loop()
     start_time = loop.time()
     deadline = start_time + session_config.duration_seconds
@@ -1281,19 +1286,32 @@ async def run_live_session(
         for packet in session.start(start_time):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
-        while loop.time() < deadline and session.close_reason is None:
+        def _should_continue() -> bool:
+            if session.close_reason is not None:
+                return False
+            if stop_event is not None and stop_event.is_set():
+                return False
+            if stop_event is None and loop.time() >= deadline:
+                return False
+            return True
+
+        while _should_continue():
             now = loop.time()
             for packet in session.drain_due_packets(now):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
+            if stop_event is None:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                recv_timeout = min(session_config.receive_timeout_seconds, remaining)
+            else:
+                recv_timeout = session_config.receive_timeout_seconds
 
             try:
                 payload, _ = await asyncio.wait_for(
                     loop.sock_recvfrom(sock, 65535),
-                    timeout=min(session_config.receive_timeout_seconds, remaining),
+                    timeout=recv_timeout,
                 )
             except TimeoutError:
                 continue
