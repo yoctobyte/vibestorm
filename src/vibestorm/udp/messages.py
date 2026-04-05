@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from struct import pack, unpack_from
 from uuid import UUID
@@ -1107,6 +1108,158 @@ def parse_object_update_compressed(message: MessageDispatch) -> ObjectUpdateComp
     )
 
 
+_COMPRESSED_FLAGS_HAS_ANG_VEL   = 0x0080
+_COMPRESSED_FLAGS_HAS_PARENT    = 0x0020
+_COMPRESSED_FLAGS_TREE          = 0x0002
+_COMPRESSED_FLAGS_HAS_TEXT      = 0x0004
+_COMPRESSED_FLAGS_MEDIA_URL     = 0x0200
+_COMPRESSED_FLAGS_PARTICLES_OLD = 0x0008
+_COMPRESSED_FLAGS_HAS_SOUND     = 0x0010
+_COMPRESSED_FLAGS_HAS_NV        = 0x0100
+
+
+def decode_compressed_object_data(
+    data: bytes,
+    region_handle: int,
+    time_dilation: int,
+    update_flags: int,
+) -> ObjectUpdateEntry | None:
+    """Decode the variable-length data blob from an ObjectUpdateCompressed entry.
+
+    Layout (from LLClientView.CreateCompressedUpdateBlockZC):
+      0   16  FullID
+     16    4  LocalID (U32)
+     20    1  PCode
+     21    1  State
+     22    4  CRC (U32)
+     26    1  Material
+     27    1  ClickAction
+     28   12  Scale (3x F32)
+     40   12  Position (3x F32)
+     52   12  Rotation XYZ (packed quaternion, W computed)
+     64    4  CompressedFlags (U32)
+     68   16  OwnerID (UUID)
+     84+      conditional fields (see CompressedFlags)
+    """
+    if len(data) < 84:
+        return None
+
+    full_id = UUID(bytes=data[0:16])
+    local_id = unpack_from("<I", data, 16)[0]
+    pcode = data[20]
+    state = data[21]
+    crc = unpack_from("<I", data, 22)[0]
+    material = data[26]
+    click_action = data[27]
+    scale: tuple[float, float, float] = tuple(unpack_from("<fff", data, 28))  # type: ignore[assignment]
+    position: tuple[float, float, float] = tuple(unpack_from("<fff", data, 40))  # type: ignore[assignment]
+    rx, ry, rz = unpack_from("<fff", data, 52)
+    rw = math.sqrt(max(0.0, 1.0 - rx * rx - ry * ry - rz * rz))
+    rotation: tuple[float, float, float, float] = (rx, ry, rz, rw)
+    compressed_flags = unpack_from("<I", data, 64)[0]
+    pos = 84  # skip OwnerID (16 bytes starting at 68)
+
+    parent_id = 0
+    name_values: dict[str, str] = {}
+    texture_entry_size = 0
+    texture_anim_size = 0
+    extra_params_entries: tuple[ExtraParamEntry, ...] = ()
+    extra_params_size = 0
+
+    try:
+        if compressed_flags & _COMPRESSED_FLAGS_HAS_ANG_VEL:
+            pos += 12  # angular velocity Vector3
+        if compressed_flags & _COMPRESSED_FLAGS_HAS_PARENT:
+            if len(data) < pos + 4:
+                return None
+            parent_id = unpack_from("<I", data, pos)[0]
+            pos += 4
+        if compressed_flags & _COMPRESSED_FLAGS_TREE:
+            pos += 1  # tree species byte
+        if compressed_flags & _COMPRESSED_FLAGS_HAS_TEXT:
+            end = data.index(b"\x00", pos)
+            pos = end + 1 + 4  # null-terminated string + RGBA
+        if compressed_flags & _COMPRESSED_FLAGS_MEDIA_URL:
+            end = data.index(b"\x00", pos)
+            pos = end + 1
+        if compressed_flags & _COMPRESSED_FLAGS_PARTICLES_OLD:
+            pos += 86  # legacy particle system, fixed size
+        # ExtraParams: always written; starts with count byte
+        ep_start = pos
+        ep_count = data[pos]
+        pos += 1
+        for _ in range(ep_count):
+            if len(data) < pos + 6:
+                break
+            ep_size = unpack_from("<I", data, pos + 2)[0]
+            pos += 6 + ep_size
+        extra_params_size = pos - ep_start
+        try:
+            extra_params_entries = parse_shape_extra_params(data[ep_start:pos])
+        except MessageDecodeError:
+            extra_params_entries = ()
+        if compressed_flags & _COMPRESSED_FLAGS_HAS_SOUND:
+            pos += 25  # UUID + F32 + U8 + F32
+        if compressed_flags & _COMPRESSED_FLAGS_HAS_NV:
+            end = data.index(b"\x00", pos)
+            nv_bytes = data[pos : end]
+            name_values = _parse_name_values(nv_bytes)
+            pos = end + 1
+        # Skip shape data (23 bytes, always present)
+        pos += 23
+        # TextureEntry: 4-byte length prefix (only lower 16 bits used)
+        if len(data) >= pos + 4:
+            te_len = unpack_from("<H", data, pos)[0]  # lower 16 bits
+            texture_entry_size = te_len
+            pos += 4 + te_len
+    except (ValueError, IndexError):
+        pass  # truncated data — return what we have
+
+    variant = "unknown"
+    if pcode == 47:
+        variant = "avatar_basic"
+    elif pcode == 9:
+        variant = "prim_basic"
+
+    default_texture_id: UUID | None = None
+    if texture_entry_size >= 16:
+        # The texture entry payload starts after the 4-byte length prefix; we already
+        # advanced past it, so re-read from pos - texture_entry_size
+        te_start = pos - texture_entry_size
+        try:
+            default_texture_id = UUID(bytes=data[te_start : te_start + 16])
+        except Exception:
+            pass
+
+    return ObjectUpdateEntry(
+        local_id=local_id,
+        state=state,
+        full_id=full_id,
+        crc=crc,
+        pcode=pcode,
+        material=material,
+        click_action=click_action,
+        scale=scale,
+        object_data_size=len(data),
+        parent_id=parent_id,
+        update_flags=update_flags,
+        position=position,
+        rotation=rotation,
+        variant=variant,
+        name_values=name_values,
+        texture_entry_size=texture_entry_size,
+        texture_anim_size=texture_anim_size,
+        data_size=0,
+        text_size=0,
+        media_url_size=0,
+        ps_block_size=0,
+        extra_params_size=extra_params_size,
+        default_texture_id=default_texture_id,
+        interesting_payloads=(),
+        extra_params_entries=extra_params_entries,
+    )
+
+
 def parse_object_properties_family(message: MessageDispatch) -> ObjectPropertiesFamilyMessage:
     if message.summary.name != "ObjectPropertiesFamily":
         raise MessageDecodeError(f"expected ObjectPropertiesFamily, got {message.summary.name}")
@@ -1792,3 +1945,23 @@ def encode_region_handshake_reply(agent_id: UUID, session_id: UUID, flags: int) 
     if not 0 <= flags <= 0xFFFFFFFF:
         raise ValueError("flags must fit in U32")
     return b"\xFF\xFF\x00\x95" + agent_id.bytes + session_id.bytes + pack("<I", flags)
+
+
+def encode_request_multiple_objects(
+    agent_id: UUID, session_id: UUID, local_ids: list[int]
+) -> bytes:
+    """Encode a RequestMultipleObjects packet (Medium/3, Zerocoded) for up to 255 local IDs.
+
+    CacheMissType=0 requests a full ObjectUpdate for each local_id, used when the
+    viewer receives ObjectUpdateCached but has no local copy of the object data.
+    """
+    if not local_ids:
+        raise ValueError("local_ids must not be empty")
+    if len(local_ids) > 255:
+        raise ValueError("at most 255 local_ids per packet")
+    header = b"\xFF\x03"  # Medium frequency, message number 3
+    agent_data = agent_id.bytes + session_id.bytes
+    object_data = bytes([len(local_ids)]) + b"".join(
+        bytes([0]) + pack("<I", lid) for lid in local_ids
+    )
+    return header + agent_data + object_data

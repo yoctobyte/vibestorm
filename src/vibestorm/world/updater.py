@@ -6,8 +6,10 @@ from dataclasses import dataclass
 
 from vibestorm.udp.messages import (
     MessageDecodeError,
+    ObjectUpdateMessage,
     ObjectUpdateSummary,
     RegionHandshakeMessage,
+    decode_compressed_object_data,
     format_object_update_interest,
     parse_coarse_location_update,
     parse_improved_terse_object_update,
@@ -173,13 +175,30 @@ class WorldUpdater:
 
         if dispatched.summary.name == "ObjectUpdateCompressed":
             compressed = parse_object_update_compressed(dispatched)
-            data_sizes = [str(len(obj.data)) for obj in compressed.objects[:4]]
+            entries = []
+            for obj in compressed.objects:
+                entry = decode_compressed_object_data(
+                    obj.data,
+                    compressed.region_handle,
+                    compressed.time_dilation,
+                    obj.update_flags,
+                )
+                if entry is not None:
+                    entries.append(entry)
+            if entries:
+                self.world_view.apply_object_update(
+                    ObjectUpdateMessage(
+                        region_handle=compressed.region_handle,
+                        time_dilation=compressed.time_dilation,
+                        objects=tuple(entries),
+                    )
+                )
             return WorldUpdateEvent(
                 kind="world.object_update_compressed",
                 detail=(
                     f"region_handle={compressed.region_handle} "
-                    f"objects={len(compressed.objects)} dilation={compressed.time_dilation}"
-                    + (f" data_sizes={','.join(data_sizes)}" if data_sizes else "")
+                    f"objects={len(compressed.objects)} decoded={len(entries)} "
+                    f"dilation={compressed.time_dilation}"
                 ),
             )
 

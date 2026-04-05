@@ -50,6 +50,7 @@ from vibestorm.udp.messages import (
     encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
+    encode_request_multiple_objects,
     encode_use_circuit_code,
     parse_agent_movement_complete,
     parse_agent_cached_texture_response,
@@ -462,7 +463,34 @@ class LiveCircuitSession:
                     reason=world_event.kind,
                 )
 
-        return self._flush_transport_packets(now)
+        packets = self._flush_transport_packets(now)
+
+        # When ObjectUpdateCached arrives, request full ObjectUpdate for each
+        # local_id — we never have a warm cache so CacheMissType=0 always.
+        if dispatched.summary.name == "ObjectUpdateCached":
+            try:
+                cached_msg = parse_object_update_cached(dispatched)
+            except Exception:
+                cached_msg = None
+            if cached_msg is not None and cached_msg.objects:
+                local_ids = [obj.local_id for obj in cached_msg.objects]
+                for i in range(0, len(local_ids), 255):
+                    chunk = local_ids[i : i + 255]
+                    packets.append(
+                        self._build_outbound_packet(
+                            encode_request_multiple_objects(
+                                self.bootstrap.agent_id,
+                                self.bootstrap.session_id,
+                                chunk,
+                            ),
+                            reliable=True,
+                            zerocoded=True,
+                            now=now,
+                            label="RequestMultipleObjects",
+                        )
+                    )
+
+        return packets
 
     def drain_due_packets(self, now: float) -> list[bytes]:
         if self.close_reason is not None or not self.started or not self.movement_completed:

@@ -420,7 +420,7 @@ class WorldUpdaterTests(unittest.TestCase):
         assert event is not None
         self.assertEqual(event.kind, "world.object_update_compressed")
         self.assertIn("objects=2", event.detail)
-        self.assertIn("data_sizes=3,4", event.detail)
+        self.assertIn("decoded=0", event.detail)  # stub data blobs too short to decode
 
     def test_apply_dispatch_applies_object_properties_family(self) -> None:
         world = WorldView()
