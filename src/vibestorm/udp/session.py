@@ -1261,13 +1261,55 @@ _BAKED_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "baked
 _APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
 
 
+def _encode_face_mask(face_index: int) -> bytes:
+    """Encode a single face index as a LEB128 face bitmask for SL TextureEntry."""
+    mask = 1 << face_index
+    out = []
+    while True:
+        b = mask & 0x7F
+        mask >>= 7
+        if mask:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            break
+    return bytes(out)
+
+
+def _build_bake_texture_entry(face_uuids: dict[int, UUID], te_suffix: bytes) -> bytes:
+    """Build a SL TextureEntry binary.
+
+    face_uuids maps face slot index → UUID (must all be the same or distinct per slot).
+    te_suffix is the raw bytes for the remaining TE sections (RGBA, scale, offset, etc.)
+    following the texture-UUID section null terminator — copied verbatim from a reference TE.
+
+    Layout: [default_uuid(16)] ([face_mask][uuid])... [0x00] [te_suffix...]
+    """
+    # SL default avatar texture UUID (the well-known null-stand-in for TE slots)
+    DEFAULT_AVATAR_TEXTURE = UUID("8dcd4a48-2d37-4909-9f78-f7a9eb4ef05d")
+    out = bytearray()
+    out.extend(DEFAULT_AVATAR_TEXTURE.bytes)
+    for face_idx, uuid in sorted(face_uuids.items()):
+        out.extend(_encode_face_mask(face_idx))
+        out.extend(uuid.bytes)
+    out.append(0x00)  # null terminator for texture-UUID section
+    out.extend(te_suffix)
+    return bytes(out)
+
+
 async def _load_and_upload_baked_textures(
     session: LiveCircuitSession,
     upload_baked_url: str,
     local_port: int,
     now: float,
 ) -> BakedAppearanceOverride | None:
-    """Load J2K blobs from local/baked-cache, upload via UploadBakedTexture CAP, build override."""
+    """Load J2K blobs from local/baked-cache, upload via UploadBakedTexture CAP, build override.
+
+    Uploads each blob and assigns the returned new_asset UUID to the wearable_data texture_index
+    at the same position (blob 0 → wearable_data[0].texture_index, etc.).  Builds a fresh TE
+    that places those UUIDs at the correct bake face slots (8, 9, 10, 11, 20 etc.) so that
+    OpenSim's UpdateBakedTextureCache finds them in its local asset cache.
+    """
     if not _APPEARANCE_FIXTURE.exists():
         session._record_event(now, "bake.skip", "appearance-fixture.json not found")
         return None
@@ -1275,8 +1317,12 @@ async def _load_and_upload_baked_textures(
     with _APPEARANCE_FIXTURE.open() as fh:
         fixture = json.load(fh)
 
-    te_bytes = bytes.fromhex(fixture["te_hex"])
-    te_offsets = {entry["blob_index"]: entry["te_offset"] for entry in fixture["te_uuid_offsets"]}
+    # The fixture TE hex contains a reference TE from Firestorm.  The texture-UUID section ends
+    # at the first 0x00-valued face-mask byte.  Everything after that (RGBA, scale, etc.) is
+    # reused verbatim as te_suffix so our TE has sane defaults for the remaining sections.
+    raw_te = bytes.fromhex(fixture["te_hex"])
+    te_suffix = _extract_te_suffix(raw_te)
+
     wearable_data = fixture["wearable_data"]
     visual_params = bytes(fixture["visual_params"])
     serial_num = fixture["serial_num"]
@@ -1285,13 +1331,17 @@ async def _load_and_upload_baked_textures(
 
     blob_count = len(fixture["blob_files"])
     client = UploadBakedTextureClient(timeout_seconds=30.0)
-    patched_te = bytearray(te_bytes)
+    face_uuids: dict[int, UUID] = {}
+    cache_item_list: list[WearableCacheEntry] = []
     uploaded_count = 0
 
     for blob_index in range(blob_count):
         blob_path = _BAKED_CACHE_DIR / f"bake-{blob_index}.j2k"
         if not blob_path.exists():
             session._record_event(now, "bake.skip", f"blob {blob_index} missing: {blob_path.name}")
+            continue
+        if blob_index >= len(wearable_data):
+            session._record_event(now, "bake.skip", f"blob {blob_index} has no wearable_data entry")
             continue
         texture_bytes = blob_path.read_bytes()
         try:
@@ -1309,31 +1359,57 @@ async def _load_and_upload_baked_textures(
             session._record_event(now, "bake.upload_no_asset", f"blob={blob_index} state={result.state}")
             continue
 
-        session._record_event(now, "bake.uploaded", f"blob={blob_index} asset={new_asset_id}")
-        te_offset = te_offsets.get(blob_index)
-        if te_offset is not None:
-            asset_uuid = UUID(new_asset_id)
-            patched_te[te_offset : te_offset + 16] = asset_uuid.bytes
+        wd = wearable_data[blob_index]
+        face_slot = wd["texture_index"]
+        asset_uuid = UUID(new_asset_id)
+        face_uuids[face_slot] = asset_uuid
+        cache_item_list.append(WearableCacheEntry(
+            texture_index=face_slot,
+            cache_id=UUID(wd["cache_id"]),
+        ))
+        session._record_event(
+            now, "bake.uploaded",
+            f"blob={blob_index} face={face_slot} asset={new_asset_id}",
+        )
         uploaded_count += 1
 
     if uploaded_count == 0:
         session._record_event(now, "bake.override_skipped", "no blobs uploaded successfully")
         return None
 
-    cache_items = tuple(
-        WearableCacheEntry(
-            texture_index=entry["texture_index"],
-            cache_id=UUID(entry["cache_id"]),
-        )
-        for entry in wearable_data
-    )
+    texture_entry = _build_bake_texture_entry(face_uuids, te_suffix)
     return BakedAppearanceOverride(
-        texture_entry=bytes(patched_te),
-        wearable_cache_items=cache_items,
+        texture_entry=texture_entry,
+        wearable_cache_items=tuple(cache_item_list),
         visual_params=visual_params,
         serial_num=serial_num,
         size=size,
     )
+
+
+def _extract_te_suffix(te_bytes: bytes) -> bytes:
+    """Return the bytes after the texture-UUID section's null terminator in a TE blob.
+
+    Parses the LEB128 face-mask + UUID entries until a zero-valued face mask is found,
+    then returns everything from the byte after the null terminator to the end.
+    """
+    pos = 16  # skip default UUID
+    while pos < len(te_bytes):
+        # Read LEB128 face mask
+        mask = 0
+        shift = 0
+        while pos < len(te_bytes):
+            b = te_bytes[pos]
+            pos += 1
+            mask |= (b & 0x7F) << shift
+            shift += 7
+            if not (b & 0x80):
+                break
+        if mask == 0:
+            # null terminator — everything from here onward is the suffix
+            return te_bytes[pos:]
+        pos += 16  # skip the 16-byte UUID for this entry
+    return b""
 
 
 async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, now: float) -> None:
