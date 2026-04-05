@@ -160,6 +160,66 @@ class WorldUpdaterTests(unittest.TestCase):
         assert world.objects[object_id].position is not None
         self.assertAlmostEqual(world.objects[object_id].position[0], 1.0)
 
+    def test_apply_dispatch_parses_multi_object_update(self) -> None:
+        world = WorldView()
+        updater = WorldUpdater(world)
+        object_id_a = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_id_b = UUID("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+
+        def _build_prim_entry(local_id: int, full_id: UUID, pos_x: float) -> bytes:
+            object_data = (
+                pack("<fff", pos_x, 2.0, 3.0)  # position
+                + b"\x00" * 28
+                + pack("<ffff", 0.0, 0.0, 0.0, 1.0)  # rotation
+                + b"\x00" * 4
+            )
+            assert len(object_data) == 60
+            return (
+                local_id.to_bytes(4, "little")
+                + bytes([0])                          # state
+                + full_id.bytes                       # full_id
+                + (0).to_bytes(4, "little")           # crc
+                + bytes([9, 0, 0])                    # pcode=9, material, click_action
+                + pack("<fff", 1.0, 1.0, 1.0)         # scale
+                + bytes([60]) + object_data           # ObjectData
+                + b"\x00" * 8                         # parent_id + update_flags
+                + b"\x00" * 22                        # shape params
+                + b"\x00\x00"                         # TextureEntry len=0
+                + bytes([0])                          # TextureAnim len=0
+                + b"\x00\x00"                         # NameValue len=0
+                + b"\x00\x00"                         # Data len=0
+                + bytes([0])                          # Text len=0
+                + b"\x00\x00\x00\x00"                # TextColor
+                + bytes([0])                          # MediaURL len=0
+                + bytes([0])                          # PSBlock len=0
+                + b"\x00\x00"                         # ExtraParams len=0
+            )
+
+        dispatched = self._dispatch(
+            "ObjectUpdate",
+            (
+                (123456789).to_bytes(8, "little")     # region_handle
+                + (42).to_bytes(2, "little")           # time_dilation
+                + bytes([2])                           # object_count=2
+                + _build_prim_entry(7, object_id_a, 1.0)
+                + _build_prim_entry(8, object_id_b, 5.0)
+            ),
+            frequency="High",
+            message_number=12,
+        )
+
+        event = updater.apply_dispatch(dispatched)
+
+        assert event is not None
+        self.assertEqual(event.kind, "world.object_update")
+        self.assertIn("objects=2", event.detail)
+        self.assertIn(object_id_a, world.objects)
+        self.assertIn(object_id_b, world.objects)
+        assert world.objects[object_id_a].position is not None
+        assert world.objects[object_id_b].position is not None
+        self.assertAlmostEqual(world.objects[object_id_a].position[0], 1.0)
+        self.assertAlmostEqual(world.objects[object_id_b].position[0], 5.0)
+
     def test_apply_dispatch_marks_rich_object_update_when_texture_entry_exists(self) -> None:
         world = WorldView()
         updater = WorldUpdater(world)

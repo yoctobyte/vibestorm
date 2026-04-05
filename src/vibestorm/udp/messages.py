@@ -1445,38 +1445,27 @@ def parse_object_update_summary(message: MessageDispatch) -> ObjectUpdateSummary
     )
 
 
-def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
-    if message.summary.name != "ObjectUpdate":
-        raise MessageDecodeError(f"expected ObjectUpdate, got {message.summary.name}")
-    if len(message.body) < 11:
-        raise MessageDecodeError("ObjectUpdate body is too short")
-
-    region_handle = unpack_from("<Q", message.body, 0)[0]
-    time_dilation = unpack_from("<H", message.body, 8)[0]
-    object_count = message.body[10]
-    if object_count != 1:
-        raise MessageDecodeError(f"unsupported ObjectUpdate object_count={object_count}")
-
-    offset = 11
-    if len(message.body) < offset + 40:
+def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpdateEntry, int]:
+    """Parse one ObjectUpdate object starting at offset. Returns (entry, next_offset)."""
+    if len(body) < offset + 40:
         raise MessageDecodeError("ObjectUpdate object header is truncated")
 
-    local_id = unpack_from("<I", message.body, offset)[0]
-    state = message.body[offset + 4]
-    full_id = UUID(bytes=message.body[offset + 5 : offset + 21])
-    crc = unpack_from("<I", message.body, offset + 21)[0]
-    pcode = message.body[offset + 25]
-    material = message.body[offset + 26]
-    click_action = message.body[offset + 27]
-    scale = tuple(unpack_from("<fff", message.body, offset + 28))
+    local_id = unpack_from("<I", body, offset)[0]
+    state = body[offset + 4]
+    full_id = UUID(bytes=body[offset + 5 : offset + 21])
+    crc = unpack_from("<I", body, offset + 21)[0]
+    pcode = body[offset + 25]
+    material = body[offset + 26]
+    click_action = body[offset + 27]
+    scale = tuple(unpack_from("<fff", body, offset + 28))
     offset += 40
 
-    object_data, offset = _read_variable_field(message.body, offset, 1, "ObjectUpdate.ObjectData")
+    object_data, offset = _read_variable_field(body, offset, 1, "ObjectUpdate.ObjectData")
 
-    if len(message.body) < offset + 8:
+    if len(body) < offset + 8:
         raise MessageDecodeError("ObjectUpdate parent/update block is truncated")
-    parent_id = unpack_from("<I", message.body, offset)[0]
-    update_flags = unpack_from("<I", message.body, offset + 4)[0]
+    parent_id = unpack_from("<I", body, offset)[0]
+    update_flags = unpack_from("<I", body, offset + 4)[0]
 
     position: tuple[float, float, float] | None = None
     rotation: tuple[float, float, float, float] | None = None
@@ -1492,7 +1481,7 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
     default_texture_id: UUID | None = None
     extra_params_entries: tuple[ExtraParamEntry, ...] = ()
     interesting_payloads: list[ObjectUpdatePayloadSummary] = []
-    trailing_payload = b""
+    next_offset = offset + 8
 
     if pcode == 9 and len(object_data) == 60:
         position = tuple(unpack_from("<fff", object_data, 0))
@@ -1500,57 +1489,34 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
         variant = "prim_basic"
         tail_offset = offset + 8 + 22
         texture_entry_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            2,
-            "ObjectUpdate.TextureEntry",
+            body, tail_offset, 2, "ObjectUpdate.TextureEntry",
         )
         texture_anim_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            1,
-            "ObjectUpdate.TextureAnim",
+            body, tail_offset, 1, "ObjectUpdate.TextureAnim",
         )
         name_value_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            2,
-            "ObjectUpdate.NameValue",
+            body, tail_offset, 2, "ObjectUpdate.NameValue",
         )
         data_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            2,
-            "ObjectUpdate.Data",
+            body, tail_offset, 2, "ObjectUpdate.Data",
         )
         text_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            1,
-            "ObjectUpdate.Text",
+            body, tail_offset, 1, "ObjectUpdate.Text",
         )
-        if len(message.body) < tail_offset + 4:
+        if len(body) < tail_offset + 4:
             raise MessageDecodeError("ObjectUpdate text color is truncated")
-        text_color_payload = message.body[tail_offset : tail_offset + 4]
+        text_color_payload = body[tail_offset : tail_offset + 4]
         tail_offset += 4
         media_url_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            1,
-            "ObjectUpdate.MediaURL",
+            body, tail_offset, 1, "ObjectUpdate.MediaURL",
         )
         ps_block_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            1,
-            "ObjectUpdate.PSBlock",
+            body, tail_offset, 1, "ObjectUpdate.PSBlock",
         )
         extra_params_payload, tail_offset = _read_variable_field_with_length_fallback(
-            message.body,
-            tail_offset,
-            "ObjectUpdate.ExtraParams",
-            preferred_length_sizes=(2, 1),
+            body, tail_offset, "ObjectUpdate.ExtraParams", preferred_length_sizes=(2, 1),
         )
+        next_offset = tail_offset
         texture_entry_size = len(texture_entry_payload)
         if texture_entry_size >= 16:
             default_texture_id = UUID(bytes=texture_entry_payload[:16])
@@ -1566,7 +1532,6 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
             except MessageDecodeError:
                 extra_params_entries = ()
         name_values = _parse_name_values(name_value_payload)
-        trailing_payload = message.body[tail_offset:]
         for field_name, payload in (
             ("TextureEntry", texture_entry_payload),
             ("TextureAnim", texture_anim_payload),
@@ -1577,7 +1542,6 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
             ("MediaURL", media_url_payload),
             ("PSBlock", ps_block_payload),
             ("ExtraParams", extra_params_payload),
-            ("Trailing", trailing_payload),
         ):
             summary = _summarize_payload(field_name, payload)
             if summary is not None:
@@ -1603,31 +1567,21 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
         variant = "avatar_basic"
         tail_offset = offset + 8 + 22
         texture_entry_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            2,
-            "ObjectUpdate.TextureEntry",
+            body, tail_offset, 2, "ObjectUpdate.TextureEntry",
         )
         texture_anim_payload, tail_offset = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            1,
-            "ObjectUpdate.TextureAnim",
+            body, tail_offset, 1, "ObjectUpdate.TextureAnim",
         )
-        name_value_payload, _ = _read_variable_field_best_effort(
-            message.body,
-            tail_offset,
-            2,
-            "ObjectUpdate.NameValue",
+        name_value_payload, tail_offset = _read_variable_field_best_effort(
+            body, tail_offset, 2, "ObjectUpdate.NameValue",
         )
+        next_offset = tail_offset
         name_values = _parse_name_values(name_value_payload)
         texture_entry_size = len(texture_entry_payload)
         texture_anim_size = len(texture_anim_payload)
-        trailing_payload = message.body[tail_offset:]
         for field_name, payload in (
             ("TextureEntry", texture_entry_payload),
             ("TextureAnim", texture_anim_payload),
-            ("Trailing", trailing_payload),
         ):
             summary = _summarize_payload(field_name, payload)
             if summary is not None:
@@ -1637,38 +1591,56 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
             f"unsupported ObjectUpdate variant pcode={pcode} object_data_size={len(object_data)}",
         )
 
+    entry = ObjectUpdateEntry(
+        local_id=local_id,
+        state=state,
+        full_id=full_id,
+        crc=crc,
+        pcode=pcode,
+        material=material,
+        click_action=click_action,
+        scale=scale,  # type: ignore[arg-type]
+        object_data_size=len(object_data),
+        parent_id=parent_id,
+        update_flags=update_flags,
+        position=position,  # type: ignore[arg-type]
+        rotation=rotation,  # type: ignore[arg-type]
+        variant=variant,
+        name_values=name_values,
+        texture_entry_size=texture_entry_size,
+        texture_anim_size=texture_anim_size,
+        data_size=data_size,
+        text_size=text_size,
+        media_url_size=media_url_size,
+        ps_block_size=ps_block_size,
+        extra_params_size=extra_params_size,
+        default_texture_id=default_texture_id,
+        interesting_payloads=tuple(interesting_payloads),
+        extra_params_entries=extra_params_entries,
+    )
+    return entry, next_offset
+
+
+def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
+    if message.summary.name != "ObjectUpdate":
+        raise MessageDecodeError(f"expected ObjectUpdate, got {message.summary.name}")
+    if len(message.body) < 11:
+        raise MessageDecodeError("ObjectUpdate body is too short")
+
+    region_handle = unpack_from("<Q", message.body, 0)[0]
+    time_dilation = unpack_from("<H", message.body, 8)[0]
+    object_count = message.body[10]
+
+    offset = 11
+    objects: list[ObjectUpdateEntry] = []
+    for _ in range(object_count):
+        entry, offset = _parse_one_object_update_entry(message.body, offset)
+        objects.append(entry)
+
     return ObjectUpdateMessage(
         region_handle=region_handle,
         time_dilation=time_dilation,
-        objects=(
-            ObjectUpdateEntry(
-                local_id=local_id,
-                state=state,
-                full_id=full_id,
-                crc=crc,
-                pcode=pcode,
-                material=material,
-                click_action=click_action,
-                scale=scale,  # type: ignore[arg-type]
-                object_data_size=len(object_data),
-                parent_id=parent_id,
-                update_flags=update_flags,
-                position=position,  # type: ignore[arg-type]
-                rotation=rotation,  # type: ignore[arg-type]
-                variant=variant,
-                name_values=name_values,
-                texture_entry_size=texture_entry_size,
-                texture_anim_size=texture_anim_size,
-                data_size=data_size,
-                text_size=text_size,
-                media_url_size=media_url_size,
-                ps_block_size=ps_block_size,
-                extra_params_size=extra_params_size,
-                default_texture_id=default_texture_id,
-                interesting_payloads=tuple(interesting_payloads),
-                extra_params_entries=extra_params_entries,
-            ),
-        ),
+        objects=tuple(objects),
     )
 
 
