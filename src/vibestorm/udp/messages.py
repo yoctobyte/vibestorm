@@ -1634,8 +1634,14 @@ def parse_object_update(message: MessageDispatch) -> ObjectUpdateMessage:
     offset = 11
     objects: list[ObjectUpdateEntry] = []
     for _ in range(object_count):
-        entry, offset = _parse_one_object_update_entry(message.body, offset)
+        try:
+            entry, offset = _parse_one_object_update_entry(message.body, offset)
+        except MessageDecodeError:
+            break
         objects.append(entry)
+
+    if not objects:
+        raise MessageDecodeError(f"ObjectUpdate: no decodable objects out of {object_count}")
 
     return ObjectUpdateMessage(
         region_handle=region_handle,
