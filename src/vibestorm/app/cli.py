@@ -173,7 +173,8 @@ def format_world_status(world_view: WorldView) -> list[str]:
             f"region_handle:{world_view.latest_object_update.region_handle}",
         )
     if world_view.objects:
-        lines.append(f"world[objects]=tracked:{len(world_view.objects)}")
+        with_props = sum(1 for o in world_view.objects.values() if o.properties_family is not None)
+        lines.append(f"world[objects]=tracked:{len(world_view.objects)} with_props:{with_props}")
         for obj in sorted(world_view.objects.values(), key=lambda item: item.local_id)[:3]:
             line = (
                 f"world[object]={obj.full_id} "
@@ -189,6 +190,10 @@ def format_world_status(world_view: WorldView) -> list[str]:
                 full_name = " ".join(part for part in (first, last) if part)
                 if full_name:
                     line += f" name={full_name}"
+            elif obj.properties_family is not None and obj.properties_family.name:
+                line += f" name={obj.properties_family.name!r}"
+            if obj.properties_family is not None:
+                line += f" owner={obj.properties_family.owner_id}"
             if obj.default_texture_id is not None:
                 line += f" texture={obj.default_texture_id}"
             lines.append(line)

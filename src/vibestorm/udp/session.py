@@ -51,6 +51,7 @@ from vibestorm.udp.messages import (
     encode_packet_ack,
     encode_region_handshake_reply,
     encode_request_multiple_objects,
+    encode_request_object_properties_family,
     encode_use_circuit_code,
     parse_agent_movement_complete,
     parse_agent_cached_texture_response,
@@ -182,6 +183,7 @@ class LiveCircuitSession:
     baked_appearance_override: BakedAppearanceOverride | None = None
     upload_baked_url: str | None = None
     resolved_capabilities: tuple[str, ...] = ()
+    properties_requested: set[UUID] = field(default_factory=set)
     test_cube_spawned: bool = False
     started: bool = False
     started_at: float | None = None
@@ -502,12 +504,14 @@ class LiveCircuitSession:
             packets = self._drain_throttle_packets(now)
             packets.extend(self._drain_appearance_packets(now))
             packets.extend(self._drain_test_cube_packets(now))
+            packets.extend(self._drain_properties_requests(now))
             return packets
 
         self.last_agent_update_at = now
         packets = self._drain_throttle_packets(now)
         packets.extend(self._drain_appearance_packets(now))
         packets.extend(self._drain_test_cube_packets(now))
+        packets.extend(self._drain_properties_requests(now))
         self._update_camera_sweep(now)
         self.agent_update_count += 1
         packets.append(
@@ -798,6 +802,39 @@ class LiveCircuitSession:
                 label="ObjectAdd",
             ),
         ]
+
+    def _drain_properties_requests(self, now: float) -> list[bytes]:
+        """Send RequestObjectPropertiesFamily for tracked objects not yet requested.
+
+        Caps at 10 per drain cycle to avoid flooding the sim.
+        """
+        if not self.movement_completed:
+            return []
+        pending = [
+            full_id
+            for full_id in self.world_view.objects
+            if full_id not in self.properties_requested
+        ]
+        if not pending:
+            return []
+        batch = pending[:10]
+        packets = []
+        for full_id in batch:
+            self.properties_requested.add(full_id)
+            packets.append(
+                self._build_outbound_packet(
+                    encode_request_object_properties_family(
+                        self.bootstrap.agent_id,
+                        self.bootstrap.session_id,
+                        full_id,
+                    ),
+                    reliable=True,
+                    zerocoded=True,
+                    now=now,
+                    label="RequestObjectPropertiesFamily",
+                )
+            )
+        return packets
 
     def _update_camera_sweep(self, now: float) -> None:
         if not self.config.camera_sweep or self.started_at is None:

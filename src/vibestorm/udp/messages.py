@@ -1947,6 +1947,13 @@ def encode_region_handshake_reply(agent_id: UUID, session_id: UUID, flags: int) 
     return b"\xFF\xFF\x00\x95" + agent_id.bytes + session_id.bytes + pack("<I", flags)
 
 
+def encode_request_object_properties_family(
+    agent_id: UUID, session_id: UUID, object_id: UUID, request_flags: int = 0
+) -> bytes:
+    """RequestObjectPropertiesFamily (Medium/5, Zerocoded) — fetch name/owner/perms for one object."""
+    return b"\xFF\x05" + agent_id.bytes + session_id.bytes + pack("<I", request_flags) + object_id.bytes
+
+
 def encode_request_multiple_objects(
     agent_id: UUID, session_id: UUID, local_ids: list[int]
 ) -> bytes:
