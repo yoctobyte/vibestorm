@@ -179,6 +179,7 @@ class LiveCircuitSession:
     latest_cached_texture_response: AgentCachedTextureResponseMessage | None = None
     latest_inventory_fetch: InventoryFetchSnapshot | None = None
     baked_appearance_override: BakedAppearanceOverride | None = None
+    upload_baked_url: str | None = None
     resolved_capabilities: tuple[str, ...] = ()
     test_cube_spawned: bool = False
     started: bool = False
@@ -659,6 +660,10 @@ class LiveCircuitSession:
             ]
 
         if self.appearance_sent:
+            return []
+
+        # If bake uploads are pending (deferred from caps prelude), wait for them.
+        if self.upload_baked_url is not None and self.baked_appearance_override is None:
             return []
 
         self.appearance_sent = True
@@ -1231,6 +1236,23 @@ async def run_live_session(
             for packet in session.handle_incoming(payload, loop.time()):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
+            # Deferred bake upload: trigger after AgentCachedTextureResponse arrives,
+            # right before AgentSetAppearance, so WeakRefs stay alive through cache lookup.
+            if (
+                session.upload_baked_url is not None
+                and session.latest_cached_texture_response is not None
+                and not session.appearance_sent
+                and session.baked_appearance_override is None
+            ):
+                local_port = int(sock.getsockname()[1])
+                _now = loop.time()
+                override = await _load_and_upload_baked_textures(session, session.upload_baked_url, local_port, _now)
+                session.upload_baked_url = None
+                if override is not None:
+                    session.baked_appearance_override = override
+                for packet in session.drain_due_packets(loop.time()):
+                    await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+
         for packet in session.build_shutdown_packets(loop.time()):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
@@ -1262,17 +1284,29 @@ _APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
 
 
 def _encode_face_mask(face_index: int) -> bytes:
-    """Encode a single face index as a LEB128 face bitmask for SL TextureEntry."""
+    """Encode a single face index as a face bitmask for SL TextureEntry.
+
+    SL TextureEntry uses MSB-first 7-bit group encoding (not standard LEB128):
+    bytes are read most-significant-group first, accumulated as
+    faceBits = (faceBits << 7) | (b & 0x7F), with bit 7 as a continuation flag.
+    So face N (mask = 1 << N) must be encoded MSB-first.
+    """
     mask = 1 << face_index
-    out = []
+    # Split into 7-bit groups LSB first, then reverse for MSB-first output
+    groups = []
+    temp = mask
     while True:
-        b = mask & 0x7F
-        mask >>= 7
-        if mask:
-            out.append(b | 0x80)
-        else:
-            out.append(b)
+        groups.append(temp & 0x7F)
+        temp >>= 7
+        if temp == 0:
             break
+    groups.reverse()
+    out = []
+    for i, g in enumerate(groups):
+        if i < len(groups) - 1:
+            out.append(g | 0x80)  # continuation bit
+        else:
+            out.append(g)
     return bytes(out)
 
 
@@ -1527,14 +1561,8 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
 
     upload_baked_url = resolved.get("UploadBakedTexture")
     if upload_baked_url:
-        override = await _load_and_upload_baked_textures(session, upload_baked_url, local_port, now)
-        if override is not None:
-            session.baked_appearance_override = override
-            session._record_event(
-                now,
-                "bake.override_ready",
-                f"serial={override.serial_num} bakes={len(override.wearable_cache_items)}",
-            )
+        session.upload_baked_url = upload_baked_url
+        session._record_event(now, "bake.url_ready", "upload deferred until post-AgentCachedTextureResponse")
     else:
         session._record_event(now, "bake.skip", "UploadBakedTexture CAP not resolved")
 
