@@ -1,0 +1,38 @@
+{
+  "appended_acks": [],
+  "at_seconds": 18.17271,
+  "body_size": 288,
+  "capture_mode": "all",
+  "capture_reason": "world.object_update_rich",
+  "is_reliable": true,
+  "message_name": "ObjectUpdate",
+  "object_update": {
+    "data_size": 0,
+    "decode_status": "decoded",
+    "extra_params_size": 0,
+    "full_id": "574fc052-7340-415a-a970-4b3a56114f42",
+    "interesting_payloads": [
+      {
+        "field_name": "TextureEntry",
+        "non_zero_bytes": 20,
+        "preview_hex": "008955674724cb43ed920b47caed1546",
+        "size": 64,
+        "text_preview": null
+      }
+    ],
+    "local_id": 492042997,
+    "media_url_size": 0,
+    "name_values": {},
+    "object_count": 1,
+    "ps_block_size": 0,
+    "region_handle": 1099511628032000,
+    "text_size": 0,
+    "texture_anim_size": 0,
+    "texture_entry_size": 64,
+    "time_dilation": 65535,
+    "update_flags": 133136,
+    "variant": "prim_basic"
+  },
+  "sequence": 71,
+  "source": "live_session_capture"
+}

@@ -31,3 +31,6 @@ Thumbs.db
 # Large local integration runtime artifacts
 local/
 
+# OpenSim full source checkout (reference only, 100MB+)
+opensim-source/
+

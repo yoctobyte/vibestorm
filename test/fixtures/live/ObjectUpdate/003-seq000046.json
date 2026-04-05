@@ -1,0 +1,42 @@
+{
+  "appended_acks": [],
+  "at_seconds": 16.710655,
+  "body_size": 322,
+  "capture_mode": "all",
+  "capture_reason": "world.object_update",
+  "is_reliable": true,
+  "message_name": "ObjectUpdate",
+  "object_update": {
+    "data_size": 0,
+    "decode_status": "decoded",
+    "extra_params_size": 0,
+    "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+    "interesting_payloads": [
+      {
+        "field_name": "Trailing",
+        "non_zero_bytes": 82,
+        "preview_hex": "00520046697273744e616d6520535452",
+        "size": 161,
+        "text_preview": null
+      }
+    ],
+    "local_id": 492043006,
+    "media_url_size": 0,
+    "name_values": {
+      "\u0000FirstName": "Vibestorm",
+      "LastName": "Tester",
+      "Title": ""
+    },
+    "object_count": 1,
+    "ps_block_size": 0,
+    "region_handle": 1099511628032000,
+    "text_size": 0,
+    "texture_anim_size": 0,
+    "texture_entry_size": 0,
+    "time_dilation": 65535,
+    "update_flags": 0,
+    "variant": "avatar_basic"
+  },
+  "sequence": 46,
+  "source": "live_session_capture"
+}
