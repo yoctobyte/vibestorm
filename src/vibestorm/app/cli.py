@@ -118,6 +118,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print live session events and transport diagnostics.",
     )
 
+    console_parser = subparsers.add_parser(
+        "console",
+        help="Run an indefinite live session and stream world events to stdout.",
+    )
+    console_parser.add_argument("--login-uri", required=True)
+    console_parser.add_argument("--first", required=True)
+    console_parser.add_argument("--last", required=True)
+    console_parser.add_argument("--password", required=True)
+    console_parser.add_argument("--start", default="last")
+    console_parser.add_argument("--agent-update-interval", type=float, default=1.0)
+    console_parser.add_argument("--camera-sweep", action="store_true")
+    console_parser.add_argument(
+        "--snapshot-interval",
+        type=float,
+        default=5.0,
+        help="Print a full world snapshot every N seconds (0 to disable).",
+    )
+
     unknowns_parser = subparsers.add_parser(
         "unknowns-report",
         help="Summarize collected interesting unknown payloads from the SQLite database.",
@@ -562,6 +580,77 @@ def main() -> int:
             ),
         )
         print_lines(format_session_report(report, verbose=args.verbose))
+        return 0
+
+    if args.command == "console":
+        import signal
+        import time
+
+        request = LoginRequest(
+            login_uri=args.login_uri,
+            credentials=LoginCredentials(
+                first=args.first,
+                last=args.last,
+                password=args.password,
+            ),
+            start=args.start,
+            version=__version__,
+            platform=platform.system(),
+            platform_version=platform.platform(),
+        )
+        bootstrap = asyncio.run(LoginClient().login(request))
+        print(
+            f"console=starting sim={bootstrap.sim_ip}:{bootstrap.sim_port} "
+            f"agent={bootstrap.agent_id} Ctrl+C to stop",
+            flush=True,
+        )
+
+        world_view = WorldView()
+        stop_event = asyncio.Event()
+        session_start = time.monotonic()
+        last_snapshot_at = [0.0]
+
+        def on_event(event: SessionEvent) -> None:
+            elapsed = time.monotonic() - session_start
+            print(f"[{elapsed:8.3f}] {event.kind}  {event.detail}", flush=True)
+            if args.snapshot_interval > 0:
+                now = time.monotonic()
+                if now - last_snapshot_at[0] >= args.snapshot_interval:
+                    last_snapshot_at[0] = now
+                    print("--- world snapshot ---", flush=True)
+                    for line in format_world_status(world_view):
+                        print(f"  {line}", flush=True)
+                    print("---", flush=True)
+
+        def _on_signal(sig: int, frame: object) -> None:
+            print("\nconsole=stopping (signal received)", flush=True)
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+
+        report = asyncio.run(
+            run_live_session(
+                bootstrap,
+                MessageDispatcher.from_repo_root(Path.cwd()),
+                config=SessionConfig(
+                    duration_seconds=86400.0,
+                    agent_update_interval_seconds=args.agent_update_interval,
+                    camera_sweep=args.camera_sweep,
+                ),
+                on_event=on_event,
+                world_view=world_view,
+                stop_event=stop_event,
+            ),
+        )
+        print("--- final world state ---", flush=True)
+        for line in format_world_status(world_view):
+            print(f"  {line}", flush=True)
+        print(
+            f"console=done elapsed={report.elapsed_seconds:.1f}s "
+            f"received={report.total_received} objects={len(world_view.objects)}",
+            flush=True,
+        )
         return 0
 
     if args.command == "unknowns-report":
