@@ -135,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="Print a full world snapshot every N seconds (0 to disable).",
     )
+    console_parser.add_argument(
+        "--packet-log",
+        action="store_true",
+        help="Also print raw transport/packet events (transport.*, packet.sent, ping.*).",
+    )
 
     unknowns_parser = subparsers.add_parser(
         "unknowns-report",
@@ -610,7 +615,11 @@ def main() -> int:
         session_start = time.monotonic()
         last_snapshot_at = [0.0]
 
+        _PACKET_LOG_PREFIXES = ("transport.", "packet.sent", "ping.")
+
         def on_event(event: SessionEvent) -> None:
+            if not args.packet_log and any(event.kind.startswith(p) for p in _PACKET_LOG_PREFIXES):
+                return
             elapsed = time.monotonic() - session_start
             print(f"[{elapsed:8.3f}] {event.kind}  {event.detail}", flush=True)
             if args.snapshot_interval > 0:
