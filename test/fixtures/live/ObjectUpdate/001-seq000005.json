@@ -1,6 +1,6 @@
 {
   "appended_acks": [],
-  "at_seconds": 5.507193,
+  "at_seconds": 5.801193,
   "body_size": 321,
   "capture_mode": "all",
   "capture_reason": "world.object_update",
@@ -20,7 +20,7 @@
         "text_preview": null
       }
     ],
-    "local_id": 492043019,
+    "local_id": 259394516,
     "media_url_size": 0,
     "name_values": {
       "\u0000FirstName": "Vibestorm",

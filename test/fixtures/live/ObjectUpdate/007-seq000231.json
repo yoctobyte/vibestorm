@@ -1,6 +1,6 @@
 {
   "appended_acks": [],
-  "at_seconds": 7.693023,
+  "at_seconds": 129.098264,
   "body_size": 322,
   "capture_mode": "all",
   "capture_reason": "world.object_update",
@@ -37,6 +37,6 @@
     "update_flags": 0,
     "variant": "avatar_basic"
   },
-  "sequence": 8,
+  "sequence": 231,
   "source": "live_session_capture"
 }

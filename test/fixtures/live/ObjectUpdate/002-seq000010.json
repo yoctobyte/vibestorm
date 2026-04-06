@@ -1,37 +1,41 @@
 {
   "appended_acks": [],
-  "at_seconds": 6.195872,
-  "body_size": 288,
+  "at_seconds": 6.116235,
+  "body_size": 322,
   "capture_mode": "all",
-  "capture_reason": "world.object_update_rich",
+  "capture_reason": "world.object_update",
   "is_reliable": true,
   "message_name": "ObjectUpdate",
   "object_update": {
     "data_size": 0,
     "decode_status": "decoded",
     "extra_params_size": 0,
-    "full_id": "6e36d1ef-c273-4654-9163-e427f3d8604c",
+    "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
     "interesting_payloads": [
       {
-        "field_name": "TextureEntry",
-        "non_zero_bytes": 20,
-        "preview_hex": "008955674724cb43ed920b47caed1546",
-        "size": 64,
+        "field_name": "Trailing",
+        "non_zero_bytes": 82,
+        "preview_hex": "00520046697273744e616d6520535452",
+        "size": 161,
         "text_preview": null
       }
     ],
-    "local_id": 492042985,
+    "local_id": 259394507,
     "media_url_size": 0,
-    "name_values": {},
+    "name_values": {
+      "\u0000FirstName": "Vibestorm",
+      "LastName": "Tester",
+      "Title": ""
+    },
     "object_count": 1,
     "ps_block_size": 0,
     "region_handle": 1099511628032000,
     "text_size": 0,
     "texture_anim_size": 0,
-    "texture_entry_size": 64,
+    "texture_entry_size": 0,
     "time_dilation": 65535,
-    "update_flags": 133136,
-    "variant": "prim_basic"
+    "update_flags": 0,
+    "variant": "avatar_basic"
   },
   "sequence": 10,
   "source": "live_session_capture"
