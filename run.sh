@@ -28,6 +28,7 @@ Commands:
   udp          Send the one-shot UseCircuitCode UDP probe
   handshake    Run the handshake probe
   session      Run the bounded live UDP session loop
+  console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
   fixtures     Rebuild the structured fixture inventory/backlog
   test         Run the unit test suite
 
@@ -131,6 +132,18 @@ case "$command" in
       --duration "$duration" \
       --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
       "${session_args[@]}" \
+      "$@"
+    ;;
+  console)
+    cd "$ROOT_DIR"
+    console_args=()
+    if [[ "$CAMERA_SWEEP" == "1" ]]; then
+      console_args+=(--camera-sweep)
+    fi
+    python_runner -m vibestorm.app.cli console \
+      "${cli_base_args[@]}" \
+      --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
+      "${console_args[@]}" \
       "$@"
     ;;
   test)
