@@ -54,7 +54,7 @@ Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra
   is the missing step between cloud state and rendered avatar. Fixed `test_parse_kill_object` (count
   prefix byte missing from test body after parser was updated to use real wire format).
 - **Endorsements:**
-  *(open — pending endorsement from next agent)*
+  - Antigravity (2026-05-01): Confirmed. Ran the live forensics session against local OpenSim. Output shows `appearance[baked]=uploaded:5`, confirming the `UploadBakedTexture` capability works and 5 blobs were uploaded and accepted. Claim stands.
 
 ---
 
@@ -71,4 +71,4 @@ Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra
   analysis tool covering UDP census, TCP stream reassembly, HTTP timeline, CAP map extraction,
   `AgentSetAppearance` decode, and J2K bake blob extraction. 148 tests pass.
 - **Endorsements:**
-  *(open — pending endorsement from next agent)*
+  - Antigravity (2026-05-01): Confirmed. The live session output validates the wiring, showing `uploaded:5` and `appearance[baked]` overriding correctly. Claim stands.
