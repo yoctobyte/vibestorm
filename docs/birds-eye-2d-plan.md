@@ -44,7 +44,7 @@ For top-down, full per-face TextureEntry decoding is overkill. Render objects as
 | Need | Have? | Plan |
 |---|---|---|
 | Default texture UUID per object | yes | first 16 bytes of `TextureEntry` already extracted |
-| Default-face color (RGBA) | no | TE second segment after default UUID; small decode addition in `messages.py` |
+| Default-face color (RGBA) | no | **Not 4 bytes after the default UUID** — the TE format is a chain of sections (UUID overrides → color overrides → ScaleU → ScaleV → OffsetU → OffsetV → Rotation → BumpShiny → MediaFlags → Glow → Materials), each `[default value][face_bitmask][override]*[0x00 terminator]`. Need a full section-walking parser in `messages.py`. Colors are stored inverted (0x00 byte = 1.0). Plan: a single `parse_texture_entry()` returning per-face properties; defer per-face logic, just expose `default_color`. |
 | Object pcode → category mapping | yes (raw pcode) | constants table: 9=prim, 47=avatar, 95=tree, 255=grass — render color/marker by category |
 | Texture asset fetch + decode | no | same `GetTexture` + J2K dep as Layer 2 — strictly optional for v1 |
 
@@ -90,6 +90,15 @@ Useful as a viewer toggle; not required for "see the world."
 1. `GetTexture` CAP client + J2K decode — one focused PR; verify against any object texture UUID we already have.
 2. `MapBlockRequest`/`Reply` round trip — emits region MapImageID; pipe into the GetTexture client → write the tile to `local/map-cache/`.
 3. `ChatFromViewer` outbound + `ImprovedInstantMessage` decode — independent of the map work; can land in parallel.
-4. TE color + ParcelOverlay — polish before any GUI.
+4. TE section-walking parser + ParcelOverlay — polish before any GUI.
 
 After step 4, every byte the GUI needs is in `WorldView` (or in a sibling `MapView` cache) and rendering becomes a pure presentation problem.
+
+## Progress (2026-05-01)
+
+- ✅ Step 1: `caps/get_texture_client.py` + `assets/j2k.py` (Pillow-backed, optional `viewer` extra). 8 tests.
+- ✅ Step 2: `encode_map_block_request` + `parse_map_block_reply` + dataclasses. 3 tests. Session wiring deferred.
+- ✅ Step 3: `encode_chat_from_viewer` + `parse_improved_instant_message` + `parse_alert_message` + `parse_agent_alert_message`. 5 tests. Session wiring deferred.
+- ⏸ Step 4: deferred. The TE format turned out to be a multi-section chain (see Layer 3 row); the "4 bytes after the default UUID" simplification doesn't hold. Needs a proper `parse_texture_entry` walker. ParcelOverlay also still pending.
+
+Session totals: protocol primitives for the entire bird's-eye data path (minus TE color and parcels) are in place — 170 → 178 tests, all passing. No session-loop wiring yet; that's the next focused PR when the GUI work begins.

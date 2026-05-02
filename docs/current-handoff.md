@@ -4,34 +4,75 @@ Last updated: 2026-05-01
 
 ## Summary
 
-The `ObjectUpdate` message parser has been refactored to support multi-object payload decoding. The parser now correctly advances the reading offset past the 66-byte fixed tail for every object entry, allowing all objects in a multi-object packet to be parsed without throwing truncated exceptions.
+Inventoried what protocol/data work is needed for a 2D bird's-eye region viewer
+(see `docs/birds-eye-2d-plan.md`) and landed three of the four planned protocol
+PRs. No session-loop wiring yet — these are protocol primitives only, ready to
+be invoked when the GUI work begins.
 
 ## What Was Done This Session (2026-05-01)
 
-**Antigravity:**
-- Analyzed `messages.py` and `third_party/secondlife/message_template.msg` to identify that the `ObjectUpdate` parser was ignoring the 66-byte fixed block trailing `ExtraParams` (`Sound`, `OwnerID`, `Gain`, `Flags`, `Radius`, `JointType`, `JointPivot`, `JointAxisOrAnchor`).
-- Extracted the variable-length standard tail parsing out of the specific `pcode == 9` branch so that it applies uniformly to all variants, including `avatar_basic` (`pcode == 47`).
-- Added the 66-byte offset skip, allowing the parser loop to correctly identify the start of subsequent objects.
-- Updated the `test_apply_dispatch_parses_multi_object_update` test in `test_world_updater.py` to pad the fake test payload with the 66 zero bytes so the test passes.
-- All 157 tests pass.
+**Antigravity / Claude Code:**
+
+- `ObjectUpdate` parser refactor: extracted variable-length tail handling out
+  of the `pcode == 9` branch and added the 66-byte fixed tail skip
+  (`Sound`/`OwnerID`/`Gain`/`Flags`/`Radius`/`JointType`/`JointPivot`/`JointAxisOrAnchor`),
+  so multi-object packets are decoded uniformly across pcodes. Live fixtures
+  refreshed.
+- `docs/birds-eye-2d-plan.md`: full inventory of the minimum protocol/data
+  pieces needed for a 2D zoomable region viewer (background tile, object/avatar
+  markers, optional parcel outlines, basic chat).
+- `caps/get_texture_client.py`: HTTP GET wrapper for the `GetTexture` CAP.
+- `assets/j2k.py`: Pillow-backed JPEG2000 decoder with `J2KDecodeError`
+  fallback when Pillow or its J2K plugin is unavailable. Pillow added as an
+  optional `viewer` extra in `pyproject.toml`.
+- `encode_map_block_request` (Low/407, Unencoded) and `parse_map_block_reply`
+  (Low/409). Reply carries one or more entries with `MapImageID` per region —
+  fetchable via `GetTextureClient`.
+- `encode_chat_from_viewer` (Low/80, Zerocoded) for outbound chat.
+- `parse_improved_instant_message` (Low/254) — decodes the full MessageBlock.
+- `parse_alert_message` (Low/134) and `parse_agent_alert_message` (Low/135)
+  for system notifications.
+
+All 178 tests pass.
 
 ## What Is Now Known
 
-- The `ObjectData` payload structure inside `ObjectUpdate` consistently ends with 66 fixed bytes for all pcodes. 
-- The parser now faithfully follows the `message_template.msg` standard for the tail segment.
+- `RegionHandshake` carries 4 base + 4 detail terrain texture UUIDs and a 2×2
+  height-range grid for procedural terrain — it does **not** carry a single
+  region map UUID. The flat 1024×1024 region map comes from
+  `MapBlockReply.MapImageID`, fetched via the `GetTexture` CAP.
+- The `GetTexture` CAP returns raw J2K bytes; URL form is
+  `<cap_url>?texture_id=<uuid>` (per OpenSim's `GetTextureHandler`).
+- `TextureEntry` is more complex than a flat `default_uuid + default_color`
+  layout. It is a chain of 11 sections (UUID overrides, color overrides,
+  ScaleU, ScaleV, OffsetU, OffsetV, Rotation, BumpShinyAlpha, MediaFlags,
+  Glow, Materials), each `[default value][face_bitmask][per-face override]*[0x00 terminator]`.
+  Colors are stored inverted (byte 0x00 = component 1.0). A proper
+  `parse_texture_entry` walker is required before per-face color/scale data
+  can be exposed.
 
-## What Remains Unknown
+## What Remains for the Bird's-Eye Plan
 
-- Semantic decoding of the remainder of `ImprovedTerseObjectUpdate` beyond the 60/44 byte struct definitions.
-- Full `TextureEntry` decoding for standard objects (beyond the first 16 byte default UUID assumption).
-- The exact layout of the 22-byte pre-tail block, although we know the sizes and names from `message_template.msg`.
+- TE section-walking parser (default color is the immediate goal; per-face is a stretch).
+- `ParcelOverlay` body decode (4 KB packed bitfield → plot edge polylines).
+- Session-loop wiring for all of the above: when to send `MapBlockRequest`,
+  where to cache the fetched map tile, how to surface inbound IM/Alert in the
+  console, and how to expose an outbound `say()`.
 
 ## One Concrete Next Step
 
-Choose another gap from `projectstate.md`'s "Current Gaps" list. A good starting point would be:
-- Deeper object update families such as `ObjectUpdateCached` and `KillObject`.
-- Full `TextureEntry` decoding.
+Wire `MapBlockRequest` into the session prelude after `RegionHandshake`,
+parse the reply, fetch the tile via `GetTextureClient`, decode with
+`assets.j2k.decode_j2k`, and write to `local/map-cache/<region_uuid>.png`.
+That closes the loop for the background-tile data path end-to-end against
+local OpenSim and validates all three new protocol pieces in one live run.
 
 ## Notes For The Next Agent
 
-- `docs/reverse-engineered-protocol.md` contains the latest known struct layouts for ObjectUpdate packets. You may want to update it to clarify that the 66-byte tail is now explicitly skipped and accounted for.
+- New protocol primitives live in `src/vibestorm/udp/messages.py` (encoders
+  and parsers grouped near the existing ones) and
+  `src/vibestorm/caps/get_texture_client.py`.
+- J2K decode is gated on Pillow being installed (`pip install '.[viewer]'`
+  or `uv sync --extra viewer`). Headless code paths are unaffected.
+- The bird's-eye plan in `docs/birds-eye-2d-plan.md` has a "Progress" section
+  at the end summarizing what landed and what's still open.
