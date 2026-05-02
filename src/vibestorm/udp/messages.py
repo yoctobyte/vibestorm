@@ -263,6 +263,25 @@ class ChatFromSimulatorMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class MapBlockReplyEntry:
+    x: int
+    y: int
+    name: str
+    access: int
+    region_flags: int
+    water_height: int
+    agents: int
+    map_image_id: UUID
+
+
+@dataclass(slots=True, frozen=True)
+class MapBlockReplyMessage:
+    agent_id: UUID
+    flags: int
+    entries: tuple[MapBlockReplyEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
 class ObjectUpdateSummary:
     region_handle: int
     time_dilation: int
@@ -1387,6 +1406,60 @@ def parse_kill_object(message: MessageDispatch) -> KillObjectMessage:
     return KillObjectMessage(local_ids=local_ids)
 
 
+def parse_map_block_reply(message: MessageDispatch) -> MapBlockReplyMessage:
+    if message.summary.name != "MapBlockReply":
+        raise MessageDecodeError(f"expected MapBlockReply, got {message.summary.name}")
+    body = message.body
+    if len(body) < 21:
+        raise MessageDecodeError("MapBlockReply body is too short")
+    agent_id = UUID(bytes=body[0:16])
+    flags = unpack_from("<I", body, 16)[0]
+    offset = 20
+    entry_count = body[offset]
+    offset += 1
+    entries: list[MapBlockReplyEntry] = []
+    for index in range(entry_count):
+        if len(body) < offset + 4:
+            raise MessageDecodeError(f"MapBlockReply entry {index} XY is truncated")
+        x = unpack_from("<H", body, offset)[0]
+        y = unpack_from("<H", body, offset + 2)[0]
+        offset += 4
+        if len(body) < offset + 1:
+            raise MessageDecodeError(f"MapBlockReply entry {index} Name length is truncated")
+        name_length = body[offset]
+        offset += 1
+        if len(body) < offset + name_length:
+            raise MessageDecodeError(f"MapBlockReply entry {index} Name payload is truncated")
+        name_bytes = body[offset : offset + name_length]
+        offset += name_length
+        name = name_bytes.rstrip(b"\x00").decode("utf-8", errors="replace")
+        if len(body) < offset + 1 + 4 + 1 + 1 + 16:
+            raise MessageDecodeError(f"MapBlockReply entry {index} fixed tail is truncated")
+        access = body[offset]
+        offset += 1
+        region_flags = unpack_from("<I", body, offset)[0]
+        offset += 4
+        water_height = body[offset]
+        offset += 1
+        agents = body[offset]
+        offset += 1
+        map_image_id = UUID(bytes=body[offset : offset + 16])
+        offset += 16
+        entries.append(
+            MapBlockReplyEntry(
+                x=x,
+                y=y,
+                name=name,
+                access=access,
+                region_flags=region_flags,
+                water_height=water_height,
+                agents=agents,
+                map_image_id=map_image_id,
+            )
+        )
+    return MapBlockReplyMessage(agent_id=agent_id, flags=flags, entries=tuple(entries))
+
+
 def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMessage:
     if message.summary.name != "ChatFromSimulator":
         raise MessageDecodeError(f"expected ChatFromSimulator, got {message.summary.name}")
@@ -1915,6 +1988,49 @@ def encode_request_object_properties_family(
 ) -> bytes:
     """RequestObjectPropertiesFamily (Medium/5, Zerocoded) — fetch name/owner/perms for one object."""
     return b"\xFF\x05" + agent_id.bytes + session_id.bytes + pack("<I", request_flags) + object_id.bytes
+
+
+def encode_map_block_request(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    min_x: int,
+    max_x: int,
+    min_y: int,
+    max_y: int,
+    flags: int = 0,
+    estate_id: int = 0,
+    godlike: bool = False,
+) -> bytes:
+    """MapBlockRequest (Low/407, Unencoded) — request map block info for a region grid range.
+
+    MinX/MaxX/MinY/MaxY are in region-widths (each = 256 m, so a single
+    region is min == max). EstateID and Godlike are sim-filled fields; the
+    viewer transmits zero/false.
+    """
+    for value, name in (
+        (flags, "flags"),
+        (estate_id, "estate_id"),
+    ):
+        if not 0 <= value <= 0xFFFFFFFF:
+            raise ValueError(f"{name} must fit in U32")
+    for value, name in (
+        (min_x, "min_x"),
+        (max_x, "max_x"),
+        (min_y, "min_y"),
+        (max_y, "max_y"),
+    ):
+        if not 0 <= value <= 0xFFFF:
+            raise ValueError(f"{name} must fit in U16")
+    return (
+        b"\xFF\xFF\x01\x97"
+        + agent_id.bytes
+        + session_id.bytes
+        + pack("<I", flags)
+        + pack("<I", estate_id)
+        + bytes([1 if godlike else 0])
+        + pack("<HHHH", min_x, max_x, min_y, max_y)
+    )
 
 
 def encode_request_multiple_objects(

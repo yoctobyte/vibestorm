@@ -15,12 +15,14 @@ from vibestorm.udp.messages import (
     encode_agent_wearables_request,
     encode_complete_agent_movement,
     encode_complete_ping_check,
+    encode_map_block_request,
     encode_packet_ack,
     encode_region_handshake_reply,
     encode_use_circuit_code,
     parse_coarse_location_update,
     parse_improved_terse_object_update,
     parse_kill_object,
+    parse_map_block_reply,
     parse_object_extra_params,
     parse_object_update,
     parse_object_update_cached,
@@ -972,3 +974,88 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.objects[1].object_local_id, 9)
         self.assertEqual(parsed.objects[1].param_size, 4)
         self.assertEqual(parsed.objects[1].param_data, data_b)
+
+    def test_encode_map_block_request_round_trips(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        payload = encode_map_block_request(
+            agent_id,
+            session_id,
+            min_x=1000,
+            max_x=1000,
+            min_y=2000,
+            max_y=2000,
+        )
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "MapBlockRequest")
+        body = dispatched.body
+        self.assertEqual(UUID(bytes=body[0:16]), agent_id)
+        self.assertEqual(UUID(bytes=body[16:32]), session_id)
+        # Flags(4) + EstateID(4) + Godlike(1)
+        self.assertEqual(body[32:41], b"\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+        # MinX, MaxX, MinY, MaxY (each U16 little-endian)
+        self.assertEqual(body[41:43], (1000).to_bytes(2, "little"))
+        self.assertEqual(body[43:45], (1000).to_bytes(2, "little"))
+        self.assertEqual(body[45:47], (2000).to_bytes(2, "little"))
+        self.assertEqual(body[47:49], (2000).to_bytes(2, "little"))
+
+    def test_encode_map_block_request_rejects_oversized_coords(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        with self.assertRaises(ValueError):
+            encode_map_block_request(
+                agent_id, session_id, min_x=70000, max_x=0, min_y=0, max_y=0
+            )
+
+    def test_parse_map_block_reply_decodes_two_entries(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        map_image_a = UUID("00000000-1111-2222-3333-444444444444")
+        map_image_b = UUID("55555555-6666-7777-8888-999999999999")
+        name_a = b"Vibestorm Test\x00"
+        name_b = b"Other Region\x00"
+        entry_a = (
+            (1000).to_bytes(2, "little")  # X
+            + (2000).to_bytes(2, "little")  # Y
+            + bytes([len(name_a)])
+            + name_a
+            + bytes([13])  # Access (PG=13)
+            + (0xDEADBEEF).to_bytes(4, "little")  # RegionFlags
+            + bytes([20])  # WaterHeight
+            + bytes([5])  # Agents
+            + map_image_a.bytes
+        )
+        entry_b = (
+            (1001).to_bytes(2, "little")
+            + (2000).to_bytes(2, "little")
+            + bytes([len(name_b)])
+            + name_b
+            + bytes([21])  # Access (Mature=21)
+            + (0).to_bytes(4, "little")
+            + bytes([23])
+            + bytes([0])
+            + map_image_b.bytes
+        )
+        body = (
+            agent_id.bytes
+            + (0).to_bytes(4, "little")  # Flags
+            + bytes([2])  # entry count
+            + entry_a
+            + entry_b
+        )
+        dispatched = self.dispatcher.dispatch(b"\xFF\xFF\x01\x99" + body)
+
+        parsed = parse_map_block_reply(dispatched)
+
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertEqual(parsed.flags, 0)
+        self.assertEqual(len(parsed.entries), 2)
+        self.assertEqual(parsed.entries[0].x, 1000)
+        self.assertEqual(parsed.entries[0].y, 2000)
+        self.assertEqual(parsed.entries[0].name, "Vibestorm Test")
+        self.assertEqual(parsed.entries[0].access, 13)
+        self.assertEqual(parsed.entries[0].region_flags, 0xDEADBEEF)
+        self.assertEqual(parsed.entries[0].water_height, 20)
+        self.assertEqual(parsed.entries[0].agents, 5)
+        self.assertEqual(parsed.entries[0].map_image_id, map_image_a)
+        self.assertEqual(parsed.entries[1].name, "Other Region")
+        self.assertEqual(parsed.entries[1].map_image_id, map_image_b)
