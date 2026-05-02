@@ -409,6 +409,29 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertEqual(visual_count, 3)
         self.assertEqual(body[56:59], b"\x50\x60\x70")
 
+    def test_build_chat_packet_emits_zerocoded_chat_from_viewer(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        events_before = len(session.events)
+
+        packet = session.build_chat_packet("hello world", chat_type=1, channel=0, now=10.5)
+
+        view = split_packet(packet)
+        self.assertTrue(view.header.is_reliable)
+        # ChatFromViewer is zerocoded; decode before dispatching
+        message = decode_zerocode(packet)
+        view_decoded = split_packet(message)
+        dispatched = self.dispatcher.dispatch(view_decoded.message)
+        self.assertEqual(dispatched.summary.name, "ChatFromViewer")
+        body = dispatched.body
+        self.assertEqual(UUID(bytes=body[0:16]), self.bootstrap.agent_id)
+        self.assertEqual(UUID(bytes=body[16:32]), self.bootstrap.session_id)
+        msg_len = int.from_bytes(body[32:34], "little")
+        self.assertEqual(body[34 : 34 + msg_len], b"hello world\x00")
+
+        kinds = [event.kind for event in session.events[events_before:]]
+        self.assertIn("chat.outbound", kinds)
+
     def test_shutdown_sends_logout_request(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)

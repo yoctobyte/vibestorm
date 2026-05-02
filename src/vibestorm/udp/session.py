@@ -44,6 +44,7 @@ from vibestorm.udp.messages import (
     encode_agent_set_appearance,
     encode_agent_throttle,
     encode_agent_wearables_request,
+    encode_chat_from_viewer,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_logout_request,
@@ -597,6 +598,40 @@ class LiveCircuitSession:
             baked_appearance_override=self.baked_appearance_override,
             events=tuple(self.events),
         )
+
+    def build_chat_packet(
+        self,
+        message: str,
+        *,
+        chat_type: int = 1,
+        channel: int = 0,
+        now: float | None = None,
+    ) -> bytes:
+        """Build a ChatFromViewer packet ready for sock_sendto.
+
+        chat_type: 0=whisper, 1=normal, 2=shout. channel: 0=public, others
+        target LSL listeners or special channels. Records a chat.outbound
+        event so the line shows up alongside inbound chat in the event log.
+        """
+        packet = self._build_outbound_packet(
+            encode_chat_from_viewer(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                message,
+                chat_type=chat_type,
+                channel=channel,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="ChatFromViewer",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "chat.outbound",
+            f"type={chat_type} channel={channel} message={message!r}",
+        )
+        return packet
 
     def build_shutdown_packets(self, now: float) -> list[bytes]:
         if self.logout_sent or not self.started:
