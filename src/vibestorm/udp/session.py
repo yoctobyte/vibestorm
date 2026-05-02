@@ -53,11 +53,14 @@ from vibestorm.udp.messages import (
     encode_request_multiple_objects,
     encode_request_object_properties_family,
     encode_use_circuit_code,
+    parse_agent_alert_message,
     parse_agent_movement_complete,
     parse_agent_cached_texture_response,
     parse_agent_wearables_update,
+    parse_alert_message,
     parse_avatar_appearance,
     parse_chat_from_simulator,
+    parse_improved_instant_message,
     parse_improved_terse_object_update,
     parse_kill_object,
     parse_object_update,
@@ -303,6 +306,44 @@ class LiveCircuitSession:
             self.close_reason = "simulator closed circuit"
             self._record_event(now, "session.closed", self.close_reason)
             return []
+
+        if dispatched.summary.name == "ImprovedInstantMessage":
+            try:
+                im = parse_improved_instant_message(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "chat.im.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "chat.im",
+                (
+                    f"from={im.from_agent_name!r} dialog={im.dialog} "
+                    f"to={im.to_agent_id} message={im.message!r}"
+                ),
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "AlertMessage":
+            try:
+                alert = parse_alert_message(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "chat.alert.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(now, "chat.alert", f"message={alert.message!r}")
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "AgentAlertMessage":
+            try:
+                alert = parse_agent_alert_message(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "chat.agent_alert.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "chat.agent_alert",
+                f"modal={int(alert.modal)} message={alert.message!r}",
+            )
+            return self._flush_transport_packets(now)
 
         if dispatched.summary.name == "ChatFromSimulator":
             chat = parse_chat_from_simulator(dispatched)
