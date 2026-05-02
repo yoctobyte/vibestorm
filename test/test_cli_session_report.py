@@ -254,6 +254,8 @@ class CliSessionReportTests(unittest.TestCase):
                 attachments=(),
             ),
             baked_appearance_override=None,
+            region_map_image_id=None,
+            region_map_path=None,
             events=(SessionEvent(at_seconds=0.0, kind="session.started", detail=""),),
         )
 
@@ -317,6 +319,8 @@ class CliSessionReportTests(unittest.TestCase):
             avatar_appearance=None,
             self_avatar_appearance=None,
             baked_appearance_override=None,
+            region_map_image_id=None,
+            region_map_path=None,
             events=(),
         )
 
@@ -348,6 +352,8 @@ class CliSessionReportTests(unittest.TestCase):
             avatar_appearance=None,
             self_avatar_appearance=None,
             baked_appearance_override=None,
+            region_map_image_id=None,
+            region_map_path=None,
             events=(),
         )
 

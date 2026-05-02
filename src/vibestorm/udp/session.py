@@ -14,7 +14,9 @@ from typing import Callable
 from uuid import UUID
 
 from vibestorm.login.models import LoginBootstrap
+from vibestorm.assets.j2k import J2KDecodeError, decode_j2k
 from vibestorm.caps.client import CapabilityClient, CapabilityError
+from vibestorm.caps.get_texture_client import GetTextureClient, GetTextureError
 from vibestorm.caps.upload_baked_texture_client import UploadBakedTextureClient, UploadBakedTextureError
 from vibestorm.caps.inventory_client import (
     InventoryCapabilityClient,
@@ -48,6 +50,7 @@ from vibestorm.udp.messages import (
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_logout_request,
+    encode_map_block_request,
     encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
@@ -64,6 +67,7 @@ from vibestorm.udp.messages import (
     parse_improved_instant_message,
     parse_improved_terse_object_update,
     parse_kill_object,
+    parse_map_block_reply,
     parse_object_update,
     parse_object_update_cached,
     parse_object_update_compressed,
@@ -145,6 +149,8 @@ class SessionReport:
     avatar_appearance: AvatarAppearanceMessage | None
     self_avatar_appearance: AvatarAppearanceMessage | None
     baked_appearance_override: BakedAppearanceOverride | None
+    region_map_image_id: UUID | None
+    region_map_path: Path | None
     events: tuple[SessionEvent, ...]
 
 
@@ -186,6 +192,11 @@ class LiveCircuitSession:
     latest_inventory_fetch: InventoryFetchSnapshot | None = None
     baked_appearance_override: BakedAppearanceOverride | None = None
     upload_baked_url: str | None = None
+    get_texture_url: str | None = None
+    map_block_request_sent: bool = False
+    region_map_image_id: UUID | None = None
+    region_map_fetched: bool = False
+    region_map_path: Path | None = None
     resolved_capabilities: tuple[str, ...] = ()
     properties_requested: set[UUID] = field(default_factory=set)
     test_cube_spawned: bool = False
@@ -420,8 +431,67 @@ class LiveCircuitSession:
                     label="RegionHandshakeReply",
                 ),
             ]
+            if not self.map_block_request_sent:
+                grid_x = self.bootstrap.region_x // 256
+                grid_y = self.bootstrap.region_y // 256
+                packets.append(
+                    self._build_outbound_packet(
+                        encode_map_block_request(
+                            self.bootstrap.agent_id,
+                            self.bootstrap.session_id,
+                            min_x=grid_x,
+                            max_x=grid_x,
+                            min_y=grid_y,
+                            max_y=grid_y,
+                        ),
+                        reliable=True,
+                        now=now,
+                        label="MapBlockRequest",
+                    )
+                )
+                self.map_block_request_sent = True
+                self._record_event(
+                    now, "map.request", f"grid=({grid_x},{grid_y})"
+                )
             packets.extend(self._flush_transport_packets(now))
             return packets
+
+        if dispatched.summary.name == "MapBlockReply":
+            try:
+                reply = parse_map_block_reply(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "map.reply.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            grid_x = self.bootstrap.region_x // 256
+            grid_y = self.bootstrap.region_y // 256
+            match = next(
+                (
+                    entry
+                    for entry in reply.entries
+                    if entry.x == grid_x and entry.y == grid_y
+                ),
+                None,
+            )
+            if match is None:
+                self._record_event(
+                    now,
+                    "map.reply.no_match",
+                    f"want=({grid_x},{grid_y}) got=[{','.join(f'({e.x},{e.y})' for e in reply.entries)}]",
+                )
+            elif match.map_image_id.int == 0:
+                self._record_event(
+                    now,
+                    "map.reply.empty_image_id",
+                    f"region={match.name!r} grid=({match.x},{match.y})",
+                )
+            else:
+                self.region_map_image_id = match.map_image_id
+                self._record_event(
+                    now,
+                    "map.reply",
+                    f"region={match.name!r} grid=({match.x},{match.y}) image={match.map_image_id}",
+                )
+            return self._flush_transport_packets(now)
 
         if dispatched.summary.name == "AgentMovementComplete":
             movement = parse_agent_movement_complete(dispatched)
@@ -596,6 +666,8 @@ class LiveCircuitSession:
             avatar_appearance=self.latest_avatar_appearance,
             self_avatar_appearance=self.latest_self_avatar_appearance,
             baked_appearance_override=self.baked_appearance_override,
+            region_map_image_id=self.region_map_image_id,
+            region_map_path=self.region_map_path,
             events=tuple(self.events),
         )
 
@@ -1412,6 +1484,24 @@ async def run_live_session(
                 for packet in session.drain_due_packets(loop.time()):
                     await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
+            # Deferred map tile fetch: triggered once per session after
+            # MapBlockReply has been parsed and the GetTexture CAP is known.
+            if (
+                session.get_texture_url is not None
+                and session.region_map_image_id is not None
+                and not session.region_map_fetched
+            ):
+                session.region_map_fetched = True
+                cached = await _fetch_and_cache_region_map(
+                    session,
+                    session.get_texture_url,
+                    session.region_map_image_id,
+                    _MAP_CACHE_DIR,
+                    loop.time(),
+                )
+                if cached is not None:
+                    session.region_map_path = cached
+
         for packet in session.build_shutdown_packets(loop.time()):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
@@ -1440,6 +1530,61 @@ async def run_live_session(
 
 _BAKED_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "baked-cache"
 _APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
+_MAP_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "map-cache"
+
+
+async def _fetch_and_cache_region_map(
+    session: LiveCircuitSession,
+    cap_url: str,
+    image_id: UUID,
+    cache_dir: Path,
+    now: float,
+) -> Path | None:
+    """Fetch the region map J2K via GetTexture, decode, and write a PNG.
+
+    Returns the cache path on success or None on failure (errors are
+    recorded as session events). Saves under cache_dir as ``<image_id>.png``.
+    """
+    client = GetTextureClient(timeout_seconds=10.0)
+    try:
+        fetched = await client.fetch(cap_url, image_id)
+    except GetTextureError as exc:
+        session._record_event(now, "map.fetch.error", str(exc))
+        return None
+    session._record_event(
+        now,
+        "map.fetch.ok",
+        f"image={image_id} bytes={len(fetched.data)} content_type={fetched.content_type}",
+    )
+
+    try:
+        decoded = decode_j2k(fetched.data)
+    except J2KDecodeError as exc:
+        session._record_event(now, "map.decode.error", str(exc))
+        return None
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    output_path = cache_dir / f"{image_id}.png"
+
+    def _write_png() -> None:
+        from PIL import Image
+
+        Image.frombytes(decoded.mode, (decoded.width, decoded.height), decoded.pixels).save(
+            output_path, format="PNG"
+        )
+
+    try:
+        await asyncio.to_thread(_write_png)
+    except (OSError, ImportError) as exc:
+        session._record_event(now, "map.cache.error", str(exc))
+        return None
+
+    session._record_event(
+        now,
+        "map.cache.ok",
+        f"path={output_path} size={decoded.width}x{decoded.height} mode={decoded.mode}",
+    )
+    return output_path
 
 
 def _encode_face_mask(face_index: int) -> bytes:
@@ -1724,6 +1869,13 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         session._record_event(now, "bake.url_ready", "upload deferred until post-AgentCachedTextureResponse")
     else:
         session._record_event(now, "bake.skip", "UploadBakedTexture CAP not resolved")
+
+    get_texture_url = resolved.get("GetTexture")
+    if get_texture_url:
+        session.get_texture_url = get_texture_url
+        session._record_event(now, "map.get_texture_url_ready", "tile fetch deferred until MapBlockReply")
+    else:
+        session._record_event(now, "map.skip", "GetTexture CAP not resolved")
 
 
 def _summarize_inventory_snapshot(snapshot: InventoryFetchSnapshot) -> str:

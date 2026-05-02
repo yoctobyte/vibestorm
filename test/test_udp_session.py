@@ -103,15 +103,21 @@ class LiveCircuitSessionTests(unittest.TestCase):
 
         packets = session.handle_incoming(inbound, 11.0)
 
-        self.assertEqual(len(packets), 2)
+        # RegionHandshakeReply, MapBlockRequest (autosent for the current
+        # region grid coords), and the explicit PacketAck.
+        self.assertEqual(len(packets), 3)
         reply = split_packet(decode_zerocode(packets[0]))
         self.assertTrue(reply.header.is_reliable)
         self.assertEqual(reply.appended_acks, ())
         self.assertEqual(self.dispatcher.dispatch(reply.message).summary.name, "RegionHandshakeReply")
-        ack = split_packet(packets[1])
+        map_request = split_packet(packets[1])
+        self.assertTrue(map_request.header.is_reliable)
+        self.assertEqual(self.dispatcher.dispatch(map_request.message).summary.name, "MapBlockRequest")
+        ack = split_packet(packets[2])
         self.assertEqual(self.dispatcher.dispatch(ack.message).summary.name, "PacketAck")
         self.assertEqual(session.last_region_name, "Test")
         self.assertTrue(any(event.kind == "handshake.region" for event in session.events))
+        self.assertTrue(session.map_block_request_sent)
 
     def test_packet_ack_clears_pending_reliable_sequences(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
@@ -409,6 +415,65 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertEqual(visual_count, 3)
         self.assertEqual(body[56:59], b"\x50\x60\x70")
 
+    def test_map_block_reply_captures_image_id_for_current_region(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        # bootstrap.region_x = 256, region_y = 512 → grid = (1, 2)
+        grid_x, grid_y = 1, 2
+        map_image_id = UUID("11112222-3333-4444-5555-666677778888")
+        name = b"Vibestorm Test\x00"
+        agent_id = self.bootstrap.agent_id
+        body = (
+            agent_id.bytes
+            + (0).to_bytes(4, "little")  # Flags
+            + bytes([1])  # entry count
+            + grid_x.to_bytes(2, "little")
+            + grid_y.to_bytes(2, "little")
+            + bytes([len(name)])
+            + name
+            + bytes([13])  # Access
+            + (0).to_bytes(4, "little")  # RegionFlags
+            + bytes([20])  # WaterHeight
+            + bytes([0])  # Agents
+            + map_image_id.bytes
+        )
+        inbound = build_packet(b"\xFF\xFF\x01\x99" + body, sequence=99)
+
+        session.handle_incoming(inbound, 12.0)
+
+        self.assertEqual(session.region_map_image_id, map_image_id)
+        kinds = [event.kind for event in session.events]
+        self.assertIn("map.reply", kinds)
+
+    def test_map_block_reply_records_no_match_when_grid_misses(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        agent_id = self.bootstrap.agent_id
+        other_image = UUID("99998888-7777-6666-5555-444433332222")
+        body = (
+            agent_id.bytes
+            + (0).to_bytes(4, "little")
+            + bytes([1])
+            + (5).to_bytes(2, "little")  # wrong X
+            + (5).to_bytes(2, "little")  # wrong Y
+            + bytes([1])
+            + b"X"
+            + bytes([13])
+            + (0).to_bytes(4, "little")
+            + bytes([0])
+            + bytes([0])
+            + other_image.bytes
+        )
+        inbound = build_packet(b"\xFF\xFF\x01\x99" + body, sequence=98)
+
+        session.handle_incoming(inbound, 12.0)
+
+        self.assertIsNone(session.region_map_image_id)
+        kinds = [event.kind for event in session.events]
+        self.assertIn("map.reply.no_match", kinds)
+
     def test_build_chat_packet_emits_zerocoded_chat_from_viewer(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)
@@ -548,10 +613,14 @@ class LiveCircuitSessionTests(unittest.TestCase):
         first_packets = session.handle_incoming(inbound, 11.0)
         second_packets = session.handle_incoming(inbound, 11.1)
 
-        self.assertEqual(len(first_packets), 2)
+        # First handshake: reply + map block request + ack. Second time
+        # (duplicate sequence): only the ack — handshake state already set,
+        # so map_block_request_sent guards against a re-send.
+        self.assertEqual(len(first_packets), 3)
         self.assertEqual(len(second_packets), 1)
         self.assertEqual(self.dispatcher.dispatch(split_packet(decode_zerocode(first_packets[0])).message).summary.name, "RegionHandshakeReply")
-        self.assertEqual(self.dispatcher.dispatch(split_packet(first_packets[1]).message).summary.name, "PacketAck")
+        self.assertEqual(self.dispatcher.dispatch(split_packet(first_packets[1]).message).summary.name, "MapBlockRequest")
+        self.assertEqual(self.dispatcher.dispatch(split_packet(first_packets[2]).message).summary.name, "PacketAck")
         self.assertEqual(self.dispatcher.dispatch(split_packet(second_packets[0]).message).summary.name, "PacketAck")
         self.assertEqual(session.received_messages["RegionHandshake"], 2)
         self.assertTrue(any(event.kind == "transport.reliable_duplicate" for event in session.events))

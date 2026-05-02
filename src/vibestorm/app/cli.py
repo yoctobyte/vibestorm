@@ -372,6 +372,18 @@ def format_appearance_status(report: SessionReport) -> list[str]:
         lines.append(f"appearance[baked]=none {summary}")
     else:
         lines.append("appearance[baked]=none no_events")
+    # Region map tile fetch status
+    if report.region_map_path is not None:
+        lines.append(f"map[tile]=cached path={report.region_map_path}")
+    elif report.region_map_image_id is not None:
+        lines.append(f"map[tile]=image_id_only id={report.region_map_image_id}")
+    else:
+        map_events = [e for e in report.events if e.kind.startswith("map.")]
+        if map_events:
+            kinds = ",".join(sorted({e.kind for e in map_events}))
+            lines.append(f"map[tile]=none events={kinds}")
+        else:
+            lines.append("map[tile]=none no_events")
     return lines
 
 
