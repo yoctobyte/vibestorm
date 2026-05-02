@@ -1487,108 +1487,93 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
         position = tuple(unpack_from("<fff", object_data, 0))
         rotation = tuple(unpack_from("<ffff", object_data, 40))
         variant = "prim_basic"
-        tail_offset = offset + 8 + 22
-        texture_entry_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 2, "ObjectUpdate.TextureEntry",
-        )
-        texture_anim_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 1, "ObjectUpdate.TextureAnim",
-        )
-        name_value_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 2, "ObjectUpdate.NameValue",
-        )
-        data_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 2, "ObjectUpdate.Data",
-        )
-        text_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 1, "ObjectUpdate.Text",
-        )
-        if len(body) < tail_offset + 4:
-            raise MessageDecodeError("ObjectUpdate text color is truncated")
-        text_color_payload = body[tail_offset : tail_offset + 4]
-        tail_offset += 4
-        media_url_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 1, "ObjectUpdate.MediaURL",
-        )
-        ps_block_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 1, "ObjectUpdate.PSBlock",
-        )
-        extra_params_payload, tail_offset = _read_variable_field_with_length_fallback(
-            body, tail_offset, "ObjectUpdate.ExtraParams", preferred_length_sizes=(2, 1),
-        )
-        next_offset = tail_offset
-        texture_entry_size = len(texture_entry_payload)
-        if texture_entry_size >= 16:
-            default_texture_id = UUID(bytes=texture_entry_payload[:16])
-        texture_anim_size = len(texture_anim_payload)
-        data_size = len(data_payload)
-        text_size = len(text_payload)
-        media_url_size = len(media_url_payload)
-        ps_block_size = len(ps_block_payload)
-        extra_params_size = len(extra_params_payload)
-        if extra_params_payload:
-            try:
-                extra_params_entries = parse_shape_extra_params(extra_params_payload)
-            except MessageDecodeError:
-                extra_params_entries = ()
-        name_values = _parse_name_values(name_value_payload)
-        for field_name, payload in (
-            ("TextureEntry", texture_entry_payload),
-            ("TextureAnim", texture_anim_payload),
-            ("NameValue", name_value_payload),
-            ("Data", data_payload),
-            ("Text", text_payload),
-            ("TextColor", text_color_payload),
-            ("MediaURL", media_url_payload),
-            ("PSBlock", ps_block_payload),
-            ("ExtraParams", extra_params_payload),
-        ):
-            summary = _summarize_payload(field_name, payload)
-            if summary is not None:
-                interesting_payloads.append(summary)
-        if extra_params_entries:
-            interesting_payloads.append(
-                ObjectUpdatePayloadSummary(
-                    field_name="ExtraParamsDecoded",
-                    size=extra_params_size,
-                    non_zero_bytes=sum(1 for byte in extra_params_payload if byte != 0),
-                    preview_hex=extra_params_payload[:16].hex(),
-                    text_preview=(
-                        f"count={len(extra_params_entries)} "
-                        + ",".join(
-                            f"type={entry.param_type}/size={len(entry.param_data)}/in_use={int(entry.param_in_use)}"
-                            for entry in extra_params_entries[:4]
-                        )
-                    ),
-                )
-            )
     elif pcode == 47 and len(object_data) == 76:
         position = tuple(unpack_from("<fff", object_data, 16))
         variant = "avatar_basic"
-        tail_offset = offset + 8 + 22
-        texture_entry_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 2, "ObjectUpdate.TextureEntry",
-        )
-        texture_anim_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 1, "ObjectUpdate.TextureAnim",
-        )
-        name_value_payload, tail_offset = _read_variable_field_best_effort(
-            body, tail_offset, 2, "ObjectUpdate.NameValue",
-        )
-        next_offset = tail_offset
-        name_values = _parse_name_values(name_value_payload)
-        texture_entry_size = len(texture_entry_payload)
-        texture_anim_size = len(texture_anim_payload)
-        for field_name, payload in (
-            ("TextureEntry", texture_entry_payload),
-            ("TextureAnim", texture_anim_payload),
-        ):
-            summary = _summarize_payload(field_name, payload)
-            if summary is not None:
-                interesting_payloads.append(summary)
     else:
         raise MessageDecodeError(
             f"unsupported ObjectUpdate variant pcode={pcode} object_data_size={len(object_data)}",
+        )
+
+    tail_offset = offset + 8 + 22
+    texture_entry_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 2, "ObjectUpdate.TextureEntry",
+    )
+    texture_anim_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 1, "ObjectUpdate.TextureAnim",
+    )
+    name_value_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 2, "ObjectUpdate.NameValue",
+    )
+    data_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 2, "ObjectUpdate.Data",
+    )
+    text_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 1, "ObjectUpdate.Text",
+    )
+    if len(body) < tail_offset + 4:
+        raise MessageDecodeError("ObjectUpdate text color is truncated")
+    text_color_payload = body[tail_offset : tail_offset + 4]
+    tail_offset += 4
+    media_url_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 1, "ObjectUpdate.MediaURL",
+    )
+    ps_block_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 1, "ObjectUpdate.PSBlock",
+    )
+    extra_params_payload, tail_offset = _read_variable_field_with_length_fallback(
+        body, tail_offset, "ObjectUpdate.ExtraParams", preferred_length_sizes=(2, 1),
+    )
+    
+    # 66 fixed bytes at the end of every ObjectUpdate entry
+    # Sound (16), OwnerID (16), Gain (4), Flags (1), Radius (4), JointType (1), JointPivot (12), JointAxisOrAnchor (12)
+    tail_offset += 66
+    next_offset = tail_offset
+
+    texture_entry_size = len(texture_entry_payload)
+    if texture_entry_size >= 16:
+        default_texture_id = UUID(bytes=texture_entry_payload[:16])
+    texture_anim_size = len(texture_anim_payload)
+    data_size = len(data_payload)
+    text_size = len(text_payload)
+    media_url_size = len(media_url_payload)
+    ps_block_size = len(ps_block_payload)
+    extra_params_size = len(extra_params_payload)
+    if extra_params_payload:
+        try:
+            extra_params_entries = parse_shape_extra_params(extra_params_payload)
+        except MessageDecodeError:
+            extra_params_entries = ()
+    name_values = _parse_name_values(name_value_payload)
+    for field_name, payload in (
+        ("TextureEntry", texture_entry_payload),
+        ("TextureAnim", texture_anim_payload),
+        ("NameValue", name_value_payload),
+        ("Data", data_payload),
+        ("Text", text_payload),
+        ("TextColor", text_color_payload),
+        ("MediaURL", media_url_payload),
+        ("PSBlock", ps_block_payload),
+        ("ExtraParams", extra_params_payload),
+    ):
+        summary = _summarize_payload(field_name, payload)
+        if summary is not None:
+            interesting_payloads.append(summary)
+    if extra_params_entries:
+        interesting_payloads.append(
+            ObjectUpdatePayloadSummary(
+                field_name="ExtraParamsDecoded",
+                size=extra_params_size,
+                non_zero_bytes=sum(1 for byte in extra_params_payload if byte != 0),
+                preview_hex=extra_params_payload[:16].hex(),
+                text_preview=(
+                    f"count={len(extra_params_entries)} "
+                    + ",".join(
+                        f"type={entry.param_type}/size={len(entry.param_data)}/in_use={int(entry.param_in_use)}"
+                        for entry in extra_params_entries[:4]
+                    )
+                ),
+            )
         )
 
     entry = ObjectUpdateEntry(

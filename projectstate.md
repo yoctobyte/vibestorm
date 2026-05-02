@@ -58,6 +58,7 @@ Current object/world coverage:
 - known `prim_basic` and `avatar_basic` `ObjectUpdate` variants
 - first conservative texture UUID extraction from rich prim `TextureEntry`
 - structural `ImprovedTerseObjectUpdate` parsing with per-entry payload and texture-entry sizing
+- multi-object `ObjectUpdate` semantic decoding and fixed-tail advancement
 
 ## Current Gaps
 
@@ -65,7 +66,6 @@ The next meaningful work is not transport stabilization. It is coverage and inte
 
 Main gaps:
 
-- multi-object `ObjectUpdate` semantic decoding
 - better census of all visible scene objects
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`

@@ -1,6 +1,6 @@
 {
   "appended_acks": [],
-  "at_seconds": 5.679697,
+  "at_seconds": 5.739968,
   "body_size": 321,
   "capture_mode": "all",
   "capture_reason": "world.object_update",
@@ -11,16 +11,8 @@
     "decode_status": "decoded",
     "extra_params_size": 0,
     "full_id": "11111111-2222-3333-4444-555555555555",
-    "interesting_payloads": [
-      {
-        "field_name": "Trailing",
-        "non_zero_bytes": 81,
-        "preview_hex": "00510046697273744e616d6520535452",
-        "size": 160,
-        "text_preview": null
-      }
-    ],
-    "local_id": 923960232,
+    "interesting_payloads": [],
+    "local_id": 58026003,
     "media_url_size": 0,
     "name_values": {
       "\u0000FirstName": "Vibestorm",

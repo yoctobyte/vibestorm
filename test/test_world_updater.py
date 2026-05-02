@@ -193,6 +193,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + bytes([0])                          # MediaURL len=0
                 + bytes([0])                          # PSBlock len=0
                 + b"\x00\x00"                         # ExtraParams len=0
+                + b"\x00" * 66                        # 66 fixed bytes tail
             )
 
         dispatched = self._dispatch(
