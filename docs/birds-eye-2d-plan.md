@@ -97,8 +97,9 @@ After step 4, every byte the GUI needs is in `WorldView` (or in a sibling `MapVi
 ## Progress (2026-05-01)
 
 - ✅ Step 1: `caps/get_texture_client.py` + `assets/j2k.py` (Pillow-backed, optional `viewer` extra). 8 tests.
-- ✅ Step 2: `encode_map_block_request` + `parse_map_block_reply` + dataclasses. 3 tests. Session wiring deferred.
-- ✅ Step 3: `encode_chat_from_viewer` + `parse_improved_instant_message` + `parse_alert_message` + `parse_agent_alert_message`. 5 tests. Session wiring deferred.
+- ✅ Step 2: `encode_map_block_request` + `parse_map_block_reply` + dataclasses. 3 tests.
+- ✅ Step 3: `encode_chat_from_viewer` + `parse_improved_instant_message` + `parse_alert_message` + `parse_agent_alert_message`. 5 tests.
+- ✅ Wiring (a4f5e98, 6f1c319, 63b37f1): inbound IM/Alert/AgentAlert surfaced as `chat.im` / `chat.alert` / `chat.agent_alert` events; `LiveCircuitSession.build_chat_packet()` outbound helper; `MapBlockRequest` autosent after `RegionHandshakeReply`; `MapBlockReply` parsed and matched against bootstrap grid coords; tile fetched via `GetTextureClient`, decoded via `assets.j2k`, written as PNG to `local/map-cache/<image_id>.png`. `SessionReport` and the CLI `format_session_report` surface the result. 4 new dispatch/wiring tests.
 - ⏸ Step 4: deferred. The TE format turned out to be a multi-section chain (see Layer 3 row); the "4 bytes after the default UUID" simplification doesn't hold. Needs a proper `parse_texture_entry` walker. ParcelOverlay also still pending.
 
-Session totals: protocol primitives for the entire bird's-eye data path (minus TE color and parcels) are in place — 170 → 178 tests, all passing. No session-loop wiring yet; that's the next focused PR when the GUI work begins.
+Session totals: 173 tests, all passing. The whole data pipeline for a 2D bird's-eye region viewer (background tile, object/avatar markers, basic chat) is now operational at the protocol/session layer. Next stage is presentation: a 2D viewer process that consumes `WorldView` + the cached map tile and renders.

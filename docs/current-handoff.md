@@ -4,75 +4,68 @@ Last updated: 2026-05-01
 
 ## Summary
 
-Inventoried what protocol/data work is needed for a 2D bird's-eye region viewer
-(see `docs/birds-eye-2d-plan.md`) and landed three of the four planned protocol
-PRs. No session-loop wiring yet — these are protocol primitives only, ready to
-be invoked when the GUI work begins.
+The bird's-eye viewer's protocol/session pipeline is now complete end-to-end.
+Session boots, fetches its region map tile, caches it as PNG, surfaces inbound
+IM/Alerts in the event stream, and exposes an outbound chat helper. Next
+stage is presentation: a 2D viewer that consumes `WorldView` + the cached
+map tile.
 
-## What Was Done This Session (2026-05-01)
+## What Is Wired
 
-**Antigravity / Claude Code:**
+Per session, automatically:
+1. `RegionHandshake` → `RegionHandshakeReply` + `MapBlockRequest` for the
+   current region's grid coords (`region_x // 256`, `region_y // 256`).
+2. `MapBlockReply` is parsed; the entry matching our grid coords yields a
+   `MapImageID` stashed as `session.region_map_image_id`.
+3. The main loop polls for (GetTexture URL + image_id + not yet fetched) and
+   runs `_fetch_and_cache_region_map`: HTTP GET → J2K decode → PNG written to
+   `local/map-cache/<image_id>.png`. Path is exposed as
+   `session.region_map_path` and surfaces in `SessionReport.region_map_path`.
+4. Inbound `ChatFromSimulator` (existing), `ImprovedInstantMessage`,
+   `AlertMessage`, and `AgentAlertMessage` all emit `chat.*` session events
+   with the decoded text.
+5. `LiveCircuitSession.build_chat_packet(text, *, chat_type=1, channel=0)`
+   returns a ready-to-send packet (reliable + zerocoded) and emits a
+   `chat.outbound` event.
 
-- `ObjectUpdate` parser refactor: extracted variable-length tail handling out
-  of the `pcode == 9` branch and added the 66-byte fixed tail skip
-  (`Sound`/`OwnerID`/`Gain`/`Flags`/`Radius`/`JointType`/`JointPivot`/`JointAxisOrAnchor`),
-  so multi-object packets are decoded uniformly across pcodes. Live fixtures
-  refreshed.
-- `docs/birds-eye-2d-plan.md`: full inventory of the minimum protocol/data
-  pieces needed for a 2D zoomable region viewer (background tile, object/avatar
-  markers, optional parcel outlines, basic chat).
-- `caps/get_texture_client.py`: HTTP GET wrapper for the `GetTexture` CAP.
-- `assets/j2k.py`: Pillow-backed JPEG2000 decoder with `J2KDecodeError`
-  fallback when Pillow or its J2K plugin is unavailable. Pillow added as an
-  optional `viewer` extra in `pyproject.toml`.
-- `encode_map_block_request` (Low/407, Unencoded) and `parse_map_block_reply`
-  (Low/409). Reply carries one or more entries with `MapImageID` per region —
-  fetchable via `GetTextureClient`.
-- `encode_chat_from_viewer` (Low/80, Zerocoded) for outbound chat.
-- `parse_improved_instant_message` (Low/254) — decodes the full MessageBlock.
-- `parse_alert_message` (Low/134) and `parse_agent_alert_message` (Low/135)
-  for system notifications.
+## How to Verify
 
-All 178 tests pass.
+Run a live session against local OpenSim and check the report tail:
 
-## What Is Now Known
+```
+./run.sh opensim &
+./run.sh session
+```
 
-- `RegionHandshake` carries 4 base + 4 detail terrain texture UUIDs and a 2×2
-  height-range grid for procedural terrain — it does **not** carry a single
-  region map UUID. The flat 1024×1024 region map comes from
-  `MapBlockReply.MapImageID`, fetched via the `GetTexture` CAP.
-- The `GetTexture` CAP returns raw J2K bytes; URL form is
-  `<cap_url>?texture_id=<uuid>` (per OpenSim's `GetTextureHandler`).
-- `TextureEntry` is more complex than a flat `default_uuid + default_color`
-  layout. It is a chain of 11 sections (UUID overrides, color overrides,
-  ScaleU, ScaleV, OffsetU, OffsetV, Rotation, BumpShinyAlpha, MediaFlags,
-  Glow, Materials), each `[default value][face_bitmask][per-face override]*[0x00 terminator]`.
-  Colors are stored inverted (byte 0x00 = component 1.0). A proper
-  `parse_texture_entry` walker is required before per-face color/scale data
-  can be exposed.
+Look for:
+- `map[tile]=cached path=...` (success) — or `image_id_only` / `none events=...`
+- A PNG appearing under `local/map-cache/<image_id>.png` matching the region's
+  prerendered map.
 
 ## What Remains for the Bird's-Eye Plan
 
-- TE section-walking parser (default color is the immediate goal; per-face is a stretch).
-- `ParcelOverlay` body decode (4 KB packed bitfield → plot edge polylines).
-- Session-loop wiring for all of the above: when to send `MapBlockRequest`,
-  where to cache the fetched map tile, how to surface inbound IM/Alert in the
-  console, and how to expose an outbound `say()`.
+- Full `TextureEntry` section-walking parser (default color first, then per-face).
+- `ParcelOverlay` 4 KB bitfield decode → plot-edge polylines.
+- Stdin / console hookup so the user can call `build_chat_packet` interactively.
 
-## One Concrete Next Step
+These are independent and can land in any order — none of them block the
+viewer presentation work.
 
-Wire `MapBlockRequest` into the session prelude after `RegionHandshake`,
-parse the reply, fetch the tile via `GetTextureClient`, decode with
-`assets.j2k.decode_j2k`, and write to `local/map-cache/<region_uuid>.png`.
-That closes the loop for the background-tile data path end-to-end against
-local OpenSim and validates all three new protocol pieces in one live run.
+## Next Stage
+
+A 2D viewer process. Suggested shape:
+
+- One Python process that runs the live session in the background and exposes
+  `WorldView` snapshots + the cached map tile path to a renderer.
+- Renderer choice (pygame/tkinter/web/PySide) is a v1 design decision.
+- v1 visual: the cached map tile as background, oriented colored shapes for
+  objects sized by `scale` and colored by pcode, avatar markers, chat panel
+  for `chat.*` events, and an input box that calls `build_chat_packet`.
 
 ## Notes For The Next Agent
 
-- New protocol primitives live in `src/vibestorm/udp/messages.py` (encoders
-  and parsers grouped near the existing ones) and
-  `src/vibestorm/caps/get_texture_client.py`.
-- J2K decode is gated on Pillow being installed (`pip install '.[viewer]'`
-  or `uv sync --extra viewer`). Headless code paths are unaffected.
-- The bird's-eye plan in `docs/birds-eye-2d-plan.md` has a "Progress" section
-  at the end summarizing what landed and what's still open.
+- All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
+  (encoders/parsers) and `src/vibestorm/caps/get_texture_client.py`.
+- `src/vibestorm/assets/j2k.py` is the Pillow-backed decoder. Pillow is in
+  the optional `viewer` extra (`uv sync --extra viewer`).
+- `local/map-cache/` is gitignored by the existing `local/` rule.
