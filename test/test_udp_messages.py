@@ -13,6 +13,7 @@ from vibestorm.udp.messages import (
     encode_agent_update,
     encode_agent_throttle,
     encode_agent_wearables_request,
+    encode_chat_from_viewer,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_map_block_request,
@@ -21,6 +22,9 @@ from vibestorm.udp.messages import (
     encode_use_circuit_code,
     parse_coarse_location_update,
     parse_improved_terse_object_update,
+    parse_agent_alert_message,
+    parse_alert_message,
+    parse_improved_instant_message,
     parse_kill_object,
     parse_map_block_reply,
     parse_object_extra_params,
@@ -1059,3 +1063,96 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.entries[0].map_image_id, map_image_a)
         self.assertEqual(parsed.entries[1].name, "Other Region")
         self.assertEqual(parsed.entries[1].map_image_id, map_image_b)
+
+    def test_encode_chat_from_viewer_round_trips(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        payload = encode_chat_from_viewer(
+            agent_id, session_id, "hello, world", chat_type=1, channel=0
+        )
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "ChatFromViewer")
+        body = dispatched.body
+        self.assertEqual(UUID(bytes=body[0:16]), agent_id)
+        self.assertEqual(UUID(bytes=body[16:32]), session_id)
+        msg_len = int.from_bytes(body[32:34], "little")
+        self.assertEqual(msg_len, len("hello, world") + 1)
+        self.assertEqual(body[34 : 34 + msg_len], b"hello, world\x00")
+        self.assertEqual(body[34 + msg_len], 1)  # chat_type
+        self.assertEqual(int.from_bytes(body[35 + msg_len : 39 + msg_len], "little", signed=True), 0)
+
+    def test_encode_chat_from_viewer_supports_negative_channel(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        payload = encode_chat_from_viewer(
+            agent_id, session_id, "/me waves", chat_type=2, channel=-1234
+        )
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "ChatFromViewer")
+        body = dispatched.body
+        msg_len = int.from_bytes(body[32:34], "little")
+        self.assertEqual(body[34 + msg_len], 2)
+        self.assertEqual(int.from_bytes(body[35 + msg_len : 39 + msg_len], "little", signed=True), -1234)
+
+    def test_parse_improved_instant_message_decodes_basic_im(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        to_agent_id = UUID("22222222-3333-4444-5555-666666666666")
+        region_id = UUID("77777777-8888-9999-aaaa-bbbbbbbbbbbb")
+        im_id = UUID("ccccccc1-2222-3333-4444-555555555555")
+        from_name = b"Some Sender\x00"
+        msg_text = b"hello there\x00"
+        bucket = b"\x01\x02\x03"
+        body = (
+            agent_id.bytes
+            + session_id.bytes
+            + bytes([0])  # FromGroup
+            + to_agent_id.bytes
+            + (4096).to_bytes(4, "little")  # ParentEstateID
+            + region_id.bytes
+            + pack("<fff", 128.0, 64.0, 22.5)  # Position
+            + bytes([0])  # Offline
+            + bytes([0])  # Dialog
+            + im_id.bytes
+            + (1700000000).to_bytes(4, "little")  # Timestamp
+            + bytes([len(from_name)])
+            + from_name
+            + len(msg_text).to_bytes(2, "little")
+            + msg_text
+            + len(bucket).to_bytes(2, "little")
+            + bucket
+        )
+        dispatched = self.dispatcher.dispatch(b"\xFF\xFF\x00\xFE" + body)
+
+        parsed = parse_improved_instant_message(dispatched)
+
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertEqual(parsed.session_id, session_id)
+        self.assertFalse(parsed.from_group)
+        self.assertEqual(parsed.to_agent_id, to_agent_id)
+        self.assertEqual(parsed.parent_estate_id, 4096)
+        self.assertEqual(parsed.region_id, region_id)
+        self.assertEqual(parsed.position, (128.0, 64.0, 22.5))
+        self.assertEqual(parsed.dialog, 0)
+        self.assertEqual(parsed.im_id, im_id)
+        self.assertEqual(parsed.timestamp, 1700000000)
+        self.assertEqual(parsed.from_agent_name, "Some Sender")
+        self.assertEqual(parsed.message, "hello there")
+        self.assertEqual(parsed.binary_bucket, bucket)
+
+    def test_parse_alert_message_decodes_text(self) -> None:
+        text = b"System message\x00"
+        body = bytes([len(text)]) + text
+        dispatched = self.dispatcher.dispatch(b"\xFF\xFF\x00\x86" + body)
+        parsed = parse_alert_message(dispatched)
+        self.assertEqual(parsed.message, "System message")
+
+    def test_parse_agent_alert_message_decodes_modal_flag(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        text = b"You cannot do that here\x00"
+        body = agent_id.bytes + bytes([1]) + bytes([len(text)]) + text
+        dispatched = self.dispatcher.dispatch(b"\xFF\xFF\x00\x87" + body)
+        parsed = parse_agent_alert_message(dispatched)
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertTrue(parsed.modal)
+        self.assertEqual(parsed.message, "You cannot do that here")

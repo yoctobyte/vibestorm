@@ -263,6 +263,36 @@ class ChatFromSimulatorMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class ImprovedInstantMessageMessage:
+    agent_id: UUID
+    session_id: UUID
+    from_group: bool
+    to_agent_id: UUID
+    parent_estate_id: int
+    region_id: UUID
+    position: tuple[float, float, float]
+    offline: int
+    dialog: int
+    im_id: UUID
+    timestamp: int
+    from_agent_name: str
+    message: str
+    binary_bucket: bytes
+
+
+@dataclass(slots=True, frozen=True)
+class AlertMessageMessage:
+    message: str
+
+
+@dataclass(slots=True, frozen=True)
+class AgentAlertMessageMessage:
+    agent_id: UUID
+    modal: bool
+    message: str
+
+
+@dataclass(slots=True, frozen=True)
 class MapBlockReplyEntry:
     x: int
     y: int
@@ -1460,6 +1490,113 @@ def parse_map_block_reply(message: MessageDispatch) -> MapBlockReplyMessage:
     return MapBlockReplyMessage(agent_id=agent_id, flags=flags, entries=tuple(entries))
 
 
+def parse_improved_instant_message(message: MessageDispatch) -> ImprovedInstantMessageMessage:
+    if message.summary.name != "ImprovedInstantMessage":
+        raise MessageDecodeError(
+            f"expected ImprovedInstantMessage, got {message.summary.name}"
+        )
+    body = message.body
+    fixed_head = 16 + 16 + 1 + 16 + 4 + 16 + 12 + 1 + 1 + 16 + 4
+    if len(body) < fixed_head + 1:
+        raise MessageDecodeError("ImprovedInstantMessage body is too short")
+    agent_id = UUID(bytes=body[0:16])
+    session_id = UUID(bytes=body[16:32])
+    offset = 32
+    from_group = bool(body[offset])
+    offset += 1
+    to_agent_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    parent_estate_id = unpack_from("<I", body, offset)[0]
+    offset += 4
+    region_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    position = tuple(unpack_from("<fff", body, offset))
+    offset += 12
+    offline = body[offset]
+    offset += 1
+    dialog = body[offset]
+    offset += 1
+    im_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    timestamp = unpack_from("<I", body, offset)[0]
+    offset += 4
+
+    if len(body) < offset + 1:
+        raise MessageDecodeError("ImprovedInstantMessage FromAgentName length is truncated")
+    name_length = body[offset]
+    offset += 1
+    if len(body) < offset + name_length:
+        raise MessageDecodeError("ImprovedInstantMessage FromAgentName payload is truncated")
+    from_agent_name = (
+        body[offset : offset + name_length].decode("utf-8", errors="replace").rstrip("\x00")
+    )
+    offset += name_length
+
+    if len(body) < offset + 2:
+        raise MessageDecodeError("ImprovedInstantMessage Message length is truncated")
+    msg_length = unpack_from("<H", body, offset)[0]
+    offset += 2
+    if len(body) < offset + msg_length:
+        raise MessageDecodeError("ImprovedInstantMessage Message payload is truncated")
+    msg_text = (
+        body[offset : offset + msg_length].decode("utf-8", errors="replace").rstrip("\x00")
+    )
+    offset += msg_length
+
+    if len(body) < offset + 2:
+        raise MessageDecodeError("ImprovedInstantMessage BinaryBucket length is truncated")
+    bucket_length = unpack_from("<H", body, offset)[0]
+    offset += 2
+    if len(body) < offset + bucket_length:
+        raise MessageDecodeError("ImprovedInstantMessage BinaryBucket payload is truncated")
+    binary_bucket = bytes(body[offset : offset + bucket_length])
+
+    return ImprovedInstantMessageMessage(
+        agent_id=agent_id,
+        session_id=session_id,
+        from_group=from_group,
+        to_agent_id=to_agent_id,
+        parent_estate_id=parent_estate_id,
+        region_id=region_id,
+        position=position,  # type: ignore[arg-type]
+        offline=offline,
+        dialog=dialog,
+        im_id=im_id,
+        timestamp=timestamp,
+        from_agent_name=from_agent_name,
+        message=msg_text,
+        binary_bucket=binary_bucket,
+    )
+
+
+def parse_alert_message(message: MessageDispatch) -> AlertMessageMessage:
+    if message.summary.name != "AlertMessage":
+        raise MessageDecodeError(f"expected AlertMessage, got {message.summary.name}")
+    body = message.body
+    if len(body) < 1:
+        raise MessageDecodeError("AlertMessage body is too short")
+    msg_length = body[0]
+    if len(body) < 1 + msg_length:
+        raise MessageDecodeError("AlertMessage Message payload is truncated")
+    text = body[1 : 1 + msg_length].decode("utf-8", errors="replace").rstrip("\x00")
+    return AlertMessageMessage(message=text)
+
+
+def parse_agent_alert_message(message: MessageDispatch) -> AgentAlertMessageMessage:
+    if message.summary.name != "AgentAlertMessage":
+        raise MessageDecodeError(f"expected AgentAlertMessage, got {message.summary.name}")
+    body = message.body
+    if len(body) < 16 + 1 + 1:
+        raise MessageDecodeError("AgentAlertMessage body is too short")
+    agent_id = UUID(bytes=body[0:16])
+    modal = bool(body[16])
+    msg_length = body[17]
+    if len(body) < 18 + msg_length:
+        raise MessageDecodeError("AgentAlertMessage Message payload is truncated")
+    text = body[18 : 18 + msg_length].decode("utf-8", errors="replace").rstrip("\x00")
+    return AgentAlertMessageMessage(agent_id=agent_id, modal=modal, message=text)
+
+
 def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMessage:
     if message.summary.name != "ChatFromSimulator":
         raise MessageDecodeError(f"expected ChatFromSimulator, got {message.summary.name}")
@@ -1988,6 +2125,39 @@ def encode_request_object_properties_family(
 ) -> bytes:
     """RequestObjectPropertiesFamily (Medium/5, Zerocoded) — fetch name/owner/perms for one object."""
     return b"\xFF\x05" + agent_id.bytes + session_id.bytes + pack("<I", request_flags) + object_id.bytes
+
+
+def encode_chat_from_viewer(
+    agent_id: UUID,
+    session_id: UUID,
+    message: str,
+    *,
+    chat_type: int = 1,
+    channel: int = 0,
+) -> bytes:
+    """ChatFromViewer (Low/80, Zerocoded) — say ``message`` on ``channel``.
+
+    chat_type: 0=whisper, 1=normal, 2=shout, 3=start typing, 4=stop typing.
+    channel: 0=public, positive=LSL listen channels, negatives are special
+    (DEBUG_CHANNEL=2147483647 is the largest positive; -1 to -N are reserved).
+    The message is UTF-8 encoded and NUL-terminated on the wire.
+    """
+    if not 0 <= chat_type <= 0xFF:
+        raise ValueError("chat_type must fit in U8")
+    if not -(2**31) <= channel <= 2**31 - 1:
+        raise ValueError("channel must fit in S32")
+    msg_bytes = message.encode("utf-8") + b"\x00"
+    if len(msg_bytes) > 0xFFFF:
+        raise ValueError("message is too long for ChatFromViewer Variable 2 field")
+    return (
+        b"\xFF\xFF\x00\x50"
+        + agent_id.bytes
+        + session_id.bytes
+        + len(msg_bytes).to_bytes(2, "little")
+        + msg_bytes
+        + bytes([chat_type])
+        + pack("<i", channel)
+    )
 
 
 def encode_map_block_request(
