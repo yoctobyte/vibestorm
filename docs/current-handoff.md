@@ -1,85 +1,37 @@
 # Current Handoff
 
-Last updated: 2026-04-04
+Last updated: 2026-05-01
 
 ## Summary
 
-Baked texture upload is now fully wired into live sessions. The cloud avatar blocker has a concrete
-implementation path — the remaining question is whether it works end-to-end against a live OpenSim
-target.
+The `ObjectUpdate` message parser has been refactored to support multi-object payload decoding. The parser now correctly advances the reading offset past the 66-byte fixed tail for every object entry, allowing all objects in a multi-object packet to be parsed without throwing truncated exceptions.
 
-## What Was Done This Session (2026-04-04)
+## What Was Done This Session (2026-05-01)
 
-**Firestorm pcap decoded inline (Python TCP stream reassembly):**
-- Confirmed `UploadBakedTexture` CAP URL from seed cap LLSD
-- Extracted 5 JPEG2000 baked texture blobs: `local/baked-cache/bake-{0..4}.j2k`
-  - sizes: 112 KB, 96 KB, 21 KB, 244 KB, 284 KB
-- Extracted 5 `AgentSetAppearance` payloads (ground truth appearance)
-- Decoded 178-byte `TextureEntry` binary: located 5 baked UUID slots at byte offsets 19, 37, 55, 73, 91
-- Created `local/baked-cache/appearance-fixture.json` with TE hex, wearable_data, visual_params, serial, size, and per-blob te_offset mappings
-
-**Session wiring (commit cc17060):**
-- `BakedAppearanceOverride` dataclass: patched TE bytes, wearable cache items, visual_params, serial_num, size
-- `_load_and_upload_baked_textures()`: loads J2K blobs, uploads each via `UploadBakedTexture` CAP,
-  patches TE at known UUID offsets with returned `new_asset` UUIDs
-- Called from `_run_caps_prelude` after inventory fetch; result stored on `LiveCircuitSession.baked_appearance_override`
-- `_drain_appearance_packets` now prefers `baked_appearance_override` over bootstrap/default fallback when set
-- 148 tests pass
-
-**Signal Log:**
-- Claim #001 (Codex): endorsed by Claude ✓
-- Claim #002 (Claude): open, pending next agent
+**Antigravity:**
+- Analyzed `messages.py` and `third_party/secondlife/message_template.msg` to identify that the `ObjectUpdate` parser was ignoring the 66-byte fixed block trailing `ExtraParams` (`Sound`, `OwnerID`, `Gain`, `Flags`, `Radius`, `JointType`, `JointPivot`, `JointAxisOrAnchor`).
+- Extracted the variable-length standard tail parsing out of the specific `pcode == 9` branch so that it applies uniformly to all variants, including `avatar_basic` (`pcode == 47`).
+- Added the 66-byte offset skip, allowing the parser loop to correctly identify the start of subsequent objects.
+- Updated the `test_apply_dispatch_parses_multi_object_update` test in `test_world_updater.py` to pad the fake test payload with the 66 zero bytes so the test passes.
+- All 157 tests pass.
 
 ## What Is Now Known
 
-- Firestorm uploads exactly 5 J2K codestreams per login via `UploadBakedTexture` two-step flow
-- TE blob is 178 bytes; baked UUID slots start at offset 19 (spacing 18 bytes between slots)
-- The wiring is correct: if the live OpenSim accepts the uploads and returns `new_asset` UUIDs,
-  those UUIDs will be in the `AgentSetAppearance` TE, and cloud state should clear
-- `UploadBakedTexture` CAP must be advertised by the simulator — it is in the requested list
+- The `ObjectData` payload structure inside `ObjectUpdate` consistently ends with 66 fixed bytes for all pcodes. 
+- The parser now faithfully follows the `message_template.msg` standard for the tail segment.
 
 ## What Remains Unknown
 
-- Whether the local OpenSim instance honors `UploadBakedTexture` and returns real asset UUIDs
-  (OpenSim does implement `UploadBakedTextureModule.cs` — probability: high)
-- Whether sending foreign-avatar J2K blobs (from the Firestorm pcap) is accepted or rejected
-- Whether `AgentCachedTextureResponse` will return non-zero IDs after successful upload, or whether
-  the server needs a cache warm-up first
-- Whether the TE offset patching is sufficient — server may require specific face-mask byte ordering
-
-## What Was Verified
-
-- All 148 tests pass after the session.py changes
-- `_BAKED_CACHE_DIR` path resolves correctly to `local/baked-cache/` from the installed package location
-- Fixture file and all 5 J2K blobs confirmed present at that path
+- Semantic decoding of the remainder of `ImprovedTerseObjectUpdate` beyond the 60/44 byte struct definitions.
+- Full `TextureEntry` decoding for standard objects (beyond the first 16 byte default UUID assumption).
+- The exact layout of the 22-byte pre-tail block, although we know the sizes and names from `message_template.msg`.
 
 ## One Concrete Next Step
 
-Run a live session against the local OpenSim target and inspect session output for:
-```
-caps[seed]=...,UploadBakedTexture,...
-bake.uploaded blob=0 asset=<uuid>
-bake.uploaded blob=1 asset=<uuid>
-...
-bake.override_ready serial=5 bakes=5
-appearance.baked_override serial=5 te=178 vp=253 bakes=5
-```
-
-If `bake.override_ready` appears and the avatar is no longer cloud-like, the blocker is fixed.
-
-If uploads succeed but avatar stays cloud, check:
-- `appearance[cached_textures]` — are returned texture IDs non-zero?
-- Whether OpenSim needs a second login/cached-check cycle after assets are registered
-- Whether the TE face-mask entries need to match the specific face indices OpenSim expects
-
-If `bake.upload_error` appears, the local OpenSim may not have `UploadBakedTexture` enabled —
-check OpenSim config (`Caps_EnabledWhere`) or confirm the CAP appears in seed cap response.
+Choose another gap from `projectstate.md`'s "Current Gaps" list. A good starting point would be:
+- Deeper object update families such as `ObjectUpdateCached` and `KillObject`.
+- Full `TextureEntry` decoding.
 
 ## Notes For The Next Agent
 
-- `local/baked-cache/appearance-fixture.json` is the ground truth for TE offsets and wearable data
-- `local/baked-cache/bake-{0..4}.j2k` are the raw J2K blobs from the Firestorm capture
-- `src/vibestorm/caps/upload_baked_texture_client.py`: the upload client (unchanged)
-- `src/vibestorm/udp/session.py`: the session loop with wiring (commit cc17060)
-- `docs/claude-handoff-2026-04-04.md`: detailed peer handoff with full pcap analysis and TE decoding
-- The `SIGNAL_LOG.md` Claim #002 (Claude) is open and waiting for endorsement
+- `docs/reverse-engineered-protocol.md` contains the latest known struct layouts for ObjectUpdate packets. You may want to update it to clarify that the 66-byte tail is now explicitly skipped and accounted for.
