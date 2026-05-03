@@ -2160,6 +2160,27 @@ def encode_chat_from_viewer(
     )
 
 
+def encode_teleport_location_request(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    region_handle: int,
+    position: tuple[float, float, float],
+    look_at: tuple[float, float, float] = (1.0, 0.0, 0.0),
+) -> bytes:
+    """TeleportLocationRequest (Low/63) — request an exact destination."""
+    if not 0 <= int(region_handle) <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("region_handle must fit in U64")
+    return (
+        b"\xFF\xFF\x00\x3F"
+        + agent_id.bytes
+        + session_id.bytes
+        + int(region_handle).to_bytes(8, "little")
+        + pack("<fff", float(position[0]), float(position[1]), float(position[2]))
+        + pack("<fff", float(look_at[0]), float(look_at[1]), float(look_at[2]))
+    )
+
+
 def encode_map_block_request(
     agent_id: UUID,
     session_id: UUID,

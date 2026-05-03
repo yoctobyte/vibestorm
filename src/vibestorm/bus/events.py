@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID  # noqa: F401  - used by RegionMapTileReady etc.
 
+from vibestorm.caps.inventory_client import InventoryFetchSnapshot
 
 # ---- session lifecycle ----------------------------------------------------
 
@@ -90,6 +91,12 @@ class WorldStateChanged:
     reason: str  # "object_update" | "kill_object" | "terse_update" | "coarse_location" | …
 
 
+@dataclass(slots=True, frozen=True)
+class InventorySnapshotReady:
+    region_handle: int
+    snapshot: InventoryFetchSnapshot
+
+
 # ---- map / texture -------------------------------------------------------
 
 @dataclass(slots=True, frozen=True)
@@ -104,6 +111,7 @@ __all__ = [
     "ChatIM",
     "ChatLocal",
     "ChatOutbound",
+    "InventorySnapshotReady",
     "LoginComplete",
     "RegionChanged",
     "RegionMapTileReady",

@@ -68,10 +68,16 @@ vibestorm --help
 - `vibestorm udp-probe`
 - `vibestorm handshake-probe`
 - `vibestorm session-run`
+- `./run.sh viewer`
 
 `session-run` is the most complete workflow today. It logs in, establishes the UDP circuit, runs
 a bounded session loop, updates normalized world state, and can optionally capture selected inbound
 messages for later fixture work.
+
+`./run.sh viewer` runs the pygame bird's-eye viewer against the same live session path. It
+auto-scales the UI from the desktop size and accepts `--ui-scale`, `--width`, and `--height`
+overrides. The viewer exposes a pygame_gui menu/status shell, movement help, chat, a local
+teleport-location request dialog, and the first read-only inventory snapshot window.
 
 ## Next Step
 

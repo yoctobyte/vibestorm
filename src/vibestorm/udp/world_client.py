@@ -16,8 +16,10 @@ CrossedRegion → promote child to current).
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
+from threading import Lock
 
 from vibestorm.bus import Bus, NoHandlerError
 from vibestorm.bus.commands import (
@@ -29,12 +31,14 @@ from vibestorm.bus.commands import (
     SetCamera,
     SetControlFlags,
     SetHeadRotation,
+    TeleportLocation,
 )
 from vibestorm.bus.events import (
     ChatAlert,
     ChatIM,
     ChatLocal,
     ChatOutbound,
+    InventorySnapshotReady,
     RegionChanged,
     RegionMapTileReady,
     SessionClosed,
@@ -80,6 +84,12 @@ class WorldClient:
     circuits: dict[int, LiveCircuitSession] = field(default_factory=dict)
     current_handle: int | None = None
     bus: Bus = field(default_factory=Bus)
+    _outbound_packets: deque[tuple[int, bytes]] = field(
+        default_factory=deque,
+        init=False,
+        repr=False,
+    )
+    _outbound_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _command_handlers_registered: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -163,6 +173,32 @@ class WorldClient:
             return None
         return current.world_view
 
+    # ----------------------------------------------------------- outbound
+
+    def queue_outbound_packet(self, handle: int, packet: bytes) -> None:
+        """Queue a packet built outside the session loop for the UDP pump to send."""
+        with self._outbound_lock:
+            self._outbound_packets.append((handle, packet))
+
+    def drain_outbound_packets(self, handle: int | None = None) -> tuple[tuple[int, bytes], ...]:
+        """Return and remove queued outbound packets, optionally only for one circuit."""
+        with self._outbound_lock:
+            if handle is None:
+                packets = tuple(self._outbound_packets)
+                self._outbound_packets.clear()
+                return packets
+
+            matched: list[tuple[int, bytes]] = []
+            remaining: deque[tuple[int, bytes]] = deque()
+            while self._outbound_packets:
+                item = self._outbound_packets.popleft()
+                if item[0] == handle:
+                    matched.append(item)
+                else:
+                    remaining.append(item)
+            self._outbound_packets = remaining
+            return tuple(matched)
+
     # ----------------------------------------------------------- bus bridge
 
     def on_session_event(self, session: LiveCircuitSession, event: SessionEvent) -> None:
@@ -189,9 +225,13 @@ class WorldClient:
             if payload is not None:
                 self.bus.publish(payload)
         elif kind == "chat.alert":
-            self.bus.publish(ChatAlert(region_handle=handle, message=event.detail, is_agent_alert=False))
+            self.bus.publish(
+                ChatAlert(region_handle=handle, message=event.detail, is_agent_alert=False)
+            )
         elif kind == "chat.agent_alert":
-            self.bus.publish(ChatAlert(region_handle=handle, message=event.detail, is_agent_alert=True))
+            self.bus.publish(
+                ChatAlert(region_handle=handle, message=event.detail, is_agent_alert=True)
+            )
         elif kind == "session.closed":
             self.bus.publish(SessionClosed(region_handle=handle, reason=event.detail))
         elif kind == "map.cache.ok":
@@ -205,6 +245,13 @@ class WorldClient:
                         cache_path=path,
                     )
                 )
+        elif kind == "caps.inventory" and session.latest_inventory_fetch is not None:
+            self.bus.publish(
+                InventorySnapshotReady(
+                    region_handle=handle,
+                    snapshot=session.latest_inventory_fetch,
+                )
+            )
         elif kind.startswith("world."):
             self.bus.publish(WorldStateChanged(region_handle=handle, reason=kind[len("world."):]))
 
@@ -222,6 +269,7 @@ class WorldClient:
         self.bus.register_handler(SetHeadRotation, self._handle_set_head_rotation)
         self.bus.register_handler(SetCamera, self._handle_set_camera)
         self.bus.register_handler(SendChat, self._handle_send_chat)
+        self.bus.register_handler(TeleportLocation, self._handle_teleport_location)
 
     def _require_current(self) -> LiveCircuitSession:
         current = self.current
@@ -255,11 +303,28 @@ class WorldClient:
         current.camera_up_axis = tuple(float(v) for v in cmd.up_axis)  # type: ignore[assignment]
 
     def _handle_send_chat(self, cmd: SendChat) -> bytes:
-        return self._require_current().build_chat_packet(
+        current = self._require_current()
+        packet = current.build_chat_packet(
             cmd.message,
             chat_type=cmd.chat_type,
             channel=cmd.channel,
         )
+        if self.current_handle is not None:
+            self.queue_outbound_packet(self.current_handle, packet)
+        return packet
+
+    def _handle_teleport_location(self, cmd: TeleportLocation) -> bytes:
+        current = self._require_current()
+        handle = cmd.region_handle if cmd.region_handle is not None else self.current_handle
+        if handle is None:
+            raise WorldClientError("no current region handle; cannot teleport")
+        packet = current.build_teleport_location_packet(
+            region_handle=handle,
+            position=cmd.position,
+            look_at=cmd.look_at,
+        )
+        self.queue_outbound_packet(handle, packet)
+        return packet
 
     # ------------------------------------------------------- event parsing
 

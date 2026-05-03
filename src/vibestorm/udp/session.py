@@ -56,6 +56,7 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_request_multiple_objects,
     encode_request_object_properties_family,
+    encode_teleport_location_request,
     encode_use_circuit_code,
     parse_agent_alert_message,
     parse_agent_movement_complete,
@@ -730,6 +731,37 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "chat.outbound",
             f"type={chat_type} channel={channel} message={message!r}",
+        )
+        return packet
+
+    def build_teleport_location_packet(
+        self,
+        *,
+        region_handle: int,
+        position: tuple[float, float, float],
+        look_at: tuple[float, float, float] = (1.0, 0.0, 0.0),
+        now: float | None = None,
+    ) -> bytes:
+        """Build a TeleportLocationRequest packet ready for sock_sendto."""
+        packet = self._build_outbound_packet(
+            encode_teleport_location_request(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                region_handle=region_handle,
+                position=position,
+                look_at=look_at,
+            ),
+            reliable=True,
+            now=now,
+            label="TeleportLocationRequest",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "teleport.location.requested",
+            (
+                f"region_handle={region_handle:#018x} "
+                f"position=({position[0]:.1f},{position[1]:.1f},{position[2]:.1f})"
+            ),
         )
         return packet
 
@@ -1452,7 +1484,7 @@ async def run_live_session(
         init_kwargs["world_view"] = world_view
     session = LiveCircuitSession(**init_kwargs)
     client = world_client if world_client is not None else WorldClient()
-    client.add_circuit(session, make_current=True)
+    session_handle = client.add_circuit(session, make_current=True)
     loop = asyncio.get_running_loop()
     start_time = loop.time()
     deadline = start_time + session_config.duration_seconds
@@ -1478,6 +1510,8 @@ async def run_live_session(
 
         while _should_continue():
             now = loop.time()
+            for _, packet in client.drain_outbound_packets(session_handle):
+                await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
             for packet in session.drain_due_packets(now):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
@@ -1498,6 +1532,8 @@ async def run_live_session(
                 continue
 
             for packet in session.handle_incoming(payload, loop.time()):
+                await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+            for _, packet in client.drain_outbound_packets(session_handle):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
             # Deferred bake upload: trigger after AgentCachedTextureResponse arrives,

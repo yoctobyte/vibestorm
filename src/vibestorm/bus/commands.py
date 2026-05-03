@@ -11,8 +11,6 @@ AgentUpdate carries them. Chat commands build packets immediately.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from uuid import UUID
-
 
 # ---- movement (mutates session state; takes effect on next AgentUpdate) ----
 
@@ -70,6 +68,14 @@ class SendChat:
     channel: int = 0
 
 
+@dataclass(slots=True, frozen=True)
+class TeleportLocation:
+    """Request a teleport to a local position in a region handle."""
+    position: tuple[float, float, float]
+    region_handle: int | None = None
+    look_at: tuple[float, float, float] = (1.0, 0.0, 0.0)
+
+
 __all__ = [
     "AddControlFlags",
     "ClearControlFlags",
@@ -79,4 +85,5 @@ __all__ = [
     "SetCamera",
     "SetControlFlags",
     "SetHeadRotation",
+    "TeleportLocation",
 ]

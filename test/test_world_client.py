@@ -216,6 +216,28 @@ class WorldClientBusBridgeTests(unittest.TestCase):
 
         self.assertIn("chat.local", captured)
 
+    def test_caps_inventory_event_publishes_inventory_snapshot(self) -> None:
+        from uuid import UUID
+
+        from vibestorm.bus.events import InventorySnapshotReady
+        from vibestorm.caps.inventory_client import InventoryFetchSnapshot
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[InventorySnapshotReady] = []
+        client.bus.subscribe(InventorySnapshotReady, received.append)
+
+        snapshot = InventoryFetchSnapshot(
+            folders=(),
+            inventory_root_folder_id=UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c"),
+        )
+        session.latest_inventory_fetch = snapshot
+        session._record_event(0.0, "caps.inventory", "folders=0")
+
+        self.assertEqual(len(received), 1)
+        self.assertIs(received[0].snapshot, snapshot)
+
 
 class WorldClientCommandHandlerTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -307,6 +329,30 @@ class WorldClientCommandHandlerTests(unittest.TestCase):
 
         self.assertIsInstance(result, bytes)
         self.assertGreater(len(result), 0)
+
+    def test_send_chat_command_queues_packet_for_session_loop(self) -> None:
+        from vibestorm.bus.commands import SendChat
+
+        client = WorldClient()
+        session = self._make_session()
+        handle = client.add_circuit(session)
+
+        result = client.bus.dispatch(SendChat("hello"))
+
+        self.assertEqual(client.drain_outbound_packets(handle), ((handle, result),))
+        self.assertEqual(client.drain_outbound_packets(handle), ())
+
+    def test_teleport_location_command_queues_location_request(self) -> None:
+        from vibestorm.bus.commands import TeleportLocation
+
+        client = WorldClient()
+        session = self._make_session()
+        handle = client.add_circuit(session)
+
+        result = client.bus.dispatch(TeleportLocation(position=(10.0, 20.0, 30.0)))
+
+        self.assertEqual(client.drain_outbound_packets(handle), ((handle, result),))
+        self.assertEqual(result[6:10], b"\xFF\xFF\x00\x3F")
 
     def test_command_without_current_circuit_raises(self) -> None:
         from vibestorm.bus.commands import SetControlFlags

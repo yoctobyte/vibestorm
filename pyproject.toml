@@ -15,10 +15,14 @@ dependencies = [
 [project.optional-dependencies]
 viewer = [
   "Pillow>=10,<12",
+  "pygame-ce>=2.5,<3",
+  "pygame_gui>=0.6,<1",
 ]
 dev = [
   "mypy>=1.10,<2",
   "Pillow>=10,<12",
+  "pygame-ce>=2.5,<3",
+  "pygame_gui>=0.6,<1",
   "pytest>=8.2,<9",
   "pytest-asyncio>=0.23,<1",
   "pytest-cov>=5,<6",
@@ -49,4 +53,3 @@ select = ["E", "F", "I", "UP"]
 python_version = "3.12"
 packages = ["vibestorm"]
 strict = true
-

@@ -19,6 +19,7 @@ from vibestorm.udp.messages import (
     encode_map_block_request,
     encode_packet_ack,
     encode_region_handshake_reply,
+    encode_teleport_location_request,
     encode_use_circuit_code,
     parse_coarse_location_update,
     parse_improved_terse_object_update,
@@ -1116,6 +1117,26 @@ class SemanticMessageTests(unittest.TestCase):
         msg_len = int.from_bytes(body[32:34], "little")
         self.assertEqual(body[34 + msg_len], 2)
         self.assertEqual(int.from_bytes(body[35 + msg_len : 39 + msg_len], "little", signed=True), -1234)
+
+    def test_encode_teleport_location_request_round_trips(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        payload = encode_teleport_location_request(
+            agent_id,
+            session_id,
+            region_handle=(256 << 32) | 512,
+            position=(10.0, 20.0, 30.0),
+            look_at=(1.0, 0.0, 0.0),
+        )
+
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "TeleportLocationRequest")
+        body = dispatched.body
+        self.assertEqual(UUID(bytes=body[0:16]), agent_id)
+        self.assertEqual(UUID(bytes=body[16:32]), session_id)
+        self.assertEqual(int.from_bytes(body[32:40], "little"), (256 << 32) | 512)
+        self.assertEqual(body[40:52], pack("<fff", 10.0, 20.0, 30.0))
+        self.assertEqual(body[52:64], pack("<fff", 1.0, 0.0, 0.0))
 
     def test_parse_improved_instant_message_decodes_basic_im(self) -> None:
         agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

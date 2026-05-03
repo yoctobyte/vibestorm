@@ -243,6 +243,27 @@ Current implementation status:
 - Vibestorm currently decodes the rich blob into structured `extra_params_entries` on `ObjectUpdateEntry` when parsing succeeds
 - this area still needs more live captures for non-sculpt subtypes such as flexible/light/projector-style cases
 
+### `TeleportLocationRequest`
+
+Implemented send-side shape from `message_template.msg`:
+```
+TeleportLocationRequest Low/63 NotTrusted Unencoded
+AgentData:
+  AgentID UUID
+  SessionID UUID
+Info:
+  RegionHandle U64
+  Position LLVector3
+  LookAt LLVector3
+```
+
+Current implementation status:
+- `encode_teleport_location_request(...)` writes wire number `FF FF 00 3F`.
+- The viewer's Tools -> Teleport dialog queues a reliable packet through `WorldClient`
+  using the current region handle by default.
+- Teleport completion/failure messages and cross-sim circuit promotion are not decoded
+  or wired yet; live behavior still needs an OpenSim visual/protocol pass.
+
 ## Confidence Scale
 
 - `confirmed`: directly implemented and exercised in local OpenSim or fixture tests

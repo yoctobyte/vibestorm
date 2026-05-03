@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-04-04
+Last updated: 2026-05-03
 
 ## Current Summary
 
@@ -21,6 +21,11 @@ The repo already supports:
 - session-scoped evidence rows inside the SQLite store
 - aggregate inbound-message census and unknown UDP dispatch-failure logging
 - nearby chat capture for timestamped in-world notes
+- pygame-based 2D bird's-eye viewer consuming live `WorldView` state and the
+  cached region map tile
+- viewer menu/status shell with movement help, chat, local teleport-location requests,
+  and a read-only inventory snapshot sourced from `FetchInventoryDescendents2` /
+  `FetchInventory2`
 
 ## What Is Stable
 
@@ -32,6 +37,7 @@ The repo already supports:
 - `./run.sh handshake`
 - `./run.sh session`
 - `./run.sh session 180 --verbose`
+- `./run.sh viewer`
 - `./run.sh unknowns`
 - `./run.sh fixtures`
 
@@ -46,7 +52,10 @@ Main implemented areas:
 - `src/vibestorm/event_queue/`: `EventQueueGet` polling
 - `src/vibestorm/udp/`: packet parsing, template dispatch, semantic message helpers, session loop
 - `src/vibestorm/world/`: normalized world-state models and updater
+- `src/vibestorm/viewer/`: pygame 2D viewer, camera, scene aggregation, UI shell,
+  input, rendering
 - `src/vibestorm/fixtures/`: fixture inventory and SQLite unknowns database
+- `docs/viewer-help.md`: in-app movement/menu help loaded by the pygame viewer
 
 Current object/world coverage:
 
@@ -73,6 +82,10 @@ Main gaps:
 - `ExtraParams` and related rich-tail fields
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
+- parcel name/status is still a placeholder until `ParcelOverlay` and parcel metadata
+  are decoded
+- inventory is currently read-only; asset create/upload/store management is not
+  implemented yet beyond existing appearance/baked-texture upload support
 
 ## Current Evidence Workflow
 
@@ -125,16 +138,13 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 
 ## Recommended Next Step
 
-Run one live session against the local OpenSim target. The cloud avatar blocker is now wired:
+Run the 2D viewer against the local OpenSim target and do a visual/interaction pass:
 
 1. Start OpenSim: `./run.sh opensim`
-2. Run a session: `./tools/run_session_forensics.sh 90`
-3. Inspect session output for:
-   - `bake.uploaded blob=N asset=<uuid>` × 5 — confirms uploads accepted
-   - `bake.override_ready serial=5 bakes=5` — confirms override is set
-   - `appearance.baked_override ...` — confirms it was used in `AgentSetAppearance`
-4. Check in-world whether the avatar is no longer cloud-like
-
-If the avatar still appears cloud after uploads succeed, the next target is:
-- Whether OpenSim requires a second login cycle to see its own newly-uploaded bake assets
-- Whether `AgentCachedTextureResponse` returned non-zero IDs (check `appearance[cached_textures]`)
+2. Run the viewer: `./run.sh viewer`
+3. Check that the cached map tile appears, object/avatar markers update, WASD/arrows move the agent,
+   mouse wheel/right-drag camera controls feel usable, the main menu/status bar scale correctly,
+   the resizable chat window sends local chat, Help opens movement instructions, View -> Inventory
+   shows the fetched snapshot, and Tools -> Teleport sends a local `TeleportLocationRequest`.
+4. If rendering is visually cramped or misleading, tune marker sizing/colors in
+   `src/vibestorm/viewer/render.py` and `src/vibestorm/viewer/scene.py`.

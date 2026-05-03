@@ -29,6 +29,7 @@ Commands:
   handshake    Run the handshake probe
   session      Run the bounded live UDP session loop
   console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
+  viewer       Run the pygame 2D bird's-eye viewer
   fixtures     Rebuild the structured fixture inventory/backlog
   test         Run the unit test suite
 
@@ -49,6 +50,7 @@ Examples:
   ./run.sh session
   ./run.sh session 180
   ./run.sh session 180 --verbose
+  ./run.sh viewer
   ./run.sh bootstrap
   VIBESTORM_SESSION_DURATION=15 ./run.sh session
   VIBESTORM_CAMERA_SWEEP=1 ./run.sh session
@@ -63,6 +65,14 @@ EOF
 python_runner() {
   if command -v uv >/dev/null 2>&1; then
     uv run --python python3 "$@"
+  else
+    PYTHONPATH=src python3 "$@"
+  fi
+}
+
+viewer_python_runner() {
+  if command -v uv >/dev/null 2>&1; then
+    uv run --extra viewer --python python3 "$@"
   else
     PYTHONPATH=src python3 "$@"
   fi
@@ -144,6 +154,18 @@ case "$command" in
       "${cli_base_args[@]}" \
       --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
       "${console_args[@]}" \
+      "$@"
+    ;;
+  viewer)
+    cd "$ROOT_DIR"
+    viewer_args=()
+    if [[ "$CAMERA_SWEEP" == "1" ]]; then
+      viewer_args+=(--camera-sweep)
+    fi
+    viewer_python_runner -m vibestorm.viewer.app \
+      "${cli_base_args[@]}" \
+      --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
+      "${viewer_args[@]}" \
       "$@"
     ;;
   test)
