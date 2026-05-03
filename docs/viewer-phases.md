@@ -17,7 +17,7 @@ shift as we discover surprises — record them in the phase's "Notes" section.
 
 ---
 
-## Phase 1 — AgentUpdate emitter ⏳
+## Phase 1 — AgentUpdate emitter ✅ 📝
 
 **Goal:** the avatar can stand still and blink, walk forward, turn, and stop,
 all from headless code (no GUI).
@@ -76,7 +76,22 @@ hookup, and watch the avatar inch forward in the OpenSim console
 - `test/test_udp_messages.py`
 - `test/test_udp_session.py`
 
-**Notes:** *(record surprises here as we go)*
+**Notes (2026-05-03):**
+
+- **Smaller than predicted.** `encode_agent_update` and a periodic emitter
+  inside `LiveCircuitSession.drain_due_packets()` already existed (the
+  session was already firing AgentUpdate at the configured interval, just
+  with hardcoded zero ControlFlags and identity rotations). The actual gap
+  was: a constants module, session-held mutable state, and setter methods.
+- **Files actually touched:** `src/vibestorm/udp/control_flags.py` (new),
+  `src/vibestorm/udp/session.py` (added 4 fields + 5 setters, threaded into
+  the existing `encode_agent_update` call). 6 new tests across
+  `test/test_udp_messages.py` and `test/test_udp_session.py`. 179 tests pass.
+- **Difficulty:** low. No protocol surprises; the libomv ControlFlags bit
+  positions are well-documented and the existing emitter machinery was
+  already correct.
+- **Live validation deferred** — no console hookup yet to drive the setters
+  during a session. Will validate when Phase 4 or the console hookup lands.
 
 ---
 

@@ -143,6 +143,29 @@ class SemanticMessageTests(unittest.TestCase):
         dispatched = self.dispatcher.dispatch(payload)
         self.assertEqual(dispatched.summary.name, "AgentUpdate")
 
+    def test_encode_agent_update_control_flags_round_trip(self) -> None:
+        from struct import unpack_from
+
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        flags = 0x02000401  # AT_POS | FAST_AT | TURN_LEFT
+        payload = encode_agent_update(
+            agent_id,
+            session_id,
+            body_rotation=(0.1, 0.2, 0.3),
+            head_rotation=(0.4, 0.5, 0.6),
+            state=2,
+            control_flags=flags,
+            flags=0x80,
+        )
+        # Header(1) + agent(16) + session(16) + body(12) + head(12) + state(1)
+        # + camera 4*12=48 + far(4) = 110 bytes before ControlFlags U32.
+        offset = 1 + 16 + 16 + 12 + 12 + 1 + 48 + 4
+        (parsed_flags,) = unpack_from("<I", payload, offset)
+        self.assertEqual(parsed_flags, flags)
+        self.assertEqual(payload[1 + 16 + 16 + 12 + 12], 2)  # state
+        self.assertEqual(payload[-1], 0x80)  # trailing Flags U8
+
     def test_encode_agent_throttle_dispatches(self) -> None:
         session_id = UUID("11111111-2222-3333-4444-555555555555")
         agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

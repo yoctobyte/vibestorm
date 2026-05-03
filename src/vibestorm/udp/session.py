@@ -179,6 +179,10 @@ class LiveCircuitSession:
     camera_left_axis: tuple[float, float, float] = (0.0, 1.0, 0.0)
     camera_up_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
     base_camera_center: tuple[float, float, float] | None = None
+    agent_control_flags: int = 0
+    body_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    head_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    agent_state: int = 0
     movement_completed: bool = False
     throttle_sent: bool = False
     wearables_request_sent: bool = False
@@ -631,10 +635,14 @@ class LiveCircuitSession:
                 encode_agent_update(
                     self.bootstrap.agent_id,
                     self.bootstrap.session_id,
+                    body_rotation=self.body_rotation,
+                    head_rotation=self.head_rotation,
+                    state=self.agent_state,
                     camera_center=self.camera_center,
                     camera_at_axis=self.camera_at_axis,
                     camera_left_axis=self.camera_left_axis,
                     camera_up_axis=self.camera_up_axis,
+                    control_flags=self.agent_control_flags,
                 ),
                 zerocoded=True,
                 now=now,
@@ -670,6 +678,26 @@ class LiveCircuitSession:
             region_map_path=self.region_map_path,
             events=tuple(self.events),
         )
+
+    def set_control_flags(self, flags: int) -> None:
+        if not 0 <= int(flags) <= 0xFFFFFFFF:
+            raise ValueError("control_flags must fit in U32")
+        self.agent_control_flags = int(flags)
+
+    def add_control_flags(self, flags: int) -> None:
+        self.set_control_flags(self.agent_control_flags | int(flags))
+
+    def remove_control_flags(self, flags: int) -> None:
+        self.set_control_flags(self.agent_control_flags & ~int(flags))
+
+    def clear_control_flags(self) -> None:
+        self.agent_control_flags = 0
+
+    def set_body_rotation(self, rotation: tuple[float, float, float]) -> None:
+        self.body_rotation = (float(rotation[0]), float(rotation[1]), float(rotation[2]))
+
+    def set_head_rotation(self, rotation: tuple[float, float, float]) -> None:
+        self.head_rotation = (float(rotation[0]), float(rotation[1]), float(rotation[2]))
 
     def build_chat_packet(
         self,

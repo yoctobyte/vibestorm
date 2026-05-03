@@ -8,6 +8,7 @@ from uuid import UUID
 from vibestorm.login.models import BootstrapBakedCacheEntry, BootstrapPackedAppearance, LoginBootstrap
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, LL_ZERO_CODE_FLAG, build_packet, split_packet
+from vibestorm.udp.control_flags import AgentControlFlags, DIRECTION_BITS
 from vibestorm.udp.session import LiveCircuitSession, SessionConfig, SessionEvent
 from vibestorm.udp.zerocode import decode_zerocode
 
@@ -1404,3 +1405,114 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session.handle_incoming(build_packet(bytes([0xFF, 0xFF, 0x00, 0x63]) + body, sequence=100), 10.2)
 
         self.assertTrue(any(event.kind == "world.object_extra_params" for event in session.events))
+
+
+class AgentControlFlagsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.dispatcher = MessageDispatcher.from_repo_root(Path.cwd())
+        self.bootstrap = LoginBootstrap(
+            agent_id=UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            session_id=UUID("11111111-2222-3333-4444-555555555555"),
+            secure_session_id=UUID("99999999-8888-7777-6666-555555555555"),
+            circuit_code=0x12345678,
+            sim_ip="127.0.0.1",
+            sim_port=9000,
+            seed_capability="http://127.0.0.1:9000/caps/seed",
+            region_x=256,
+            region_y=512,
+            message="ok",
+        )
+
+    def _drive_to_movement_complete(self, session: LiveCircuitSession) -> None:
+        session.start(10.0)
+        movement_body = (
+            self.bootstrap.agent_id.bytes
+            + self.bootstrap.session_id.bytes
+            + bytes.fromhex("0000803f0000004000004040")
+            + bytes.fromhex("000080bf000000000000803f")
+            + (123456789).to_bytes(8, "little")
+            + (42).to_bytes(4, "little")
+            + (3).to_bytes(2, "little")
+            + b"sim"
+        )
+        session.handshake_reply_sent = True
+        session.handle_incoming(
+            build_packet(bytes([0xFF, 0xFF, 0x00, 0xFA]) + movement_body, sequence=41),
+            10.2,
+        )
+
+    def _extract_control_flags(self, packet: bytes) -> int:
+        message = split_packet(decode_zerocode(packet)).message
+        # Header(1) + agent(16) + session(16) + body(12) + head(12) + state(1)
+        # + camera 4*12=48 + far(4) = 110 -> ControlFlags U32 starts at 110.
+        return int.from_bytes(message[110:114], "little")
+
+    def test_agent_control_flag_bits_are_canonical(self) -> None:
+        # Sanity-checks against the libomv values used by SL viewer + OpenSim.
+        self.assertEqual(int(AgentControlFlags.AT_POS), 0x00000001)
+        self.assertEqual(int(AgentControlFlags.LEFT_POS), 0x00000004)
+        self.assertEqual(int(AgentControlFlags.FAST_AT), 0x00000400)
+        self.assertEqual(int(AgentControlFlags.FLY), 0x00002000)
+        self.assertEqual(int(AgentControlFlags.TURN_LEFT), 0x02000000)
+        self.assertEqual(int(AgentControlFlags.ML_LBUTTON_UP), 0x80000000)
+        # DIRECTION_BITS sums distinct bit positions; popcount matches member count.
+        self.assertEqual(bin(DIRECTION_BITS).count("1"), 14)
+
+    def test_set_control_flags_threads_through_next_agent_update(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        self._drive_to_movement_complete(session)
+
+        session.set_control_flags(int(AgentControlFlags.AT_POS | AgentControlFlags.FAST_AT))
+        packets = session.drain_due_packets(11.5)
+
+        update_packets = [
+            p for p in packets
+            if self.dispatcher.dispatch(split_packet(decode_zerocode(p)).message).summary.name
+            == "AgentUpdate"
+        ]
+        self.assertEqual(len(update_packets), 1)
+        flags = self._extract_control_flags(update_packets[0])
+        self.assertEqual(flags, 0x00000001 | 0x00000400)
+
+    def test_add_remove_clear_control_flags(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        self._drive_to_movement_complete(session)
+
+        session.add_control_flags(int(AgentControlFlags.AT_POS))
+        session.add_control_flags(int(AgentControlFlags.FLY))
+        self.assertEqual(
+            session.agent_control_flags,
+            int(AgentControlFlags.AT_POS) | int(AgentControlFlags.FLY),
+        )
+        session.remove_control_flags(int(AgentControlFlags.AT_POS))
+        self.assertEqual(session.agent_control_flags, int(AgentControlFlags.FLY))
+        session.clear_control_flags()
+        self.assertEqual(session.agent_control_flags, 0)
+
+    def test_set_control_flags_rejects_non_u32(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        with self.assertRaises(ValueError):
+            session.set_control_flags(-1)
+        with self.assertRaises(ValueError):
+            session.set_control_flags(0x1_0000_0000)
+
+    def test_body_and_head_rotation_setters_threads_through(self) -> None:
+        from struct import unpack_from
+
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        self._drive_to_movement_complete(session)
+
+        session.set_body_rotation((0.1, 0.2, 0.3))
+        session.set_head_rotation((0.4, 0.5, 0.6))
+        packets = session.drain_due_packets(11.5)
+        update_packets = [
+            p for p in packets
+            if self.dispatcher.dispatch(split_packet(decode_zerocode(p)).message).summary.name
+            == "AgentUpdate"
+        ]
+        self.assertEqual(len(update_packets), 1)
+        message = split_packet(decode_zerocode(update_packets[0])).message
+        body = tuple(round(v, 4) for v in unpack_from("<fff", message, 1 + 16 + 16))
+        head = tuple(round(v, 4) for v in unpack_from("<fff", message, 1 + 16 + 16 + 12))
+        self.assertEqual(body, (0.1, 0.2, 0.3))
+        self.assertEqual(head, (0.4, 0.5, 0.6))
