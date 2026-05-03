@@ -156,7 +156,7 @@ WorldClient itself. Read the call graph carefully before refactoring.
 
 ---
 
-## Phase 3 — Command / event bus ⏳
+## Phase 3 — Command / event bus ✅ 📝
 
 **Blocked by:** Phase 1.
 
@@ -205,6 +205,32 @@ expressive events rather than many narrow ones.
 - `src/vibestorm/udp/world_client.py`
 - `src/vibestorm/udp/session.py` (publish events from handlers)
 - `test/test_bus.py` (new)
+
+**Notes (2026-05-03):**
+
+- The session's existing string-keyed `SessionEvent` stream stays put (heavily
+  depended on by tests). The bus publishes typed events *additionally*,
+  bridged by `WorldClient.on_session_event` which is installed by
+  `add_circuit` as the session's `on_event` callback (preserving any
+  pre-existing one). String events the bridge doesn't recognize pass through
+  silently.
+- Detail strings from `_record_event` are repr()-encoded; parsed with shlex
+  to handle quoted values safely. The chat.local detail does NOT include the
+  speaker UUID (only name, type, audible, pos, message), so `ChatLocal` was
+  trimmed accordingly. `RegionMapTileReady` reads `image_id` from the session
+  rather than the event detail (the cache.ok event doesn't carry it).
+- Command handlers return values opportunistically: state-mutation commands
+  return None; `SendChat` returns the packet bytes the caller should send.
+  This matches the existing `build_chat_packet` / `drain_due_packets`
+  pattern — outbound is "build, hand back, caller sends".
+- `Bus` collects subscriber failures rather than letting one bad subscriber
+  stop delivery; it raises `BusDeliveryError` after all have run. Loud but
+  not silent.
+- 21 new tests; 211 total.
+- **Difficulty:** medium. The mechanics were straightforward; the design call
+  worth flagging is keeping the event vocabulary stable across phases. Names
+  in `bus/events.py` and `bus/commands.py` should be considered sticky once
+  Phase 4 starts depending on them.
 
 ---
 

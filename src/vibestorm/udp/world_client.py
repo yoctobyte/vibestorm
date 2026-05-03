@@ -19,7 +19,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable
 
-from vibestorm.udp.session import LiveCircuitSession
+from vibestorm.bus import Bus, NoHandlerError
+from vibestorm.bus.commands import (
+    AddControlFlags,
+    ClearControlFlags,
+    RemoveControlFlags,
+    SendChat,
+    SetBodyRotation,
+    SetCamera,
+    SetControlFlags,
+    SetHeadRotation,
+)
+from vibestorm.bus.events import (
+    ChatAlert,
+    ChatIM,
+    ChatLocal,
+    ChatOutbound,
+    RegionChanged,
+    RegionMapTileReady,
+    SessionClosed,
+    WorldStateChanged,
+)
+from vibestorm.udp.session import LiveCircuitSession, SessionEvent
 from vibestorm.world.models import WorldView
 
 
@@ -58,6 +79,11 @@ class WorldClient:
 
     circuits: dict[int, LiveCircuitSession] = field(default_factory=dict)
     current_handle: int | None = None
+    bus: Bus = field(default_factory=Bus)
+    _command_handlers_registered: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._register_default_command_handlers()
 
     # ------------------------------------------------------------------ ops
 
@@ -66,13 +92,33 @@ class WorldClient:
 
         Raises if a circuit is already registered for the same handle —
         callers should ``remove_circuit`` first if they intend to replace.
+
+        The session's ``on_event`` callback is wrapped (preserving any
+        existing one) so SessionEvent records flow through the bus
+        translator.
         """
         handle = region_handle_for_session(session)
         if handle in self.circuits:
             raise WorldClientError(f"circuit already registered for region_handle={handle:#018x}")
+
+        previous_on_event = session.on_event
+
+        def _bridge(evt: SessionEvent) -> None:
+            if previous_on_event is not None:
+                previous_on_event(evt)
+            self.on_session_event(session, evt)
+
+        session.on_event = _bridge
+
+        promoting = make_current or self.current_handle is None
+        previous_handle = self.current_handle
         self.circuits[handle] = session
-        if make_current or self.current_handle is None:
+        if promoting:
             self.current_handle = handle
+            if previous_handle != handle:
+                self.bus.publish(
+                    RegionChanged(region_handle=handle, region_name=session.last_region_name)
+                )
         return handle
 
     def remove_circuit(self, handle: int) -> LiveCircuitSession | None:
@@ -86,7 +132,11 @@ class WorldClient:
         """Promote an existing child circuit to current."""
         if handle not in self.circuits:
             raise WorldClientError(f"no circuit registered for region_handle={handle:#018x}")
+        if self.current_handle == handle:
+            return
         self.current_handle = handle
+        session = self.circuits[handle]
+        self.bus.publish(RegionChanged(region_handle=handle, region_name=session.last_region_name))
 
     # ------------------------------------------------------------------ views
 
@@ -113,8 +163,187 @@ class WorldClient:
             return None
         return current.world_view
 
+    # ----------------------------------------------------------- bus bridge
+
+    def on_session_event(self, session: LiveCircuitSession, event: SessionEvent) -> None:
+        """Translate the per-session string-keyed SessionEvent stream into typed bus events.
+
+        Wired into the session's ``on_event`` callback by ``add_circuit`` so
+        consumers can subscribe to typed events without parsing detail strings.
+        Unknown event kinds are silently ignored — the original SessionEvent
+        is still recorded in ``session.events`` for retrospection.
+        """
+        handle = region_handle_for_session(session)
+        kind = event.kind
+
+        if kind == "chat.local":
+            payload = self._parse_chat_local(event.detail, handle)
+            if payload is not None:
+                self.bus.publish(payload)
+        elif kind == "chat.im":
+            payload = self._parse_chat_im(event.detail, handle)
+            if payload is not None:
+                self.bus.publish(payload)
+        elif kind == "chat.outbound":
+            payload = self._parse_chat_outbound(event.detail, handle)
+            if payload is not None:
+                self.bus.publish(payload)
+        elif kind == "chat.alert":
+            self.bus.publish(ChatAlert(region_handle=handle, message=event.detail, is_agent_alert=False))
+        elif kind == "chat.agent_alert":
+            self.bus.publish(ChatAlert(region_handle=handle, message=event.detail, is_agent_alert=True))
+        elif kind == "session.closed":
+            self.bus.publish(SessionClosed(region_handle=handle, reason=event.detail))
+        elif kind == "map.cache.ok":
+            parts = _kv_split(event.detail)
+            path = parts.get("path")
+            if path and session.region_map_image_id is not None:
+                self.bus.publish(
+                    RegionMapTileReady(
+                        region_handle=handle,
+                        image_id=session.region_map_image_id,
+                        cache_path=path,
+                    )
+                )
+        elif kind.startswith("world."):
+            self.bus.publish(WorldStateChanged(region_handle=handle, reason=kind[len("world."):]))
+
+    # ----------------------------------------------------- command handlers
+
+    def _register_default_command_handlers(self) -> None:
+        if self._command_handlers_registered:
+            return
+        self._command_handlers_registered = True
+        self.bus.register_handler(SetControlFlags, self._handle_set_control_flags)
+        self.bus.register_handler(AddControlFlags, self._handle_add_control_flags)
+        self.bus.register_handler(RemoveControlFlags, self._handle_remove_control_flags)
+        self.bus.register_handler(ClearControlFlags, self._handle_clear_control_flags)
+        self.bus.register_handler(SetBodyRotation, self._handle_set_body_rotation)
+        self.bus.register_handler(SetHeadRotation, self._handle_set_head_rotation)
+        self.bus.register_handler(SetCamera, self._handle_set_camera)
+        self.bus.register_handler(SendChat, self._handle_send_chat)
+
+    def _require_current(self) -> LiveCircuitSession:
+        current = self.current
+        if current is None:
+            raise WorldClientError("no current circuit; cannot dispatch command")
+        return current
+
+    def _handle_set_control_flags(self, cmd: SetControlFlags) -> None:
+        self._require_current().set_control_flags(cmd.flags)
+
+    def _handle_add_control_flags(self, cmd: AddControlFlags) -> None:
+        self._require_current().add_control_flags(cmd.flags)
+
+    def _handle_remove_control_flags(self, cmd: RemoveControlFlags) -> None:
+        self._require_current().remove_control_flags(cmd.flags)
+
+    def _handle_clear_control_flags(self, cmd: ClearControlFlags) -> None:
+        self._require_current().clear_control_flags()
+
+    def _handle_set_body_rotation(self, cmd: SetBodyRotation) -> None:
+        self._require_current().set_body_rotation(cmd.rotation)
+
+    def _handle_set_head_rotation(self, cmd: SetHeadRotation) -> None:
+        self._require_current().set_head_rotation(cmd.rotation)
+
+    def _handle_set_camera(self, cmd: SetCamera) -> None:
+        current = self._require_current()
+        current.camera_center = tuple(float(v) for v in cmd.center)  # type: ignore[assignment]
+        current.camera_at_axis = tuple(float(v) for v in cmd.at_axis)  # type: ignore[assignment]
+        current.camera_left_axis = tuple(float(v) for v in cmd.left_axis)  # type: ignore[assignment]
+        current.camera_up_axis = tuple(float(v) for v in cmd.up_axis)  # type: ignore[assignment]
+
+    def _handle_send_chat(self, cmd: SendChat) -> bytes:
+        return self._require_current().build_chat_packet(
+            cmd.message,
+            chat_type=cmd.chat_type,
+            channel=cmd.channel,
+        )
+
+    # ------------------------------------------------------- event parsing
+
+    @staticmethod
+    def _parse_chat_local(detail: str, handle: int) -> ChatLocal | None:
+        # SessionEvent("chat.local", "from='Name' type=N audible=N pos=(x,y,z) message='…'")
+        parts = _kv_split(detail)
+        try:
+            from_name = parts["from"]
+            chat_type = int(parts.get("type", "1"))
+            audible = int(parts.get("audible", "0"))
+            message = parts.get("message", "")
+        except (KeyError, ValueError):
+            return None
+        return ChatLocal(
+            region_handle=handle,
+            from_name=from_name,
+            chat_type=chat_type,
+            audible=audible,
+            message=message,
+        )
+
+    @staticmethod
+    def _parse_chat_im(detail: str, handle: int) -> ChatIM | None:
+        # SessionEvent("chat.im", "from='Name' dialog=N to=<uuid> message='…'")
+        from uuid import UUID as _UUID
+
+        parts = _kv_split(detail)
+        try:
+            from_name = parts["from"]
+            dialog = int(parts.get("dialog", "0"))
+            to_agent_id = _UUID(parts["to"])
+            message = parts.get("message", "")
+        except (KeyError, ValueError):
+            return None
+        return ChatIM(
+            region_handle=handle,
+            from_agent_name=from_name,
+            to_agent_id=to_agent_id,
+            message=message,
+            dialog=dialog,
+        )
+
+    @staticmethod
+    def _parse_chat_outbound(detail: str, handle: int) -> ChatOutbound | None:
+        parts = _kv_split(detail)
+        try:
+            chat_type = int(parts.get("type", "1"))
+            channel = int(parts.get("channel", "0"))
+            message = parts.get("message", "")
+        except ValueError:
+            return None
+        return ChatOutbound(
+            region_handle=handle,
+            chat_type=chat_type,
+            channel=channel,
+            message=message,
+        )
+
+def _kv_split(detail: str) -> dict[str, str]:
+    """key=value tokenize using shlex so quoted values (with spaces) work.
+
+    The session encodes string values with Python ``repr()`` (single or
+    double quoted). shlex strips matching quotes for us. Tokens without
+    ``=`` are ignored.
+    """
+    import shlex
+
+    try:
+        tokens = shlex.split(detail, posix=True)
+    except ValueError:
+        return {}
+    out: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, _, value = token.partition("=")
+        out[key] = value
+    return out
+
 
 __all__ = [
+    "Bus",
+    "NoHandlerError",
     "WorldClient",
     "WorldClientError",
     "region_handle_for_session",
