@@ -95,7 +95,7 @@ hookup, and watch the avatar inch forward in the OpenSim console
 
 ---
 
-## Phase 2 — Multi-circuit `WorldClient` skeleton ⏳
+## Phase 2 — Multi-circuit `WorldClient` skeleton ✅ 📝
 
 **Blocked by:** Phase 1 (so AgentUpdate routing is already in the per-circuit
 session).
@@ -137,6 +137,22 @@ WorldClient itself. Read the call graph carefully before refactoring.
 - `src/vibestorm/app/cli.py`
 - `test/test_world_client.py` (new)
 - existing session tests if their fixtures need to construct via WorldClient.
+
+**Notes (2026-05-03):**
+
+- **Smaller than predicted, again.** The phase doc anticipated a callgraph
+  cleanup ("the session" → "the current circuit" everywhere). In practice
+  almost no call sites assume singleton-ness — the live loop is hosted in
+  `run_live_session(bootstrap, dispatcher, …)` which builds and owns the
+  session locally. The CLI never holds a `LiveCircuitSession` reference.
+- Implementation: added `WorldClient`, `region_handle_for_session`, and a
+  packing helper. `run_live_session` now accepts an optional
+  `world_client=` and registers its session as the current circuit at
+  construction time. The loop body is unchanged — it still operates on
+  `session` directly. The WorldClient is observable but does not drive
+  routing yet; that lands in Phase 3 with the command/event bus.
+- 11 new tests; 190 total. No existing tests changed.
+- **Difficulty:** low. The skeleton is small and additive.
 
 ---
 

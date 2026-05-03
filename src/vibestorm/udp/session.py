@@ -1437,7 +1437,10 @@ async def run_live_session(
     on_event: Callable[[SessionEvent], None] | None = None,
     world_view: WorldView | None = None,
     stop_event: asyncio.Event | None = None,
+    world_client: "WorldClient | None" = None,
 ) -> SessionReport:
+    from vibestorm.udp.world_client import WorldClient
+
     session_config = config or SessionConfig()
     init_kwargs: dict = dict(
         bootstrap=bootstrap,
@@ -1448,6 +1451,8 @@ async def run_live_session(
     if world_view is not None:
         init_kwargs["world_view"] = world_view
     session = LiveCircuitSession(**init_kwargs)
+    client = world_client if world_client is not None else WorldClient()
+    client.add_circuit(session, make_current=True)
     loop = asyncio.get_running_loop()
     start_time = loop.time()
     deadline = start_time + session_config.duration_seconds
