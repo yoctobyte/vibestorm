@@ -17,11 +17,20 @@ refactor of the 2D viewer.
 - The full plan, including renumbered implementation order with the fork as
   step 0, lives in `docs/viewer-3d-plan.md`.
 
-Next planned step (`viewer-3d-plan.md` step 1): promote `viewer3d.scene.Marker`
-to a renderer-agnostic `SceneEntity`, derive prim shape from `path_curve` /
-`profile_curve`, and surface `sun_phase` and `default_texture_id` for future
-3D consumption. The 2D top-down render inside `viewer3d/` keeps its current
-behavior.
+Step 1a (`viewer-3d-plan.md`) is done: `viewer3d.scene` now exposes a
+renderer-agnostic `SceneEntity` (replacing `Marker`) with `kind`, full
+quaternion `rotation`, `default_texture_id`, `tint`, and a `shape`
+placeholder; `Scene.sun_phase` is surfaced from `WorldView.latest_time`;
+`object_entities`/`avatar_entities` replace the old marker dicts. New
+tests in `test/test_viewer3d_scene.py` (22 tests, all green). The 2D
+viewer reference under `src/vibestorm/viewer/` is untouched.
+
+Next planned step (`viewer-3d-plan.md` step 1b): extend the inbound
+`ObjectUpdate` parser to surface `path_curve`/`profile_curve` from the
+22-byte pre-tail block, classify into `PrimShape`, and populate
+`SceneEntity.shape`. This resolves the project memory's flagged "22-byte
+pre-tail block, names known but semantics not" gap and pre-pays the
+primitive-library work for the 3D renderer.
 
 ## Summary
 

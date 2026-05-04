@@ -364,14 +364,24 @@ shippable on its own. Cost annotations are rough.
 0. **Fork the viewer.** *(done 2026-05-04.)* Copy `viewer/` → `viewer3d/`,
    retarget intra-package imports, change window caption, add `viewer3d`
    command to `run.sh`. Behavior identical to the 2D viewer.
-1. **`SceneEntity` extension.** Promote `Marker` in `viewer3d/scene.py` to a
-   renderer-agnostic `SceneEntity`. Populate `shape` from
-   `path_curve`/`profile_curve`, and surface `sun_phase` and
-   `default_texture_id`. The 2D top-down draw inside `viewer3d/` consumes the
-   new shape; user-visible behavior unchanged. The original `viewer/`
-   package is untouched. *(small–medium; touches `viewer3d/scene.py`,
-   possibly `world/models.py` if `path_curve`/`profile_curve` need to be
-   surfaced on `WorldObject`)*
+1a. **`SceneEntity` DTO.** *(done 2026-05-04.)* Promoted `Marker` in
+    `viewer3d/scene.py` to a renderer-agnostic `SceneEntity` carrying
+    `kind`, full quaternion `rotation`, `default_texture_id`, `tint`, and
+    a placeholder `shape: PrimShape | None = None`. Surfaced `sun_phase`
+    on `Scene`. Renamed `object_markers`/`avatar_markers` to
+    `object_entities`/`avatar_entities`. New tests in
+    `test/test_viewer3d_scene.py` (22 tests, all passing). The original
+    `viewer/` package is untouched.
+1b. **Parser → `shape`.** Extend the inbound `ObjectUpdate` parser in
+    `src/vibestorm/udp/messages.py` to extract the 22-byte pre-tail block
+    (`PathCurve`, `ProfileCurve`, `PathBegin`/`End`, `PathScaleX`/`Y`,
+    `PathTwist`, `PathRevolutions`, `ProfileBegin`/`End`/`Hollow`, …),
+    surface `path_curve`/`profile_curve` on `WorldObject`, and classify
+    them into `PrimShape` for `SceneEntity.shape` in `viewer3d/scene.py`.
+    Project memory already flagged this 22-byte block as "names known,
+    semantics not"; this is the cheapest concrete win. Both 2D and 3D
+    paths benefit. *(medium; touches `udp/messages.py`,
+    `world/models.py`, `viewer3d/scene.py`, plus new tests)*
 2. **Renderer interface inside `viewer3d/`.** Introduce the
    `ViewerRenderer` protocol and extract the existing 2D draw into a
    `TopDownRenderer` implementation. The fork now has the seam needed for
@@ -408,15 +418,16 @@ shippable on its own. Cost annotations are rough.
     3D Perspective modes and is stable, delete `src/vibestorm/viewer/` and
     repoint `./run.sh viewer` at `viewer3d` with a forced Map mode.
 
-Items 1–4 are the pre-3D refactor inside the fork. Items 5–8 are the
+Items 1a–4 are the pre-3D refactor inside the fork. Items 5–8 are the
 minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 13 is the eventual cleanup.
 
 ## Recommendation
 
-Start with step 1 (`SceneEntity`) — it pre-pays work the 3D path needs and
-gives the fork a tangible improvement over the 2D reference (better marker
-shapes derived from `path_curve`/`profile_curve`) without yet introducing
-GL. Once `SceneEntity` and `Camera3D` exist, step 5 is a small, low-risk
-dependency add that proves the GL+HUD compositing story. Only then commit
-to the moderngl path for the rest. Skip 2.5D unless a concrete need emerges.
+Step 1a (`SceneEntity` DTO) is done. Next is step 1b — the wire-format
+parser extension that fills `SceneEntity.shape`. It pre-pays the
+primitive-library work (step 7) and resolves a long-standing project gap
+(the 22-byte pre-tail block in `ObjectUpdate`). Once shape data is real,
+step 2 (renderer interface) and step 4 (`Camera3D`) are small mechanical
+refactors that prepare the fork for the moderngl bootstrap (step 5).
+Skip 2.5D unless a concrete need emerges.

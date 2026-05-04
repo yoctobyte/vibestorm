@@ -97,9 +97,9 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 if coarse.is_you:
                     camera.center_on(float(coarse.x), float(coarse.y))
                     return
-        marker = next(iter(scene.avatar_markers.values()), None)
-        if marker is not None:
-            camera.center_on(marker.position[0], marker.position[1])
+        entity = next(iter(scene.avatar_entities.values()), None)
+        if entity is not None:
+            camera.center_on(entity.position[0], entity.position[1])
 
     def on_chat_submit(text: str) -> None:
         try:

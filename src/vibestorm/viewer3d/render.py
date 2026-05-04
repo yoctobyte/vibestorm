@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from vibestorm.viewer3d.camera import REGION_SIZE_METERS
-from vibestorm.viewer3d.scene import Marker, Scene
+from vibestorm.viewer3d.scene import Scene, SceneEntity
 
 if TYPE_CHECKING:
     import pygame
@@ -46,10 +46,10 @@ def render_scene(surface: pygame.Surface, camera: Camera, scene: Scene) -> None:
     _draw_grid(surface, camera)
     _draw_region_border(surface, camera)
 
-    for marker in scene.object_markers.values():
-        _draw_marker(surface, camera, marker)
-    for marker in scene.avatar_markers.values():
-        _draw_marker(surface, camera, marker, is_avatar=True)
+    for entity in scene.object_entities.values():
+        _draw_entity(surface, camera, entity)
+    for entity in scene.avatar_entities.values():
+        _draw_entity(surface, camera, entity, is_avatar=True)
 
 
 def _draw_region_background(surface: pygame.Surface, camera: Camera, scene: Scene) -> None:
@@ -108,18 +108,18 @@ def _draw_region_border(surface: pygame.Surface, camera: Camera) -> None:
     pygame.draw.lines(surface, REGION_BORDER_COLOR, True, points, 2)
 
 
-def _draw_marker(
-    surface: pygame.Surface, camera: Camera, marker: Marker, *, is_avatar: bool = False
+def _draw_entity(
+    surface: pygame.Surface, camera: Camera, entity: SceneEntity, *, is_avatar: bool = False
 ) -> None:
     import pygame
 
-    cx, cy = camera.world_to_screen(marker.position[0], marker.position[1])
-    half_x = max(2.0, marker.scale[0] * 0.5 * camera.zoom)
-    half_y = max(2.0, marker.scale[1] * 0.5 * camera.zoom)
+    cx, cy = camera.world_to_screen(entity.position[0], entity.position[1])
+    half_x = max(2.0, entity.scale[0] * 0.5 * camera.zoom)
+    half_y = max(2.0, entity.scale[1] * 0.5 * camera.zoom)
 
     # Oriented rectangle: rotate four corners around the center.
-    cos_y = math.cos(marker.rotation_z_radians)
-    sin_y = math.sin(marker.rotation_z_radians)
+    cos_y = math.cos(entity.rotation_z_radians)
+    sin_y = math.sin(entity.rotation_z_radians)
     corners_local = [(-half_x, -half_y), (half_x, -half_y), (half_x, half_y), (-half_x, half_y)]
     corners_screen = []
     for lx, ly in corners_local:
@@ -128,7 +128,7 @@ def _draw_marker(
         # ry is in screen-space already (we used screen-axis half_x/half_y).
         corners_screen.append((int(round(cx + rx)), int(round(cy - ry))))
 
-    pygame.draw.polygon(surface, marker.color, corners_screen)
+    pygame.draw.polygon(surface, entity.tint, corners_screen)
 
     if is_avatar:
         # Bright dot at the center for legibility at low zoom.

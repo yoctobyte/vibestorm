@@ -610,8 +610,8 @@ class HUD:
             left = f"Pos: {pos} | Sim: 0x{scene.region_handle:016x} | Parcel: {parcel}"
         else:
             left = f"Pos: {pos} | Sim: (none) | Parcel: {parcel}"
-        objects = len(scene.object_markers)
-        avatars = len(scene.avatar_markers)
+        objects = len(scene.object_entities)
+        avatars = len(scene.avatar_entities)
         chat = len(scene.chat_lines)
         tile = "map=ready" if scene.map_tile_path is not None else "map=pending"
         self.status_left.set_text(left)

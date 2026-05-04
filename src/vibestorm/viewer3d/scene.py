@@ -2,6 +2,12 @@
 
 Pygame-free. The viewer's main loop pumps bus events into Scene methods,
 then the renderer reads Scene fields each frame.
+
+This is the viewer3d fork's version. It keeps the 2D viewer's per-frame
+``refresh_from_world_view`` flow but exposes a richer ``SceneEntity`` DTO
+(replacing the 2D-flavoured ``Marker``) that 3D renderers can consume
+directly. The 2D top-down draw inside this fork still works against the
+same data.
 """
 
 from __future__ import annotations
@@ -9,7 +15,8 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+from uuid import UUID
 
 if TYPE_CHECKING:
     from vibestorm.bus.events import (
@@ -39,6 +46,22 @@ PCODE_COLORS: dict[int, tuple[int, int, int]] = {
 DEFAULT_MARKER_COLOR: tuple[int, int, int] = (140, 140, 140)
 
 
+EntityKind = Literal["prim", "avatar", "tree", "grass", "particle", "unknown"]
+PrimShape = Literal["cube", "sphere", "cylinder", "torus", "prism", "ring", "tube"]
+
+
+def _kind_for_pcode(pcode: int) -> EntityKind:
+    if pcode == PCODE_AVATAR:
+        return "avatar"
+    if pcode == PCODE_PRIM:
+        return "prim"
+    if pcode == PCODE_TREE:
+        return "tree"
+    if pcode == PCODE_PARTICLE_SYSTEM:
+        return "particle"
+    return "unknown"
+
+
 @dataclass(slots=True, frozen=True)
 class ChatLine:
     kind: str          # "local" | "im" | "alert" | "outbound"
@@ -47,18 +70,27 @@ class ChatLine:
 
 
 @dataclass(slots=True, frozen=True)
-class Marker:
-    """One render-time marker for an object or avatar."""
+class SceneEntity:
+    """Renderer-agnostic entity. Both 2D top-down and future 3D renderers
+    consume this. Coordinates stay in the SL world frame (X east, Y north,
+    Z up); 3D renderers remap to GL frame internally.
+    """
     local_id: int
     pcode: int
+    kind: EntityKind
     position: tuple[float, float, float]
     scale: tuple[float, float, float]
-    rotation_z_radians: float          # extracted from quat for top-down draw
+    rotation: tuple[float, float, float, float] | None  # quat (x, y, z, w)
+    rotation_z_radians: float                           # yaw, derived from rotation
     name: str | None = None
+    default_texture_id: UUID | None = None
+    shape: PrimShape | None = None  # populated once parser surfaces path/profile curves
+    tint: tuple[int, int, int] = DEFAULT_MARKER_COLOR
 
     @property
     def color(self) -> tuple[int, int, int]:
-        return PCODE_COLORS.get(self.pcode, DEFAULT_MARKER_COLOR)
+        """Backwards-compatible alias for the 2D draw path."""
+        return self.tint
 
 
 @dataclass(slots=True)
@@ -66,8 +98,8 @@ class Scene:
     """Render-state aggregated from bus events + a live WorldView reference.
 
     The WorldView is the source of truth for object positions; ``refresh()``
-    walks it and rebuilds markers. Bus events (chat, region change, map tile)
-    update the rest of the scene incrementally.
+    walks it and rebuilds entities. Bus events (chat, region change, map
+    tile) update the rest of the scene incrementally.
     """
 
     region_handle: int | None = None
@@ -76,8 +108,9 @@ class Scene:
     parcel_name: str | None = None
     map_tile_path: Path | None = None
     inventory_snapshot: InventoryFetchSnapshot | None = None
-    object_markers: dict[int, Marker] = field(default_factory=dict)
-    avatar_markers: dict[int, Marker] = field(default_factory=dict)
+    object_entities: dict[int, SceneEntity] = field(default_factory=dict)
+    avatar_entities: dict[int, SceneEntity] = field(default_factory=dict)
+    sun_phase: float | None = None
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
 
     # ---- bus event handlers ----------------------------------------------
@@ -87,8 +120,8 @@ class Scene:
         self.region_name = event.region_name
         self.avatar_position = None
         self.parcel_name = None
-        self.object_markers.clear()
-        self.avatar_markers.clear()
+        self.object_entities.clear()
+        self.avatar_entities.clear()
         # Map tile is region-scoped; clear so a stale tile from the old region isn't shown.
         self.map_tile_path = None
 
@@ -119,17 +152,22 @@ class Scene:
     # ---- WorldView snapshot ----------------------------------------------
 
     def refresh_from_world_view(self, world_view: object | None) -> None:
-        """Re-derive markers from the current WorldView. Called once per frame.
+        """Re-derive entities from the current WorldView. Called once per frame.
 
-        Idempotent: clears existing markers each call so removed objects
+        Idempotent: clears existing entities each call so removed objects
         disappear without an explicit kill event.
         """
-        self.object_markers = {}
-        self.avatar_markers = {}
+        self.object_entities = {}
+        self.avatar_entities = {}
         if world_view is None:
             return
 
         self.avatar_position = _self_avatar_position(world_view)
+
+        time_snapshot = getattr(world_view, "latest_time", None)
+        self.sun_phase = (
+            float(time_snapshot.sun_phase) if time_snapshot is not None else None
+        )
 
         # Full ObjectUpdate-derived objects (have rich data).
         for obj in getattr(world_view, "objects", {}).values():
@@ -143,36 +181,47 @@ class Scene:
             properties = getattr(obj, "properties_family", None)
             if properties is not None:
                 name = getattr(properties, "name", None) or None
-            marker = Marker(
+            entity = SceneEntity(
                 local_id=obj.local_id,
                 pcode=obj.pcode,
+                kind=_kind_for_pcode(obj.pcode),
                 position=position,
                 scale=scale,
+                rotation=rot,
                 rotation_z_radians=yaw,
                 name=name,
+                default_texture_id=getattr(obj, "default_texture_id", None),
+                shape=None,  # filled in once the parser surfaces path/profile curves
+                tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
             )
             if obj.pcode == PCODE_AVATAR:
-                self.avatar_markers[obj.local_id] = marker
+                self.avatar_entities[obj.local_id] = entity
             else:
-                self.object_markers[obj.local_id] = marker
+                self.object_entities[obj.local_id] = entity
 
         # Terse-only objects (no full ObjectUpdate seen yet) — render a placeholder.
         for terse in getattr(world_view, "terse_objects", {}).values():
-            if terse.local_id in self.object_markers or terse.local_id in self.avatar_markers:
+            if terse.local_id in self.object_entities or terse.local_id in self.avatar_entities:
                 continue
             yaw = _quat_to_yaw(terse.rotation)
-            marker = Marker(
+            pcode = PCODE_AVATAR if terse.is_avatar else PCODE_PRIM
+            entity = SceneEntity(
                 local_id=terse.local_id,
-                pcode=PCODE_AVATAR if terse.is_avatar else PCODE_PRIM,
+                pcode=pcode,
+                kind=_kind_for_pcode(pcode),
                 position=terse.position,
                 scale=(0.5, 0.5, 0.5),  # terse-only: minimal placeholder
+                rotation=terse.rotation,
                 rotation_z_radians=yaw,
                 name=None,
+                default_texture_id=None,
+                shape=None,
+                tint=PCODE_COLORS.get(pcode, DEFAULT_MARKER_COLOR),
             )
             if terse.is_avatar:
-                self.avatar_markers[terse.local_id] = marker
+                self.avatar_entities[terse.local_id] = entity
             else:
-                self.object_markers[terse.local_id] = marker
+                self.object_entities[terse.local_id] = entity
 
         if world_view.region is not None and self.region_name is None:
             self.region_name = world_view.region.name
@@ -191,9 +240,9 @@ def _self_avatar_position(world_view: object) -> tuple[float, float, float] | No
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:
     """Project a unit quaternion onto the z axis to get yaw in radians.
 
-    The viewer is top-down; we only care about rotation around z. Returns 0
-    for None or a non-finite quat — defensive default for terse decode edge
-    cases.
+    The viewer's 2D mode is top-down; we only care about rotation around z.
+    Returns 0 for None or a non-finite quat — defensive default for terse
+    decode edge cases.
     """
     import math
 
@@ -211,4 +260,12 @@ def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:
         return 0.0
 
 
-__all__ = ["ChatLine", "Marker", "Scene", "PCODE_AVATAR", "PCODE_PRIM"]
+__all__ = [
+    "ChatLine",
+    "EntityKind",
+    "PrimShape",
+    "SceneEntity",
+    "Scene",
+    "PCODE_AVATAR",
+    "PCODE_PRIM",
+]
