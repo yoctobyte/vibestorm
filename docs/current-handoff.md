@@ -1,6 +1,27 @@
 # Current Handoff
 
-Last updated: 2026-05-03
+Last updated: 2026-05-04
+
+## Update 2026-05-04: 3D Viewer Fork
+
+3D viewer work has begun in a forked package rather than as an in-place
+refactor of the 2D viewer.
+
+- `src/vibestorm/viewer3d/` is a byte-for-byte copy of `src/vibestorm/viewer/`
+  with intra-package imports retargeted and the window caption changed to
+  "Vibestorm 3D Viewer". Behavior is identical to the 2D viewer today.
+- `./run.sh viewer3d` runs the fork; `./run.sh viewer` is unchanged.
+- The 2D `viewer/` package is now the stable reference. We don't intend to
+  invest further in it; it stays for visual comparison and as a known-good
+  baseline. Tests for `viewer/` still pass.
+- The full plan, including renumbered implementation order with the fork as
+  step 0, lives in `docs/viewer-3d-plan.md`.
+
+Next planned step (`viewer-3d-plan.md` step 1): promote `viewer3d.scene.Marker`
+to a renderer-agnostic `SceneEntity`, derive prim shape from `path_curve` /
+`profile_curve`, and surface `sun_phase` and `default_texture_id` for future
+3D consumption. The 2D top-down render inside `viewer3d/` keeps its current
+behavior.
 
 ## Summary
 

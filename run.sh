@@ -30,6 +30,7 @@ Commands:
   session      Run the bounded live UDP session loop
   console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
   viewer       Run the pygame 2D bird's-eye viewer
+  viewer3d     Run the 3D viewer fork (currently identical to viewer; 3D work in progress)
   fixtures     Rebuild the structured fixture inventory/backlog
   test         Run the unit test suite
 
@@ -163,6 +164,18 @@ case "$command" in
       viewer_args+=(--camera-sweep)
     fi
     viewer_python_runner -m vibestorm.viewer.app \
+      "${cli_base_args[@]}" \
+      --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
+      "${viewer_args[@]}" \
+      "$@"
+    ;;
+  viewer3d)
+    cd "$ROOT_DIR"
+    viewer_args=()
+    if [[ "$CAMERA_SWEEP" == "1" ]]; then
+      viewer_args+=(--camera-sweep)
+    fi
+    viewer_python_runner -m vibestorm.viewer3d.app \
       "${cli_base_args[@]}" \
       --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
       "${viewer_args[@]}" \
