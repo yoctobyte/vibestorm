@@ -393,10 +393,16 @@ shippable on its own. Cost annotations are rough.
     `WorldObject.shape` in the refresh loop. The OpenSim default sphere
     fixture now classifies as `"sphere"`. New tests for the classifier
     and end-to-end Scene population.
-2. **Renderer interface inside `viewer3d/`.** Introduce the
-   `ViewerRenderer` protocol and extract the existing 2D draw into a
-   `TopDownRenderer` implementation. The fork now has the seam needed for
-   mode switching. *(small)*
+2. **Renderer interface inside `viewer3d/`.** *(done 2026-05-04.)*
+   Introduced the `ViewerRenderer` protocol in
+   `src/vibestorm/viewer3d/renderer.py` and a `TopDownRenderer` that
+   wraps the existing 2D draw. `viewer3d/app.py` now holds a
+   `ViewerRenderer` reference and routes `update` / `render` /
+   `clear_caches` through it. The fork has the seam needed for mode
+   switching; behavior unchanged. The protocol stays small (no
+   `attach`/`detach`/`handle_event` yet) — those land when 3D backends
+   need them in step 5. New tests in
+   `test/test_viewer3d_renderer.py` (4 tests).
 3. **Render-mode menu state.** Add View → Mode and per-mode camera-mode
    submenus to the `viewer3d` HUD. Mode switching is a no-op for modes
    that don't exist yet. *(small)*
@@ -435,11 +441,9 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Steps 1a, 1b-i, and 1b-ii are done. `SceneEntity.shape` is now populated
-from real wire data, and the parser bug that was producing shifted
-texture UUIDs has been fixed along the way. Next is step 2 — extract
-the existing 2D draw inside `viewer3d/render.py` behind a small
-`ViewerRenderer` protocol. Then step 4 (`Camera3D`) introduces a
-mode-aware camera. Steps 2 and 4 are small mechanical refactors that
-prepare the fork for the moderngl bootstrap (step 5). Skip 2.5D unless
-a concrete need emerges.
+Steps 1a, 1b-i, 1b-ii, and 2 are done. The fork has a renderer seam, a
+populated `SceneEntity.shape`, and a corrected protocol parser. Next is
+step 3 (View → Mode menu state — wires mode switching even though only
+Map exists yet) and step 4 (`Camera3D` — a mode-aware camera). Both are
+small. Then step 5 introduces moderngl and proves the GL+HUD compositing
+path. Skip 2.5D unless a concrete need emerges.

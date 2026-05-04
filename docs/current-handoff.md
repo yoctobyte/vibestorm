@@ -40,9 +40,15 @@ Steps 1a, 1b-i, and 1b-ii are done.
 Test suite now 285 tests, all green. The 2D viewer reference under
 `src/vibestorm/viewer/` is untouched.
 
-Next planned step (`viewer-3d-plan.md` step 2): extract the existing 2D
-draw inside `viewer3d/render.py` behind a small `ViewerRenderer`
-protocol. Pure refactor inside the fork; behavior unchanged.
+Step 2 is done: `viewer3d/renderer.py` defines a `ViewerRenderer` protocol
+plus a `TopDownRenderer` that wraps today's 2D draw. The app loop now
+routes `update` / `render` / `clear_caches` through the renderer instead
+of calling `render_scene` directly. Behavior unchanged. 289 tests, all
+green.
+
+Next planned step (`viewer-3d-plan.md` step 3): wire a View → Mode submenu
+into the HUD with mode switching as a no-op for the modes that don't
+exist yet. Then step 4 (`Camera3D`) and step 5 (moderngl bootstrap).
 
 ## Summary
 

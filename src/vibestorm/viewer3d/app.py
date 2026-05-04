@@ -27,7 +27,7 @@ from vibestorm.udp.world_client import WorldClient
 from vibestorm.viewer3d.camera import Camera
 from vibestorm.viewer3d.hud import HUD
 from vibestorm.viewer3d.input import handle_event
-from vibestorm.viewer3d.render import clear_tile_cache, render_scene
+from vibestorm.viewer3d.renderer import TopDownRenderer, ViewerRenderer
 from vibestorm.viewer3d.scene import Scene
 
 
@@ -87,6 +87,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
     scene = Scene()
     camera = Camera(world_center=(128.0, 128.0), zoom=1.0, screen_size=screen_size)
     camera.fit_region(padding_px=56)
+    renderer: ViewerRenderer = TopDownRenderer(camera)
 
     _wire_scene(client, scene)
 
@@ -180,7 +181,8 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     hud.resize(screen_size)
 
             scene.refresh_from_world_view(client.world_view())
-            render_scene(screen, camera, scene)
+            renderer.update(dt, scene)
+            renderer.render(screen, scene)
             hud.update(dt, scene)
             hud.draw(screen)
             pygame.display.flip()
@@ -191,7 +193,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             await asyncio.wait_for(session_task, timeout=2.0)
         except TimeoutError:
             session_task.cancel()
-        clear_tile_cache()
+        renderer.clear_caches()
         pygame.quit()
 
     return 0
