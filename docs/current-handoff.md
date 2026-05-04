@@ -46,9 +46,14 @@ routes `update` / `render` / `clear_caches` through the renderer instead
 of calling `render_scene` directly. Behavior unchanged. 289 tests, all
 green.
 
-Next planned step (`viewer-3d-plan.md` step 3): wire a View → Mode submenu
-into the HUD with mode switching as a no-op for the modes that don't
-exist yet. Then step 4 (`Camera3D`) and step 5 (moderngl bootstrap).
+Step 3 is done: "Render: 2D Map" and "Render: 3D" buttons in the View
+menu, HUD tracks `render_mode`, status bar shows the active mode, and
+selecting 3D posts a chat alert ("3D mode is not implemented yet").
+296 tests, all green (7 HUD tests verified under `./run.sh test`).
+
+Next planned step (`viewer-3d-plan.md` step 4): introduce `Camera3D` —
+a mode-aware camera where Map mode reproduces today's pan/zoom and
+later modes (Orbit, Eye, Free) hook in for the 3D renderer.
 
 ## Summary
 

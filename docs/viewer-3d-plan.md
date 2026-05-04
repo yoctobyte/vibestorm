@@ -403,9 +403,14 @@ shippable on its own. Cost annotations are rough.
    `attach`/`detach`/`handle_event` yet) — those land when 3D backends
    need them in step 5. New tests in
    `test/test_viewer3d_renderer.py` (4 tests).
-3. **Render-mode menu state.** Add View → Mode and per-mode camera-mode
-   submenus to the `viewer3d` HUD. Mode switching is a no-op for modes
-   that don't exist yet. *(small)*
+3. **Render-mode menu state.** *(done 2026-05-04.)* Added "Render: 2D
+   Map" and "Render: 3D" buttons to the View menu. HUD tracks
+   `render_mode` and exposes an `on_render_mode_change(mode)` callback;
+   the status bar now shows the active mode. The app wires the callback
+   to a no-op for `2d-map` and a chat alert ("3D mode is not implemented
+   yet — staying on 2D Map.") for `3d`. Per-mode camera-mode submenu
+   moves to step 4 alongside `Camera3D`. New tests in
+   `test/test_viewer3d_hud_render_mode.py` (7 tests).
 4. **`Camera3D`.** Replace the 2D `Camera` in `viewer3d/` with a mode-aware
    camera; Map mode reproduces today's pan/zoom. *(medium; touches camera
    math + input)*

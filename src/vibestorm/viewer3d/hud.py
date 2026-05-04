@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 CHAT_TICKER_LINES = 8
 BASE_MENU_HEIGHT = 30
 BASE_STATUS_HEIGHT = 24
+RENDER_MODE_2D = "2d-map"
+RENDER_MODE_3D = "3d"
+RENDER_MODE_LABELS: dict[str, str] = {
+    RENDER_MODE_2D: "2D Map",
+    RENDER_MODE_3D: "3D",
+}
 DEFAULT_HELP_TEXT = """Vibestorm 2D movement
 
 W / Up: move forward
@@ -53,6 +59,7 @@ class HUD:
         on_zoom_out: Callable[[], None] | None = None,
         on_center: Callable[[], None] | None = None,
         on_teleport: Callable[[tuple[float, float, float]], None] | None = None,
+        on_render_mode_change: Callable[[str], None] | None = None,
         help_text: str = DEFAULT_HELP_TEXT,
         theme_path: str | None = None,
         ui_scale: float = 1.0,
@@ -69,6 +76,8 @@ class HUD:
         self.on_zoom_out = on_zoom_out
         self.on_center = on_center
         self.on_teleport = on_teleport
+        self.on_render_mode_change = on_render_mode_change
+        self.render_mode: str = RENDER_MODE_2D
         self.help_text = help_text
         self._open_menu: str | None = None
         self._last_chat_container_size: tuple[int, int] | None = None
@@ -194,10 +203,12 @@ class HUD:
         self.view_menu = self._build_menu_panel(
             x=self._s(62),
             y=menu_h,
-            width=self._s(170),
+            width=self._s(200),
             rows=(
                 ("Show Chat", "show_chat_button"),
                 ("Inventory", "inventory_button"),
+                ("Render: 2D Map", "render_mode_2d_button"),
+                ("Render: 3D", "render_mode_3d_button"),
             ),
         )
         self.debug_menu = self._build_menu_panel(
@@ -313,6 +324,15 @@ class HUD:
         self._hide_all_menus()
         menus[name].show()
         self._open_menu = name
+
+    def _set_render_mode(self, mode: str) -> None:
+        if mode == self.render_mode:
+            return
+        if mode not in RENDER_MODE_LABELS:
+            return
+        self.render_mode = mode
+        if self.on_render_mode_change is not None:
+            self.on_render_mode_change(mode)
 
     def _build_aux_windows(self, sw: int, sh: int) -> None:
         import pygame
@@ -459,6 +479,16 @@ class HUD:
                 self._hide_all_menus()
                 self._open_menu = None
                 return True
+            if event.ui_element is self.render_mode_2d_button:
+                self._set_render_mode(RENDER_MODE_2D)
+                self._hide_all_menus()
+                self._open_menu = None
+                return True
+            if event.ui_element is self.render_mode_3d_button:
+                self._set_render_mode(RENDER_MODE_3D)
+                self._hide_all_menus()
+                self._open_menu = None
+                return True
             if event.ui_element is self.zoom_in_button and self.on_zoom_in is not None:
                 self.on_zoom_in()
                 return True
@@ -534,6 +564,8 @@ class HUD:
             self.file_quit_button,
             self.show_chat_button,
             self.inventory_button,
+            self.render_mode_2d_button,
+            self.render_mode_3d_button,
             self.zoom_in_button,
             self.zoom_out_button,
             self.center_button,
@@ -614,8 +646,11 @@ class HUD:
         avatars = len(scene.avatar_entities)
         chat = len(scene.chat_lines)
         tile = "map=ready" if scene.map_tile_path is not None else "map=pending"
+        mode_label = RENDER_MODE_LABELS.get(self.render_mode, self.render_mode)
         self.status_left.set_text(left)
-        self.status_right.set_text(f"{tile} objects={objects} avatars={avatars} chat={chat}")
+        self.status_right.set_text(
+            f"mode={mode_label} {tile} objects={objects} avatars={avatars} chat={chat}"
+        )
         self._refresh_inventory(scene)
 
     def _refresh_inventory(self, scene: Scene) -> None:

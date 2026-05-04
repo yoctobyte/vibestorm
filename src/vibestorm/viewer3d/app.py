@@ -118,6 +118,17 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
             )
 
+    def on_render_mode_change(mode: str) -> None:
+        # 3D backend doesn't exist yet; flag the request and stay on Map.
+        # Once PerspectiveRenderer lands we'll swap renderer instances here.
+        if mode == "3d":
+            scene.apply_chat_alert(
+                ChatAlert(
+                    region_handle=client.current_handle or 0,
+                    message="3D mode is not implemented yet — staying on 2D Map.",
+                )
+            )
+
     hud = HUD(
         screen_size,
         on_chat_submit=on_chat_submit,
@@ -129,6 +140,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         ),
         on_center=center_on_avatar,
         on_teleport=on_teleport,
+        on_render_mode_change=on_render_mode_change,
         help_text=_load_viewer_help(),
         ui_scale=ui_scale,
     )
