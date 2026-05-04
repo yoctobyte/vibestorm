@@ -13,13 +13,20 @@ from vibestorm.bus.events import (
 )
 from vibestorm.viewer3d.scene import (
     DEFAULT_MARKER_COLOR,
+    PATH_CURVE_CIRCLE,
+    PATH_CURVE_LINE,
     PCODE_AVATAR,
     PCODE_PRIM,
     PCODE_TREE,
+    PROFILE_CURVE_CIRCLE,
+    PROFILE_CURVE_EQUIL_TRIANGLE,
+    PROFILE_CURVE_HALF_CIRCLE,
+    PROFILE_CURVE_SQUARE,
     Scene,
     SceneEntity,
     _kind_for_pcode,
     _quat_to_yaw,
+    classify_prim_shape,
 )
 
 
@@ -316,6 +323,96 @@ class KindForPcodeTests(unittest.TestCase):
 
     def test_unknown_pcode_is_unknown(self) -> None:
         self.assertEqual(_kind_for_pcode(200), "unknown")
+
+
+class ClassifyPrimShapeTests(unittest.TestCase):
+    def test_line_square_is_cube(self) -> None:
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_LINE, PROFILE_CURVE_SQUARE), "cube"
+        )
+
+    def test_line_circle_is_cylinder(self) -> None:
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_LINE, PROFILE_CURVE_CIRCLE), "cylinder"
+        )
+
+    def test_line_triangle_is_prism(self) -> None:
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_LINE, PROFILE_CURVE_EQUIL_TRIANGLE), "prism"
+        )
+
+    def test_circle_half_circle_is_sphere(self) -> None:
+        # The shape observed in the live OpenSim default sphere fixture.
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_CIRCLE, PROFILE_CURVE_HALF_CIRCLE), "sphere"
+        )
+
+    def test_circle_circle_is_torus(self) -> None:
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_CIRCLE, PROFILE_CURVE_CIRCLE), "torus"
+        )
+
+    def test_unknown_combo_returns_none(self) -> None:
+        self.assertIsNone(classify_prim_shape(0xFF, 0xFF))
+
+    def test_profile_curve_high_bits_ignored(self) -> None:
+        # Per libomv convention only the low 3 bits of profile_curve carry the
+        # profile family — high bits encode hollow style and are masked off.
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_LINE, PROFILE_CURVE_SQUARE | 0x10), "cube"
+        )
+
+
+class SceneShapePopulatedTests(unittest.TestCase):
+    def test_refresh_populates_shape_for_prim(self) -> None:
+        from vibestorm.udp.messages import PrimShapeData
+        from vibestorm.world.models import WorldObject, WorldView
+
+        sphere_shape = PrimShapeData(
+            path_curve=PATH_CURVE_CIRCLE,
+            profile_curve=PROFILE_CURVE_HALF_CIRCLE,
+            path_begin=0, path_end=0, path_scale_x=100, path_scale_y=100,
+            path_shear_x=0, path_shear_y=0, path_twist=0, path_twist_begin=0,
+            path_radius_offset=0, path_taper_x=0, path_taper_y=0,
+            path_revolutions=0, path_skew=0,
+            profile_begin=0, profile_end=0, profile_hollow=0,
+        )
+        view = WorldView()
+        view.objects[UUID(int=1)] = WorldObject(
+            full_id=UUID(int=1), local_id=10, parent_id=0, pcode=PCODE_PRIM,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
+            update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
+            position=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+            default_texture_id=None, shape=sphere_shape,
+        )
+
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.object_entities[10].shape, "sphere")
+
+    def test_refresh_leaves_shape_none_when_world_object_has_no_shape(self) -> None:
+        from vibestorm.world.models import WorldObject, WorldView
+
+        view = WorldView()
+        view.objects[UUID(int=1)] = WorldObject(
+            full_id=UUID(int=1), local_id=10, parent_id=0, pcode=PCODE_PRIM,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
+            update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
+            position=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+            default_texture_id=None, shape=None,
+        )
+
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        self.assertIsNone(scene.object_entities[10].shape)
 
 
 if __name__ == "__main__":

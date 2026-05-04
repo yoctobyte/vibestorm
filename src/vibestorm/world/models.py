@@ -13,6 +13,7 @@ from vibestorm.udp.messages import (
     ObjectPropertiesFamilyMessage,
     ObjectUpdateMessage,
     ObjectUpdateSummary,
+    PrimShapeData,
     SimStatsMessage,
     SimulatorViewerTimeMessage,
 )
@@ -93,6 +94,7 @@ class WorldObject:
     extra_params_size: int
     extra_params_entries: tuple[ExtraParamEntry, ...]
     default_texture_id: UUID | None
+    shape: PrimShapeData | None = None
     properties_family: ObjectPropertiesFamilyMessage | None = None
 
 
@@ -243,6 +245,7 @@ class WorldView:
                 extra_params_size=obj.extra_params_size,
                 extra_params_entries=obj.extra_params_entries,
                 default_texture_id=obj.default_texture_id,
+                shape=obj.shape,
                 properties_family=self.objects.get(obj.full_id).properties_family if obj.full_id in self.objects else None,
             )
             self.objects[obj.full_id] = new_obj
@@ -300,6 +303,7 @@ class WorldView:
                 default_texture_id=UUID(bytes=entry.texture_entry[:16])
                 if entry.texture_entry and len(entry.texture_entry) >= 16
                 else obj.default_texture_id,
+                shape=obj.shape,
                 properties_family=obj.properties_family,
             )
 
@@ -343,5 +347,6 @@ class WorldView:
             extra_params_size=existing.extra_params_size,
             extra_params_entries=existing.extra_params_entries,
             default_texture_id=existing.default_texture_id,
+            shape=existing.shape,
             properties_family=message,
         )

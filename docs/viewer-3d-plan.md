@@ -372,16 +372,27 @@ shippable on its own. Cost annotations are rough.
     `object_entities`/`avatar_entities`. New tests in
     `test/test_viewer3d_scene.py` (22 tests, all passing). The original
     `viewer/` package is untouched.
-1b. **Parser → `shape`.** Extend the inbound `ObjectUpdate` parser in
-    `src/vibestorm/udp/messages.py` to extract the 22-byte pre-tail block
-    (`PathCurve`, `ProfileCurve`, `PathBegin`/`End`, `PathScaleX`/`Y`,
-    `PathTwist`, `PathRevolutions`, `ProfileBegin`/`End`/`Hollow`, …),
-    surface `path_curve`/`profile_curve` on `WorldObject`, and classify
-    them into `PrimShape` for `SceneEntity.shape` in `viewer3d/scene.py`.
-    Project memory already flagged this 22-byte block as "names known,
-    semantics not"; this is the cheapest concrete win. Both 2D and 3D
-    paths benefit. *(medium; touches `udp/messages.py`,
-    `world/models.py`, `viewer3d/scene.py`, plus new tests)*
+1b-i. **Parser decodes 23-byte path/profile block.** *(done 2026-05-04.)*
+    Extended `_parse_one_object_update_entry` to decode the 23-byte
+    `PathCurve`/`ProfileCurve`/`PathBegin`/.../`ProfileHollow` block (per
+    `message_template.msg` lines 3307–3324) into a new `PrimShapeData`
+    dataclass surfaced as `ObjectUpdateEntry.shape`. Fixed two
+    self-cancelling off-by-one bugs (block was being skipped as 22 bytes;
+    `ExtraParams` was being read with U16 length prefix instead of U8
+    per template line 3339). Net effect: every TextureEntry/TextureAnim/
+    NameValue/Data/Text/MediaURL/PSBlock payload was previously read one
+    byte early; `default_texture_id` was the genuine UUID shifted left
+    with a leading `0x00`. Updated 20 synthetic test bodies, regenerated
+    `test/fixtures/live/index.json` (now 43 captures vs 8), and corrected
+    `docs/reverse-engineered-protocol.md`. *(commit `baee76a`.)*
+1b-ii. **`SceneEntity.shape` from path/profile.** *(done 2026-05-04.)*
+    Surfaced `shape: PrimShapeData | None` on `WorldObject`. Added a
+    `classify_prim_shape(path_curve, profile_curve) -> PrimShape | None`
+    helper in `viewer3d/scene.py` covering cube/sphere/cylinder/torus/
+    prism/ring/tube. Populated `SceneEntity.shape` from the new
+    `WorldObject.shape` in the refresh loop. The OpenSim default sphere
+    fixture now classifies as `"sphere"`. New tests for the classifier
+    and end-to-end Scene population.
 2. **Renderer interface inside `viewer3d/`.** Introduce the
    `ViewerRenderer` protocol and extract the existing 2D draw into a
    `TopDownRenderer` implementation. The fork now has the seam needed for
@@ -424,10 +435,11 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Step 1a (`SceneEntity` DTO) is done. Next is step 1b — the wire-format
-parser extension that fills `SceneEntity.shape`. It pre-pays the
-primitive-library work (step 7) and resolves a long-standing project gap
-(the 22-byte pre-tail block in `ObjectUpdate`). Once shape data is real,
-step 2 (renderer interface) and step 4 (`Camera3D`) are small mechanical
-refactors that prepare the fork for the moderngl bootstrap (step 5).
-Skip 2.5D unless a concrete need emerges.
+Steps 1a, 1b-i, and 1b-ii are done. `SceneEntity.shape` is now populated
+from real wire data, and the parser bug that was producing shifted
+texture UUIDs has been fixed along the way. Next is step 2 — extract
+the existing 2D draw inside `viewer3d/render.py` behind a small
+`ViewerRenderer` protocol. Then step 4 (`Camera3D`) introduces a
+mode-aware camera. Steps 2 and 4 are small mechanical refactors that
+prepare the fork for the moderngl bootstrap (step 5). Skip 2.5D unless
+a concrete need emerges.

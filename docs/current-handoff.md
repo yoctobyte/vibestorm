@@ -17,20 +17,32 @@ refactor of the 2D viewer.
 - The full plan, including renumbered implementation order with the fork as
   step 0, lives in `docs/viewer-3d-plan.md`.
 
-Step 1a (`viewer-3d-plan.md`) is done: `viewer3d.scene` now exposes a
-renderer-agnostic `SceneEntity` (replacing `Marker`) with `kind`, full
-quaternion `rotation`, `default_texture_id`, `tint`, and a `shape`
-placeholder; `Scene.sun_phase` is surfaced from `WorldView.latest_time`;
-`object_entities`/`avatar_entities` replace the old marker dicts. New
-tests in `test/test_viewer3d_scene.py` (22 tests, all green). The 2D
-viewer reference under `src/vibestorm/viewer/` is untouched.
+Steps 1a, 1b-i, and 1b-ii are done.
 
-Next planned step (`viewer-3d-plan.md` step 1b): extend the inbound
-`ObjectUpdate` parser to surface `path_curve`/`profile_curve` from the
-22-byte pre-tail block, classify into `PrimShape`, and populate
-`SceneEntity.shape`. This resolves the project memory's flagged "22-byte
-pre-tail block, names known but semantics not" gap and pre-pays the
-primitive-library work for the 3D renderer.
+- 1a: `viewer3d.scene` now exposes a renderer-agnostic `SceneEntity`
+  (replacing `Marker`) with `kind`, full quaternion `rotation`,
+  `default_texture_id`, `tint`, and a `shape` field. `Scene.sun_phase` is
+  surfaced from `WorldView.latest_time`. `object_entities` /
+  `avatar_entities` replace the old marker dicts.
+- 1b-i: protocol fix. The `ObjectUpdate` parser had two self-cancelling
+  off-by-one bugs (22-byte path/profile block, U16 ExtraParams length).
+  Fixed: the block is decoded as 23 bytes via a new `PrimShapeData`
+  dataclass, and ExtraParams uses U8 length per template. Side effect:
+  `default_texture_id` is now the real UUID instead of being shifted
+  left by one byte with a leading `0x00`. `docs/reverse-engineered-
+  protocol.md` corrected; `test/fixtures/live/index.json` regenerated
+  (now 43 captures vs 8).
+- 1b-ii: `SceneEntity.shape` is now populated from real wire data via a
+  new `classify_prim_shape(path_curve, profile_curve)` helper covering
+  cube/sphere/cylinder/torus/prism/ring/tube. The OpenSim default sphere
+  fixture classifies as `"sphere"`.
+
+Test suite now 285 tests, all green. The 2D viewer reference under
+`src/vibestorm/viewer/` is untouched.
+
+Next planned step (`viewer-3d-plan.md` step 2): extract the existing 2D
+draw inside `viewer3d/render.py` behind a small `ViewerRenderer`
+protocol. Pure refactor inside the fork; behavior unchanged.
 
 ## Summary
 

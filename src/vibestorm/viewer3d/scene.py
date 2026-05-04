@@ -49,6 +49,20 @@ DEFAULT_MARKER_COLOR: tuple[int, int, int] = (140, 140, 140)
 EntityKind = Literal["prim", "avatar", "tree", "grass", "particle", "unknown"]
 PrimShape = Literal["cube", "sphere", "cylinder", "torus", "prism", "ring", "tube"]
 
+# Path/profile curve constants from libomv (PathCurve U8, ProfileCurve & 0x07).
+PATH_CURVE_LINE = 0x10
+PATH_CURVE_CIRCLE = 0x20
+PATH_CURVE_CIRCLE2 = 0x30
+PATH_CURVE_TEST = 0x40
+PATH_CURVE_FLEXIBLE = 0x80
+
+PROFILE_CURVE_CIRCLE = 0
+PROFILE_CURVE_SQUARE = 1
+PROFILE_CURVE_ISO_TRIANGLE = 2
+PROFILE_CURVE_EQUIL_TRIANGLE = 3
+PROFILE_CURVE_RIGHT_TRIANGLE = 4
+PROFILE_CURVE_HALF_CIRCLE = 5
+
 
 def _kind_for_pcode(pcode: int) -> EntityKind:
     if pcode == PCODE_AVATAR:
@@ -60,6 +74,44 @@ def _kind_for_pcode(pcode: int) -> EntityKind:
     if pcode == PCODE_PARTICLE_SYSTEM:
         return "particle"
     return "unknown"
+
+
+def classify_prim_shape(path_curve: int, profile_curve: int) -> PrimShape | None:
+    """Map (PathCurve, ProfileCurve) to a primitive shape category.
+
+    Best-effort classification suitable for approximate rendering. Encodes
+    the common cube/sphere/cylinder/torus/prism cases observed in libomv;
+    returns ``None`` for combinations the renderer should treat as a
+    fallback box.
+    """
+    profile = profile_curve & 0x07
+    if path_curve == PATH_CURVE_LINE:
+        if profile == PROFILE_CURVE_SQUARE:
+            return "cube"
+        if profile == PROFILE_CURVE_CIRCLE:
+            return "cylinder"
+        if profile in (
+            PROFILE_CURVE_ISO_TRIANGLE,
+            PROFILE_CURVE_EQUIL_TRIANGLE,
+            PROFILE_CURVE_RIGHT_TRIANGLE,
+        ):
+            return "prism"
+        if profile == PROFILE_CURVE_HALF_CIRCLE:
+            return "cylinder"
+    if path_curve in (PATH_CURVE_CIRCLE, PATH_CURVE_CIRCLE2):
+        if profile == PROFILE_CURVE_CIRCLE:
+            return "torus"
+        if profile == PROFILE_CURVE_HALF_CIRCLE:
+            return "sphere"
+        if profile == PROFILE_CURVE_SQUARE:
+            return "tube"
+        if profile in (
+            PROFILE_CURVE_ISO_TRIANGLE,
+            PROFILE_CURVE_EQUIL_TRIANGLE,
+            PROFILE_CURVE_RIGHT_TRIANGLE,
+        ):
+            return "ring"
+    return None
 
 
 @dataclass(slots=True, frozen=True)
@@ -181,6 +233,10 @@ class Scene:
             properties = getattr(obj, "properties_family", None)
             if properties is not None:
                 name = getattr(properties, "name", None) or None
+            shape_data = getattr(obj, "shape", None)
+            shape: PrimShape | None = None
+            if shape_data is not None:
+                shape = classify_prim_shape(shape_data.path_curve, shape_data.profile_curve)
             entity = SceneEntity(
                 local_id=obj.local_id,
                 pcode=obj.pcode,
@@ -191,7 +247,7 @@ class Scene:
                 rotation_z_radians=yaw,
                 name=name,
                 default_texture_id=getattr(obj, "default_texture_id", None),
-                shape=None,  # filled in once the parser surfaces path/profile curves
+                shape=shape,
                 tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
             )
             if obj.pcode == PCODE_AVATAR:
@@ -268,4 +324,5 @@ __all__ = [
     "Scene",
     "PCODE_AVATAR",
     "PCODE_PRIM",
+    "classify_prim_shape",
 ]
