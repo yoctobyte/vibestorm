@@ -455,7 +455,7 @@ class SemanticMessageTests(unittest.TestCase):
             + object_data
             + (0).to_bytes(4, "little")
             + (5).to_bytes(4, "little")
-            + (b"\x00" * 22)
+            + (b"\x00" * 23)
             + (0).to_bytes(2, "little")
             + bytes([0])
             + (0).to_bytes(2, "little")
@@ -488,7 +488,7 @@ class SemanticMessageTests(unittest.TestCase):
             + object_data
             + (0).to_bytes(4, "little")
             + (5).to_bytes(4, "little")
-            + (b"\x00" * 22)
+            + (b"\x00" * 23)
             + (0).to_bytes(2, "little")
             + bytes([0])
             + (0).to_bytes(2, "little")
@@ -541,7 +541,7 @@ class SemanticMessageTests(unittest.TestCase):
             + object_data
             + (0).to_bytes(4, "little")
             + (0).to_bytes(4, "little")
-            + (b"\x00" * 22)
+            + (b"\x00" * 23)
             + (0).to_bytes(2, "little")
             + bytes([0])
             + len(name_values).to_bytes(2, "big")
@@ -580,7 +580,7 @@ class SemanticMessageTests(unittest.TestCase):
             + object_data
             + (0).to_bytes(4, "little")
             + (5).to_bytes(4, "little")
-            + (b"\x00" * 22)
+            + (b"\x00" * 23)
             + len(texture_entry).to_bytes(2, "little")
             + texture_entry
             + bytes([0])
@@ -600,6 +600,110 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.objects[0].interesting_payloads[0].field_name, "TextureEntry")
         self.assertEqual(parsed.objects[0].interesting_payloads[0].size, 64)
 
+    def test_parse_prim_object_update_decodes_shape_block(self) -> None:
+        # Sphere-shaped prim: PathCurve=0x20 (CIRCLE/revolve), ProfileCurve=0x05
+        # (HalfCircle), PathScaleX/Y=100, ProfileBegin=0x100, ProfileEnd=0x200,
+        # ProfileHollow=0x80. Other fields zero.
+        full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_data = (
+            pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28)
+            + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
+        )
+        shape_block = (
+            bytes([0x20, 0x05])                         # PathCurve, ProfileCurve
+            + (0).to_bytes(2, "little")                 # PathBegin
+            + (0).to_bytes(2, "little")                 # PathEnd
+            + bytes([100, 100, 0, 0])                   # PathScale X/Y, Shear X/Y
+            + bytes([0, 0, 0, 0, 0])                    # PathTwist..PathTaperY
+            + bytes([0, 0])                             # PathRevolutions, PathSkew
+            + (0x100).to_bytes(2, "little")             # ProfileBegin
+            + (0x200).to_bytes(2, "little")             # ProfileEnd
+            + (0x80).to_bytes(2, "little")              # ProfileHollow
+        )
+        assert len(shape_block) == 23
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([3])
+            + full_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([9, 3, 1])
+            + pack("<fff", 1.0, 2.0, 3.0)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (5).to_bytes(4, "little")
+            + shape_block
+            + (0).to_bytes(2, "little")    # TextureEntry length
+            + bytes([0])                    # TextureAnim length
+            + (0).to_bytes(2, "little")    # NameValue length
+            + (0).to_bytes(2, "little")    # Data length
+            + bytes([0])                    # Text length
+            + (b"\x00" * 4)                 # TextColor
+            + bytes([0, 0, 0])              # MediaURL, PSBlock, ExtraParams (all U8)
+            + (b"\x00" * 66)
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+
+        parsed = parse_object_update(dispatched)
+        shape = parsed.objects[0].shape
+
+        self.assertIsNotNone(shape)
+        self.assertEqual(shape.path_curve, 0x20)
+        self.assertEqual(shape.profile_curve, 0x05)
+        self.assertEqual(shape.path_scale_x, 100)
+        self.assertEqual(shape.path_scale_y, 100)
+        self.assertEqual(shape.profile_begin, 0x100)
+        self.assertEqual(shape.profile_end, 0x200)
+        self.assertEqual(shape.profile_hollow, 0x80)
+
+    def test_parse_avatar_object_update_has_no_shape(self) -> None:
+        # Avatars (pcode=47) have no path/profile shape data — the parser
+        # only sets ``shape`` for prims (pcode=9).
+        from vibestorm.udp.messages import parse_object_update as _por  # noqa: F401
+
+        full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        object_data = (
+            (b"\x00" * 16)
+            + pack("<fff", 128.0, 128.0, 25.96)
+            + (b"\x00" * 48)
+        )
+        assert len(object_data) == 76
+        name_values = b"FirstName STRING RW SV Vibestorm\nLastName STRING RW SV Admin\x00"
+        body = (
+            (123456789).to_bytes(8, "little")
+            + (42).to_bytes(2, "little")
+            + bytes([1])
+            + (7).to_bytes(4, "little")
+            + bytes([0])
+            + full_id.bytes
+            + (99).to_bytes(4, "little")
+            + bytes([47, 0, 0])
+            + pack("<fff", 0.45, 0.6, 1.7)
+            + bytes([len(object_data)])
+            + object_data
+            + (0).to_bytes(4, "little")
+            + (0).to_bytes(4, "little")
+            + (b"\x00" * 23)
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + len(name_values).to_bytes(2, "big")
+            + name_values
+            + (0).to_bytes(2, "little")
+            + bytes([0])
+            + (b"\x00" * 4)
+            + bytes([0, 0, 0])
+            + (b"\x00" * 66)
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0C]) + body)
+
+        parsed = parse_object_update(dispatched)
+
+        self.assertEqual(parsed.objects[0].variant, "avatar_basic")
+        self.assertIsNone(parsed.objects[0].shape)
+
     def test_parse_prim_object_update_collects_interesting_unknown_payloads(self) -> None:
         full_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         object_data = pack("<fff", 1.0, 2.0, 3.0) + (b"\x00" * 28) + pack("<ffff", 0.0, 0.0, 0.0, 1.0) + (b"\x00" * 4)
@@ -618,7 +722,7 @@ class SemanticMessageTests(unittest.TestCase):
             + object_data
             + (0).to_bytes(4, "little")
             + (5).to_bytes(4, "little")
-            + (b"\x00" * 22)
+            + (b"\x00" * 23)
             + (0).to_bytes(2, "little")
             + bytes([0])
             + (0).to_bytes(2, "little")
@@ -667,7 +771,7 @@ class SemanticMessageTests(unittest.TestCase):
             + object_data
             + (0).to_bytes(4, "little")
             + (5).to_bytes(4, "little")
-            + (b"\x00" * 22)
+            + (b"\x00" * 23)
             + (0).to_bytes(2, "little")
             + bytes([0])
             + (0).to_bytes(2, "little")

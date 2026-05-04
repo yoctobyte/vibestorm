@@ -32,7 +32,7 @@ class FixtureInventoryTests(unittest.TestCase):
                 + object_data
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (64).to_bytes(2, "little")
                 + texture_id.bytes
                 + (b"\x00" * 48)

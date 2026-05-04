@@ -328,6 +328,36 @@ class ObjectUpdatePayloadSummary:
 
 
 @dataclass(slots=True, frozen=True)
+class PrimShapeData:
+    """Path/profile block decoded from ObjectUpdate's 23-byte pre-tail.
+
+    Field layout per ``third_party/secondlife/message_template.msg`` lines
+    3307–3324: PathCurve (U8), ProfileCurve (U8), PathBegin/End (U16),
+    PathScaleX/Y (U8), PathShearX/Y (U8), PathTwist/Begin (S8),
+    PathRadiusOffset (S8), PathTaperX/Y (S8), PathRevolutions (U8),
+    PathSkew (S8), ProfileBegin/End/Hollow (U16). Total: 23 bytes.
+    """
+    path_curve: int
+    profile_curve: int
+    path_begin: int
+    path_end: int
+    path_scale_x: int
+    path_scale_y: int
+    path_shear_x: int
+    path_shear_y: int
+    path_twist: int
+    path_twist_begin: int
+    path_radius_offset: int
+    path_taper_x: int
+    path_taper_y: int
+    path_revolutions: int
+    path_skew: int
+    profile_begin: int
+    profile_end: int
+    profile_hollow: int
+
+
+@dataclass(slots=True, frozen=True)
 class ObjectUpdateEntry:
     local_id: int
     state: int
@@ -354,6 +384,7 @@ class ObjectUpdateEntry:
     default_texture_id: UUID | None
     interesting_payloads: tuple[ObjectUpdatePayloadSummary, ...]
     extra_params_entries: tuple[ExtraParamEntry, ...] = ()
+    shape: PrimShapeData | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -432,6 +463,38 @@ def _read_utf8_fields_with_fallback(
             continue
 
     raise last_error or MessageDecodeError("variable UTF-8 field is truncated")
+
+
+def _parse_prim_shape_block(data: bytes, offset: int) -> PrimShapeData:
+    """Decode the 23-byte path/profile block from ObjectUpdate.
+
+    Layout per ``message_template.msg`` ObjectUpdate.ObjectData:
+    PathCurve (U8), ProfileCurve (U8), PathBegin/End (U16),
+    PathScaleX/Y (U8), PathShearX/Y (U8), PathTwist/Begin (S8),
+    PathRadiusOffset (S8), PathTaperX/Y (S8), PathRevolutions (U8),
+    PathSkew (S8), ProfileBegin/End/Hollow (U16). Caller guarantees
+    ``len(data) >= offset + 23``.
+    """
+    return PrimShapeData(
+        path_curve=data[offset],
+        profile_curve=data[offset + 1],
+        path_begin=unpack_from("<H", data, offset + 2)[0],
+        path_end=unpack_from("<H", data, offset + 4)[0],
+        path_scale_x=data[offset + 6],
+        path_scale_y=data[offset + 7],
+        path_shear_x=data[offset + 8],
+        path_shear_y=data[offset + 9],
+        path_twist=unpack_from("<b", data, offset + 10)[0],
+        path_twist_begin=unpack_from("<b", data, offset + 11)[0],
+        path_radius_offset=unpack_from("<b", data, offset + 12)[0],
+        path_taper_x=unpack_from("<b", data, offset + 13)[0],
+        path_taper_y=unpack_from("<b", data, offset + 14)[0],
+        path_revolutions=data[offset + 15],
+        path_skew=unpack_from("<b", data, offset + 16)[0],
+        profile_begin=unpack_from("<H", data, offset + 17)[0],
+        profile_end=unpack_from("<H", data, offset + 19)[0],
+        profile_hollow=unpack_from("<H", data, offset + 21)[0],
+    )
 
 
 def _read_variable_field_with_length_fallback(
@@ -1705,7 +1768,11 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
             f"unsupported ObjectUpdate variant pcode={pcode} object_data_size={len(object_data)}",
         )
 
-    tail_offset = offset + 8 + 22
+    shape: PrimShapeData | None = None
+    shape_offset = offset + 8
+    if pcode == 9 and len(body) >= shape_offset + 23:
+        shape = _parse_prim_shape_block(body, shape_offset)
+    tail_offset = offset + 8 + 23
     texture_entry_payload, tail_offset = _read_variable_field_best_effort(
         body, tail_offset, 2, "ObjectUpdate.TextureEntry",
     )
@@ -1731,8 +1798,8 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
     ps_block_payload, tail_offset = _read_variable_field_best_effort(
         body, tail_offset, 1, "ObjectUpdate.PSBlock",
     )
-    extra_params_payload, tail_offset = _read_variable_field_with_length_fallback(
-        body, tail_offset, "ObjectUpdate.ExtraParams", preferred_length_sizes=(2, 1),
+    extra_params_payload, tail_offset = _read_variable_field_best_effort(
+        body, tail_offset, 1, "ObjectUpdate.ExtraParams",
     )
     
     # 66 fixed bytes at the end of every ObjectUpdate entry
@@ -1812,6 +1879,7 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
         default_texture_id=default_texture_id,
         interesting_payloads=tuple(interesting_payloads),
         extra_params_entries=extra_params_entries,
+        shape=shape,
     )
     return entry, next_offset
 

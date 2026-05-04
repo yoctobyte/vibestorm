@@ -1,38 +1,223 @@
 {
   "backlog": [
     {
-      "count": 8,
+      "count": 43,
       "fixtures": [
         "ObjectUpdate/001-seq000927.json",
+        "ObjectUpdate/002-seq000008.json",
+        "ObjectUpdate/002-seq000009.json",
+        "ObjectUpdate/002-seq000053.json",
+        "ObjectUpdate/002-seq000069.json",
+        "ObjectUpdate/002-seq000093.json",
+        "ObjectUpdate/002-seq000146.json",
+        "ObjectUpdate/002-seq000202.json",
         "ObjectUpdate/002-seq000929.json",
+        "ObjectUpdate/003-seq000012.json",
+        "ObjectUpdate/003-seq000014.json",
+        "ObjectUpdate/003-seq000056.json",
+        "ObjectUpdate/003-seq000071.json",
+        "ObjectUpdate/003-seq000095.json",
+        "ObjectUpdate/003-seq000148.json",
+        "ObjectUpdate/003-seq000204.json",
         "ObjectUpdate/003-seq000930.json",
+        "ObjectUpdate/004-seq000012.json",
+        "ObjectUpdate/004-seq000013.json",
+        "ObjectUpdate/004-seq000014.json",
+        "ObjectUpdate/004-seq000015.json",
+        "ObjectUpdate/004-seq000057.json",
+        "ObjectUpdate/004-seq000072.json",
+        "ObjectUpdate/004-seq000096.json",
+        "ObjectUpdate/004-seq000149.json",
+        "ObjectUpdate/004-seq000205.json",
+        "ObjectUpdate/004-seq000215.json",
         "ObjectUpdate/004-seq000938.json",
+        "ObjectUpdate/005-seq000213.json",
+        "ObjectUpdate/005-seq000217.json",
         "ObjectUpdate/005-seq000939.json",
+        "ObjectUpdate/005-seq004356.json",
+        "ObjectUpdate/006-seq000075.json",
+        "ObjectUpdate/006-seq000186.json",
+        "ObjectUpdate/006-seq000219.json",
+        "ObjectUpdate/006-seq000330.json",
         "ObjectUpdate/006-seq000944.json",
+        "ObjectUpdate/007-seq000078.json",
+        "ObjectUpdate/007-seq000187.json",
         "ObjectUpdate/007-seq000945.json",
+        "ObjectUpdate/008-seq000079.json",
+        "ObjectUpdate/008-seq000189.json",
         "ObjectUpdate/008-seq000958.json"
       ],
       "key": "object-update-rich-tail",
       "summary": "Known ObjectUpdate variants with non-empty tail data such as TextureEntry or ExtraParams."
     },
     {
-      "count": 8,
+      "count": 60,
       "fixtures": [
+        "ObjectUpdate/001-seq000004.json",
+        "ObjectUpdate/001-seq000005.json",
         "ObjectUpdate/001-seq000927.json",
+        "ObjectUpdate/002-seq000008.json",
+        "ObjectUpdate/002-seq000009.json",
+        "ObjectUpdate/002-seq000010.json",
+        "ObjectUpdate/002-seq000053.json",
+        "ObjectUpdate/002-seq000069.json",
+        "ObjectUpdate/002-seq000093.json",
+        "ObjectUpdate/002-seq000113.json",
+        "ObjectUpdate/002-seq000146.json",
+        "ObjectUpdate/002-seq000202.json",
         "ObjectUpdate/002-seq000929.json",
+        "ObjectUpdate/003-seq000009.json",
+        "ObjectUpdate/003-seq000010.json",
+        "ObjectUpdate/003-seq000011.json",
+        "ObjectUpdate/003-seq000012.json",
+        "ObjectUpdate/003-seq000014.json",
+        "ObjectUpdate/003-seq000046.json",
+        "ObjectUpdate/003-seq000056.json",
+        "ObjectUpdate/003-seq000071.json",
+        "ObjectUpdate/003-seq000095.json",
+        "ObjectUpdate/003-seq000120.json",
+        "ObjectUpdate/003-seq000148.json",
+        "ObjectUpdate/003-seq000204.json",
         "ObjectUpdate/003-seq000930.json",
+        "ObjectUpdate/004-seq000012.json",
+        "ObjectUpdate/004-seq000013.json",
+        "ObjectUpdate/004-seq000014.json",
+        "ObjectUpdate/004-seq000015.json",
+        "ObjectUpdate/004-seq000052.json",
+        "ObjectUpdate/004-seq000057.json",
+        "ObjectUpdate/004-seq000072.json",
+        "ObjectUpdate/004-seq000096.json",
+        "ObjectUpdate/004-seq000149.json",
+        "ObjectUpdate/004-seq000161.json",
+        "ObjectUpdate/004-seq000205.json",
+        "ObjectUpdate/004-seq000215.json",
         "ObjectUpdate/004-seq000938.json",
+        "ObjectUpdate/005-seq000030.json",
+        "ObjectUpdate/005-seq000050.json",
+        "ObjectUpdate/005-seq000058.json",
+        "ObjectUpdate/005-seq000061.json",
+        "ObjectUpdate/005-seq000213.json",
+        "ObjectUpdate/005-seq000217.json",
         "ObjectUpdate/005-seq000939.json",
+        "ObjectUpdate/005-seq004356.json",
+        "ObjectUpdate/006-seq000075.json",
+        "ObjectUpdate/006-seq000160.json",
+        "ObjectUpdate/006-seq000186.json",
+        "ObjectUpdate/006-seq000219.json",
+        "ObjectUpdate/006-seq000330.json",
         "ObjectUpdate/006-seq000944.json",
+        "ObjectUpdate/007-seq000078.json",
+        "ObjectUpdate/007-seq000187.json",
+        "ObjectUpdate/007-seq000231.json",
         "ObjectUpdate/007-seq000945.json",
+        "ObjectUpdate/008-seq000079.json",
+        "ObjectUpdate/008-seq000189.json",
         "ObjectUpdate/008-seq000958.json"
       ],
       "key": "object-update-interesting-unknowns",
       "summary": "ObjectUpdate captures with non-zero tail payloads worth reverse-engineering further."
     }
   ],
-  "capture_count": 8,
+  "capture_count": 60,
   "captures": [
+    {
+      "at_seconds": 5.739968,
+      "body_path": "ObjectUpdate/001-seq000004.body.bin",
+      "body_size": 321,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/001-seq000004.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "11111111-2222-3333-4444-555555555555",
+        "interest_summary": "local_id=58026003 variant=avatar_basic label='Vibestorm Admin' interesting=NameValue:81 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Admin\\\\nTit' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 80,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 81,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Admin\\nTit"
+          }
+        ],
+        "label": "Vibestorm Admin",
+        "local_id": 58026003,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Admin",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          128.0,
+          128.0,
+          25.871097564697266
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 4
+    },
+    {
+      "at_seconds": 5.801193,
+      "body_path": "ObjectUpdate/001-seq000005.body.bin",
+      "body_size": 321,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/001-seq000005.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "11111111-2222-3333-4444-555555555555",
+        "interest_summary": "local_id=259394516 variant=avatar_basic label='Vibestorm Admin' interesting=NameValue:81 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Admin\\\\nTit' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 80,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 81,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Admin\\nTit"
+          }
+        ],
+        "label": "Vibestorm Admin",
+        "local_id": 259394516,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Admin",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          128.0,
+          128.0,
+          25.871097564697266
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 5
+    },
     {
       "at_seconds": 40.114103,
       "body_path": "ObjectUpdate/001-seq000927.body.bin",
@@ -43,15 +228,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -84,6 +269,454 @@
       "sequence": 927
     },
     {
+      "at_seconds": 6.123016,
+      "body_path": "ObjectUpdate/002-seq000008.body.bin",
+      "body_size": 565,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000008.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "d7f47f7e-4328-4d17-a665-19feaec7b1e9",
+        "interest_summary": "local_id=58025986 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 58025986,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 2,
+        "position": [
+          122.62586975097656,
+          124.86428833007812,
+          24.859453201293945
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          -0.04920271411538124,
+          -0.14110706746578217,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 8
+    },
+    {
+      "at_seconds": 5.765792,
+      "body_path": "ObjectUpdate/002-seq000009.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000009.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "8d592126-0a58-416f-af4b-af1d727f85f8",
+        "interest_summary": "local_id=492043015 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043015,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.02203369140625,
+          126.9915542602539,
+          25.151445388793945
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 9
+    },
+    {
+      "at_seconds": 6.116235,
+      "body_path": "ObjectUpdate/002-seq000010.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000010.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=259394507 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 259394507,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          129.90838623046875,
+          127.41802215576172,
+          26.410551071166992
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 10
+    },
+    {
+      "at_seconds": 16.357234,
+      "body_path": "ObjectUpdate/002-seq000053.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000053.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "6e36d1ef-c273-4654-9163-e427f3d8604c",
+        "interest_summary": "local_id=492042985 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042985,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.11497497558594,
+          129.9217071533203,
+          25.16702651977539
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 53
+    },
+    {
+      "at_seconds": 18.072453,
+      "body_path": "ObjectUpdate/002-seq000069.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000069.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "574fc052-7340-415a-a970-4b3a56114f42",
+        "interest_summary": "local_id=492042997 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042997,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          129.27362060546875,
+          125.11518859863281,
+          25.14797592163086
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 69
+    },
+    {
+      "at_seconds": 22.561757,
+      "body_path": "ObjectUpdate/002-seq000093.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000093.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "986b1c51-ae40-4767-981a-738062eb591b",
+        "interest_summary": "local_id=492042994 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042994,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          126.0634765625,
+          127.96920776367188,
+          25.211721420288086
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 93
+    },
+    {
+      "at_seconds": 23.933054,
+      "body_path": "ObjectUpdate/002-seq000113.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000113.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492042976 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492042976,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          0.0,
+          -0.058990478515625,
+          1.1778373718261719
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 113
+    },
+    {
+      "at_seconds": 16.777793,
+      "body_path": "ObjectUpdate/002-seq000146.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000146.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "7ad0a6fb-be8b-49b8-9b39-1210aacbd00c",
+        "interest_summary": "local_id=492043001 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043001,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          125.4204330444336,
+          128.44479370117188,
+          25.176898956298828
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 146
+    },
+    {
+      "at_seconds": 37.631756,
+      "body_path": "ObjectUpdate/002-seq000202.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/002-seq000202.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "625b95ad-f649-435d-acf6-90c4e69f6f07",
+        "interest_summary": "local_id=492042990 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042990,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.48585510253906,
+          122.23439025878906,
+          24.853309631347656
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 202
+    },
+    {
       "at_seconds": 40.129324,
       "body_path": "ObjectUpdate/002-seq000929.body.bin",
       "body_size": 288,
@@ -93,15 +726,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -134,6 +767,601 @@
       "sequence": 929
     },
     {
+      "at_seconds": 5.911516,
+      "body_path": "ObjectUpdate/003-seq000009.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000009.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          0.4250030517578125,
+          0.0228118896484375,
+          0.8899993896484375
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 9
+    },
+    {
+      "at_seconds": 6.019429,
+      "body_path": "ObjectUpdate/003-seq000010.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000010.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          0.4250030517578125,
+          0.0228118896484375,
+          0.8899993896484375
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 10
+    },
+    {
+      "at_seconds": 6.276803,
+      "body_path": "ObjectUpdate/003-seq000011.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000011.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          0.4250030517578125,
+          0.036041259765625,
+          0.8899993896484375
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 11
+    },
+    {
+      "at_seconds": 7.340118,
+      "body_path": "ObjectUpdate/003-seq000012.body.bin",
+      "body_size": 565,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000012.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "d7f47f7e-4328-4d17-a665-19feaec7b1e9",
+        "interest_summary": "local_id=58025986 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 58025986,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 2,
+        "position": [
+          122.62586975097656,
+          124.86428833007812,
+          24.859453201293945
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          -0.04920271411538124,
+          -0.14110706746578217,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 12
+    },
+    {
+      "at_seconds": 6.275273,
+      "body_path": "ObjectUpdate/003-seq000014.body.bin",
+      "body_size": 565,
+      "capture_reason": "world.object_update_partial",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000014.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "d7f47f7e-4328-4d17-a665-19feaec7b1e9",
+        "interest_summary": "local_id=259394491 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 259394491,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 2,
+        "position": [
+          122.62586975097656,
+          124.86428833007812,
+          24.859453201293945
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          -0.04920278489589691,
+          -0.14110690355300903,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 14
+    },
+    {
+      "at_seconds": 16.710655,
+      "body_path": "ObjectUpdate/003-seq000046.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000046.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          122.82359313964844,
+          127.21904754638672,
+          25.816425323486328
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 46
+    },
+    {
+      "at_seconds": 16.481185,
+      "body_path": "ObjectUpdate/003-seq000056.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000056.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "6e36d1ef-c273-4654-9163-e427f3d8604c",
+        "interest_summary": "local_id=492042985 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042985,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.11497497558594,
+          129.9217071533203,
+          25.16702651977539
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 56
+    },
+    {
+      "at_seconds": 18.17271,
+      "body_path": "ObjectUpdate/003-seq000071.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000071.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "574fc052-7340-415a-a970-4b3a56114f42",
+        "interest_summary": "local_id=492042997 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042997,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          129.27362060546875,
+          125.11518859863281,
+          25.14797592163086
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 71
+    },
+    {
+      "at_seconds": 22.661672,
+      "body_path": "ObjectUpdate/003-seq000095.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000095.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "986b1c51-ae40-4767-981a-738062eb591b",
+        "interest_summary": "local_id=492042994 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042994,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          126.0634765625,
+          127.96920776367188,
+          25.211721420288086
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 95
+    },
+    {
+      "at_seconds": 25.840456,
+      "body_path": "ObjectUpdate/003-seq000120.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000120.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492042976 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492042976,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          132.50709533691406,
+          128.15603637695312,
+          26.876850128173828
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 120
+    },
+    {
+      "at_seconds": 16.884372,
+      "body_path": "ObjectUpdate/003-seq000148.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000148.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "7ad0a6fb-be8b-49b8-9b39-1210aacbd00c",
+        "interest_summary": "local_id=492043001 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043001,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          125.4204330444336,
+          128.44479370117188,
+          25.176898956298828
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 148
+    },
+    {
+      "at_seconds": 37.73232,
+      "body_path": "ObjectUpdate/003-seq000204.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/003-seq000204.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "625b95ad-f649-435d-acf6-90c4e69f6f07",
+        "interest_summary": "local_id=492042990 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042990,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.48585510253906,
+          122.23439025878906,
+          24.853309631347656
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 204
+    },
+    {
       "at_seconds": 40.204804,
       "body_path": "ObjectUpdate/003-seq000930.body.bin",
       "body_size": 288,
@@ -143,15 +1371,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -184,6 +1412,604 @@
       "sequence": 930
     },
     {
+      "at_seconds": 6.064686,
+      "body_path": "ObjectUpdate/004-seq000012.body.bin",
+      "body_size": 565,
+      "capture_reason": "world.object_update_partial",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000012.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "d7f47f7e-4328-4d17-a665-19feaec7b1e9",
+        "interest_summary": "local_id=492042964 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042964,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 2,
+        "position": [
+          122.62571716308594,
+          124.86432647705078,
+          24.859437942504883
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          -0.04951538145542145,
+          -0.14111901819705963,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 12
+    },
+    {
+      "at_seconds": 6.134461,
+      "body_path": "ObjectUpdate/004-seq000013.body.bin",
+      "body_size": 565,
+      "capture_reason": "world.object_update_partial",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000013.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "d7f47f7e-4328-4d17-a665-19feaec7b1e9",
+        "interest_summary": "local_id=492042964 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042964,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 2,
+        "position": [
+          122.62571716308594,
+          124.86432647705078,
+          24.859437942504883
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          -0.04951538145542145,
+          -0.14111901819705963,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 13
+    },
+    {
+      "at_seconds": 5.822927,
+      "body_path": "ObjectUpdate/004-seq000014.body.bin",
+      "body_size": 565,
+      "capture_reason": "world.object_update_partial",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000014.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "d7f47f7e-4328-4d17-a665-19feaec7b1e9",
+        "interest_summary": "local_id=492042964 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042964,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 2,
+        "position": [
+          122.62571716308594,
+          124.86432647705078,
+          24.859437942504883
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          -0.04951538145542145,
+          -0.14111901819705963,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 14
+    },
+    {
+      "at_seconds": 6.467338,
+      "body_path": "ObjectUpdate/004-seq000015.body.bin",
+      "body_size": 565,
+      "capture_reason": "world.object_update_partial",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000015.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "d7f47f7e-4328-4d17-a665-19feaec7b1e9",
+        "interest_summary": "local_id=492042964 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042964,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 2,
+        "position": [
+          122.62571716308594,
+          124.86432647705078,
+          24.859437942504883
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          -0.04951538145542145,
+          -0.14111901819705963,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 15
+    },
+    {
+      "at_seconds": 17.204883,
+      "body_path": "ObjectUpdate/004-seq000052.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000052.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          122.9538345336914,
+          127.21904754638672,
+          25.669410705566406
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 52
+    },
+    {
+      "at_seconds": 16.556895,
+      "body_path": "ObjectUpdate/004-seq000057.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000057.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "6e36d1ef-c273-4654-9163-e427f3d8604c",
+        "interest_summary": "local_id=492042985 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042985,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.11497497558594,
+          129.9217071533203,
+          25.16702651977539
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 57
+    },
+    {
+      "at_seconds": 18.24232,
+      "body_path": "ObjectUpdate/004-seq000072.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000072.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "574fc052-7340-415a-a970-4b3a56114f42",
+        "interest_summary": "local_id=492042997 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042997,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          129.27362060546875,
+          125.11518859863281,
+          25.14797592163086
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 72
+    },
+    {
+      "at_seconds": 22.729897,
+      "body_path": "ObjectUpdate/004-seq000096.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000096.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "986b1c51-ae40-4767-981a-738062eb591b",
+        "interest_summary": "local_id=492042994 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042994,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          126.0634765625,
+          127.96920776367188,
+          25.211721420288086
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 96
+    },
+    {
+      "at_seconds": 16.973136,
+      "body_path": "ObjectUpdate/004-seq000149.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000149.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "7ad0a6fb-be8b-49b8-9b39-1210aacbd00c",
+        "interest_summary": "local_id=492043001 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043001,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          125.4204330444336,
+          128.44479370117188,
+          25.176898956298828
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 149
+    },
+    {
+      "at_seconds": 38.06396,
+      "body_path": "ObjectUpdate/004-seq000161.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000161.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492042976 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492042976,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          132.50709533691406,
+          128.15603637695312,
+          25.7373046875
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 161
+    },
+    {
+      "at_seconds": 37.800129,
+      "body_path": "ObjectUpdate/004-seq000205.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000205.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "625b95ad-f649-435d-acf6-90c4e69f6f07",
+        "interest_summary": "local_id=492042990 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042990,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.48585510253906,
+          122.23439025878906,
+          24.853309631347656
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 205
+    },
+    {
+      "at_seconds": 125.270812,
+      "body_path": "ObjectUpdate/004-seq000215.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/004-seq000215.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "1326298d-0fda-4151-8bdc-e624149630a1",
+        "interest_summary": "local_id=259394517 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 259394517,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          129.07923889160156,
+          126.5058364868164,
+          25.213024139404297
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 215
+    },
+    {
       "at_seconds": 46.270043,
       "body_path": "ObjectUpdate/004-seq000938.body.bin",
       "body_size": 288,
@@ -193,15 +2019,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -234,6 +2060,302 @@
       "sequence": 938
     },
     {
+      "at_seconds": 9.543973,
+      "body_path": "ObjectUpdate/005-seq000030.body.bin",
+      "body_size": 321,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq000030.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "11111111-2222-3333-4444-555555555555",
+        "interest_summary": "local_id=492043019 variant=avatar_basic label='Vibestorm Admin' interesting=NameValue:81 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Admin\\\\nTit' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 80,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 81,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Admin\\nTit"
+          }
+        ],
+        "label": "Vibestorm Admin",
+        "local_id": 492043019,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Admin",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          128.0,
+          128.0,
+          25.94497299194336
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 30
+    },
+    {
+      "at_seconds": 16.640336,
+      "body_path": "ObjectUpdate/005-seq000050.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq000050.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          131.18997192382812,
+          129.95774841308594,
+          26.637575149536133
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 50
+    },
+    {
+      "at_seconds": 17.92213,
+      "body_path": "ObjectUpdate/005-seq000058.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq000058.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          122.9538345336914,
+          127.21904754638672,
+          25.679969787597656
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 58
+    },
+    {
+      "at_seconds": 22.386468,
+      "body_path": "ObjectUpdate/005-seq000061.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq000061.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          126.77973175048828,
+          129.49859619140625,
+          26.693613052368164
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 61
+    },
+    {
+      "at_seconds": 41.081625,
+      "body_path": "ObjectUpdate/005-seq000213.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq000213.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "625b95ad-f649-435d-acf6-90c4e69f6f07",
+        "interest_summary": "local_id=492042990 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042990,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.9473419189453,
+          121.77291107177734,
+          25.314790725708008
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 213
+    },
+    {
+      "at_seconds": 125.393043,
+      "body_path": "ObjectUpdate/005-seq000217.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq000217.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "1326298d-0fda-4151-8bdc-e624149630a1",
+        "interest_summary": "local_id=259394517 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 259394517,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          129.07923889160156,
+          126.5058364868164,
+          25.213024139404297
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 217
+    },
+    {
       "at_seconds": 46.300351,
       "body_path": "ObjectUpdate/005-seq000939.body.bin",
       "body_size": 288,
@@ -243,15 +2365,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -284,6 +2406,319 @@
       "sequence": 939
     },
     {
+      "at_seconds": 140.845533,
+      "body_path": "ObjectUpdate/005-seq004356.body.bin",
+      "body_size": 312,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/005-seq004356.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 24,
+        "full_id": "f0a56ca4-f404-41f3-829e-da09664b8527",
+        "interest_summary": "local_id=492042959 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f, ExtraParams:24 hex=01300011000000be293869d0d90a6959, ExtraParamsDecoded:24 text='count=1 type=48/size=17/in_use=1' hex=01300011000000be293869d0d90a6959",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          },
+          {
+            "field_name": "ExtraParams",
+            "non_zero_bytes": 20,
+            "preview_hex": "01300011000000be293869d0d90a6959",
+            "size": 24,
+            "text_preview": null
+          },
+          {
+            "field_name": "ExtraParamsDecoded",
+            "non_zero_bytes": 20,
+            "preview_hex": "01300011000000be293869d0d90a6959",
+            "size": 24,
+            "text_preview": "count=1 type=48/size=17/in_use=1"
+          }
+        ],
+        "label": null,
+        "local_id": 492042959,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          125.91918182373047,
+          125.71022033691406,
+          25.152095794677734
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 4356
+    },
+    {
+      "at_seconds": 24.313438,
+      "body_path": "ObjectUpdate/006-seq000075.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/006-seq000075.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "8d592126-0a58-416f-af4b-af1d727f85f8",
+        "interest_summary": "local_id=492043015 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043015,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.97451782226562,
+          126.9915542602539,
+          25.151445388793945
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 75
+    },
+    {
+      "at_seconds": 33.62798,
+      "body_path": "ObjectUpdate/006-seq000160.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/006-seq000160.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=492043006 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 492043006,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          0.4250030517578125,
+          0.036041259765625,
+          0.8899993896484375
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 160
+    },
+    {
+      "at_seconds": 41.633738,
+      "body_path": "ObjectUpdate/006-seq000186.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/006-seq000186.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "f5b500cf-624c-4eb4-a7b1-f689b3373a4b",
+        "interest_summary": "local_id=492043007 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043007,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          127.854736328125,
+          129.52029418945312,
+          25.223064422607422
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 186
+    },
+    {
+      "at_seconds": 125.484265,
+      "body_path": "ObjectUpdate/006-seq000219.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/006-seq000219.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "1326298d-0fda-4151-8bdc-e624149630a1",
+        "interest_summary": "local_id=259394517 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 259394517,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          129.07923889160156,
+          126.5058364868164,
+          25.213024139404297
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 219
+    },
+    {
+      "at_seconds": 48.336096,
+      "body_path": "ObjectUpdate/006-seq000330.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/006-seq000330.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "625b95ad-f649-435d-acf6-90c4e69f6f07",
+        "interest_summary": "local_id=492042990 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492042990,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.9473419189453,
+          121.77291107177734,
+          25.314790725708008
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133137,
+        "variant": "prim_basic"
+      },
+      "sequence": 330
+    },
+    {
       "at_seconds": 48.222492,
       "body_path": "ObjectUpdate/006-seq000944.body.bin",
       "body_size": 288,
@@ -293,15 +2728,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -334,6 +2769,155 @@
       "sequence": 944
     },
     {
+      "at_seconds": 24.450408,
+      "body_path": "ObjectUpdate/007-seq000078.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/007-seq000078.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "8d592126-0a58-416f-af4b-af1d727f85f8",
+        "interest_summary": "local_id=492043015 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043015,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.97451782226562,
+          126.9915542602539,
+          25.151445388793945
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 78
+    },
+    {
+      "at_seconds": 41.723845,
+      "body_path": "ObjectUpdate/007-seq000187.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/007-seq000187.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "f5b500cf-624c-4eb4-a7b1-f689b3373a4b",
+        "interest_summary": "local_id=492043007 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043007,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          127.854736328125,
+          129.52029418945312,
+          25.223064422607422
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 187
+    },
+    {
+      "at_seconds": 129.098264,
+      "body_path": "ObjectUpdate/007-seq000231.body.bin",
+      "body_size": 322,
+      "capture_reason": "world.object_update",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/007-seq000231.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": null,
+        "extra_params_size": 0,
+        "full_id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+        "interest_summary": "local_id=259394507 variant=avatar_basic label='Vibestorm Tester' interesting=NameValue:82 text='FirstName STRING RW SV Vibestorm\\\\nLastName STRING RW SV Tester\\\\nTi' hex=46697273744e616d6520535452494e47",
+        "interesting_payloads": [
+          {
+            "field_name": "NameValue",
+            "non_zero_bytes": 81,
+            "preview_hex": "46697273744e616d6520535452494e47",
+            "size": 82,
+            "text_preview": "FirstName STRING RW SV Vibestorm\\nLastName STRING RW SV Tester\\nTi"
+          }
+        ],
+        "label": "Vibestorm Tester",
+        "local_id": 259394507,
+        "media_url_size": 0,
+        "name_values": {
+          "FirstName": "Vibestorm",
+          "LastName": "Tester",
+          "Title": ""
+        },
+        "object_count": 1,
+        "position": [
+          -0.1264190673828125,
+          0.4250030517578125,
+          0.8899993896484375
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": null,
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 0,
+        "time_dilation": 65535,
+        "update_flags": 0,
+        "variant": "avatar_basic"
+      },
+      "sequence": 231
+    },
+    {
       "at_seconds": 48.283155,
       "body_path": "ObjectUpdate/007-seq000945.body.bin",
       "body_size": 288,
@@ -343,15 +2927,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -384,6 +2968,106 @@
       "sequence": 945
     },
     {
+      "at_seconds": 24.51914,
+      "body_path": "ObjectUpdate/008-seq000079.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/008-seq000079.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "8d592126-0a58-416f-af4b-af1d727f85f8",
+        "interest_summary": "local_id=492043015 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043015,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          130.97451782226562,
+          126.9915542602539,
+          25.151445388793945
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 79
+    },
+    {
+      "at_seconds": 41.823032,
+      "body_path": "ObjectUpdate/008-seq000189.body.bin",
+      "body_size": 288,
+      "capture_reason": "world.object_update_rich",
+      "message_name": "ObjectUpdate",
+      "metadata_path": "ObjectUpdate/008-seq000189.json",
+      "object_update": {
+        "data_size": 0,
+        "decode_status": "decoded",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
+        "extra_params_size": 0,
+        "full_id": "f5b500cf-624c-4eb4-a7b1-f689b3373a4b",
+        "interest_summary": "local_id=492043007 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
+        "interesting_payloads": [
+          {
+            "field_name": "TextureEntry",
+            "non_zero_bytes": 20,
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
+            "size": 64,
+            "text_preview": null
+          }
+        ],
+        "label": null,
+        "local_id": 492043007,
+        "media_url_size": 0,
+        "name_values": {},
+        "object_count": 1,
+        "position": [
+          127.854736328125,
+          129.52029418945312,
+          25.223064422607422
+        ],
+        "ps_block_size": 0,
+        "region_handle": 1099511628032000,
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "text_size": 0,
+        "texture_anim_size": 0,
+        "texture_entry_size": 64,
+        "time_dilation": 65535,
+        "update_flags": 133136,
+        "variant": "prim_basic"
+      },
+      "sequence": 189
+    },
+    {
       "at_seconds": 57.991509,
       "body_path": "ObjectUpdate/008-seq000958.body.bin",
       "body_size": 288,
@@ -393,15 +3077,15 @@
       "object_update": {
         "data_size": 0,
         "decode_status": "decoded",
-        "default_texture_id": "00895567-4724-cb43-ed92-0b47caed1546",
+        "default_texture_id": "89556747-24cb-43ed-920b-47caed15465f",
         "extra_params_size": 0,
         "full_id": "d3b61e36-52c7-4af3-8943-3201e23f29c1",
-        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=008955674724cb43ed920b47caed1546",
+        "interest_summary": "local_id=367911629 variant=prim_basic interesting=TextureEntry:64 hex=8955674724cb43ed920b47caed15465f",
         "interesting_payloads": [
           {
             "field_name": "TextureEntry",
             "non_zero_bytes": 20,
-            "preview_hex": "008955674724cb43ed920b47caed1546",
+            "preview_hex": "8955674724cb43ed920b47caed15465f",
             "size": 64,
             "text_preview": null
           }
@@ -434,6 +3118,6 @@
       "sequence": 958
     }
   ],
-  "generated_at": "2026-04-03T17:17:11.292329+00:00",
+  "generated_at": "2026-05-04T09:25:41.714656+00:00",
   "root": "test/fixtures/live"
 }

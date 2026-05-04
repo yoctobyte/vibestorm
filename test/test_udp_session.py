@@ -719,7 +719,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                 + object_data
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + (0).to_bytes(2, "little")
@@ -773,7 +773,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                 + object_data
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + (0).to_bytes(2, "little")
@@ -828,7 +828,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                 + object_data
                 + (0).to_bytes(4, "little")
                 + (0).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + len(name_values).to_bytes(2, "big")
@@ -875,7 +875,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                 + object_data
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (4).to_bytes(2, "little")
                 + b"\x11\x22\x33\x44"
                 + bytes([0])
@@ -923,7 +923,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                 + object_data
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (4).to_bytes(2, "little")
                 + b"\x11\x22\x33\x44"
                 + bytes([0])
@@ -1157,7 +1157,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                 + object_data
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + (0).to_bytes(2, "little")
@@ -1337,7 +1337,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
             + object_data
             + (0).to_bytes(4, "little")
             + (5).to_bytes(4, "little")
-            + (b"\x00" * 22)
+            + (b"\x00" * 23)
             + (0).to_bytes(2, "little")
             + bytes([0])
             + (0).to_bytes(2, "little")

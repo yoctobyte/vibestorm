@@ -960,7 +960,7 @@ Current tail fields that are structurally recognized but not semantically decode
 
 | Field | Current handling | Confidence | Notes |
 | --- | --- | --- | --- |
-| 22-byte pre-tail block | **Confirmed** (Path/Profile) | `confirmed` | 18 profile/path parameters |
+| 23-byte pre-tail block | **Decoded** (Path/Profile) | `confirmed` | 18 profile/path parameters; corrected from earlier 22-byte assumption — see below |
 | `TextureEntry` | size tracked, payload summarized | `confirmed` | |
 | `TextureAnim` | size tracked, payload summarized when non-zero | `unknown` | |
 | `Data` | size tracked, payload summarized when non-zero | `unknown` | |
@@ -971,29 +971,40 @@ Current tail fields that are structurally recognized but not semantically decode
 | `ExtraParams` | size tracked, payload summarized when non-zero | `unknown` | |
 | trailing bytes | summarized when non-zero | `unknown` | |
 
-### The 22-byte "Pre-Tail" Block
-This block consists of the following 18 fields (mostly U8 and S8) used for path and profile definitions:
+### The 23-byte "Pre-Tail" Block
+
+This block consists of the following 18 fields used for path and profile
+definitions. Field order matches `third_party/secondlife/message_template.msg`
+lines 3307–3324 (the canonical wire format):
 
 1. `PathCurve` (U8)
-2. `PathBegin` (U16)
-3. `PathEnd` (U16)
-4. `PathScaleX` (U8)
-5. `PathScaleY` (U8)
-6. `PathShearX` (U8)
-7. `PathShearY` (U8)
-8. `PathTwist` (S8)
-9. `PathTwistBegin` (S8)
-10. `PathRadiusOffset` (S8)
-11. `PathTaperX` (S8)
-12. `PathTaperY` (S8)
-13. `PathRevolutions` (U8)
-14. `PathSkew` (S8)
-15. `ProfileCurve` (U8)
+2. `ProfileCurve` (U8)
+3. `PathBegin` (U16)
+4. `PathEnd` (U16)
+5. `PathScaleX` (U8)
+6. `PathScaleY` (U8)
+7. `PathShearX` (U8)
+8. `PathShearY` (U8)
+9. `PathTwist` (S8)
+10. `PathTwistBegin` (S8)
+11. `PathRadiusOffset` (S8)
+12. `PathTaperX` (S8)
+13. `PathTaperY` (S8)
+14. `PathRevolutions` (U8)
+15. `PathSkew` (S8)
 16. `ProfileBegin` (U16)
 17. `ProfileEnd` (U16)
 18. `ProfileHollow` (U16)
 
-Total byte size is exactly 22. (Confirmed).
+Total byte size is exactly **23**, not 22. The earlier "22-byte" claim
+documented in this file was off by one and combined with a similarly
+off-by-one ExtraParams length (`U16` instead of `U8` per template line 3339)
+to produce a self-cancelling pair of bugs in the parser. Symptom of the bug:
+`default_texture_id` reported by the parser was the genuine UUID shifted left
+by one byte with a leading `0x00` (e.g. `00895567-4724-cb43-ed92-0b47caed1546`
+instead of the real plywood UUID `89556747-24cb-43ed-920b-47caed15465f`).
+Decoded as of 2026-05-04 in `_parse_one_object_update_entry`; populated as
+`ObjectUpdateEntry.shape: PrimShapeData | None`.
 
 ### Current Live `ObjectUpdate` Evidence
 
@@ -1048,7 +1059,7 @@ For each pair, keep all unrelated properties fixed.
 ## Open Questions
 
 1. Where do ordinary prim names actually appear on the wire for current OpenSim `ObjectUpdate` traffic?
-2. Is the current 22-byte skipped block a stable header extension, and what are its subfields?
+2. ~~Is the current 22-byte skipped block a stable header extension, and what are its subfields?~~ Resolved 2026-05-04: it is the 23-byte path/profile block; see "The 23-byte Pre-Tail Block" above.
 3. What is the exact length/endian rule for every `ObjectUpdate` tail field?
 4. What are the semantic labels for `update_flags` bits?
 5. What does `TextureAnim` look like when explicitly enabled on a prim?

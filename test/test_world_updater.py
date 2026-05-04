@@ -138,7 +138,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + (b"\x00" * 4)
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + (0).to_bytes(2, "little")
@@ -183,7 +183,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + pack("<fff", 1.0, 1.0, 1.0)         # scale
                 + bytes([60]) + object_data           # ObjectData
                 + b"\x00" * 8                         # parent_id + update_flags
-                + b"\x00" * 22                        # shape params
+                + b"\x00" * 23                        # shape params
                 + b"\x00\x00"                         # TextureEntry len=0
                 + bytes([0])                          # TextureAnim len=0
                 + b"\x00\x00"                         # NameValue len=0
@@ -192,7 +192,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + b"\x00\x00\x00\x00"                # TextColor
                 + bytes([0])                          # MediaURL len=0
                 + bytes([0])                          # PSBlock len=0
-                + b"\x00\x00"                         # ExtraParams len=0
+                + bytes([0])                          # ExtraParams len=0
                 + b"\x00" * 66                        # 66 fixed bytes tail
             )
 
@@ -244,7 +244,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + (b"\x00" * 4)
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (4).to_bytes(2, "little")
                 + b"\x11\x22\x33\x44"
                 + bytes([0])
@@ -341,7 +341,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + (b"\x00" * 4)
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + (0).to_bytes(2, "little")
@@ -407,7 +407,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + (b"\x00" * 4)
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + (0).to_bytes(2, "little")
@@ -506,7 +506,7 @@ class WorldUpdaterTests(unittest.TestCase):
                 + (b"\x00" * 4)
                 + (0).to_bytes(4, "little")
                 + (5).to_bytes(4, "little")
-                + (b"\x00" * 22)
+                + (b"\x00" * 23)
                 + (0).to_bytes(2, "little")
                 + bytes([0])
                 + (0).to_bytes(2, "little")
