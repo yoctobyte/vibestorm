@@ -51,9 +51,21 @@ menu, HUD tracks `render_mode`, status bar shows the active mode, and
 selecting 3D posts a chat alert ("3D mode is not implemented yet").
 296 tests, all green (7 HUD tests verified under `./run.sh test`).
 
-Next planned step (`viewer-3d-plan.md` step 4): introduce `Camera3D` —
-a mode-aware camera where Map mode reproduces today's pan/zoom and
-later modes (Orbit, Eye, Free) hook in for the 3D renderer.
+Step 4 is done: `Camera3D` is a mode-aware camera with a Map mode that
+reproduces today's pan/zoom math bit-for-bit, plus state fields for
+Orbit/Eye/Free modes (yaw, pitch, distance, eye_position, target).
+`Camera = Camera3D` alias preserves existing imports. The HUD render-
+mode callback now also calls `camera.set_mode(...)`. 311 tests, all
+green.
+
+**The pre-3D refactor (steps 1a, 1b-i, 1b-ii, 2, 3, 4) is complete.**
+
+Next planned step (`viewer-3d-plan.md` step 5): moderngl bootstrap. Add
+the dependency behind a `viewer3d` extra in `pyproject.toml`, open a
+hybrid `pygame.OPENGL | pygame.DOUBLEBUF` window, and draw a single
+textured fullscreen quad (the cached region map tile) plus the existing
+pygame_gui HUD on top. Goal: validate the GL+HUD compositing path
+before any geometry lands.
 
 ## Summary
 

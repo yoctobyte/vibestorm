@@ -121,6 +121,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
     def on_render_mode_change(mode: str) -> None:
         # 3D backend doesn't exist yet; flag the request and stay on Map.
         # Once PerspectiveRenderer lands we'll swap renderer instances here.
+        camera.set_mode("orbit" if mode == "3d" else "map")
         if mode == "3d":
             scene.apply_chat_alert(
                 ChatAlert(

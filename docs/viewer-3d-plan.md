@@ -411,9 +411,14 @@ shippable on its own. Cost annotations are rough.
    yet — staying on 2D Map.") for `3d`. Per-mode camera-mode submenu
    moves to step 4 alongside `Camera3D`. New tests in
    `test/test_viewer3d_hud_render_mode.py` (7 tests).
-4. **`Camera3D`.** Replace the 2D `Camera` in `viewer3d/` with a mode-aware
-   camera; Map mode reproduces today's pan/zoom. *(medium; touches camera
-   math + input)*
+4. **`Camera3D`.** *(done 2026-05-04.)* Renamed `Camera` to `Camera3D`
+   (with a `Camera = Camera3D` alias for backward compat) and added a
+   `mode: CameraMode = "map"` field plus 3D-mode state (`yaw`, `pitch`,
+   `distance`, `eye_position`, `target`). Map mode reproduces today's
+   pan/zoom math bit-for-bit; 3D modes are state-only stubs that the
+   PerspectiveRenderer in step 5+ will consume. The HUD's render-mode
+   callback now also calls `camera.set_mode("orbit" if 3d else "map")`.
+   New tests in `test/test_viewer3d_camera.py` (15 tests).
 5. **moderngl bootstrap.** Add the dependency (gated behind a `viewer3d`
    extra in `pyproject.toml`), open a hybrid GL+pygame_gui window, draw a
    single textured quad (the map tile) plus the existing HUD. Validate the
@@ -446,9 +451,11 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Steps 1a, 1b-i, 1b-ii, and 2 are done. The fork has a renderer seam, a
-populated `SceneEntity.shape`, and a corrected protocol parser. Next is
-step 3 (View → Mode menu state — wires mode switching even though only
-Map exists yet) and step 4 (`Camera3D` — a mode-aware camera). Both are
-small. Then step 5 introduces moderngl and proves the GL+HUD compositing
-path. Skip 2.5D unless a concrete need emerges.
+Steps 1a, 1b-i, 1b-ii, 2, 3, and 4 are done. The fork has a renderer
+seam, a mode-aware camera, a render-mode menu, populated
+`SceneEntity.shape`, and a corrected protocol parser. **The pre-3D
+refactor is complete.** Next is step 5: add the moderngl dependency
+(behind a `viewer3d` extra in `pyproject.toml`), open a hybrid
+GL+pygame_gui window, and draw a single textured quad (the map tile)
+plus the existing HUD. That validates the GL+HUD compositing path
+before any geometry. Skip 2.5D unless a concrete need emerges.
