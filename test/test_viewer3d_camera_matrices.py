@@ -171,6 +171,53 @@ class ViewMatrixModeTests(unittest.TestCase):
         self.assertAlmostEqual(z, 0.0, places=5)
 
 
+class WorldUpIsScreenUpTests(unittest.TestCase):
+    """End-to-end orientation: world +Z (sky) must land in upper half of NDC.
+
+    These compose view * projection — if either matrix has a sign error
+    on the up axis, the whole 3D scene renders upside-down. Catching it
+    here is much cheaper than chasing it via GL.
+    """
+
+    def test_point_above_target_lands_in_upper_ndc_in_orbit_mode(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), distance=10.0, yaw=0.0, pitch=0.0)
+        camera.set_mode("orbit")
+
+        view = camera.view_matrix()
+        proj = camera.projection_matrix(1.0)
+
+        # A point one metre above the target (world Z=+1) must project
+        # to ndc_y > 0 (top half of the GL framebuffer).
+        vx, vy, vz, vw = _mat4_times_vec4(view, (0.0, 0.0, 1.0, 1.0))
+        cx, cy, cz, cw = _mat4_times_vec4(proj, (vx, vy, vz, vw))
+        ndc_y = cy / cw
+
+        self.assertGreater(
+            ndc_y, 0.0,
+            f"world +Z (sky) must map to upper half of NDC; got ndc_y={ndc_y}",
+        )
+
+    def test_point_below_target_lands_in_lower_ndc(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), distance=10.0, yaw=0.0, pitch=0.0)
+        camera.set_mode("orbit")
+
+        view = camera.view_matrix()
+        proj = camera.projection_matrix(1.0)
+
+        vx, vy, vz, vw = _mat4_times_vec4(view, (0.0, 0.0, -1.0, 1.0))
+        _cx, cy, _cz, cw = _mat4_times_vec4(proj, (vx, vy, vz, vw))
+        ndc_y = cy / cw
+
+        self.assertLess(
+            ndc_y, 0.0,
+            f"world -Z (ground) must map to lower half of NDC; got ndc_y={ndc_y}",
+        )
+
+
 class ModelMatrixTests(unittest.TestCase):
     def test_identity_quaternion_unit_scale_translates_only(self) -> None:
         from vibestorm.viewer3d.perspective import model_matrix
