@@ -419,11 +419,23 @@ shippable on its own. Cost annotations are rough.
    PerspectiveRenderer in step 5+ will consume. The HUD's render-mode
    callback now also calls `camera.set_mode("orbit" if 3d else "map")`.
    New tests in `test/test_viewer3d_camera.py` (15 tests).
-5. **moderngl bootstrap.** Add the dependency (gated behind a `viewer3d`
-   extra in `pyproject.toml`), open a hybrid GL+pygame_gui window, draw a
-   single textured quad (the map tile) plus the existing HUD. Validate the
-   compositing path before any geometry. *(medium; new code, no protocol
-   risk)*
+5a. **Renderer-swap proof.** *(done 2026-05-05.)* Added a software
+    `PerspectiveRenderer` placeholder in `viewer3d/perspective.py`
+    (dark-blue fill + crosshair + camera/scene labels) and a
+    `build_renderer(mode, camera) -> ViewerRenderer` factory in
+    `viewer3d/app.py`. `on_render_mode_change` now genuinely swaps the
+    active `ViewerRenderer` (clearing the previous renderer's caches
+    first) instead of flagging 3D as unimplemented. Picking "Render: 3D"
+    in the View menu visibly switches the world surface; picking
+    "Render: 2D Map" returns to the map view. New tests in
+    `test/test_viewer3d_perspective.py` (9 tests). The placeholder
+    keeps `ViewerRenderer`'s shape so step 5b can replace its body
+    with moderngl without touching the swap plumbing.
+5b. **moderngl bootstrap.** Add the dependency (gated behind a `viewer3d`
+    extra in `pyproject.toml`), open a hybrid GL+pygame_gui window, draw
+    a single textured quad (the map tile) plus the existing HUD.
+    Validate the compositing path before any geometry. *(medium; new
+    code, no protocol risk)*
 6. **PerspectiveRenderer v0.** Instance one primitive (cube) per
    `SceneEntity`. Tint by pcode. Verify scale/rotation/position match the
    2D map at the same camera target. *(medium)*
@@ -445,17 +457,19 @@ shippable on its own. Cost annotations are rough.
     3D Perspective modes and is stable, delete `src/vibestorm/viewer/` and
     repoint `./run.sh viewer` at `viewer3d` with a forced Map mode.
 
-Items 1a–4 are the pre-3D refactor inside the fork. Items 5–8 are the
+Items 1a–4 are the pre-3D refactor inside the fork. Items 5a–8 are the
 minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 13 is the eventual cleanup.
 
 ## Recommendation
 
-Steps 1a, 1b-i, 1b-ii, 2, 3, and 4 are done. The fork has a renderer
+Steps 1a, 1b-i, 1b-ii, 2, 3, 4, and 5a are done. The fork has a renderer
 seam, a mode-aware camera, a render-mode menu, populated
-`SceneEntity.shape`, and a corrected protocol parser. **The pre-3D
-refactor is complete.** Next is step 5: add the moderngl dependency
-(behind a `viewer3d` extra in `pyproject.toml`), open a hybrid
-GL+pygame_gui window, and draw a single textured quad (the map tile)
-plus the existing HUD. That validates the GL+HUD compositing path
-before any geometry. Skip 2.5D unless a concrete need emerges.
+`SceneEntity.shape`, a corrected protocol parser, and a working
+renderer swap that drops in the placeholder `PerspectiveRenderer` when
+the user picks "Render: 3D". **The renderer-swap mechanism is proven
+end-to-end.** Next is step 5b: add the moderngl dependency (behind a
+`viewer3d` extra in `pyproject.toml`), open a hybrid GL+pygame_gui
+window, and draw a single textured quad (the map tile) plus the
+existing HUD. That validates the GL+HUD compositing path before any
+geometry. Skip 2.5D unless a concrete need emerges.

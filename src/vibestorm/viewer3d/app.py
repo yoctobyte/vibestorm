@@ -27,8 +27,21 @@ from vibestorm.udp.world_client import WorldClient
 from vibestorm.viewer3d.camera import Camera
 from vibestorm.viewer3d.hud import HUD
 from vibestorm.viewer3d.input import handle_event
+from vibestorm.viewer3d.perspective import PerspectiveRenderer
 from vibestorm.viewer3d.renderer import TopDownRenderer, ViewerRenderer
 from vibestorm.viewer3d.scene import Scene
+
+
+def build_renderer(mode: str, camera: Camera) -> ViewerRenderer:
+    """Pick a ``ViewerRenderer`` for the given HUD render-mode string.
+
+    Step 5a only wires the swap. The 3D branch returns the software
+    ``PerspectiveRenderer`` placeholder (dark-blue fill + crosshair);
+    moderngl geometry lands in step 5b behind the same factory.
+    """
+    if mode == "3d":
+        return PerspectiveRenderer(camera)
+    return TopDownRenderer(camera)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,7 +100,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
     scene = Scene()
     camera = Camera(world_center=(128.0, 128.0), zoom=1.0, screen_size=screen_size)
     camera.fit_region(padding_px=56)
-    renderer: ViewerRenderer = TopDownRenderer(camera)
+    renderer: ViewerRenderer = build_renderer("2d-map", camera)
 
     _wire_scene(client, scene)
 
@@ -119,16 +132,10 @@ async def run_viewer(args: argparse.Namespace) -> int:
             )
 
     def on_render_mode_change(mode: str) -> None:
-        # 3D backend doesn't exist yet; flag the request and stay on Map.
-        # Once PerspectiveRenderer lands we'll swap renderer instances here.
+        nonlocal renderer
         camera.set_mode("orbit" if mode == "3d" else "map")
-        if mode == "3d":
-            scene.apply_chat_alert(
-                ChatAlert(
-                    region_handle=client.current_handle or 0,
-                    message="3D mode is not implemented yet — staying on 2D Map.",
-                )
-            )
+        renderer.clear_caches()
+        renderer = build_renderer(mode, camera)
 
     hud = HUD(
         screen_size,
