@@ -212,7 +212,16 @@ async def run_viewer(args: argparse.Namespace) -> int:
 
     def on_render_mode_change(mode: str) -> None:
         nonlocal renderer
-        camera.set_mode("orbit" if mode == "3d" else "map")
+        if mode == "3d":
+            # Tilt + back off the orbit camera so the region floor and
+            # most cubes are framed at startup. Without orbit input
+            # wired (step 9), the user otherwise lands at pitch=0
+            # distance=8 which looks "into" objects with no ground.
+            camera.set_mode("orbit")
+            camera.pitch = 0.5
+            camera.distance = 50.0
+        else:
+            camera.set_mode("map")
         renderer.clear_caches()
         renderer = build_renderer(mode, camera, ctx=ctx)
 

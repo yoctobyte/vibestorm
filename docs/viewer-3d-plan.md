@@ -1,6 +1,6 @@
 # Viewer 2D / 2.5D / 3D Plan
 
-Last updated: 2026-05-04
+Last updated: 2026-05-05
 
 ## Intent
 
@@ -484,6 +484,26 @@ shippable on its own. Cost annotations are rough.
    and `test/test_viewer3d_perspective_gl.py` (6 tests, real GL via
    standalone context — a tinted unit cube actually appears at the
    framebuffer center). *(medium)*
+6b. **Region ground floor.** *(done 2026-05-05.)* Added a flat 256x256 m
+    textured quad at Z=0 to `PerspectiveRenderer`, sampled from
+    `Scene.map_tile_path`. UV mapping pins tile row 0 (north) at
+    world Y=256 and tile column 0 (west) at world X=0, matching the
+    2D top-down orientation. Texture is uploaded lazily on the first
+    `render_gl` after the path appears or changes; re-upload reuses
+    the existing `moderngl.Texture` when sizes match. Drawn before
+    cubes with depth test on so cubes occlude the ground correctly.
+    `clear_caches` releases the new program/VBO/IBO/VAO/texture.
+    `app.py`'s render-mode switch now seeds the orbit camera with
+    `pitch=0.5` and `distance=50` on entry to 3D, so the ground
+    actually sits in frame without orbit input wired yet (step 9).
+    Two new tests in `test_viewer3d_perspective_gl.py`
+    (`PerspectiveRendererGroundTests`) verify the ground textures
+    pixels from the tile, is skipped when no `map_tile_path` is set,
+    and re-uploads when the path changes. A `WorldUpIsScreenUpTests`
+    pair was added in `test_viewer3d_camera_matrices.py` as a
+    tripwire for view/projection sign errors after a user report
+    that the 3D world looked upside-down (math is fine; the missing
+    ground was the visual culprit). *(small)*
 7. **Primitive library.** Add sphere/cylinder/torus/prism meshes; pick by
    `SceneEntity.shape`. *(medium)*
 8. **Lighting + fog.** Directional light from `sun_phase`; ambient;
@@ -508,14 +528,14 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, 5b-ii, and 6 are done. The
-fork now renders real 3D geometry: one tinted unit cube per
-`SceneEntity`, drawn through a perspective projection with depth
-testing, on top of the cached map tile, with the HUD composited on
-top via the existing GL compositor. **The minimum viable 3D mode is
-shippable.** Next is step 7: primitive library — pick the cube /
-sphere / cylinder / torus / prism mesh from
-`SceneEntity.shape` (already populated by step 1b-ii) so the world
-stops rendering as boxes-everywhere. After that, step 8 lights the
-scene from `Scene.sun_phase`. Skip 2.5D unless a concrete need
+Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, 5b-ii, 6, and 6b are done.
+The fork now renders real 3D geometry: a textured ground quad covers
+the region floor at Z=0, with one tinted unit cube per `SceneEntity`
+above it, drawn through a perspective projection with depth testing
+and the HUD composited on top via the existing GL compositor. **The
+minimum viable 3D mode is shippable.** Next is step 7: primitive
+library — pick the cube / sphere / cylinder / torus / prism mesh
+from `SceneEntity.shape` (already populated by step 1b-ii) so the
+world stops rendering as boxes-everywhere. After that, step 8 lights
+the scene from `Scene.sun_phase`. Skip 2.5D unless a concrete need
 emerges.

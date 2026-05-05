@@ -7,8 +7,11 @@ reading pixels back. Tests skip cleanly when no GL is available
 (headless CI without a GPU, no glcontext.x11/EGL).
 """
 
+import math
 import os
+import tempfile
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
@@ -193,6 +196,113 @@ class PerspectiveRendererInstanceGrowthTests(_GLTestBase):
         self.assertIsNone(renderer._program)
         self.assertIsNone(renderer._vao)
         self.assertEqual(renderer._instance_capacity, 0)
+        self.assertIsNone(renderer._ground_program)
+        self.assertIsNone(renderer._ground_vao)
+        self.assertIsNone(renderer._ground_texture)
+
+
+def _write_solid_tile(color: tuple[int, int, int], size: int = 4) -> Path:
+    """Save a small solid-colour PNG and return its path. Uses pygame so
+    the loader path in PerspectiveRenderer is exercised end-to-end."""
+    import pygame
+
+    surface = pygame.Surface((size, size))
+    surface.fill(color)
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    pygame.image.save(surface, path)
+    return Path(path)
+
+
+class PerspectiveRendererGroundTests(_GLTestBase):
+    """Region floor (textured quad at Z=0) rendering."""
+
+    def test_ground_renders_textured_quad_when_map_tile_path_set(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        tile_path = _write_solid_tile((0, 200, 0))  # bright green
+        try:
+            # Camera high above the region centre, pitched straight down,
+            # so the ground quad fills the framebuffer.
+            camera = Camera3D(
+                target=(128.0, 128.0, 0.0),
+                distance=200.0,
+                yaw=0.0,
+                pitch=math.pi / 2 - 0.001,
+            )
+            camera.set_mode("orbit")
+
+            scene = Scene()
+            scene.map_tile_path = tile_path
+
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+
+                r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+                self.assertGreater(g, 150, f"center should sample green tile; got {(r, g, b)}")
+                self.assertLess(r, 60)
+                self.assertLess(b, 60)
+
+                self.assertIsNotNone(renderer._ground_texture)
+                self.assertEqual(renderer._ground_texture_path, tile_path)
+            finally:
+                renderer.clear_caches()
+        finally:
+            tile_path.unlink(missing_ok=True)
+
+    def test_ground_skipped_when_map_tile_path_is_none(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = Camera3D(
+            target=(128.0, 128.0, 0.0),
+            distance=200.0,
+            pitch=math.pi / 2 - 0.001,
+        )
+        camera.set_mode("orbit")
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(Scene(), aspect=1.0)
+
+            r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+            self.assertEqual((r, g, b), (0, 0, 0))
+            self.assertIsNone(renderer._ground_texture)
+        finally:
+            renderer.clear_caches()
+
+    def test_ground_re_uploads_when_path_changes(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        tile_a = _write_solid_tile((200, 0, 0))
+        tile_b = _write_solid_tile((0, 0, 200))
+        try:
+            renderer = PerspectiveRenderer(Camera3D(), ctx=self.ctx)
+            try:
+                scene = Scene()
+                scene.map_tile_path = tile_a
+                renderer.render_gl(scene, aspect=1.0)
+                first_path = renderer._ground_texture_path
+
+                scene.map_tile_path = tile_b
+                renderer.render_gl(scene, aspect=1.0)
+                second_path = renderer._ground_texture_path
+
+                self.assertEqual(first_path, tile_a)
+                self.assertEqual(second_path, tile_b)
+            finally:
+                renderer.clear_caches()
+        finally:
+            tile_a.unlink(missing_ok=True)
+            tile_b.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

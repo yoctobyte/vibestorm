@@ -112,6 +112,58 @@ void main() {
 """
 
 
+_GROUND_VERTEX_SHADER = """
+#version 330
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+
+in vec3 in_pos;
+in vec2 in_uv;
+
+out vec2 v_uv;
+
+void main() {
+    v_uv = in_uv;
+    gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+}
+"""
+
+_GROUND_FRAGMENT_SHADER = """
+#version 330
+
+uniform sampler2D u_texture;
+
+in vec2 v_uv;
+
+out vec4 frag_color;
+
+void main() {
+    frag_color = vec4(texture(u_texture, v_uv).rgb, 1.0);
+}
+"""
+
+
+# Region floor: flat 256x256 m quad at Z=0. UV mapping puts the map
+# tile's row 0 (north of the region by SL convention) at world Y=256
+# and its column 0 (west) at world X=0, so the texture lands in the
+# same orientation the 2D top-down view shows.
+REGION_GROUND_SIZE_M: float = 256.0
+
+_GROUND_VERTICES: tuple[float, ...] = (
+    # x,                   y,                   z,    u,   v
+      0.0,                  0.0,                 0.0,  0.0, 1.0,  # SW
+    REGION_GROUND_SIZE_M,   0.0,                 0.0,  1.0, 1.0,  # SE
+    REGION_GROUND_SIZE_M,   REGION_GROUND_SIZE_M, 0.0, 1.0, 0.0,  # NE
+      0.0,                  REGION_GROUND_SIZE_M, 0.0, 0.0, 0.0,  # NW
+)
+
+_GROUND_INDICES: tuple[int, ...] = (
+    0, 1, 2,  # SW, SE, NE
+    0, 2, 3,  # SW, NE, NW
+)
+
+
 def model_matrix(
     position: tuple[float, float, float],
     scale: tuple[float, float, float],
@@ -172,6 +224,14 @@ class PerspectiveRenderer:
         self._instance_vbo = None  # type: moderngl.Buffer | None
         self._vao = None  # type: moderngl.VertexArray | None
         self._instance_capacity = 0
+        # Ground (region floor) — separate program because the cubes are
+        # flat-tinted while the ground samples a texture.
+        self._ground_program = None  # type: moderngl.Program | None
+        self._ground_vbo = None  # type: moderngl.Buffer | None
+        self._ground_ibo = None  # type: moderngl.Buffer | None
+        self._ground_vao = None  # type: moderngl.VertexArray | None
+        self._ground_texture = None  # type: moderngl.Texture | None
+        self._ground_texture_path: Path | None = None
         if ctx is not None:
             self._setup_gl(ctx)
 
@@ -221,11 +281,11 @@ class PerspectiveRenderer:
     # -------------------------------------------------------------- GL pass
 
     def render_gl(self, scene: Scene, *, aspect: float) -> None:
-        """Draw one cube per scene entity into the bound GL framebuffer.
+        """Draw the region ground + one cube per scene entity.
 
-        The compositor has already drawn the world quad (map tile);
-        this pass enables depth testing and renders cubes on top, then
-        leaves depth testing off so the HUD overlay draws normally.
+        Order: ground floor first, cubes second, both with depth test
+        on so cubes occlude the ground correctly. Depth test is left
+        disabled at the end so the HUD overlay quad composites normally.
         """
         ctx = self.ctx
         if ctx is None or self._program is None or self._vao is None:
@@ -235,17 +295,25 @@ class PerspectiveRenderer:
 
         view = self.camera.view_matrix()
         proj = self.camera.projection_matrix(aspect)
+        view_data = struct.pack("16f", *view)
+        proj_data = struct.pack("16f", *proj)
 
+        self._upload_ground_texture(ctx, scene)
         instance_count = self._upload_instances(ctx, scene)
-        if instance_count == 0:
-            return
-
-        self._program["u_view"].write(struct.pack("16f", *view))
-        self._program["u_proj"].write(struct.pack("16f", *proj))
 
         ctx.enable(ctx.DEPTH_TEST)
         try:
-            self._vao.render(instances=instance_count)
+            if self._ground_texture is not None and self._ground_program is not None:
+                self._ground_program["u_view"].write(view_data)
+                self._ground_program["u_proj"].write(proj_data)
+                self._ground_texture.use(location=0)
+                assert self._ground_vao is not None
+                self._ground_vao.render()
+
+            if instance_count > 0:
+                self._program["u_view"].write(view_data)
+                self._program["u_proj"].write(proj_data)
+                self._vao.render(instances=instance_count)
         finally:
             # Leave the depth state predictable for the HUD overlay
             # quad and the next frame's compositor draws.
@@ -261,7 +329,18 @@ class PerspectiveRenderer:
         instance to render again.
         """
         self._tile_cache.clear()
-        for resource in (self._vao, self._instance_vbo, self._ibo, self._vbo, self._program):
+        for resource in (
+            self._vao,
+            self._instance_vbo,
+            self._ibo,
+            self._vbo,
+            self._program,
+            self._ground_vao,
+            self._ground_ibo,
+            self._ground_vbo,
+            self._ground_program,
+            self._ground_texture,
+        ):
             if resource is not None:
                 resource.release()
         self._vao = None
@@ -270,6 +349,12 @@ class PerspectiveRenderer:
         self._vbo = None
         self._program = None
         self._instance_capacity = 0
+        self._ground_vao = None
+        self._ground_ibo = None
+        self._ground_vbo = None
+        self._ground_program = None
+        self._ground_texture = None
+        self._ground_texture_path = None
 
     # -------------------------------------------------------------- helpers
 
@@ -296,6 +381,25 @@ class PerspectiveRenderer:
                 (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
             ],
             index_buffer=self._ibo,
+            index_element_size=4,
+        )
+
+        self._ground_program = ctx.program(
+            vertex_shader=_GROUND_VERTEX_SHADER,
+            fragment_shader=_GROUND_FRAGMENT_SHADER,
+        )
+        if "u_texture" in self._ground_program:
+            self._ground_program["u_texture"].value = 0
+        self._ground_vbo = ctx.buffer(
+            struct.pack(f"{len(_GROUND_VERTICES)}f", *_GROUND_VERTICES)
+        )
+        self._ground_ibo = ctx.buffer(
+            struct.pack(f"{len(_GROUND_INDICES)}I", *_GROUND_INDICES)
+        )
+        self._ground_vao = ctx.vertex_array(
+            self._ground_program,
+            [(self._ground_vbo, "3f 2f", "in_pos", "in_uv")],
+            index_buffer=self._ground_ibo,
             index_element_size=4,
         )
 
@@ -327,6 +431,48 @@ class PerspectiveRenderer:
         self._instance_vbo.orphan(size=len(data))
         self._instance_vbo.write(data)
         return len(entities)
+
+    def _upload_ground_texture(self, ctx: moderngl.Context, scene: Scene) -> None:
+        """Lazily upload ``scene.map_tile_path`` as the ground texture.
+
+        Re-upload only when the path changes; otherwise the cached
+        ``moderngl.Texture`` is kept. ``convert_alpha`` is intentionally
+        skipped — it requires an active pygame display, which the GL
+        test harness does not have, and ``tobytes(..., "RGBA")`` already
+        normalises the pixel format.
+        """
+        path = scene.map_tile_path
+        if path is None:
+            if self._ground_texture is not None:
+                self._ground_texture.release()
+                self._ground_texture = None
+                self._ground_texture_path = None
+            return
+        if path == self._ground_texture_path and self._ground_texture is not None:
+            return
+
+        import pygame
+
+        try:
+            surface = pygame.image.load(str(path))
+        except (pygame.error, FileNotFoundError, OSError):
+            return
+
+        size = surface.get_size()
+        pixels = pygame.image.tobytes(surface, "RGBA")
+
+        existing = self._ground_texture
+        if existing is not None and existing.size == size:
+            existing.write(pixels)
+        else:
+            if existing is not None:
+                existing.release()
+            tex = ctx.texture(size, components=4, data=pixels)
+            tex.filter = (ctx.LINEAR, ctx.LINEAR)
+            tex.repeat_x = False
+            tex.repeat_y = False
+            self._ground_texture = tex
+        self._ground_texture_path = path
 
     def _grow_instance_buffer(self, ctx: moderngl.Context, required: int) -> None:
         new_capacity = max(self._instance_capacity * 2, required)
