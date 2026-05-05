@@ -431,11 +431,30 @@ shippable on its own. Cost annotations are rough.
     `test/test_viewer3d_perspective.py` (9 tests). The placeholder
     keeps `ViewerRenderer`'s shape so step 5b can replace its body
     with moderngl without touching the swap plumbing.
-5b. **moderngl bootstrap.** Add the dependency (gated behind a `viewer3d`
-    extra in `pyproject.toml`), open a hybrid GL+pygame_gui window, draw
-    a single textured quad (the map tile) plus the existing HUD.
-    Validate the compositing path before any geometry. *(medium; new
-    code, no protocol risk)*
+5b-i. **moderngl + GLCompositor module.** *(done 2026-05-05.)* Added a
+    `viewer3d` extra in `pyproject.toml` (Pillow + pygame-ce +
+    pygame_gui + `moderngl>=5.10,<6`). Created
+    `src/vibestorm/viewer3d/gl_compositor.py`: a small `GLCompositor`
+    class owning a moderngl context, a fullscreen-quad VAO,
+    textured-quad shaders, and a name → `moderngl.Texture` cache.
+    Public surface: `clear(color)`, `upload_surface(name, surface)`,
+    `draw(name, alpha=False)`, `has_texture`, `texture_size`,
+    `release()`. Quad UV mapping flips V so pygame surfaces (top-row
+    first) render right-side up without per-frame memory copies. New
+    tests in `test/test_viewer3d_gl_compositor.py` (9 tests) drive
+    real GL via `moderngl.create_standalone_context()` against a
+    custom RGBA framebuffer; tests skip cleanly when no standalone
+    context is available (CI without GPU/EGL). The compositor is GL
+    only — no pygame display interaction yet, so the existing 2D path
+    is untouched. *(medium; new code, no protocol risk)*
+5b-ii. **Wire compositor into app.** Switch the display to
+    `OPENGL | DOUBLEBUF | RESIZABLE`, allocate a world surface for
+    renderers and an alpha HUD surface for `pygame_gui`, run the
+    compositor each frame (clear → world quad opaque → HUD quad
+    alpha → flip), and update the `PerspectiveRenderer` placeholder
+    to blit the cached map tile when available so the user actually
+    sees "the map tile drawn as a textured quad". *(medium; first
+    real GL window, but no geometry yet)*
 6. **PerspectiveRenderer v0.** Instance one primitive (cube) per
    `SceneEntity`. Tint by pcode. Verify scale/rotation/position match the
    2D map at the same camera target. *(medium)*
@@ -463,13 +482,15 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Steps 1a, 1b-i, 1b-ii, 2, 3, 4, and 5a are done. The fork has a renderer
-seam, a mode-aware camera, a render-mode menu, populated
-`SceneEntity.shape`, a corrected protocol parser, and a working
-renderer swap that drops in the placeholder `PerspectiveRenderer` when
-the user picks "Render: 3D". **The renderer-swap mechanism is proven
-end-to-end.** Next is step 5b: add the moderngl dependency (behind a
-`viewer3d` extra in `pyproject.toml`), open a hybrid GL+pygame_gui
-window, and draw a single textured quad (the map tile) plus the
-existing HUD. That validates the GL+HUD compositing path before any
-geometry. Skip 2.5D unless a concrete need emerges.
+Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, and 5b-i are done. The fork has a
+renderer seam, a mode-aware camera, a render-mode menu, populated
+`SceneEntity.shape`, a corrected protocol parser, a working
+renderer swap, and a tested `GLCompositor` ready to upload pygame
+surfaces and draw them as fullscreen textured quads. **The GL
+plumbing is proven end-to-end against real GL via standalone
+context.** Next is step 5b-ii: open the actual `OPENGL | DOUBLEBUF`
+window, route renderers and `pygame_gui` through the compositor each
+frame, and draw the cached map tile in the `PerspectiveRenderer`
+placeholder. After that, step 6 replaces the placeholder body with
+native GL geometry (one cube per `SceneEntity`). Skip 2.5D unless a
+concrete need emerges.
