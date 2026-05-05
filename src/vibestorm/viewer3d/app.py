@@ -1,4 +1,19 @@
-"""Runnable pygame bird's-eye viewer."""
+"""Runnable pygame bird's-eye viewer.
+
+Display pipeline (step 5b-ii):
+
+- The pygame window opens with ``OPENGL | DOUBLEBUF | RESIZABLE``;
+  the screen surface is the GL default framebuffer.
+- The active ``ViewerRenderer`` draws into a software
+  ``world_surface``; the HUD's ``UIManager`` draws into a separate
+  per-pixel-alpha ``hud_surface``.
+- Each frame the ``GLCompositor`` uploads both surfaces as textures
+  and draws them as fullscreen quads — world opaque, HUD with alpha
+  blending — then ``pygame.display.flip()`` swaps the framebuffer.
+
+Step 6 replaces the ``PerspectiveRenderer`` body with native GL
+geometry that targets the same default framebuffer.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +21,7 @@ import argparse
 import asyncio
 import platform
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vibestorm import __version__
 from vibestorm.bus import BusDeliveryError, BusError
@@ -25,23 +41,65 @@ from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient
 from vibestorm.viewer3d.camera import Camera
+from vibestorm.viewer3d.gl_compositor import GLCompositor
 from vibestorm.viewer3d.hud import HUD
 from vibestorm.viewer3d.input import handle_event
 from vibestorm.viewer3d.perspective import PerspectiveRenderer
+from vibestorm.viewer3d.render import clear_tile_cache
 from vibestorm.viewer3d.renderer import TopDownRenderer, ViewerRenderer
 from vibestorm.viewer3d.scene import Scene
+
+if TYPE_CHECKING:
+    import pygame
 
 
 def build_renderer(mode: str, camera: Camera) -> ViewerRenderer:
     """Pick a ``ViewerRenderer`` for the given HUD render-mode string.
 
-    Step 5a only wires the swap. The 3D branch returns the software
-    ``PerspectiveRenderer`` placeholder (dark-blue fill + crosshair);
-    moderngl geometry lands in step 5b behind the same factory.
+    Both renderers draw into a software pygame surface — the GL
+    framebuffer is owned by ``GLCompositor``, which uploads the
+    surface as a textured quad each frame. Step 6 will introduce a
+    native-GL ``PerspectiveRenderer`` that targets the framebuffer
+    directly; the factory shape stays the same.
     """
     if mode == "3d":
         return PerspectiveRenderer(camera)
     return TopDownRenderer(camera)
+
+
+def allocate_frame_surfaces(
+    pygame_module, size: tuple[int, int]
+) -> tuple[pygame.Surface, pygame.Surface]:
+    """Allocate paired world (RGB) + HUD (SRCALPHA) draw targets.
+
+    The world surface is opaque — the renderer fills every pixel.
+    The HUD surface uses per-pixel alpha so empty UI space stays
+    transparent; the compositor uses source-over blending to
+    overlay it on the world quad.
+    """
+    world = pygame_module.Surface(size)
+    hud = pygame_module.Surface(size, pygame_module.SRCALPHA)
+    return world, hud
+
+
+def composite_frame(
+    compositor: GLCompositor,
+    world_surface: pygame.Surface,
+    hud_surface: pygame.Surface,
+    *,
+    clear_color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+) -> None:
+    """Upload world + HUD, draw both fullscreen quads, leave flip to caller.
+
+    The caller has already populated ``world_surface`` (active renderer)
+    and ``hud_surface`` (pygame_gui). The framebuffer flip is left to
+    the caller so the compositor stays display-agnostic.
+    """
+    compositor.clear(clear_color)
+    compositor.upload_surface("world", world_surface)
+    compositor.draw("world", alpha=False)
+    compositor.upload_surface("hud", hud_surface)
+    compositor.draw("hud", alpha=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def run_viewer(args: argparse.Namespace) -> int:
+    import moderngl
     import pygame
 
     request = LoginRequest(
@@ -93,7 +152,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
         max(640, min(requested_w, max(640, desktop_w - 80))),
         max(480, min(requested_h, max(480, desktop_h - 120))),
     )
-    screen = pygame.display.set_mode(screen_size, pygame.RESIZABLE)
+    display_flags = pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE
+    pygame.display.set_mode(screen_size, display_flags)
+    ctx = moderngl.create_context()
+    ctx.viewport = (0, 0, *screen_size)
+    compositor = GLCompositor(ctx)
+    world_surface, hud_surface = allocate_frame_surfaces(pygame, screen_size)
     clock = pygame.time.Clock()
 
     client = WorldClient()
@@ -196,15 +260,19 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     center_on_avatar()
                 if event.type == pygame.VIDEORESIZE:
                     screen_size = (max(1, event.w), max(1, event.h))
-                    screen = pygame.display.set_mode(screen_size, pygame.RESIZABLE)
+                    pygame.display.set_mode(screen_size, display_flags)
+                    ctx.viewport = (0, 0, *screen_size)
+                    world_surface, hud_surface = allocate_frame_surfaces(pygame, screen_size)
                     camera.set_screen_size(screen_size)
                     hud.resize(screen_size)
 
             scene.refresh_from_world_view(client.world_view())
             renderer.update(dt, scene)
-            renderer.render(screen, scene)
+            renderer.render(world_surface, scene)
+            hud_surface.fill((0, 0, 0, 0))
             hud.update(dt, scene)
-            hud.draw(screen)
+            hud.draw(hud_surface)
+            composite_frame(compositor, world_surface, hud_surface)
             pygame.display.flip()
             await asyncio.sleep(0)
     finally:
@@ -214,6 +282,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         except TimeoutError:
             session_task.cancel()
         renderer.clear_caches()
+        compositor.release()
         pygame.quit()
 
     return 0

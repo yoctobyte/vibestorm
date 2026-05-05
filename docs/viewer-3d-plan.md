@@ -447,14 +447,24 @@ shippable on its own. Cost annotations are rough.
     context is available (CI without GPU/EGL). The compositor is GL
     only — no pygame display interaction yet, so the existing 2D path
     is untouched. *(medium; new code, no protocol risk)*
-5b-ii. **Wire compositor into app.** Switch the display to
-    `OPENGL | DOUBLEBUF | RESIZABLE`, allocate a world surface for
-    renderers and an alpha HUD surface for `pygame_gui`, run the
-    compositor each frame (clear → world quad opaque → HUD quad
-    alpha → flip), and update the `PerspectiveRenderer` placeholder
-    to blit the cached map tile when available so the user actually
-    sees "the map tile drawn as a textured quad". *(medium; first
-    real GL window, but no geometry yet)*
+5b-ii. **Wire compositor into app.** *(done 2026-05-05.)* Switched the
+    pygame display to `OPENGL | DOUBLEBUF | RESIZABLE`, created a
+    `moderngl.Context` from the live window, and routed every frame
+    through the compositor: the active renderer draws into a software
+    `world_surface`, `pygame_gui` draws into a per-pixel-alpha
+    `hud_surface`, the compositor uploads both as textures and draws
+    them as fullscreen quads (world opaque → HUD with source-over
+    alpha) before `display.flip()`. Resize reallocates surfaces and
+    updates `ctx.viewport`. The `PerspectiveRenderer` placeholder now
+    blits the cached map tile scaled to the surface (with its own
+    in-renderer cache invalidated by `clear_caches`) so the user
+    sees "the map tile drawn as a textured quad" when they pick
+    Render: 3D. As a side-fix the long-latent unimported
+    `clear_tile_cache` reference in `_with_render_cache_clear` is
+    now a real import. New helpers `allocate_frame_surfaces` and
+    `composite_frame` are extracted at module level and unit-tested.
+    New tests in `test/test_viewer3d_app_compositor.py` (9 tests).
+    *(medium; first real GL window, no geometry yet)*
 6. **PerspectiveRenderer v0.** Instance one primitive (cube) per
    `SceneEntity`. Tint by pcode. Verify scale/rotation/position match the
    2D map at the same camera target. *(medium)*
@@ -482,15 +492,13 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, and 5b-i are done. The fork has a
-renderer seam, a mode-aware camera, a render-mode menu, populated
-`SceneEntity.shape`, a corrected protocol parser, a working
-renderer swap, and a tested `GLCompositor` ready to upload pygame
-surfaces and draw them as fullscreen textured quads. **The GL
-plumbing is proven end-to-end against real GL via standalone
-context.** Next is step 5b-ii: open the actual `OPENGL | DOUBLEBUF`
-window, route renderers and `pygame_gui` through the compositor each
-frame, and draw the cached map tile in the `PerspectiveRenderer`
-placeholder. After that, step 6 replaces the placeholder body with
-native GL geometry (one cube per `SceneEntity`). Skip 2.5D unless a
-concrete need emerges.
+Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, and 5b-ii are done. The
+fork now opens a real `OPENGL | DOUBLEBUF` window, routes the
+software-rendered world surface and the `pygame_gui` HUD through the
+`GLCompositor` each frame, and shows the region's cached map tile as
+a fullscreen textured quad in 3D mode. **The hybrid GL+pygame_gui
+compositing path is shippable.** Next is step 6:
+`PerspectiveRenderer` v0 — instance one primitive (cube) per
+`SceneEntity`, tinted by pcode, drawn against a 3D camera that
+reproduces the 2D map's framing at the same camera target. Skip 2.5D
+unless a concrete need emerges.
