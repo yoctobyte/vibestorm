@@ -50,20 +50,24 @@ from vibestorm.viewer3d.renderer import TopDownRenderer, ViewerRenderer
 from vibestorm.viewer3d.scene import Scene
 
 if TYPE_CHECKING:
+    import moderngl
     import pygame
 
 
-def build_renderer(mode: str, camera: Camera) -> ViewerRenderer:
+def build_renderer(
+    mode: str, camera: Camera, *, ctx: moderngl.Context | None = None
+) -> ViewerRenderer:
     """Pick a ``ViewerRenderer`` for the given HUD render-mode string.
 
-    Both renderers draw into a software pygame surface — the GL
-    framebuffer is owned by ``GLCompositor``, which uploads the
-    surface as a textured quad each frame. Step 6 will introduce a
-    native-GL ``PerspectiveRenderer`` that targets the framebuffer
-    directly; the factory shape stays the same.
+    Both renderers draw the world background into a software pygame
+    surface (uploaded as a fullscreen quad by ``GLCompositor``). The
+    perspective renderer additionally draws native GL geometry on
+    top of that quad in ``render_gl`` — that's why it needs the
+    moderngl context. Tests that don't have a GL context can omit
+    ``ctx`` and the perspective renderer will skip the native pass.
     """
     if mode == "3d":
-        return PerspectiveRenderer(camera)
+        return PerspectiveRenderer(camera, ctx=ctx)
     return TopDownRenderer(camera)
 
 
@@ -82,6 +86,18 @@ def allocate_frame_surfaces(
     return world, hud
 
 
+def composite_world(compositor: GLCompositor, world_surface: pygame.Surface) -> None:
+    """Upload the world surface and draw it as the opaque background quad."""
+    compositor.upload_surface("world", world_surface)
+    compositor.draw("world", alpha=False)
+
+
+def composite_hud(compositor: GLCompositor, hud_surface: pygame.Surface) -> None:
+    """Upload the HUD surface and draw it as the alpha-blended overlay quad."""
+    compositor.upload_surface("hud", hud_surface)
+    compositor.draw("hud", alpha=True)
+
+
 def composite_frame(
     compositor: GLCompositor,
     world_surface: pygame.Surface,
@@ -89,17 +105,16 @@ def composite_frame(
     *,
     clear_color: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
 ) -> None:
-    """Upload world + HUD, draw both fullscreen quads, leave flip to caller.
+    """Convenience wrapper: clear, draw world quad, draw HUD quad.
 
-    The caller has already populated ``world_surface`` (active renderer)
-    and ``hud_surface`` (pygame_gui). The framebuffer flip is left to
-    the caller so the compositor stays display-agnostic.
+    The frame loop in ``run_viewer`` doesn't use this — it inlines the
+    sequence so ``renderer.render_gl(scene, aspect)`` can run between
+    the world and HUD passes. The wrapper is kept for tests that
+    exercise the world/HUD compositing path without a 3D renderer.
     """
     compositor.clear(clear_color)
-    compositor.upload_surface("world", world_surface)
-    compositor.draw("world", alpha=False)
-    compositor.upload_surface("hud", hud_surface)
-    compositor.draw("hud", alpha=True)
+    composite_world(compositor, world_surface)
+    composite_hud(compositor, hud_surface)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -164,7 +179,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
     scene = Scene()
     camera = Camera(world_center=(128.0, 128.0), zoom=1.0, screen_size=screen_size)
     camera.fit_region(padding_px=56)
-    renderer: ViewerRenderer = build_renderer("2d-map", camera)
+    renderer: ViewerRenderer = build_renderer("2d-map", camera, ctx=ctx)
 
     _wire_scene(client, scene)
 
@@ -199,7 +214,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         nonlocal renderer
         camera.set_mode("orbit" if mode == "3d" else "map")
         renderer.clear_caches()
-        renderer = build_renderer(mode, camera)
+        renderer = build_renderer(mode, camera, ctx=ctx)
 
     hud = HUD(
         screen_size,
@@ -272,7 +287,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
             hud_surface.fill((0, 0, 0, 0))
             hud.update(dt, scene)
             hud.draw(hud_surface)
-            composite_frame(compositor, world_surface, hud_surface)
+
+            compositor.clear((0.0, 0.0, 0.0, 1.0))
+            composite_world(compositor, world_surface)
+            aspect = screen_size[0] / max(1, screen_size[1])
+            renderer.render_gl(scene, aspect=aspect)
+            composite_hud(compositor, hud_surface)
             pygame.display.flip()
             await asyncio.sleep(0)
     finally:

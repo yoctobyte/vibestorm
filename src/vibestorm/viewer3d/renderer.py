@@ -1,13 +1,15 @@
 """Renderer abstraction for the viewer3d fork.
 
-The app loop holds one ``ViewerRenderer`` and calls ``update`` then
-``render`` once per frame. Today only ``TopDownRenderer`` exists — it
-wraps the existing 2D draw functions in ``viewer3d.render``. A future
-``PerspectiveRenderer`` will plug into the same interface.
+The app loop holds one ``ViewerRenderer`` and calls ``update``,
+``render``, then ``render_gl`` once per frame. ``render`` paints the
+software ``world_surface`` (which the compositor uploads as a textured
+quad in the next compositor pass); ``render_gl`` is the optional
+native-GL pass for renderers that want to draw geometry directly to
+the GL framebuffer (PerspectiveRenderer in step 6+).
 
-The protocol stays small on purpose. ``Camera3D``, ``attach``/``detach``
-hooks for GL context lifecycle, and event handling will land in later
-steps when they have concrete consumers.
+Protocol stays small on purpose. Event handling and ``attach`` /
+``detach`` GL-lifecycle hooks land if/when they have concrete
+consumers.
 """
 
 from __future__ import annotations
@@ -24,10 +26,18 @@ if TYPE_CHECKING:
 
 
 class ViewerRenderer(Protocol):
-    """One frame in, one frame out. Implementations own their target."""
+    """One frame in, one frame out. Implementations own their target.
+
+    The frame loop calls ``render`` (software world surface) before
+    ``render_gl`` (optional native GL) so a renderer can do either,
+    both, or neither. ``render`` runs every frame; ``render_gl`` runs
+    after the world surface is uploaded as a textured quad and before
+    the HUD overlay.
+    """
 
     def update(self, dt: float, scene: Scene) -> None: ...
     def render(self, surface: pygame.Surface, scene: Scene) -> None: ...
+    def render_gl(self, scene: Scene, *, aspect: float) -> None: ...
     def clear_caches(self) -> None: ...
 
 
@@ -43,6 +53,11 @@ class TopDownRenderer:
 
     def render(self, surface: pygame.Surface, scene: Scene) -> None:
         render_scene(surface, self.camera, scene)
+
+    def render_gl(self, scene: Scene, *, aspect: float) -> None:
+        # Top-down mode is fully software; the GL framebuffer only
+        # receives the uploaded world quad. Nothing to draw here.
+        del scene, aspect
 
     def clear_caches(self) -> None:
         clear_tile_cache()

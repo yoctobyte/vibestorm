@@ -1,39 +1,44 @@
-"""Placeholder 3D renderer for the viewer3d fork.
+"""3D perspective renderer for the viewer3d fork.
 
-This is the renderer that takes over when the user picks "Render: 3D"
-in the View menu. It draws into an ordinary ``pygame.Surface``; the
-``GLCompositor`` in ``app.py`` uploads that surface as a texture and
-draws it as a fullscreen quad on the GL framebuffer (step 5b-ii).
-That fulfills "draw a single textured quad — the map tile" without
-yet having any 3D geometry.
+Step 6 v0:
 
-What this class does today:
+- Software ``render(world_surface, scene)`` keeps blitting the cached
+  region map tile so the compositor uploads it as a fullscreen quad
+  (the "ground"). This is the same path step 5b-ii introduced.
+- ``render_gl(scene, aspect)`` then draws geometry directly to the GL
+  framebuffer: one instanced unit cube per ``SceneEntity``, transformed
+  by per-instance model matrices and tinted by ``SceneEntity.tint``.
+  A perspective projection paired with ``Camera3D.view_matrix()``
+  drives the camera; depth testing keeps cubes correctly occluded.
 
-- If the region's cached map tile is available, blits it scaled to
-  the surface size so the user sees the region under the camera.
-  This is the textured-quad payload that step 5b-ii promises.
-- Otherwise fills with a recognisable dark-blue fog colour so the
-  user can see the mode swap took effect even before a tile arrives.
-- Draws a centred crosshair and small camera/scene labels so the
-  placeholder reads as a placeholder, not a broken render.
+What's deliberately omitted in v0:
 
-Step 6 replaces this body with native GL geometry (one cube per
-``SceneEntity``) targeting the same default framebuffer. The class
-keeps the ``ViewerRenderer`` shape (``update`` / ``render`` /
-``clear_caches``) so the renderer-swap plumbing in ``app.py``
-doesn't change.
+- Lighting / shading. Cubes render flat-tinted; ``Scene.sun_phase``
+  feeds in step 8.
+- Sphere/cylinder/torus/prism primitives. Step 7 picks the mesh
+  per ``SceneEntity.shape``.
+- Per-face textures, mesh, sculpt geometry. Each of those is its
+  own pipeline.
+- Avatar capsules / billboards. v0 boxes them too.
+
+The class accepts an optional ``moderngl.Context``. When ``ctx`` is
+``None`` (e.g. in unit tests with no GL available) ``render_gl`` is a
+no-op — ``render`` still draws the placeholder background and labels
+so swap-mechanism tests keep working without GL.
 """
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import moderngl
     import pygame
 
     from vibestorm.viewer3d.camera import Camera3D
-    from vibestorm.viewer3d.scene import Scene
+    from vibestorm.viewer3d.scene import Scene, SceneEntity
 
 
 PLACEHOLDER_BG: tuple[int, int, int] = (12, 16, 28)
@@ -41,16 +46,136 @@ PLACEHOLDER_FG: tuple[int, int, int] = (140, 160, 200)
 PLACEHOLDER_ACCENT: tuple[int, int, int] = (255, 200, 80)
 
 
-class PerspectiveRenderer:
-    """Placeholder 3D renderer. See module docstring."""
+# Unit cube centred at origin, side length 1. 8 unique vertices indexed
+# by 36 vertex indices (12 triangles, 6 faces). Winding is CCW from the
+# outside; back-face culling stays off in v0 so winding errors don't
+# silently hide a face.
+_CUBE_VERTICES: tuple[float, ...] = (
+    -0.5, -0.5, -0.5,  # 0
+     0.5, -0.5, -0.5,  # 1
+     0.5,  0.5, -0.5,  # 2
+    -0.5,  0.5, -0.5,  # 3
+    -0.5, -0.5,  0.5,  # 4
+     0.5, -0.5,  0.5,  # 5
+     0.5,  0.5,  0.5,  # 6
+    -0.5,  0.5,  0.5,  # 7
+)
 
-    def __init__(self, camera: Camera3D) -> None:
+_CUBE_INDICES: tuple[int, ...] = (
+    # Bottom (Z = -0.5) — viewed from below, CCW
+    0, 2, 1,  0, 3, 2,
+    # Top (Z = +0.5) — viewed from above, CCW
+    4, 5, 6,  4, 6, 7,
+    # Front (Y = +0.5)
+    3, 7, 6,  3, 6, 2,
+    # Back (Y = -0.5)
+    0, 1, 5,  0, 5, 4,
+    # Right (X = +0.5)
+    1, 2, 6,  1, 6, 5,
+    # Left (X = -0.5)
+    0, 4, 7,  0, 7, 3,
+)
+
+
+_FLOATS_PER_INSTANCE = 16 + 3  # mat4 + vec3 tint
+_BYTES_PER_INSTANCE = _FLOATS_PER_INSTANCE * 4
+_INITIAL_INSTANCE_CAPACITY = 1024
+
+
+_VERTEX_SHADER = """
+#version 330
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+
+in vec3 in_pos;
+in mat4 in_model;
+in vec3 in_tint;
+
+out vec3 v_color;
+
+void main() {
+    v_color = in_tint;
+    gl_Position = u_proj * u_view * in_model * vec4(in_pos, 1.0);
+}
+"""
+
+_FRAGMENT_SHADER = """
+#version 330
+
+in vec3 v_color;
+out vec4 frag_color;
+
+void main() {
+    frag_color = vec4(v_color, 1.0);
+}
+"""
+
+
+def model_matrix(
+    position: tuple[float, float, float],
+    scale: tuple[float, float, float],
+    rotation_quat: tuple[float, float, float, float],
+) -> tuple[float, ...]:
+    """Build a column-major 4x4 model matrix M = T * R * S.
+
+    Quaternion order is ``(x, y, z, w)`` with w real, matching the
+    on-the-wire convention from ``ObjectUpdate``. The result is 16
+    floats ready for ``struct.pack`` into an instance buffer.
+    """
+    px, py, pz = position
+    sx, sy, sz = scale
+    qx, qy, qz, qw = rotation_quat
+
+    xx = qx * qx
+    yy = qy * qy
+    zz = qz * qz
+    xy = qx * qy
+    xz = qx * qz
+    yz = qy * qz
+    wx = qw * qx
+    wy = qw * qy
+    wz = qw * qz
+
+    r00 = 1.0 - 2.0 * (yy + zz)
+    r01 = 2.0 * (xy - wz)
+    r02 = 2.0 * (xz + wy)
+    r10 = 2.0 * (xy + wz)
+    r11 = 1.0 - 2.0 * (xx + zz)
+    r12 = 2.0 * (yz - wx)
+    r20 = 2.0 * (xz - wy)
+    r21 = 2.0 * (yz + wx)
+    r22 = 1.0 - 2.0 * (xx + yy)
+
+    return (
+        r00 * sx, r10 * sx, r20 * sx, 0.0,  # column 0
+        r01 * sy, r11 * sy, r21 * sy, 0.0,  # column 1
+        r02 * sz, r12 * sz, r22 * sz, 0.0,  # column 2
+        px, py, pz, 1.0,                    # column 3
+    )
+
+
+class PerspectiveRenderer:
+    """3D renderer. Software map-tile background + native GL geometry."""
+
+    def __init__(self, camera: Camera3D, *, ctx: moderngl.Context | None = None) -> None:
         self.camera = camera
+        self.ctx = ctx
         self._font = None  # type: object | None
-        # Cached tile image keyed by source path. The tile is reusable
-        # across frames and across surface-size changes (we smoothscale
-        # on the fly), so the cache key is just the path.
         self._tile_cache: dict[Path, pygame.Surface] = {}
+
+        # GL resources are allocated lazily so renderer construction
+        # stays cheap when ctx is None (test harnesses without GL).
+        self._program = None  # type: moderngl.Program | None
+        self._vbo = None  # type: moderngl.Buffer | None
+        self._ibo = None  # type: moderngl.Buffer | None
+        self._instance_vbo = None  # type: moderngl.Buffer | None
+        self._vao = None  # type: moderngl.VertexArray | None
+        self._instance_capacity = 0
+        if ctx is not None:
+            self._setup_gl(ctx)
+
+    # -------------------------------------------------------------- pygame
 
     def update(self, dt: float, scene: Scene) -> None:
         del dt, scene
@@ -64,8 +189,6 @@ class PerspectiveRenderer:
 
         cx, cy = sw // 2, sh // 2
 
-        # Crosshair so the user sees the placeholder is alive even when
-        # the map tile background is present.
         pygame.draw.line(surface, PLACEHOLDER_FG, (cx - 30, cy), (cx + 30, cy), 2)
         pygame.draw.line(surface, PLACEHOLDER_FG, (cx, cy - 30), (cx, cy + 30), 2)
         pygame.draw.circle(surface, PLACEHOLDER_ACCENT, (cx, cy), 6, width=2)
@@ -74,18 +197,18 @@ class PerspectiveRenderer:
         if font is None:
             return
 
-        label = font.render(
-            "Vibestorm 3D placeholder — geometry rendering not yet wired",
-            True,
-            PLACEHOLDER_FG,
-        )
+        if self.ctx is None:
+            label_text = "Vibestorm 3D — software fallback (no GL context)"
+        else:
+            label_text = "Vibestorm 3D — geometry rendered above this background"
+        label = font.render(label_text, True, PLACEHOLDER_FG)
         surface.blit(label, label.get_rect(center=(cx, cy + 60)))
 
         cam_text = (
             f"camera.mode={self.camera.mode}  "
-            f"world_center=({self.camera.world_center[0]:.1f}, "
-            f"{self.camera.world_center[1]:.1f})  "
-            f"zoom={self.camera.zoom:.2f}"
+            f"target=({self.camera.target[0]:.1f}, {self.camera.target[1]:.1f}, "
+            f"{self.camera.target[2]:.1f})  "
+            f"distance={self.camera.distance:.1f}m"
         )
         cam_label = font.render(cam_text, True, PLACEHOLDER_FG)
         surface.blit(cam_label, cam_label.get_rect(center=(cx, cy + 90)))
@@ -95,8 +218,136 @@ class PerspectiveRenderer:
         ent_label = font.render(ent_text, True, PLACEHOLDER_FG)
         surface.blit(ent_label, ent_label.get_rect(center=(cx, cy + 116)))
 
+    # -------------------------------------------------------------- GL pass
+
+    def render_gl(self, scene: Scene, *, aspect: float) -> None:
+        """Draw one cube per scene entity into the bound GL framebuffer.
+
+        The compositor has already drawn the world quad (map tile);
+        this pass enables depth testing and renders cubes on top, then
+        leaves depth testing off so the HUD overlay draws normally.
+        """
+        ctx = self.ctx
+        if ctx is None or self._program is None or self._vao is None:
+            return
+        if aspect <= 0.0:
+            return
+
+        view = self.camera.view_matrix()
+        proj = self.camera.projection_matrix(aspect)
+
+        instance_count = self._upload_instances(ctx, scene)
+        if instance_count == 0:
+            return
+
+        self._program["u_view"].write(struct.pack("16f", *view))
+        self._program["u_proj"].write(struct.pack("16f", *proj))
+
+        ctx.enable(ctx.DEPTH_TEST)
+        try:
+            self._vao.render(instances=instance_count)
+        finally:
+            # Leave the depth state predictable for the HUD overlay
+            # quad and the next frame's compositor draws.
+            ctx.disable(ctx.DEPTH_TEST)
+
+    # -------------------------------------------------------------- caches
+
     def clear_caches(self) -> None:
+        """Drop tile cache and release GL resources.
+
+        Called by the app on render-mode swap and on shutdown. After
+        ``clear_caches`` the renderer is no longer usable; build a new
+        instance to render again.
+        """
         self._tile_cache.clear()
+        for resource in (self._vao, self._instance_vbo, self._ibo, self._vbo, self._program):
+            if resource is not None:
+                resource.release()
+        self._vao = None
+        self._instance_vbo = None
+        self._ibo = None
+        self._vbo = None
+        self._program = None
+        self._instance_capacity = 0
+
+    # -------------------------------------------------------------- helpers
+
+    def _setup_gl(self, ctx: moderngl.Context) -> None:
+        self._program = ctx.program(
+            vertex_shader=_VERTEX_SHADER,
+            fragment_shader=_FRAGMENT_SHADER,
+        )
+        self._vbo = ctx.buffer(
+            struct.pack(f"{len(_CUBE_VERTICES)}f", *_CUBE_VERTICES)
+        )
+        self._ibo = ctx.buffer(
+            struct.pack(f"{len(_CUBE_INDICES)}I", *_CUBE_INDICES)
+        )
+        self._instance_capacity = _INITIAL_INSTANCE_CAPACITY
+        self._instance_vbo = ctx.buffer(
+            reserve=self._instance_capacity * _BYTES_PER_INSTANCE,
+            dynamic=True,
+        )
+        self._vao = ctx.vertex_array(
+            self._program,
+            [
+                (self._vbo, "3f", "in_pos"),
+                (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+            ],
+            index_buffer=self._ibo,
+            index_element_size=4,
+        )
+
+    def _upload_instances(self, ctx: moderngl.Context, scene: Scene) -> int:
+        entities: list[SceneEntity] = []
+        entities.extend(scene.object_entities.values())
+        entities.extend(scene.avatar_entities.values())
+        if not entities:
+            return 0
+
+        if len(entities) > self._instance_capacity:
+            self._grow_instance_buffer(ctx, len(entities))
+
+        floats: list[float] = []
+        for entity in entities:
+            quat = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
+            model = model_matrix(entity.position, entity.scale, quat)
+            floats.extend(model)
+            r, g, b = entity.tint
+            floats.append(r / 255.0)
+            floats.append(g / 255.0)
+            floats.append(b / 255.0)
+
+        data = struct.pack(f"{len(floats)}f", *floats)
+        # ``orphan`` requests a fresh storage block from the driver so
+        # the GPU isn't forced to wait on the previous frame's draw to
+        # finish before the new write becomes visible.
+        assert self._instance_vbo is not None
+        self._instance_vbo.orphan(size=len(data))
+        self._instance_vbo.write(data)
+        return len(entities)
+
+    def _grow_instance_buffer(self, ctx: moderngl.Context, required: int) -> None:
+        new_capacity = max(self._instance_capacity * 2, required)
+        assert self._instance_vbo is not None and self._vao is not None
+        self._instance_vbo.release()
+        self._vao.release()
+        self._instance_vbo = ctx.buffer(
+            reserve=new_capacity * _BYTES_PER_INSTANCE,
+            dynamic=True,
+        )
+        assert self._program is not None and self._vbo is not None and self._ibo is not None
+        self._vao = ctx.vertex_array(
+            self._program,
+            [
+                (self._vbo, "3f", "in_pos"),
+                (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+            ],
+            index_buffer=self._ibo,
+            index_element_size=4,
+        )
+        self._instance_capacity = new_capacity
 
     def _draw_map_tile_background(
         self,
@@ -105,13 +356,6 @@ class PerspectiveRenderer:
         scene: Scene,
         size: tuple[int, int],
     ) -> bool:
-        """Blit the cached region map tile scaled to ``size``.
-
-        Returns True when something was drawn. The compositor uploads
-        the result and shows it as the textured quad of step 5b. When
-        no tile is cached yet (region just changed, fetch in flight)
-        the caller falls back to a flat background.
-        """
         path = scene.map_tile_path
         if path is None:
             return False
@@ -143,4 +387,4 @@ class PerspectiveRenderer:
         return self._font
 
 
-__all__ = ["PerspectiveRenderer"]
+__all__ = ["PerspectiveRenderer", "model_matrix"]

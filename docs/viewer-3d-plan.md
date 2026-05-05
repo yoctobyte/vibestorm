@@ -465,9 +465,25 @@ shippable on its own. Cost annotations are rough.
     `composite_frame` are extracted at module level and unit-tested.
     New tests in `test/test_viewer3d_app_compositor.py` (9 tests).
     *(medium; first real GL window, no geometry yet)*
-6. **PerspectiveRenderer v0.** Instance one primitive (cube) per
-   `SceneEntity`. Tint by pcode. Verify scale/rotation/position match the
-   2D map at the same camera target. *(medium)*
+6. **PerspectiveRenderer v0.** *(done 2026-05-05.)* Camera math
+   (`look_at`, `perspective`, `orbit_eye`, `view_matrix`,
+   `projection_matrix`) added to `Camera3D` in pure Python — no
+   numpy dep. The `ViewerRenderer` protocol grew a `render_gl(scene,
+   *, aspect)` hook; `TopDownRenderer` is a no-op there,
+   `PerspectiveRenderer` is upgraded into a real GL renderer:
+   compiles vertex/fragment shaders, allocates a unit-cube VBO + IBO,
+   instances per-`SceneEntity` model matrices + tint into a dynamic
+   buffer that grows as the entity count exceeds capacity, and
+   draws with depth testing on (then off, so the HUD overlay still
+   composites cleanly). The factory threads the moderngl context
+   through (`build_renderer(mode, camera, *, ctx)`); the frame loop
+   inlines the compositor sequence so `render_gl` runs between the
+   world quad and the HUD overlay. The composite helper splits into
+   `composite_world` / `composite_hud` for that. New tests in
+   `test/test_viewer3d_camera_matrices.py` (14 tests, pure Python)
+   and `test/test_viewer3d_perspective_gl.py` (6 tests, real GL via
+   standalone context — a tinted unit cube actually appears at the
+   framebuffer center). *(medium)*
 7. **Primitive library.** Add sphere/cylinder/torus/prism meshes; pick by
    `SceneEntity.shape`. *(medium)*
 8. **Lighting + fog.** Directional light from `sun_phase`; ambient;
@@ -492,13 +508,14 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, and 5b-ii are done. The
-fork now opens a real `OPENGL | DOUBLEBUF` window, routes the
-software-rendered world surface and the `pygame_gui` HUD through the
-`GLCompositor` each frame, and shows the region's cached map tile as
-a fullscreen textured quad in 3D mode. **The hybrid GL+pygame_gui
-compositing path is shippable.** Next is step 6:
-`PerspectiveRenderer` v0 — instance one primitive (cube) per
-`SceneEntity`, tinted by pcode, drawn against a 3D camera that
-reproduces the 2D map's framing at the same camera target. Skip 2.5D
-unless a concrete need emerges.
+Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, 5b-ii, and 6 are done. The
+fork now renders real 3D geometry: one tinted unit cube per
+`SceneEntity`, drawn through a perspective projection with depth
+testing, on top of the cached map tile, with the HUD composited on
+top via the existing GL compositor. **The minimum viable 3D mode is
+shippable.** Next is step 7: primitive library — pick the cube /
+sphere / cylinder / torus / prism mesh from
+`SceneEntity.shape` (already populated by step 1b-ii) so the world
+stops rendering as boxes-everywhere. After that, step 8 lights the
+scene from `Scene.sun_phase`. Skip 2.5D unless a concrete need
+emerges.
