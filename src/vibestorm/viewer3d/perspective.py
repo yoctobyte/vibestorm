@@ -148,6 +148,50 @@ _GROUND_INDICES: tuple[int, ...] = (
 )
 
 
+# Region water: flat translucent quad at SL's default sea level (20 m).
+# Shaders are minimal — single solid colour with alpha; sun_phase-driven
+# tinting and reflection land in step 8.
+WATER_LEVEL_M: float = 20.0
+WATER_TINT_RGBA: tuple[float, float, float, float] = (0.18, 0.36, 0.55, 0.55)
+
+_WATER_VERTEX_SHADER = """
+#version 330
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+
+in vec3 in_pos;
+
+void main() {
+    gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+}
+"""
+
+_WATER_FRAGMENT_SHADER = """
+#version 330
+
+uniform vec4 u_color;
+
+out vec4 frag_color;
+
+void main() {
+    frag_color = u_color;
+}
+"""
+
+_WATER_VERTICES: tuple[float, ...] = (
+    0.0,                   0.0,                  WATER_LEVEL_M,
+    REGION_GROUND_SIZE_M,  0.0,                  WATER_LEVEL_M,
+    REGION_GROUND_SIZE_M,  REGION_GROUND_SIZE_M, WATER_LEVEL_M,
+    0.0,                   REGION_GROUND_SIZE_M, WATER_LEVEL_M,
+)
+
+_WATER_INDICES: tuple[int, ...] = (
+    0, 1, 2,
+    0, 2, 3,
+)
+
+
 def model_matrix(
     position: tuple[float, float, float],
     scale: tuple[float, float, float],
@@ -227,6 +271,12 @@ class PerspectiveRenderer:
         self._ground_vao = None  # type: moderngl.VertexArray | None
         self._ground_texture = None  # type: moderngl.Texture | None
         self._ground_texture_path: Path | None = None
+        # Water plane at SL's default sea level. Solid translucent fill
+        # for v1; lighting/sun reflections move with step 8.
+        self._water_program = None  # type: moderngl.Program | None
+        self._water_vbo = None  # type: moderngl.Buffer | None
+        self._water_ibo = None  # type: moderngl.Buffer | None
+        self._water_vao = None  # type: moderngl.VertexArray | None
         if ctx is not None:
             self._setup_gl(ctx)
 
@@ -251,12 +301,14 @@ class PerspectiveRenderer:
     # -------------------------------------------------------------- GL pass
 
     def render_gl(self, scene: Scene, *, aspect: float) -> None:
-        """Draw the region ground + one mesh per scene entity.
+        """Draw the region ground + primitives + water.
 
         Entities are grouped by ``SceneEntity.shape`` so each primitive
         shape is drawn with one instanced draw call against its own
-        mesh. Order: ground floor first, primitives second, both with
-        depth test on so primitives occlude the ground correctly.
+        mesh. Order: ground floor, primitives, water — all under depth
+        test. Water draws last with alpha blending so submerged ground
+        and below-water primitive fragments tint through it; primitives
+        above water still occlude water at the depth test.
         """
         ctx = self.ctx
         if ctx is None or self._program is None or not self._shape_meshes:
@@ -288,6 +340,17 @@ class PerspectiveRenderer:
                     mesh = self._shape_meshes[shape_key]
                     self._upload_instances_for(ctx, entities)
                     mesh.vao.render(instances=len(entities))
+
+            if self._water_program is not None and self._water_vao is not None:
+                self._water_program["u_view"].write(view_data)
+                self._water_program["u_proj"].write(proj_data)
+                self._water_program["u_color"].value = WATER_TINT_RGBA
+                ctx.enable(ctx.BLEND)
+                ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
+                try:
+                    self._water_vao.render()
+                finally:
+                    ctx.disable(ctx.BLEND)
         finally:
             # Leave the depth state predictable for the HUD overlay
             # quad and the next frame's compositor draws.
@@ -315,6 +378,10 @@ class PerspectiveRenderer:
             self._ground_vbo,
             self._ground_program,
             self._ground_texture,
+            self._water_vao,
+            self._water_ibo,
+            self._water_vbo,
+            self._water_program,
         ):
             if resource is not None:
                 resource.release()
@@ -327,6 +394,10 @@ class PerspectiveRenderer:
         self._ground_program = None
         self._ground_texture = None
         self._ground_texture_path = None
+        self._water_vao = None
+        self._water_ibo = None
+        self._water_vbo = None
+        self._water_program = None
 
     # -------------------------------------------------------------- helpers
 
@@ -383,6 +454,23 @@ class PerspectiveRenderer:
             self._ground_program,
             [(self._ground_vbo, "3f 2f", "in_pos", "in_uv")],
             index_buffer=self._ground_ibo,
+            index_element_size=4,
+        )
+
+        self._water_program = ctx.program(
+            vertex_shader=_WATER_VERTEX_SHADER,
+            fragment_shader=_WATER_FRAGMENT_SHADER,
+        )
+        self._water_vbo = ctx.buffer(
+            struct.pack(f"{len(_WATER_VERTICES)}f", *_WATER_VERTICES)
+        )
+        self._water_ibo = ctx.buffer(
+            struct.pack(f"{len(_WATER_INDICES)}I", *_WATER_INDICES)
+        )
+        self._water_vao = ctx.vertex_array(
+            self._water_program,
+            [(self._water_vbo, "3f", "in_pos")],
+            index_buffer=self._water_ibo,
             index_element_size=4,
         )
 

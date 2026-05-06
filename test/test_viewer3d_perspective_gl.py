@@ -85,15 +85,21 @@ class PerspectiveRendererGLTests(_GLTestBase):
             renderer.clear_caches()
 
     def test_render_gl_with_no_entities_is_a_no_op(self) -> None:
+        # Camera positioned outside the region square (off the SW corner)
+        # looking horizontally — ground/water planes (which are bounded
+        # to the 256x256 region) don't intersect any FOV ray, so an
+        # empty scene paints nothing.
         from vibestorm.viewer3d.camera import Camera3D
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
         from vibestorm.viewer3d.scene import Scene
 
-        renderer = PerspectiveRenderer(Camera3D(), ctx=self.ctx)
+        camera = Camera3D(target=(-100.0, -100.0, 5.0), distance=5.0, yaw=0.0, pitch=0.0)
+        camera.set_mode("orbit")
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
             self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
             renderer.render_gl(Scene(), aspect=1.0)
-            # Empty scene — framebuffer should still be black.
             r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
             self.assertEqual((r, g, b), (0, 0, 0))
         finally:
@@ -203,6 +209,8 @@ class PerspectiveRendererInstanceGrowthTests(_GLTestBase):
         self.assertIsNone(renderer._ground_program)
         self.assertIsNone(renderer._ground_vao)
         self.assertIsNone(renderer._ground_texture)
+        self.assertIsNone(renderer._water_program)
+        self.assertIsNone(renderer._water_vao)
 
 
 def _write_solid_tile(color: tuple[int, int, int], size: int = 4) -> Path:
@@ -221,27 +229,33 @@ def _write_solid_tile(color: tuple[int, int, int], size: int = 4) -> Path:
 class PerspectiveRendererGroundTests(_GLTestBase):
     """Region floor (textured quad at Z=0) rendering."""
 
-    def test_ground_renders_textured_quad_when_map_tile_path_set(self) -> None:
+    def _ground_test_camera(self):
+        """Eye below water (Z<20) looking nearly straight down at the
+        ground centre — keeps the ground in view while keeping the
+        water plane behind/above the camera, so the test reads the
+        ground colour without water tinting it.
+        """
         from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D(
+            target=(128.0, 128.0, 0.0),
+            distance=15.0,
+            yaw=0.0,
+            pitch=math.pi / 2 - 0.1,
+        )
+        camera.set_mode("orbit")
+        return camera
+
+    def test_ground_renders_textured_quad_when_map_tile_path_set(self) -> None:
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
         from vibestorm.viewer3d.scene import Scene
 
         tile_path = _write_solid_tile((0, 200, 0))  # bright green
         try:
-            # Camera high above the region centre, pitched straight down,
-            # so the ground quad fills the framebuffer.
-            camera = Camera3D(
-                target=(128.0, 128.0, 0.0),
-                distance=200.0,
-                yaw=0.0,
-                pitch=math.pi / 2 - 0.001,
-            )
-            camera.set_mode("orbit")
-
             scene = Scene()
             scene.map_tile_path = tile_path
 
-            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            renderer = PerspectiveRenderer(self._ground_test_camera(), ctx=self.ctx)
             try:
                 self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
                 renderer.render_gl(scene, aspect=1.0)
@@ -259,18 +273,10 @@ class PerspectiveRendererGroundTests(_GLTestBase):
             tile_path.unlink(missing_ok=True)
 
     def test_ground_skipped_when_map_tile_path_is_none(self) -> None:
-        from vibestorm.viewer3d.camera import Camera3D
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
         from vibestorm.viewer3d.scene import Scene
 
-        camera = Camera3D(
-            target=(128.0, 128.0, 0.0),
-            distance=200.0,
-            pitch=math.pi / 2 - 0.001,
-        )
-        camera.set_mode("orbit")
-
-        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        renderer = PerspectiveRenderer(self._ground_test_camera(), ctx=self.ctx)
         try:
             self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
             renderer.render_gl(Scene(), aspect=1.0)
@@ -379,6 +385,86 @@ class PerspectiveRendererShapeDispatchTests(_GLTestBase):
         # Avatars currently leave shape=None; they must still render.
         r, g, b, _ = self._render_shape_at_origin(None)
         self.assertGreater(g, 150)
+
+
+class PerspectiveRendererWaterTests(_GLTestBase):
+    """Step: water plane at SL's default sea level (Z=20)."""
+
+    def test_water_plane_renders_translucent_blue_when_camera_looks_down(self) -> None:
+        # Camera high above the region centre, pitched almost straight
+        # down. Without a map_tile_path the ground stays untextured, so
+        # only water draws — center pixel reads water alpha-blended over
+        # the cleared (black) framebuffer.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import (
+            WATER_TINT_RGBA,
+            PerspectiveRenderer,
+        )
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = Camera3D(
+            target=(128.0, 128.0, 0.0),
+            distance=200.0,
+            yaw=0.0,
+            pitch=math.pi / 2 - 0.1,
+        )
+        camera.set_mode("orbit")
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(Scene(), aspect=1.0)
+
+            r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+            # Water alpha-blended over black: each channel ≈ tint * alpha * 255.
+            wr, wg, wb, wa = WATER_TINT_RGBA
+            expected = (round(wr * wa * 255), round(wg * wa * 255), round(wb * wa * 255))
+            self.assertAlmostEqual(r, expected[0], delta=3)
+            self.assertAlmostEqual(g, expected[1], delta=3)
+            self.assertAlmostEqual(b, expected[2], delta=3)
+
+            self.assertIsNotNone(renderer._water_program)
+            self.assertIsNotNone(renderer._water_vao)
+        finally:
+            renderer.clear_caches()
+
+    def test_water_tints_submerged_ground_when_visible(self) -> None:
+        # Camera above water looking down at green ground. Water (Z=20)
+        # sits between camera and ground (Z=0); alpha blend pulls the
+        # ground green toward water blue.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        tile_path = _write_solid_tile((0, 200, 0))
+        try:
+            camera = Camera3D(
+                target=(128.0, 128.0, 0.0),
+                distance=100.0,
+                yaw=0.0,
+                pitch=math.pi / 2 - 0.1,
+            )
+            camera.set_mode("orbit")
+
+            scene = Scene()
+            scene.map_tile_path = tile_path
+
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+
+                r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+                # Green ground tinted by translucent blue water:
+                # green should still dominate but blue gains and red
+                # picks up a small contribution from the water tint.
+                self.assertGreater(g, 80, f"submerged green should still show; got {(r, g, b)}")
+                self.assertLess(g, 200, f"green should be muted by water; got {(r, g, b)}")
+                self.assertGreater(b, 30, f"water tint should add blue; got {(r, g, b)}")
+            finally:
+                renderer.clear_caches()
+        finally:
+            tile_path.unlink(missing_ok=True)
 
 
 class GroupEntitiesByShapeTests(unittest.TestCase):

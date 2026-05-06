@@ -504,6 +504,26 @@ shippable on its own. Cost annotations are rough.
     tripwire for view/projection sign errors after a user report
     that the 3D world looked upside-down (math is fine; the missing
     ground was the visual culprit). *(small)*
+6c. **Drop 2D map-tile backdrop + add water plane.** *(done 2026-05-06.)*
+    `PerspectiveRenderer.render()` was painting the map tile as a
+    fullscreen 2D blit on the world surface (uploaded by the GL
+    compositor) — the 3D ground (step 6b) drew over it correctly but
+    used the same texture, so the surface mesh appeared invisible
+    behind a look-alike backdrop. Replaced with a sky-color fill
+    (`SKY_COLOR`); the map tile now lives only on the 3D ground quad.
+    Removed the placeholder crosshair / debug labels / tile cache /
+    font helpers that step 5a needed before GL geometry existed.
+    Added a water plane: flat 256x256 m quad at Z=`WATER_LEVEL_M`
+    (20.0, SL's default sea level), tinted translucent blue
+    (`WATER_TINT_RGBA = (0.18, 0.36, 0.55, 0.55)`). Drawn after
+    primitives in `render_gl` with depth test on and source-over
+    blending so primitives above water occlude it and submerged
+    ground/primitives tint through it. New test class
+    `PerspectiveRendererWaterTests` verifies the water tint over
+    black and the green-ground-tinted-by-blue-water blend; the
+    "no-entities" / ground tests were repositioned so the camera
+    sits below water level (or off-region) to avoid the always-on
+    water plane masking their assertions.
 7. **Primitive library.** *(done 2026-05-06.)*
     - 7a (pure Python): new `src/vibestorm/viewer3d/meshes.py` with
       `cube_mesh`/`sphere_mesh`/`cylinder_mesh`/`torus_mesh`/`prism_mesh`
