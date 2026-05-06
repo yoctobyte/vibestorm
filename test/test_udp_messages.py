@@ -40,6 +40,7 @@ from vibestorm.udp.messages import (
     parse_agent_wearables_update,
     parse_avatar_appearance,
     parse_chat_from_simulator,
+    parse_layer_data,
     parse_complete_ping_check,
     parse_region_handshake,
     parse_sim_stats,
@@ -809,6 +810,47 @@ class SemanticMessageTests(unittest.TestCase):
         payloads = {payload.field_name: payload for payload in parsed.objects[0].interesting_payloads}
         self.assertIn("ExtraParamsDecoded", payloads)
         self.assertNotIn("Trailing", payloads)
+
+    def test_parse_layer_data_extracts_type_and_data(self) -> None:
+        # LayerData is High-frequency message #11 — wire byte 0x0B.
+        # Body is: Type (U8) | Data (U16 length-prefix little-endian) | data...
+        from vibestorm.udp.messages import (
+            LAYER_TYPE_LAND,
+            LayerDataMessage,
+            MessageDecodeError,
+        )
+
+        payload = bytes(range(64))  # 64 bytes of stand-in patch data
+        body = (
+            bytes([LAYER_TYPE_LAND])
+            + len(payload).to_bytes(2, "little")
+            + payload
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x0B]) + body)
+
+        parsed = parse_layer_data(dispatched)
+
+        self.assertIsInstance(parsed, LayerDataMessage)
+        self.assertEqual(parsed.layer_type, LAYER_TYPE_LAND)
+        self.assertEqual(parsed.data, payload)
+
+    def test_parse_layer_data_truncated_payload_raises(self) -> None:
+        # Declared 100 bytes but only 4 actually present.
+        from vibestorm.udp.messages import MessageDecodeError
+
+        body = bytes([0x4C]) + (100).to_bytes(2, "little") + b"abcd"
+        dispatched = self.dispatcher.dispatch(bytes([0x0B]) + body)
+
+        with self.assertRaises(MessageDecodeError):
+            parse_layer_data(dispatched)
+
+    def test_parse_layer_data_short_header_raises(self) -> None:
+        # Need at least 1 (Type) + 2 (length) bytes.
+        from vibestorm.udp.messages import MessageDecodeError
+
+        dispatched = self.dispatcher.dispatch(bytes([0x0B, 0x4C]))
+        with self.assertRaises(MessageDecodeError):
+            parse_layer_data(dispatched)
 
     def test_parse_chat_from_simulator(self) -> None:
         source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

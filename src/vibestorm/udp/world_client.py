@@ -39,6 +39,7 @@ from vibestorm.bus.events import (
     ChatLocal,
     ChatOutbound,
     InventorySnapshotReady,
+    LayerDataReceived,
     RegionChanged,
     RegionMapTileReady,
     SessionClosed,
@@ -245,6 +246,29 @@ class WorldClient:
                         cache_path=path,
                     )
                 )
+        elif kind == "terrain.layer_data":
+            # detail looks like ``type=0x4c bytes=NN``. Pull the type
+            # back out and republish the most-recent blob from the
+            # session — the session is the source of truth, the
+            # SessionEvent is just the trigger.
+            parts = _kv_split(event.detail)
+            type_str = parts.get("type")
+            if type_str is None:
+                return
+            try:
+                layer_type = int(type_str, 16) if type_str.startswith("0x") else int(type_str)
+            except ValueError:
+                return
+            data = session.latest_layer_data.get(layer_type)
+            if data is None:
+                return
+            self.bus.publish(
+                LayerDataReceived(
+                    region_handle=handle,
+                    layer_type=layer_type,
+                    data=data,
+                )
+            )
         elif kind == "caps.inventory" and session.latest_inventory_fetch is not None:
             self.bus.publish(
                 InventorySnapshotReady(

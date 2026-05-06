@@ -106,12 +106,31 @@ class RegionMapTileReady:
     cache_path: str  # absolute path to the cached PNG
 
 
+# ---- terrain --------------------------------------------------------------
+
+@dataclass(slots=True, frozen=True)
+class LayerDataReceived:
+    """A LayerData packet arrived on the wire.
+
+    The payload is the **raw, undecoded** Data block — patch decoding
+    (DCT coefficients + IDCT) lives in ``vibestorm.world.terrain``
+    rather than here so subscribers that only care about packet
+    receipt (logging, capture, replay) don't pay the decode cost.
+    Real consumers (the 3D renderer's terrain mesh) re-decode the
+    payload through that module.
+    """
+    region_handle: int
+    layer_type: int
+    data: bytes
+
+
 __all__ = [
     "ChatAlert",
     "ChatIM",
     "ChatLocal",
     "ChatOutbound",
     "InventorySnapshotReady",
+    "LayerDataReceived",
     "LoginComplete",
     "RegionChanged",
     "RegionMapTileReady",

@@ -263,6 +263,35 @@ class ChatFromSimulatorMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class LayerDataMessage:
+    """Decoded LayerData wire shape.
+
+    The packet body is just ``Type (U8) | Data (Variable 2)``. ``data``
+    is the raw, bit-packed terrain/wind/cloud blob — patch decoding
+    happens in ``vibestorm.world.terrain`` so capture/log paths can
+    inspect packets without paying the IDCT cost.
+
+    ``Type`` byte conventions (per libomv terrain.cs):
+      0x4C 'L' — Land (16x16 patches, normal 256m region)
+      0x57 'W' — Wind
+      0x37 '7' — Cloud
+      0x4D 'M' — LandExtended (variable-region terrain)
+      0x39 '9' — WindExtended
+      0x38 '8' — CloudExtended
+    """
+    layer_type: int
+    data: bytes
+
+
+LAYER_TYPE_LAND: int = 0x4C  # 'L'
+LAYER_TYPE_WIND: int = 0x57  # 'W'
+LAYER_TYPE_CLOUD: int = 0x37  # '7'
+LAYER_TYPE_LAND_EXTENDED: int = 0x4D  # 'M'
+LAYER_TYPE_WIND_EXTENDED: int = 0x39  # '9'
+LAYER_TYPE_CLOUD_EXTENDED: int = 0x38  # '8'
+
+
+@dataclass(slots=True, frozen=True)
 class ImprovedInstantMessageMessage:
     agent_id: UUID
     session_id: UUID
@@ -1704,6 +1733,35 @@ def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMess
         position=position,  # type: ignore[arg-type]
         message=chat_message,
     )
+
+
+def parse_layer_data(message: MessageDispatch) -> LayerDataMessage:
+    """Decode a LayerData packet into ``LayerDataMessage``.
+
+    Wire shape (per ``message_template.msg`` lines 3260–3273):
+      LayerID block:  Type      U8
+      LayerData block: Data    Variable 2  (U16 little-endian length prefix)
+
+    The Data blob is returned untouched; patch decoding is in
+    ``vibestorm.world.terrain``.
+    """
+    if message.summary.name != "LayerData":
+        raise MessageDecodeError(f"expected LayerData, got {message.summary.name}")
+
+    body = message.body
+    if len(body) < 1 + 2:
+        raise MessageDecodeError("LayerData body is too short")
+
+    layer_type = body[0]
+    data_len = int.from_bytes(body[1:3], "little")
+    data_end = 3 + data_len
+    if len(body) < data_end:
+        raise MessageDecodeError(
+            f"LayerData payload truncated: declared {data_len} bytes, "
+            f"only {len(body) - 3} available"
+        )
+
+    return LayerDataMessage(layer_type=layer_type, data=bytes(body[3:data_end]))
 
 
 def parse_object_update_summary(message: MessageDispatch) -> ObjectUpdateSummary:

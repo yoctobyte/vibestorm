@@ -504,6 +504,22 @@ shippable on its own. Cost annotations are rough.
     tripwire for view/projection sign errors after a user report
     that the 3D world looked upside-down (math is fine; the missing
     ground was the visual culprit). *(small)*
+6d-1. **LayerData packet parser + bus event.** *(done 2026-05-06.)*
+    Recognise the `LayerData` UDP packet on the wire (high-frequency
+    message #11). New `LayerDataMessage` dataclass + `parse_layer_data`
+    in `udp/messages.py` decode the simple `Type (U8) | Data
+    (Variable 2)` envelope; the Data blob is preserved untouched
+    (patch decoding lands in 6d-2/6d-3). Layer-type byte constants
+    surfaced as `LAYER_TYPE_LAND` / `LAYER_TYPE_WIND` /
+    `LAYER_TYPE_CLOUD` plus `*_EXTENDED` variants for variable-region
+    sims. `session.py` now buffers the latest blob per layer-type byte
+    on `LiveCircuitSession.latest_layer_data` and emits a
+    `terrain.layer_data` SessionEvent; `WorldClient.on_session_event`
+    bridges that to a typed `LayerDataReceived(region_handle,
+    layer_type, data)` bus event so consumers (renderer, capture/log)
+    don't have to re-parse detail strings. Five new tests cover the
+    parser (good/short/truncated) and the bus bridge (publishes when
+    blob is present, drops when missing).
 6c. **Drop 2D map-tile backdrop + add water plane.** *(done 2026-05-06.)*
     `PerspectiveRenderer.render()` was painting the map tile as a
     fullscreen 2D blit on the world surface (uploaded by the GL

@@ -68,6 +68,7 @@ from vibestorm.udp.messages import (
     parse_improved_instant_message,
     parse_improved_terse_object_update,
     parse_kill_object,
+    parse_layer_data,
     parse_map_block_reply,
     parse_object_update,
     parse_object_update_cached,
@@ -202,6 +203,12 @@ class LiveCircuitSession:
     region_map_image_id: UUID | None = None
     region_map_fetched: bool = False
     region_map_path: Path | None = None
+    # Most-recent LayerData blob per layer-type byte (0x4C 'L', 0x57 'W',
+    # 0x37 '7', etc.). Patches arrive incrementally — the wire-side
+    # session just keeps the latest blob; reassembly into a heightmap
+    # happens in ``vibestorm.world.terrain`` when the bus consumer
+    # decodes it.
+    latest_layer_data: dict[int, bytes] = field(default_factory=dict)
     resolved_capabilities: tuple[str, ...] = ()
     properties_requested: set[UUID] = field(default_factory=set)
     test_cube_spawned: bool = False
@@ -387,6 +394,20 @@ class LiveCircuitSession:
                     position=chat.position,
                     message=chat.message,
                 )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "LayerData":
+            try:
+                layer = parse_layer_data(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "terrain.layer_data.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self.latest_layer_data[layer.layer_type] = layer.data
+            self._record_event(
+                now,
+                "terrain.layer_data",
+                f"type={layer.layer_type:#04x} bytes={len(layer.data)}",
+            )
             return self._flush_transport_packets(now)
 
         if dispatched.summary.name == "StartPingCheck":

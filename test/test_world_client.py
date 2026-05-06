@@ -145,6 +145,46 @@ class WorldClientBusBridgeTests(unittest.TestCase):
         self.assertEqual(received[0].message, "hello world")
         self.assertEqual(received[0].region_handle, (256 << 32) | 512)
 
+    def test_layer_data_session_event_publishes_typed_layerdatareceived(self) -> None:
+        from vibestorm.bus.events import LayerDataReceived
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[LayerDataReceived] = []
+        client.bus.subscribe(LayerDataReceived, received.append)
+
+        # The session is the source of truth for raw layer bytes; the
+        # SessionEvent only carries metadata (type/size).
+        payload = bytes(range(48))
+        session.latest_layer_data[0x4C] = payload
+
+        session._record_event(
+            14.0,
+            "terrain.layer_data",
+            f"type=0x4c bytes={len(payload)}",
+        )
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].layer_type, 0x4C)
+        self.assertEqual(received[0].data, payload)
+        self.assertEqual(received[0].region_handle, (256 << 32) | 512)
+
+    def test_layer_data_event_without_session_blob_is_dropped(self) -> None:
+        # Defensive: if a stale event somehow fires before/after the
+        # session blob is populated, the bridge must not raise.
+        from vibestorm.bus.events import LayerDataReceived
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[LayerDataReceived] = []
+        client.bus.subscribe(LayerDataReceived, received.append)
+
+        session._record_event(15.0, "terrain.layer_data", "type=0x4c bytes=0")
+
+        self.assertEqual(received, [])
+
     def test_chat_outbound_session_event_publishes_typed_chatoutbound(self) -> None:
         from vibestorm.bus.events import ChatOutbound
 
