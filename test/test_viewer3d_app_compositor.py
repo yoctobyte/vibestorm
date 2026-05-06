@@ -167,11 +167,11 @@ class CompositeFrameTests(unittest.TestCase):
             compositor.release()
 
 
-class PerspectiveTileBackgroundTests(unittest.TestCase):
-    """The placeholder reads scene.map_tile_path and blits the PNG
-    fullscreen when one is available. Without a tile, it falls back to
-    PLACEHOLDER_BG. This is what the compositor uploads as the textured
-    quad in step 5b-ii."""
+class PerspectiveSkyBackgroundTests(unittest.TestCase):
+    """The 3D renderer fills the world surface with a sky colour and
+    leaves the map tile to the GL ground quad — earlier versions blitted
+    the tile fullscreen, which hid the actual 3D ground behind a
+    look-alike."""
 
     def setUp(self) -> None:
         try:
@@ -185,9 +185,9 @@ class PerspectiveTileBackgroundTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.pygame.quit()
 
-    def test_falls_back_to_placeholder_bg_without_tile(self) -> None:
+    def test_world_surface_is_sky_when_no_tile(self) -> None:
         from vibestorm.viewer3d.camera import Camera3D
-        from vibestorm.viewer3d.perspective import PLACEHOLDER_BG, PerspectiveRenderer
+        from vibestorm.viewer3d.perspective import SKY_COLOR, PerspectiveRenderer
         from vibestorm.viewer3d.scene import Scene
 
         renderer = PerspectiveRenderer(Camera3D())
@@ -196,20 +196,20 @@ class PerspectiveTileBackgroundTests(unittest.TestCase):
         renderer.render(surface, Scene())
 
         corner = surface.get_at((1, 1))
-        self.assertEqual((corner.r, corner.g, corner.b), PLACEHOLDER_BG)
+        self.assertEqual((corner.r, corner.g, corner.b), SKY_COLOR)
 
-    def test_blits_map_tile_when_path_set(self) -> None:
-        # Write a small PNG with a distinctive corner colour, point Scene
-        # at it, then verify the rendered surface's corner matches.
+    def test_world_surface_stays_sky_even_when_map_tile_path_set(self) -> None:
+        # The map tile lives on the GL ground from step 6b; the world
+        # surface must NOT blit it as a 2D background anymore.
         import tempfile
         from pathlib import Path
 
         from vibestorm.viewer3d.camera import Camera3D
-        from vibestorm.viewer3d.perspective import PLACEHOLDER_BG, PerspectiveRenderer
+        from vibestorm.viewer3d.perspective import SKY_COLOR, PerspectiveRenderer
         from vibestorm.viewer3d.scene import Scene
 
         tile = self.pygame.Surface((32, 32))
-        tile.fill((30, 200, 90))  # distinctive green
+        tile.fill((30, 200, 90))
         with tempfile.TemporaryDirectory() as tmp:
             tile_path = Path(tmp) / "region.png"
             self.pygame.image.save(tile, str(tile_path))
@@ -223,34 +223,7 @@ class PerspectiveTileBackgroundTests(unittest.TestCase):
             renderer.render(surface, scene)
 
             corner = surface.get_at((1, 1))
-            # Tile corner should now be visible (some shade of green),
-            # not the dark PLACEHOLDER_BG.
-            self.assertNotEqual((corner.r, corner.g, corner.b), PLACEHOLDER_BG)
-            self.assertGreater(corner.g, 100)
-
-    def test_clear_caches_drops_loaded_tile(self) -> None:
-        import tempfile
-        from pathlib import Path
-
-        from vibestorm.viewer3d.camera import Camera3D
-        from vibestorm.viewer3d.perspective import PerspectiveRenderer
-        from vibestorm.viewer3d.scene import Scene
-
-        tile = self.pygame.Surface((8, 8))
-        tile.fill((100, 100, 100))
-        with tempfile.TemporaryDirectory() as tmp:
-            tile_path = Path(tmp) / "region.png"
-            self.pygame.image.save(tile, str(tile_path))
-
-            scene = Scene()
-            scene.map_tile_path = tile_path
-
-            renderer = PerspectiveRenderer(Camera3D())
-            renderer.render(self.pygame.Surface((32, 32)), scene)
-            self.assertIn(tile_path, renderer._tile_cache)
-
-            renderer.clear_caches()
-            self.assertEqual(renderer._tile_cache, {})
+            self.assertEqual((corner.r, corner.g, corner.b), SKY_COLOR)
 
 
 if __name__ == "__main__":

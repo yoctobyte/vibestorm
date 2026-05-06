@@ -42,9 +42,11 @@ if TYPE_CHECKING:
     from vibestorm.viewer3d.scene import Scene, SceneEntity
 
 
-PLACEHOLDER_BG: tuple[int, int, int] = (12, 16, 28)
-PLACEHOLDER_FG: tuple[int, int, int] = (140, 160, 200)
-PLACEHOLDER_ACCENT: tuple[int, int, int] = (255, 200, 80)
+# Sky colour used when the perspective renderer is asked for a 2D
+# world surface. The fullscreen quad uploaded by the compositor sits
+# under the GL pass, so this fills the sky above the horizon (and
+# anywhere the 3D ground/cubes don't draw).
+SKY_COLOR: tuple[int, int, int] = (60, 110, 160)
 
 
 _FLOATS_PER_INSTANCE = 16 + 3  # mat4 + vec3 tint
@@ -210,8 +212,6 @@ class PerspectiveRenderer:
     def __init__(self, camera: Camera3D, *, ctx: moderngl.Context | None = None) -> None:
         self.camera = camera
         self.ctx = ctx
-        self._font = None  # type: object | None
-        self._tile_cache: dict[Path, pygame.Surface] = {}
 
         # GL resources are allocated lazily so renderer construction
         # stays cheap when ctx is None (test harnesses without GL).
@@ -236,42 +236,17 @@ class PerspectiveRenderer:
         del dt, scene
 
     def render(self, surface: pygame.Surface, scene: Scene) -> None:
-        import pygame
+        """Fill the world surface with sky.
 
-        sw, sh = surface.get_size()
-        if not self._draw_map_tile_background(pygame, surface, scene, (sw, sh)):
-            surface.fill(PLACEHOLDER_BG)
-
-        cx, cy = sw // 2, sh // 2
-
-        pygame.draw.line(surface, PLACEHOLDER_FG, (cx - 30, cy), (cx + 30, cy), 2)
-        pygame.draw.line(surface, PLACEHOLDER_FG, (cx, cy - 30), (cx, cy + 30), 2)
-        pygame.draw.circle(surface, PLACEHOLDER_ACCENT, (cx, cy), 6, width=2)
-
-        font = self._get_font(pygame)
-        if font is None:
-            return
-
-        if self.ctx is None:
-            label_text = "Vibestorm 3D — software fallback (no GL context)"
-        else:
-            label_text = "Vibestorm 3D — geometry rendered above this background"
-        label = font.render(label_text, True, PLACEHOLDER_FG)
-        surface.blit(label, label.get_rect(center=(cx, cy + 60)))
-
-        cam_text = (
-            f"camera.mode={self.camera.mode}  "
-            f"target=({self.camera.target[0]:.1f}, {self.camera.target[1]:.1f}, "
-            f"{self.camera.target[2]:.1f})  "
-            f"distance={self.camera.distance:.1f}m"
-        )
-        cam_label = font.render(cam_text, True, PLACEHOLDER_FG)
-        surface.blit(cam_label, cam_label.get_rect(center=(cx, cy + 90)))
-
-        ent_count = len(scene.object_entities) + len(scene.avatar_entities)
-        ent_text = f"scene entities={ent_count}  sun_phase={scene.sun_phase}"
-        ent_label = font.render(ent_text, True, PLACEHOLDER_FG)
-        surface.blit(ent_label, ent_label.get_rect(center=(cx, cy + 116)))
+        The map tile is drawn by the 3D pass as a textured ground
+        quad (step 6b); the world surface only provides the sky/skyline
+        backdrop above the horizon. Painting the map tile here as a
+        fullscreen 2D image hid the actual 3D ground behind a look-alike
+        quad, which is why the surface mesh appeared invisible despite
+        rendering correctly.
+        """
+        del scene
+        surface.fill(SKY_COLOR)
 
     # -------------------------------------------------------------- GL pass
 
@@ -321,13 +296,12 @@ class PerspectiveRenderer:
     # -------------------------------------------------------------- caches
 
     def clear_caches(self) -> None:
-        """Drop tile cache and release GL resources.
+        """Release GL resources.
 
         Called by the app on render-mode swap and on shutdown. After
         ``clear_caches`` the renderer is no longer usable; build a new
         instance to render again.
         """
-        self._tile_cache.clear()
         for mesh in self._shape_meshes.values():
             mesh.vao.release()
             mesh.ibo.release()
@@ -529,43 +503,5 @@ class PerspectiveRenderer:
             )
             self._shape_meshes[shape_key] = mesh
         self._instance_capacity = new_capacity
-
-    def _draw_map_tile_background(
-        self,
-        pygame_module,
-        surface: pygame.Surface,
-        scene: Scene,
-        size: tuple[int, int],
-    ) -> bool:
-        path = scene.map_tile_path
-        if path is None:
-            return False
-        tile = self._load_tile(pygame_module, path)
-        if tile is None:
-            return False
-        scaled = pygame_module.transform.smoothscale(tile, size)
-        surface.blit(scaled, (0, 0))
-        return True
-
-    def _load_tile(self, pygame_module, path: Path) -> pygame.Surface | None:
-        cached = self._tile_cache.get(path)
-        if cached is not None:
-            return cached
-        try:
-            tile = pygame_module.image.load(str(path)).convert_alpha()
-        except (pygame_module.error, FileNotFoundError):
-            return None
-        self._tile_cache[path] = tile
-        return tile
-
-    def _get_font(self, pygame_module) -> object | None:
-        if self._font is not None:
-            return self._font
-        try:
-            self._font = pygame_module.font.SysFont(None, 20)
-        except (pygame_module.error, RuntimeError):
-            return None
-        return self._font
-
 
 __all__ = ["PerspectiveRenderer", "model_matrix"]

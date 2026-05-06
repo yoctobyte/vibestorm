@@ -45,9 +45,12 @@ class PerspectiveRendererPlaceholderTests(unittest.TestCase):
         self.assertEqual(scene.object_entities, {})
         self.assertEqual(scene.avatar_entities, {})
 
-    def test_render_fills_surface_with_placeholder_background(self) -> None:
+    def test_render_fills_world_surface_with_sky(self) -> None:
+        # The world surface is now a sky backdrop only — the map tile
+        # is rendered as a 3D ground quad in render_gl, not as a
+        # fullscreen 2D blit.
         from vibestorm.viewer3d.camera import Camera3D
-        from vibestorm.viewer3d.perspective import PLACEHOLDER_BG, PerspectiveRenderer
+        from vibestorm.viewer3d.perspective import SKY_COLOR, PerspectiveRenderer
         from vibestorm.viewer3d.scene import Scene
 
         renderer = PerspectiveRenderer(Camera3D())
@@ -57,10 +60,9 @@ class PerspectiveRendererPlaceholderTests(unittest.TestCase):
 
         renderer.render(surface, scene)
 
-        # A corner pixel should now match the dark placeholder background.
-        # (The crosshair is in the middle, so the corner is unaffected.)
-        corner = surface.get_at((0, 0))
-        self.assertEqual((corner.r, corner.g, corner.b), PLACEHOLDER_BG)
+        for x, y in ((0, 0), (160, 120), (319, 239)):
+            px = surface.get_at((x, y))
+            self.assertEqual((px.r, px.g, px.b), SKY_COLOR)
 
     def test_render_does_not_crash_when_camera_in_orbit_mode(self) -> None:
         # The placeholder reads camera.mode/world_center/zoom for its label.
