@@ -504,6 +504,24 @@ shippable on its own. Cost annotations are rough.
     tripwire for view/projection sign errors after a user report
     that the 3D world looked upside-down (math is fine; the missing
     ground was the visual culprit). *(small)*
+6d-2. **Terrain bitstream reader + patch-header decoder.** *(done 2026-05-06.)*
+    New module `src/vibestorm/world/terrain.py` with a libomv-compatible
+    `BitPack` (MSB-first within each byte; `unpack_float` reinterprets
+    32 bits as a little-endian IEEE float, matching libomv's
+    BitConverter dance) and a symmetric `BitPackWriter` for tests.
+    `decode_layer_blob(data)` walks a complete LayerData payload and
+    returns a `GroupHeader` (stride/patch_size/layer_type) plus a list
+    of `DecodedPatch` records — each carries a `PatchHeader`
+    (quant_wbits/dc_offset/range/patch_x/patch_y, with
+    `word_bits`/`prequant` properties) and its 256 raw quantised
+    coefficients. End-of-data is the libomv `0x97` marker on a patch
+    boundary. `iter_patch_headers` is a coefficient-skipping helper
+    for log/replay paths. 12 tests cover bit-level reads (MSB-first,
+    cross-byte, end-of-stream, oversize), float round-trip via the
+    writer, group-header + multi-patch-header decode, and the
+    coefficient walk (zero-block EOB, mixed +/-/0 with explicit
+    bit-pattern fixtures). Dequantisation + IDCT (recovering actual
+    elevation values) lands in 6d-3.
 6d-1. **LayerData packet parser + bus event.** *(done 2026-05-06.)*
     Recognise the `LayerData` UDP packet on the wire (high-frequency
     message #11). New `LayerDataMessage` dataclass + `parse_layer_data`
