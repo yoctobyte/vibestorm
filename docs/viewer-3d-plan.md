@@ -504,8 +504,25 @@ shippable on its own. Cost annotations are rough.
     tripwire for view/projection sign errors after a user report
     that the 3D world looked upside-down (math is fine; the missing
     ground was the visual culprit). *(small)*
-7. **Primitive library.** Add sphere/cylinder/torus/prism meshes; pick by
-   `SceneEntity.shape`. *(medium)*
+7. **Primitive library.** *(done 2026-05-06.)*
+    - 7a (pure Python): new `src/vibestorm/viewer3d/meshes.py` with
+      `cube_mesh`/`sphere_mesh`/`cylinder_mesh`/`torus_mesh`/`prism_mesh`
+      authors. Each returns `(vertices_xyz, indices_uint)` flat tuples;
+      every primitive fits a 1 m unit cube so per-entity `scale` maps
+      1:1 to "metres along each local axis". 13 tests verify counts
+      and bounds.
+    - 7b (GL plumbing): `PerspectiveRenderer` replaces its single
+      cube VBO/IBO/VAO with a `dict[shape_key, _ShapeMesh]` populated
+      from `meshes.py`. `render_gl` groups entities by
+      `SceneEntity.shape` (with aliases `ring → torus`, `tube → cube`,
+      and a cube fallback for `None`/unknown), uploads instance data
+      per shape group into a shared instance VBO, and issues one
+      instanced draw per group. Buffer growth recreates every shape's
+      VAO since they each record the (now stale) buffer binding.
+      9 new tests in `test_viewer3d_perspective_gl.py`: 5 GL tests
+      verify each shape (and `None`/unknown fallbacks) renders
+      tinted pixels at the framebuffer centre, plus 4 pure-Python
+      tests for the grouping/aliasing logic.
 8. **Lighting + fog.** Directional light from `sun_phase`; ambient;
    exponential fog. *(small)*
 9. **Camera modes.** Orbit, Eye, Free. *(medium; mostly input glue)*
@@ -528,14 +545,13 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 
 ## Recommendation
 
-Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, 5b-ii, 6, and 6b are done.
-The fork now renders real 3D geometry: a textured ground quad covers
-the region floor at Z=0, with one tinted unit cube per `SceneEntity`
+Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, 5b-ii, 6, 6b, and 7 are
+done. The fork now renders real 3D geometry: a textured ground quad
+covers the region floor at Z=0, with one cube/sphere/cylinder/torus/
+prism per `SceneEntity` (chosen from the path/profile classifier)
 above it, drawn through a perspective projection with depth testing
-and the HUD composited on top via the existing GL compositor. **The
-minimum viable 3D mode is shippable.** Next is step 7: primitive
-library — pick the cube / sphere / cylinder / torus / prism mesh
-from `SceneEntity.shape` (already populated by step 1b-ii) so the
-world stops rendering as boxes-everywhere. After that, step 8 lights
-the scene from `Scene.sun_phase`. Skip 2.5D unless a concrete need
-emerges.
+and the HUD composited on top via the existing GL compositor.
+**The minimum viable 3D mode is shippable.** Next is step 8: light
+the scene from `Scene.sun_phase` and add exponential fog so the
+flat-tinted primitives gain volumetric cues. Skip 2.5D unless a
+concrete need emerges.

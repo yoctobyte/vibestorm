@@ -73,10 +73,14 @@ class PerspectiveRendererGLTests(_GLTestBase):
 
         try:
             self.assertIsNotNone(renderer._program)
-            self.assertIsNotNone(renderer._vao)
-            self.assertIsNotNone(renderer._vbo)
-            self.assertIsNotNone(renderer._ibo)
             self.assertIsNotNone(renderer._instance_vbo)
+            # Step 7b ships the full primitive library — every shape
+            # has its own VBO/IBO/VAO bound against the shared
+            # instance buffer.
+            for key in ("cube", "sphere", "cylinder", "torus", "prism"):
+                mesh = renderer._shape_meshes.get(key)
+                self.assertIsNotNone(mesh, f"missing GL mesh for {key!r}")
+                self.assertGreater(mesh.index_count, 0)
         finally:
             renderer.clear_caches()
 
@@ -194,7 +198,7 @@ class PerspectiveRendererInstanceGrowthTests(_GLTestBase):
         renderer.clear_caches()
 
         self.assertIsNone(renderer._program)
-        self.assertIsNone(renderer._vao)
+        self.assertEqual(renderer._shape_meshes, {})
         self.assertEqual(renderer._instance_capacity, 0)
         self.assertIsNone(renderer._ground_program)
         self.assertIsNone(renderer._ground_vao)
@@ -303,6 +307,169 @@ class PerspectiveRendererGroundTests(_GLTestBase):
         finally:
             tile_a.unlink(missing_ok=True)
             tile_b.unlink(missing_ok=True)
+
+
+class PerspectiveRendererShapeDispatchTests(_GLTestBase):
+    """Step 7b: per-shape dispatch in render_gl."""
+
+    @staticmethod
+    def _entity(local_id: int, shape, tint=(40, 200, 60)):
+        from vibestorm.viewer3d.scene import SceneEntity
+
+        return SceneEntity(
+            local_id=local_id,
+            pcode=9,
+            kind="prim",
+            position=(0.0, 0.0, 0.0),
+            scale=(2.0, 2.0, 2.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=shape,
+            default_texture_id=None,
+            name=None,
+            tint=tint,
+        )
+
+    def _render_shape_at_origin(self, shape):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = Camera3D(
+            target=(0.0, 0.0, 0.0),
+            distance=5.0,
+            yaw=0.0,
+            pitch=0.0,
+        )
+        camera.set_mode("orbit")
+
+        scene = Scene()
+        scene.object_entities[1] = self._entity(1, shape)
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+        finally:
+            renderer.clear_caches()
+
+    def test_sphere_shape_renders_tinted_pixels(self) -> None:
+        r, g, b, _ = self._render_shape_at_origin("sphere")
+        self.assertGreater(g, 150, f"sphere center should be green-tinted; got {(r, g, b)}")
+        self.assertLess(r, 80)
+        self.assertLess(b, 100)
+
+    def test_cylinder_shape_renders_tinted_pixels(self) -> None:
+        r, g, b, _ = self._render_shape_at_origin("cylinder")
+        self.assertGreater(g, 150, f"cylinder center should be green-tinted; got {(r, g, b)}")
+
+    def test_prism_shape_renders_tinted_pixels(self) -> None:
+        r, g, b, _ = self._render_shape_at_origin("prism")
+        self.assertGreater(g, 150, f"prism center should be green-tinted; got {(r, g, b)}")
+
+    def test_unknown_shape_falls_back_to_cube(self) -> None:
+        # An unknown shape string must fall back to the default cube
+        # mesh, not raise — defensive against ObjectUpdate path/profile
+        # combinations the classifier hasn't categorised yet.
+        r, g, b, _ = self._render_shape_at_origin("not-a-real-shape")
+        self.assertGreater(g, 150)
+
+    def test_shape_none_falls_back_to_cube(self) -> None:
+        # Avatars currently leave shape=None; they must still render.
+        r, g, b, _ = self._render_shape_at_origin(None)
+        self.assertGreater(g, 150)
+
+
+class GroupEntitiesByShapeTests(unittest.TestCase):
+    """Pure-Python tests for the shape bucketing logic."""
+
+    @staticmethod
+    def _make_scene_with(shapes):
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        for i, shape in enumerate(shapes):
+            scene.object_entities[i] = SceneEntity(
+                local_id=i,
+                pcode=9,
+                kind="prim",
+                position=(0.0, 0.0, 0.0),
+                scale=(1.0, 1.0, 1.0),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape=shape,
+                default_texture_id=None,
+                name=None,
+                tint=(255, 255, 255),
+            )
+        return scene
+
+    def _grouper(self):
+        # _group_entities_by_shape needs ``self._shape_meshes`` populated
+        # so the alias/fallback resolution can verify membership. Use a
+        # no-ctx renderer and seed the dict manually.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        renderer = PerspectiveRenderer(Camera3D(), ctx=None)
+        for key in ("cube", "sphere", "cylinder", "torus", "prism"):
+            renderer._shape_meshes[key] = object()  # sentinel — not touched
+        return renderer
+
+    def test_aliases_ring_to_torus_and_tube_to_cube(self) -> None:
+        renderer = self._grouper()
+        scene = self._make_scene_with(["ring", "tube"])
+
+        groups = renderer._group_entities_by_shape(scene)
+
+        self.assertIn("torus", groups)
+        self.assertIn("cube", groups)
+        self.assertEqual(len(groups["torus"]), 1)
+        self.assertEqual(len(groups["cube"]), 1)
+
+    def test_none_shape_falls_back_to_cube(self) -> None:
+        renderer = self._grouper()
+        scene = self._make_scene_with([None, None, "sphere"])
+
+        groups = renderer._group_entities_by_shape(scene)
+
+        self.assertEqual(len(groups["cube"]), 2)
+        self.assertEqual(len(groups["sphere"]), 1)
+
+    def test_unknown_shape_falls_back_to_cube(self) -> None:
+        renderer = self._grouper()
+        scene = self._make_scene_with(["fictional"])
+
+        groups = renderer._group_entities_by_shape(scene)
+
+        self.assertEqual(list(groups.keys()), ["cube"])
+
+    def test_avatars_join_object_groups(self) -> None:
+        # Avatars are stored in scene.avatar_entities but should
+        # bucket alongside object prims of the same shape.
+        from vibestorm.viewer3d.scene import SceneEntity
+
+        renderer = self._grouper()
+        scene = self._make_scene_with(["sphere"])
+        scene.avatar_entities[100] = SceneEntity(
+            local_id=100,
+            pcode=47,
+            kind="avatar",
+            position=(0.0, 0.0, 0.0),
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=None,
+            default_texture_id=None,
+            name=None,
+            tint=(255, 200, 80),
+        )
+
+        groups = renderer._group_entities_by_shape(scene)
+
+        self.assertEqual(len(groups["sphere"]), 1)
+        self.assertEqual(len(groups["cube"]), 1)
 
 
 if __name__ == "__main__":

@@ -1,28 +1,28 @@
 """3D perspective renderer for the viewer3d fork.
 
-Step 6 v0:
+Pipeline:
 
-- Software ``render(world_surface, scene)`` keeps blitting the cached
-  region map tile so the compositor uploads it as a fullscreen quad
-  (the "ground"). This is the same path step 5b-ii introduced.
-- ``render_gl(scene, aspect)`` then draws geometry directly to the GL
-  framebuffer: one instanced unit cube per ``SceneEntity``, transformed
-  by per-instance model matrices and tinted by ``SceneEntity.tint``.
-  A perspective projection paired with ``Camera3D.view_matrix()``
-  drives the camera; depth testing keeps cubes correctly occluded.
+- Software ``render(world_surface, scene)`` blits the cached map tile
+  so the compositor still has a world quad even before the GL pass
+  paints over it.
+- ``render_gl(scene, aspect)`` draws geometry directly to the GL
+  framebuffer: a textured ground floor at Z=0 (step 6b) followed by
+  per-shape instanced primitive draws — one VAO per shape from
+  ``vibestorm.viewer3d.meshes`` (step 7) keyed by ``SceneEntity.shape``.
+  Each draw call uses the shared instance VBO, so an entity's
+  ``position``/``scale``/``rotation``/``tint`` flows through model
+  matrices regardless of mesh type.
 
-What's deliberately omitted in v0:
+Deliberate omissions:
 
 - Lighting / shading. Cubes render flat-tinted; ``Scene.sun_phase``
   feeds in step 8.
-- Sphere/cylinder/torus/prism primitives. Step 7 picks the mesh
-  per ``SceneEntity.shape``.
-- Per-face textures, mesh, sculpt geometry. Each of those is its
-  own pipeline.
-- Avatar capsules / billboards. v0 boxes them too.
+- Per-face textures, mesh, sculpt geometry. Each is its own pipeline.
+- Avatar capsules / billboards. Avatars currently fall through to
+  the cube fallback (no shape classification on PCODE_AVATAR).
 
 The class accepts an optional ``moderngl.Context``. When ``ctx`` is
-``None`` (e.g. in unit tests with no GL available) ``render_gl`` is a
+``None`` (e.g. unit tests with no GL available) ``render_gl`` is a
 no-op — ``render`` still draws the placeholder background and labels
 so swap-mechanism tests keep working without GL.
 """
@@ -30,6 +30,7 @@ so swap-mechanism tests keep working without GL.
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,40 +47,21 @@ PLACEHOLDER_FG: tuple[int, int, int] = (140, 160, 200)
 PLACEHOLDER_ACCENT: tuple[int, int, int] = (255, 200, 80)
 
 
-# Unit cube centred at origin, side length 1. 8 unique vertices indexed
-# by 36 vertex indices (12 triangles, 6 faces). Winding is CCW from the
-# outside; back-face culling stays off in v0 so winding errors don't
-# silently hide a face.
-_CUBE_VERTICES: tuple[float, ...] = (
-    -0.5, -0.5, -0.5,  # 0
-     0.5, -0.5, -0.5,  # 1
-     0.5,  0.5, -0.5,  # 2
-    -0.5,  0.5, -0.5,  # 3
-    -0.5, -0.5,  0.5,  # 4
-     0.5, -0.5,  0.5,  # 5
-     0.5,  0.5,  0.5,  # 6
-    -0.5,  0.5,  0.5,  # 7
-)
-
-_CUBE_INDICES: tuple[int, ...] = (
-    # Bottom (Z = -0.5) — viewed from below, CCW
-    0, 2, 1,  0, 3, 2,
-    # Top (Z = +0.5) — viewed from above, CCW
-    4, 5, 6,  4, 6, 7,
-    # Front (Y = +0.5)
-    3, 7, 6,  3, 6, 2,
-    # Back (Y = -0.5)
-    0, 1, 5,  0, 5, 4,
-    # Right (X = +0.5)
-    1, 2, 6,  1, 6, 5,
-    # Left (X = -0.5)
-    0, 4, 7,  0, 7, 3,
-)
-
-
 _FLOATS_PER_INSTANCE = 16 + 3  # mat4 + vec3 tint
 _BYTES_PER_INSTANCE = _FLOATS_PER_INSTANCE * 4
 _INITIAL_INSTANCE_CAPACITY = 1024
+
+# Mesh used when ``SceneEntity.shape`` is ``None`` (avatars, trees with
+# no shape classification, future entity kinds). Cubes are forgiving
+# — wrong size is obvious, wrong shape is not catastrophic.
+_DEFAULT_SHAPE_KEY: str = "cube"
+
+# Aliases from PrimShape values to the underlying mesh used. Tube/ring
+# don't have purpose-built meshes yet — fall back to the closest match.
+_SHAPE_ALIASES: dict[str, str] = {
+    "tube": "cube",
+    "ring": "torus",
+}
 
 
 _VERTEX_SHADER = """
@@ -207,6 +189,21 @@ def model_matrix(
     )
 
 
+@dataclass(slots=True)
+class _ShapeMesh:
+    """GL resources for one primitive mesh.
+
+    The VBO/IBO are owned for the lifetime of the renderer; the VAO is
+    rebuilt whenever the shared instance buffer is reallocated (its
+    binding is recorded inside the VAO at construction time).
+    """
+
+    vbo: object  # moderngl.Buffer
+    ibo: object  # moderngl.Buffer
+    vao: object  # moderngl.VertexArray
+    index_count: int
+
+
 class PerspectiveRenderer:
     """3D renderer. Software map-tile background + native GL geometry."""
 
@@ -219,10 +216,8 @@ class PerspectiveRenderer:
         # GL resources are allocated lazily so renderer construction
         # stays cheap when ctx is None (test harnesses without GL).
         self._program = None  # type: moderngl.Program | None
-        self._vbo = None  # type: moderngl.Buffer | None
-        self._ibo = None  # type: moderngl.Buffer | None
         self._instance_vbo = None  # type: moderngl.Buffer | None
-        self._vao = None  # type: moderngl.VertexArray | None
+        self._shape_meshes: dict[str, _ShapeMesh] = {}
         self._instance_capacity = 0
         # Ground (region floor) — separate program because the cubes are
         # flat-tinted while the ground samples a texture.
@@ -281,14 +276,15 @@ class PerspectiveRenderer:
     # -------------------------------------------------------------- GL pass
 
     def render_gl(self, scene: Scene, *, aspect: float) -> None:
-        """Draw the region ground + one cube per scene entity.
+        """Draw the region ground + one mesh per scene entity.
 
-        Order: ground floor first, cubes second, both with depth test
-        on so cubes occlude the ground correctly. Depth test is left
-        disabled at the end so the HUD overlay quad composites normally.
+        Entities are grouped by ``SceneEntity.shape`` so each primitive
+        shape is drawn with one instanced draw call against its own
+        mesh. Order: ground floor first, primitives second, both with
+        depth test on so primitives occlude the ground correctly.
         """
         ctx = self.ctx
-        if ctx is None or self._program is None or self._vao is None:
+        if ctx is None or self._program is None or not self._shape_meshes:
             return
         if aspect <= 0.0:
             return
@@ -299,7 +295,7 @@ class PerspectiveRenderer:
         proj_data = struct.pack("16f", *proj)
 
         self._upload_ground_texture(ctx, scene)
-        instance_count = self._upload_instances(ctx, scene)
+        groups = self._group_entities_by_shape(scene)
 
         ctx.enable(ctx.DEPTH_TEST)
         try:
@@ -310,10 +306,13 @@ class PerspectiveRenderer:
                 assert self._ground_vao is not None
                 self._ground_vao.render()
 
-            if instance_count > 0:
+            if groups:
                 self._program["u_view"].write(view_data)
                 self._program["u_proj"].write(proj_data)
-                self._vao.render(instances=instance_count)
+                for shape_key, entities in groups.items():
+                    mesh = self._shape_meshes[shape_key]
+                    self._upload_instances_for(ctx, entities)
+                    mesh.vao.render(instances=len(entities))
         finally:
             # Leave the depth state predictable for the HUD overlay
             # quad and the next frame's compositor draws.
@@ -329,11 +328,13 @@ class PerspectiveRenderer:
         instance to render again.
         """
         self._tile_cache.clear()
+        for mesh in self._shape_meshes.values():
+            mesh.vao.release()
+            mesh.ibo.release()
+            mesh.vbo.release()
+        self._shape_meshes.clear()
         for resource in (
-            self._vao,
             self._instance_vbo,
-            self._ibo,
-            self._vbo,
             self._program,
             self._ground_vao,
             self._ground_ibo,
@@ -343,10 +344,7 @@ class PerspectiveRenderer:
         ):
             if resource is not None:
                 resource.release()
-        self._vao = None
         self._instance_vbo = None
-        self._ibo = None
-        self._vbo = None
         self._program = None
         self._instance_capacity = 0
         self._ground_vao = None
@@ -359,30 +357,41 @@ class PerspectiveRenderer:
     # -------------------------------------------------------------- helpers
 
     def _setup_gl(self, ctx: moderngl.Context) -> None:
+        from vibestorm.viewer3d import meshes
+
         self._program = ctx.program(
             vertex_shader=_VERTEX_SHADER,
             fragment_shader=_FRAGMENT_SHADER,
-        )
-        self._vbo = ctx.buffer(
-            struct.pack(f"{len(_CUBE_VERTICES)}f", *_CUBE_VERTICES)
-        )
-        self._ibo = ctx.buffer(
-            struct.pack(f"{len(_CUBE_INDICES)}I", *_CUBE_INDICES)
         )
         self._instance_capacity = _INITIAL_INSTANCE_CAPACITY
         self._instance_vbo = ctx.buffer(
             reserve=self._instance_capacity * _BYTES_PER_INSTANCE,
             dynamic=True,
         )
-        self._vao = ctx.vertex_array(
-            self._program,
-            [
-                (self._vbo, "3f", "in_pos"),
-                (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
-            ],
-            index_buffer=self._ibo,
-            index_element_size=4,
-        )
+
+        shape_authors = {
+            "cube": meshes.cube_mesh,
+            "sphere": meshes.sphere_mesh,
+            "cylinder": meshes.cylinder_mesh,
+            "torus": meshes.torus_mesh,
+            "prism": meshes.prism_mesh,
+        }
+        for shape_key, author in shape_authors.items():
+            verts, indices = author()
+            vbo = ctx.buffer(struct.pack(f"{len(verts)}f", *verts))
+            ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
+            vao = ctx.vertex_array(
+                self._program,
+                [
+                    (vbo, "3f", "in_pos"),
+                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                ],
+                index_buffer=ibo,
+                index_element_size=4,
+            )
+            self._shape_meshes[shape_key] = _ShapeMesh(
+                vbo=vbo, ibo=ibo, vao=vao, index_count=len(indices)
+            )
 
         self._ground_program = ctx.program(
             vertex_shader=_GROUND_VERTEX_SHADER,
@@ -403,34 +412,53 @@ class PerspectiveRenderer:
             index_element_size=4,
         )
 
-    def _upload_instances(self, ctx: moderngl.Context, scene: Scene) -> int:
-        entities: list[SceneEntity] = []
-        entities.extend(scene.object_entities.values())
-        entities.extend(scene.avatar_entities.values())
-        if not entities:
-            return 0
+    def _group_entities_by_shape(
+        self, scene: Scene
+    ) -> dict[str, list[SceneEntity]]:
+        """Bucket scene entities by mesh key, applying aliases / fallback.
 
+        Avatars and entities whose ``shape`` is ``None`` route to the
+        cube fallback. Tube/ring fall back to cube/torus per
+        ``_SHAPE_ALIASES``. Order is preserved within each bucket so
+        the on-screen layout is deterministic frame to frame.
+        """
+        groups: dict[str, list[SceneEntity]] = {}
+        for entity in (
+            *scene.object_entities.values(),
+            *scene.avatar_entities.values(),
+        ):
+            raw = entity.shape
+            shape_key = _SHAPE_ALIASES.get(raw, raw) if raw is not None else _DEFAULT_SHAPE_KEY
+            if shape_key not in self._shape_meshes:
+                shape_key = _DEFAULT_SHAPE_KEY
+            groups.setdefault(shape_key, []).append(entity)
+        return groups
+
+    def _upload_instances_for(
+        self, ctx: moderngl.Context, entities: list[SceneEntity]
+    ) -> None:
+        """Pack ``entities`` into the shared instance buffer.
+
+        The buffer is shared by every shape's VAO; uploads happen once
+        per shape group per frame. ``orphan`` requests fresh storage so
+        the GPU isn't stalled by the previous frame's reads.
+        """
         if len(entities) > self._instance_capacity:
             self._grow_instance_buffer(ctx, len(entities))
 
         floats: list[float] = []
         for entity in entities:
             quat = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
-            model = model_matrix(entity.position, entity.scale, quat)
-            floats.extend(model)
+            floats.extend(model_matrix(entity.position, entity.scale, quat))
             r, g, b = entity.tint
             floats.append(r / 255.0)
             floats.append(g / 255.0)
             floats.append(b / 255.0)
 
         data = struct.pack(f"{len(floats)}f", *floats)
-        # ``orphan`` requests a fresh storage block from the driver so
-        # the GPU isn't forced to wait on the previous frame's draw to
-        # finish before the new write becomes visible.
         assert self._instance_vbo is not None
         self._instance_vbo.orphan(size=len(data))
         self._instance_vbo.write(data)
-        return len(entities)
 
     def _upload_ground_texture(self, ctx: moderngl.Context, scene: Scene) -> None:
         """Lazily upload ``scene.map_tile_path`` as the ground texture.
@@ -475,24 +503,31 @@ class PerspectiveRenderer:
         self._ground_texture_path = path
 
     def _grow_instance_buffer(self, ctx: moderngl.Context, required: int) -> None:
+        """Reallocate the shared instance buffer and rebind every shape VAO.
+
+        Each VAO records the buffer it draws from at construction
+        time, so growing the buffer means tearing down and rebuilding
+        every per-shape VAO against the new buffer. VBO/IBO are kept.
+        """
         new_capacity = max(self._instance_capacity * 2, required)
-        assert self._instance_vbo is not None and self._vao is not None
+        assert self._instance_vbo is not None and self._program is not None
         self._instance_vbo.release()
-        self._vao.release()
         self._instance_vbo = ctx.buffer(
             reserve=new_capacity * _BYTES_PER_INSTANCE,
             dynamic=True,
         )
-        assert self._program is not None and self._vbo is not None and self._ibo is not None
-        self._vao = ctx.vertex_array(
-            self._program,
-            [
-                (self._vbo, "3f", "in_pos"),
-                (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
-            ],
-            index_buffer=self._ibo,
-            index_element_size=4,
-        )
+        for shape_key, mesh in self._shape_meshes.items():
+            mesh.vao.release()
+            mesh.vao = ctx.vertex_array(
+                self._program,
+                [
+                    (mesh.vbo, "3f", "in_pos"),
+                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                ],
+                index_buffer=mesh.ibo,
+                index_element_size=4,
+            )
+            self._shape_meshes[shape_key] = mesh
         self._instance_capacity = new_capacity
 
     def _draw_map_tile_background(
