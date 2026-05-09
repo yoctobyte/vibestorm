@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 if TYPE_CHECKING:
     import pygame
@@ -42,6 +44,14 @@ Enter: focus chat
 """
 
 
+@dataclass(slots=True, frozen=True)
+class InventoryDisplayRow:
+    text: str
+    detail_html: str
+    folder_id: UUID | None = None
+    can_open: bool = False
+
+
 class HUD:
     """Main-menu strip, status bar, and a resizable chat subwindow.
 
@@ -59,6 +69,7 @@ class HUD:
         on_zoom_out: Callable[[], None] | None = None,
         on_center: Callable[[], None] | None = None,
         on_teleport: Callable[[tuple[float, float, float]], None] | None = None,
+        on_inventory_open_folder: Callable[[UUID], None] | None = None,
         on_render_mode_change: Callable[[str], None] | None = None,
         on_render_setting_change: Callable[[str, object], None] | None = None,
         initial_render_mode: str = RENDER_MODE_2D,
@@ -78,6 +89,7 @@ class HUD:
         self.on_zoom_out = on_zoom_out
         self.on_center = on_center
         self.on_teleport = on_teleport
+        self.on_inventory_open_folder = on_inventory_open_folder
         self.on_render_mode_change = on_render_mode_change
         self.on_render_setting_change = on_render_setting_change
         self.render_mode: str = (
@@ -88,7 +100,10 @@ class HUD:
         self._last_diagnostics_html: str | None = None
         self._open_menu: str | None = None
         self._last_chat_container_size: tuple[int, int] | None = None
-        self._last_inventory_text: str | None = None
+        self._last_inventory_signature: tuple[tuple[object, ...], ...] | None = None
+        self._inventory_row_details: dict[str, str] = {}
+        self._inventory_openable_rows: dict[str, UUID] = {}
+        self._selected_inventory_row: str | None = None
         self._last_heightmap_signature: (
             tuple[int, int, int, float | None, float | None] | None
         ) = None
@@ -393,6 +408,7 @@ class HUD:
             UIHorizontalSlider,
             UIImage,
             UILabel,
+            UISelectionList,
             UITextBox,
             UITextEntryLine,
             UIWindow,
@@ -529,20 +545,41 @@ class HUD:
 
         self.inventory_window = UIWindow(
             rect=pygame.Rect(
-                max(self._s(120), sw - self._s(520)),
+                max(self._s(80), sw - self._s(680)),
                 self._s(110),
-                self._s(460),
-                self._s(390),
+                self._s(620),
+                self._s(440),
             ),
             manager=self.manager,
-            window_display_title="Inventory",
+            window_display_title="Inventory Manager",
             resizable=True,
         )
-        self.inventory_text = UITextBox(
-            html_text="Inventory has not loaded yet.",
-            relative_rect=pygame.Rect(self._s(8), self._s(8), self._s(420), self._s(320)),
+        inv_container = self.inventory_window.get_container()
+        self.inventory_summary = UILabel(
+            relative_rect=pygame.Rect(self._s(8), self._s(8), self._s(580), self._s(24)),
+            text="Inventory has not loaded yet.",
             manager=self.manager,
-            container=self.inventory_window.get_container(),
+            container=inv_container,
+        )
+        self.inventory_open_button = UIButton(
+            relative_rect=pygame.Rect(self._s(8), self._s(38), self._s(110), self._s(28)),
+            text="Open",
+            manager=self.manager,
+            container=inv_container,
+        )
+        self.inventory_open_button.disable()
+        self.inventory_list = UISelectionList(
+            relative_rect=pygame.Rect(self._s(8), self._s(74), self._s(285), self._s(296)),
+            item_list=[],
+            manager=self.manager,
+            container=inv_container,
+            allow_multi_select=False,
+        )
+        self.inventory_details = UITextBox(
+            html_text="Select an inventory row.",
+            relative_rect=pygame.Rect(self._s(305), self._s(40), self._s(285), self._s(330)),
+            manager=self.manager,
+            container=inv_container,
         )
         self.inventory_window.hide()
 
@@ -630,8 +667,12 @@ class HUD:
                 return True
             if event.ui_element is self.inventory_button:
                 self.inventory_window.show()
+                self._layout_inventory_window()
                 self._hide_all_menus()
                 self._open_menu = None
+                return True
+            if event.ui_element is self.inventory_open_button:
+                self._open_selected_inventory_folder()
                 return True
             if event.ui_element is self.render_settings_button:
                 self.render_settings_window.show()
@@ -708,8 +749,25 @@ class HUD:
                 value = max(0.1, min(1.0, float(event.value) / 100.0))
                 self._set_render_setting("water_alpha", value)
                 return True
+        elif event.type == pygame_gui.UI_SELECTION_LIST_NEW_SELECTION:
+            if event.ui_element is self.inventory_list:
+                selection = str(getattr(event, "text", "") or "")
+                self._select_inventory_row(selection)
+                return True
+        elif event.type == pygame_gui.UI_SELECTION_LIST_DOUBLE_CLICKED_SELECTION:
+            if event.ui_element is self.inventory_list:
+                selection = str(getattr(event, "text", "") or "")
+                self._select_inventory_row(selection)
+                self._open_selected_inventory_folder()
+                return True
         elif event.type == pygame_gui.UI_WINDOW_RESIZED and event.ui_element is self.chat_window:
             self._layout_chat_window()
+            return True
+        elif (
+            event.type == pygame_gui.UI_WINDOW_RESIZED
+            and event.ui_element is self.inventory_window
+        ):
+            self._layout_inventory_window()
             return True
         return False
 
@@ -798,14 +856,20 @@ class HUD:
             self.water_alpha_label,
             self.water_alpha_slider,
             self.inventory_window,
-            self.inventory_text,
+            self.inventory_summary,
+            self.inventory_open_button,
+            self.inventory_list,
+            self.inventory_details,
             self.diagnostics_text,
             self.heightmap_image,
             self.heightmap_status,
         ):
             element.kill()
         self._last_chat_container_size = None
-        self._last_inventory_text = None
+        self._last_inventory_signature = None
+        self._inventory_row_details = {}
+        self._inventory_openable_rows = {}
+        self._selected_inventory_row = None
         self._last_diagnostics_html = None
         self._last_heightmap_signature = None
         self._build_widgets()
@@ -830,6 +894,30 @@ class HUD:
         self.chat_input.set_relative_position((margin, margin + ticker_h + gap))
         self.chat_input.set_dimensions((content_w, input_h))
         self._last_chat_container_size = (cw, ch)
+
+    def _layout_inventory_window(self) -> None:
+        container = self.inventory_window.get_container()
+        cw, ch = container.get_size()
+        margin = self._s(8)
+        gap = self._s(10)
+        summary_h = self._s(24)
+        button_h = self._s(28)
+        button_gap = self._s(8)
+        list_y = margin + summary_h + button_gap + button_h + self._s(8)
+        details_y = margin + summary_h + self._s(8)
+        content_w = max(self._s(160), cw - margin * 2)
+        left_w = max(self._s(180), min(self._s(340), (content_w - gap) // 2))
+        right_w = max(self._s(120), content_w - left_w - gap)
+        self.inventory_summary.set_relative_position((margin, margin))
+        self.inventory_summary.set_dimensions((content_w, summary_h))
+        self.inventory_open_button.set_relative_position(
+            (margin, margin + summary_h + button_gap)
+        )
+        self.inventory_open_button.set_dimensions((min(left_w, self._s(110)), button_h))
+        self.inventory_list.set_relative_position((margin, list_y))
+        self.inventory_list.set_dimensions((left_w, max(self._s(80), ch - list_y - margin)))
+        self.inventory_details.set_relative_position((margin + left_w + gap, details_y))
+        self.inventory_details.set_dimensions((right_w, max(self._s(80), ch - details_y - margin)))
 
     def _refresh_ticker(self, scene: Scene) -> None:
         # Take last N chat lines, format with kind-colored prefix.
@@ -1010,14 +1098,63 @@ class HUD:
         self._refresh_render_settings_controls()
 
     def _refresh_inventory(self, scene: Scene) -> None:
-        html = _inventory_snapshot_html(scene.inventory_snapshot)
-        if html == self._last_inventory_text:
+        rows = inventory_snapshot_rows(scene.inventory_snapshot)
+        row_texts = tuple(row.text for row in rows)
+        signature = tuple((row.text, row.detail_html, row.folder_id, row.can_open) for row in rows)
+        if signature == self._last_inventory_signature:
             return
-        self._last_inventory_text = html
+        self._last_inventory_signature = signature
+        self._inventory_row_details = {row.text: row.detail_html for row in rows}
+        self._inventory_openable_rows = {
+            row.text: row.folder_id
+            for row in rows
+            if row.can_open and row.folder_id is not None
+        }
+        if self._selected_inventory_row not in self._inventory_row_details:
+            self._selected_inventory_row = row_texts[0] if row_texts else None
+        if scene.inventory_snapshot is None:
+            folder_count = 0
+            item_count = 0
+        else:
+            folder_count = getattr(scene.inventory_snapshot, "folder_count", 0)
+            item_count = getattr(scene.inventory_snapshot, "total_item_count", 0)
+        summary = (
+            "Inventory has not loaded yet."
+            if scene.inventory_snapshot is None
+            else f"Folders: {folder_count} | Items: {item_count} | Rows: {len(row_texts)}"
+        )
         try:
-            self.inventory_text.set_text(html)
+            self.inventory_summary.set_text(summary)
+            self.inventory_list.set_item_list(list(row_texts))
+            self._select_inventory_row(self._selected_inventory_row)
         except Exception:  # pragma: no cover
             pass
+
+    def _select_inventory_row(self, selection: str | None) -> None:
+        self._selected_inventory_row = selection if selection else None
+        can_open = selection in self._inventory_openable_rows if selection else False
+        detail = (
+            self._inventory_row_details.get(selection, "Select an inventory row.")
+            if selection
+            else "Select an inventory row."
+        )
+        try:
+            if can_open:
+                self.inventory_open_button.enable()
+            else:
+                self.inventory_open_button.disable()
+            self.inventory_open_button.set_text("Open")
+            self.inventory_details.set_text(detail)
+        except Exception:  # pragma: no cover
+            pass
+
+    def _open_selected_inventory_folder(self) -> None:
+        if self.on_inventory_open_folder is None or self._selected_inventory_row is None:
+            return
+        folder_id = self._inventory_openable_rows.get(self._selected_inventory_row)
+        if folder_id is None:
+            return
+        self.on_inventory_open_folder(folder_id)
 
     def _submit_teleport(self) -> None:
         try:
@@ -1103,35 +1240,161 @@ def heightmap_debug_surface(
     return pygame_module.transform.scale(source, (size, size))
 
 
+def inventory_snapshot_rows(snapshot: object | None) -> tuple[InventoryDisplayRow, ...]:
+    if snapshot is None:
+        return ()
+    folders = getattr(snapshot, "folders", ())
+    rows: list[InventoryDisplayRow] = []
+    loaded_folder_ids = {
+        folder_id
+        for folder_id in (getattr(folder, "folder_id", None) for folder in folders)
+        if folder_id is not None
+    }
+    root_id = getattr(snapshot, "inventory_root_folder_id", None)
+    cof_id = getattr(snapshot, "current_outfit_folder_id", None)
+    for folder in folders:
+        folder_id = getattr(folder, "folder_id", None)
+        if folder_id == root_id:
+            folder_name = "Inventory Root"
+        elif folder_id == cof_id:
+            folder_name = "Current Outfit"
+        else:
+            folder_name = _folder_display_name(folder)
+        badges = []
+        if folder_id == root_id:
+            badges.append("root")
+        if folder_id == cof_id:
+            badges.append("current outfit")
+        badge_text = f" [{', '.join(badges)}]" if badges else ""
+        rows.append(
+            InventoryDisplayRow(
+                text=f"▾ ◼ {folder_name}{badge_text}",
+                detail_html=_folder_detail_html(folder, folder_name),
+            )
+        )
+        for category in getattr(folder, "categories", ()):
+            child_name = getattr(category, "name", "") or "(unnamed folder)"
+            category_id = getattr(category, "category_id", None)
+            loaded = category_id in loaded_folder_ids
+            marker = "▾ ◼" if loaded else "▸ ◻"
+            status = "" if loaded else " (not loaded)"
+            rows.append(
+                InventoryDisplayRow(
+                    text=f"   {marker} {child_name}{status}",
+                    detail_html=_category_detail_html(category, loaded=loaded),
+                    folder_id=category_id,
+                    can_open=not loaded and category_id is not None,
+                )
+            )
+        for item in getattr(folder, "items", ()):
+            name = getattr(item, "name", "") or "(unnamed item)"
+            marker = "↗" if bool(getattr(item, "is_link", False)) else "•"
+            rows.append(
+                InventoryDisplayRow(
+                    text=f"      {marker} {name}",
+                    detail_html=_item_detail_html(item),
+                )
+            )
+    resolved = getattr(snapshot, "resolved_items", ())
+    if resolved:
+        rows.append(
+            InventoryDisplayRow(
+                text="▾ ↗ Resolved current outfit links",
+                detail_html=(
+                    "<b>Resolved current outfit links</b><br>"
+                    f"Items: {len(resolved)}<br><br>"
+                    "These are source items resolved through FetchInventory2."
+                ),
+            )
+        )
+        for item in resolved:
+            name = getattr(item, "name", "") or "(unnamed item)"
+            rows.append(
+                InventoryDisplayRow(
+                    text=f"      ↗ {name}",
+                    detail_html=_item_detail_html(item),
+                )
+            )
+    return tuple(rows)
+
+
 def _inventory_snapshot_html(snapshot: object | None) -> str:
     if snapshot is None:
         return "Inventory has not loaded yet."
-    folders = getattr(snapshot, "folders", ())
-    folder_count = getattr(snapshot, "folder_count", len(folders))
-    total_item_count = getattr(snapshot, "total_item_count", 0)
-    rows = [
-        f"<b>Folders:</b> {folder_count}",
-        f"<b>Items:</b> {total_item_count}",
-    ]
-    for folder in list(folders)[:12]:
-        folder_name = _folder_display_name(folder)
-        item_count = getattr(folder, "item_count", len(getattr(folder, "items", ())))
-        rows.append(f"<br><b>{_html_escape(folder_name)}</b> ({item_count} items)")
-        for item in list(getattr(folder, "items", ()))[:8]:
-            name = _html_escape(getattr(item, "name", "") or "(unnamed)")
-            asset_id = getattr(item, "asset_id", None)
-            inv_type = getattr(item, "inv_type", None)
-            suffix = f" inv={inv_type}" if inv_type is not None else ""
-            if asset_id is not None:
-                suffix += f" asset={asset_id}"
-            rows.append(f"&nbsp;&nbsp;{name}{_html_escape(suffix)}")
-    resolved = getattr(snapshot, "resolved_items", ())
-    if resolved:
-        rows.append("<br><b>Resolved current outfit links</b>")
-        for item in list(resolved)[:8]:
-            name = _html_escape(getattr(item, "name", "") or "(unnamed)")
-            rows.append(f"&nbsp;&nbsp;{name}")
-    return "<br>".join(rows)
+    rows = inventory_snapshot_rows(snapshot)
+    if not rows:
+        return "Inventory snapshot is empty."
+    return "<br>".join(_html_escape(row.text) for row in rows)
+
+
+def _folder_detail_html(folder: object, folder_name: str) -> str:
+    folder_id = getattr(folder, "folder_id", None)
+    owner_id = getattr(folder, "owner_id", None)
+    agent_id = getattr(folder, "agent_id", None)
+    descendents = getattr(folder, "descendents", None)
+    version = getattr(folder, "version", None)
+    categories = getattr(folder, "categories", ())
+    items = getattr(folder, "items", ())
+    return "<br>".join(
+        (
+            f"<b>{_html_escape(folder_name)}</b>",
+            "Kind: folder",
+            f"Folder ID: {_html_escape(str(folder_id)) if folder_id is not None else '(none)'}",
+            f"Owner ID: {_html_escape(str(owner_id)) if owner_id is not None else '(none)'}",
+            f"Agent ID: {_html_escape(str(agent_id)) if agent_id is not None else '(none)'}",
+            f"Descendents: {descendents if descendents is not None else 'unknown'}",
+            f"Version: {version if version is not None else 'unknown'}",
+            f"Child folders in snapshot: {len(categories)}",
+            f"Items in snapshot: {len(items)}",
+        )
+    )
+
+
+def _category_detail_html(category: object, *, loaded: bool) -> str:
+    name = getattr(category, "name", "") or "(unnamed folder)"
+    category_id = getattr(category, "category_id", None)
+    parent_id = getattr(category, "parent_id", None)
+    type_default = getattr(category, "type_default", None)
+    version = getattr(category, "version", None)
+    status = "loaded in current snapshot" if loaded else "listed, contents not fetched yet"
+    return "<br>".join(
+        (
+            f"<b>{_html_escape(name)}</b>",
+            "Kind: folder",
+            f"Status: {status}",
+            "Category ID: "
+            f"{_html_escape(str(category_id)) if category_id is not None else '(none)'}",
+            f"Parent ID: {_html_escape(str(parent_id)) if parent_id is not None else '(none)'}",
+            f"Default type: {type_default if type_default is not None else 'unknown'}",
+            f"Version: {version if version is not None else 'unknown'}",
+        )
+    )
+
+
+def _item_detail_html(item: object) -> str:
+    name = getattr(item, "name", "") or "(unnamed item)"
+    description = getattr(item, "description", "") or ""
+    item_id = getattr(item, "item_id", None)
+    asset_id = getattr(item, "asset_id", None)
+    parent_id = getattr(item, "parent_id", None)
+    type_value = getattr(item, "type", None)
+    inv_type = getattr(item, "inv_type", None)
+    flags = getattr(item, "flags", None)
+    is_link = bool(getattr(item, "is_link", False))
+    return "<br>".join(
+        (
+            f"<b>{_html_escape(name)}</b>",
+            "Kind: item",
+            f"Description: {_html_escape(description) if description else '(none)'}",
+            f"Item ID: {_html_escape(str(item_id)) if item_id is not None else '(none)'}",
+            f"Asset ID: {_html_escape(str(asset_id)) if asset_id is not None else '(none)'}",
+            f"Parent ID: {_html_escape(str(parent_id)) if parent_id is not None else '(none)'}",
+            f"Type: {type_value if type_value is not None else 'unknown'}",
+            f"Inventory type: {inv_type if inv_type is not None else 'unknown'}",
+            f"Flags: {flags if flags is not None else 'unknown'}",
+            f"Link: {'yes' if is_link else 'no'}",
+        )
+    )
 
 
 def _folder_display_name(folder: object) -> str:
@@ -1143,4 +1406,11 @@ def _folder_display_name(folder: object) -> str:
     return str(folder_id) if folder_id is not None else "Folder"
 
 
-__all__ = ["HUD", "CHAT_TICKER_LINES", "DEFAULT_HELP_TEXT", "heightmap_debug_surface"]
+__all__ = [
+    "HUD",
+    "CHAT_TICKER_LINES",
+    "DEFAULT_HELP_TEXT",
+    "InventoryDisplayRow",
+    "heightmap_debug_surface",
+    "inventory_snapshot_rows",
+]

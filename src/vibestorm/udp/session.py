@@ -202,6 +202,9 @@ class LiveCircuitSession:
     latest_self_avatar_appearance: AvatarAppearanceMessage | None = None
     latest_cached_texture_response: AgentCachedTextureResponseMessage | None = None
     latest_inventory_fetch: InventoryFetchSnapshot | None = None
+    fetch_inventory_descendents_url: str | None = None
+    fetch_inventory2_url: str | None = None
+    caps_udp_listen_port: int | None = None
     baked_appearance_override: BakedAppearanceOverride | None = None
     upload_baked_url: str | None = None
     get_texture_url: str | None = None
@@ -1930,6 +1933,7 @@ def _extract_te_suffix(te_bytes: bytes) -> bytes:
 
 async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, now: float) -> None:
     local_port = int(sock.getsockname()[1])
+    session.caps_udp_listen_port = local_port
     capability_client = CapabilityClient(timeout_seconds=5.0)
     event_queue_client = EventQueueClient(timeout_seconds=5.0)
     inventory_client = InventoryCapabilityClient(timeout_seconds=5.0)
@@ -1987,6 +1991,8 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
             session._record_event(now, "caps.simulator_features", f"keys={feature_count}")
 
     inventory_url = resolved.get("FetchInventoryDescendents2")
+    session.fetch_inventory_descendents_url = inventory_url
+    session.fetch_inventory2_url = resolved.get("FetchInventory2")
     inventory_requests: list[InventoryFolderRequest] = []
     if inventory_url and session.bootstrap.inventory_root_folder_id is not None:
         inventory_requests.append(
@@ -2021,7 +2027,7 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
                 inventory_root_folder_id=session.bootstrap.inventory_root_folder_id,
                 current_outfit_folder_id=session.bootstrap.current_outfit_folder_id,
             )
-            fetch_inventory2_url = resolved.get("FetchInventory2")
+            fetch_inventory2_url = session.fetch_inventory2_url
             link_targets = session.latest_inventory_fetch.current_outfit_link_targets
             if fetch_inventory2_url and link_targets:
                 try:

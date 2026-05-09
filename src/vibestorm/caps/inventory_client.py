@@ -297,6 +297,38 @@ def parse_inventory_items_payload(payload: object) -> tuple[InventoryItemEntry, 
     return tuple(items)
 
 
+def merge_inventory_fetch_snapshots(
+    base: InventoryFetchSnapshot | None,
+    update: InventoryFetchSnapshot,
+) -> InventoryFetchSnapshot:
+    """Return a snapshot with updated folder contents merged into existing data."""
+
+    if base is None:
+        return update
+
+    merged_by_id: dict[UUID, InventoryFolderContents] = {}
+    anonymous_folders: list[InventoryFolderContents] = []
+    order: list[UUID] = []
+    for folder in (*base.folders, *update.folders):
+        if folder.folder_id is None:
+            anonymous_folders.append(folder)
+            continue
+        if folder.folder_id not in merged_by_id:
+            order.append(folder.folder_id)
+        merged_by_id[folder.folder_id] = folder
+
+    return InventoryFetchSnapshot(
+        folders=tuple(merged_by_id[folder_id] for folder_id in order) + tuple(anonymous_folders),
+        inventory_root_folder_id=(
+            update.inventory_root_folder_id or base.inventory_root_folder_id
+        ),
+        current_outfit_folder_id=(
+            update.current_outfit_folder_id or base.current_outfit_folder_id
+        ),
+        resolved_items=base.resolved_items or update.resolved_items,
+    )
+
+
 def _parse_uuid(value: object) -> UUID | None:
     if value is None:
         return None

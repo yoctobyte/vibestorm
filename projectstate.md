@@ -23,9 +23,9 @@ The repo already supports:
 - nearby chat capture for timestamped in-world notes
 - pygame-based 2D bird's-eye viewer consuming live `WorldView` state and the
   cached region map tile
-- viewer menu/status shell with movement help, chat, local teleport-location requests,
-  and a read-only inventory snapshot sourced from `FetchInventoryDescendents2` /
-  `FetchInventory2`
+- viewer menu/status shell with movement help, chat, local teleport-location
+  requests, and a first inventory-manager window sourced from the current
+  `FetchInventoryDescendents2` / `FetchInventory2` snapshot
 - viewer3d terrain path for standard 16x16 land `LayerData`: bitstream decode,
   dequantization + IDCT, 256x256 heightmap accumulation, and textured GL
   heightfield rendering
@@ -78,8 +78,8 @@ Main implemented areas:
   input, rendering
 - `src/vibestorm/viewer3d/`: forked pygame/moderngl viewer with selectable 2D/3D
   render modes, primitive shape meshes, water plane, decoded terrain surface
-  rendering, first-pass directional lighting, and first-pass terrain/object
-  texturing
+  rendering, first-pass directional lighting, first-pass terrain/object
+  texturing, and a snapshot-backed inventory manager UI
 - `src/vibestorm/fixtures/`: fixture inventory and SQLite unknowns database
 - `docs/viewer-help.md`: in-app movement/menu help loaded by the pygame viewer
 
@@ -113,8 +113,10 @@ Main gaps:
 - parcel name/status is still a placeholder until `ParcelOverlay` and parcel metadata
   are decoded
 - extended-region 32x32 terrain patches are not decompressed yet
-- inventory is currently read-only; asset create/upload/store management is not
-  implemented yet beyond existing appearance/baked-texture upload support
+- inventory is currently read-only; user-inventory folders can be opened
+  lazily through `FetchInventoryDescendents2`, but object inventory, asset
+  create/upload/store management, multi-save, and multi-upload-from-file are
+  not implemented yet beyond existing appearance/baked-texture upload support
 
 ## Current Evidence Workflow
 

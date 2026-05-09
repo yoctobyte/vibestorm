@@ -3,10 +3,14 @@ from uuid import UUID
 
 from vibestorm.caps.inventory_client import (
     InventoryCapabilityClient,
+    InventoryFetchSnapshot,
+    InventoryFolderContents,
     InventoryFolderRequest,
+    InventoryItemEntry,
     InventoryItemRequest,
-    parse_inventory_items_payload,
+    merge_inventory_fetch_snapshots,
     parse_inventory_descendents_payload,
+    parse_inventory_items_payload,
 )
 
 
@@ -102,7 +106,10 @@ class InventoryCapabilityClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"items": []})
         payload = captured["payload"]
         self.assertEqual(len(payload["items"]), 1)
-        self.assertEqual(payload["items"][0]["item_id"], UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c"))
+        self.assertEqual(
+            payload["items"][0]["item_id"],
+            UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c"),
+        )
 
     def test_parse_inventory_descendents_payload_extracts_cof_items(self) -> None:
         snapshot = parse_inventory_descendents_payload(
@@ -110,7 +117,12 @@ class InventoryCapabilityClientTests(unittest.IsolatedAsyncioTestCase):
                 "folders": [
                     {
                         "folder_id": "49cb1ed7-e8b2-4de5-84d7-4222f540634c",
-                        "categories": [{"category_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "Clothing"}],
+                        "categories": [
+                            {
+                                "category_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                                "name": "Clothing",
+                            }
+                        ],
                         "items": [],
                     },
                     {
@@ -184,3 +196,66 @@ class InventoryCapabilityClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[0].name, "Default Eyes")
         self.assertEqual(items[0].type, 13)
         self.assertEqual(items[0].inv_type, 18)
+
+    def test_merge_inventory_fetch_snapshots_replaces_loaded_folder(self) -> None:
+        root_id = UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c")
+        child_id = UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        base = InventoryFetchSnapshot(
+            folders=(
+                InventoryFolderContents(
+                    folder_id=root_id,
+                    owner_id=None,
+                    agent_id=None,
+                    descendents=1,
+                    version=1,
+                    categories=(),
+                    items=(),
+                ),
+            ),
+            inventory_root_folder_id=root_id,
+            resolved_items=(
+                InventoryItemEntry(
+                    item_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                    asset_id=None,
+                    parent_id=root_id,
+                    name="Resolved",
+                    description="",
+                    type=7,
+                    inv_type=7,
+                    flags=0,
+                ),
+            ),
+        )
+        update = InventoryFetchSnapshot(
+            folders=(
+                InventoryFolderContents(
+                    folder_id=child_id,
+                    owner_id=None,
+                    agent_id=None,
+                    descendents=1,
+                    version=2,
+                    categories=(),
+                    items=(
+                        InventoryItemEntry(
+                            item_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+                            asset_id=None,
+                            parent_id=child_id,
+                            name="Loaded child item",
+                            description="",
+                            type=7,
+                            inv_type=7,
+                            flags=0,
+                        ),
+                    ),
+                ),
+            ),
+            inventory_root_folder_id=root_id,
+        )
+
+        merged = merge_inventory_fetch_snapshots(base, update)
+
+        self.assertEqual(merged.folder_count, 2)
+        self.assertEqual(merged.folders[0].folder_id, root_id)
+        self.assertEqual(merged.folders[1].folder_id, child_id)
+        self.assertEqual(merged.folders[1].items[0].name, "Loaded child item")
+        self.assertEqual(merged.resolved_items[0].name, "Resolved")

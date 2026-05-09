@@ -20,8 +20,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import platform
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from vibestorm import __version__
 from vibestorm.bus import BusDeliveryError, BusError
@@ -36,6 +38,13 @@ from vibestorm.bus.events import (
     RegionChanged,
     RegionMapTileReady,
     TextureAssetReady,
+)
+from vibestorm.caps.inventory_client import (
+    InventoryCapabilityClient,
+    InventoryCapabilityError,
+    InventoryFolderRequest,
+    merge_inventory_fetch_snapshots,
+    parse_inventory_descendents_payload,
 )
 from vibestorm.login.client import LoginClient
 from vibestorm.login.models import LoginCredentials, LoginRequest
@@ -255,6 +264,74 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
             )
 
+    pending_inventory_folders: set[UUID] = set()
+
+    async def fetch_inventory_folder(folder_id: UUID) -> None:
+        session = client.current
+        handle = client.current_handle or 0
+        if session is None:
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=handle, message="Inventory is not connected.")
+            )
+            return
+        if folder_id in pending_inventory_folders:
+            return
+        url = session.fetch_inventory_descendents_url
+        if not url:
+            scene.apply_chat_alert(
+                ChatAlert(
+                    region_handle=handle,
+                    message="FetchInventoryDescendents2 is not available.",
+                )
+            )
+            return
+        pending_inventory_folders.add(folder_id)
+        session._record_event(
+            time.monotonic(),
+            "caps.inventory_folder.start",
+            f"folder={folder_id}",
+        )
+        try:
+            inventory_client = InventoryCapabilityClient(timeout_seconds=5.0)
+            payload = await inventory_client.fetch_inventory_descendents(
+                url,
+                [
+                    InventoryFolderRequest(
+                        folder_id=folder_id,
+                        owner_id=session.bootstrap.agent_id,
+                    )
+                ],
+                udp_listen_port=session.caps_udp_listen_port,
+            )
+        except InventoryCapabilityError as exc:
+            session._record_event(
+                time.monotonic(),
+                "caps.inventory_folder.error",
+                f"folder={folder_id} error={str(exc)!r}",
+            )
+            scene.apply_chat_alert(ChatAlert(region_handle=handle, message=str(exc)))
+        else:
+            update = parse_inventory_descendents_payload(
+                payload,
+                inventory_root_folder_id=session.bootstrap.inventory_root_folder_id,
+                current_outfit_folder_id=session.bootstrap.current_outfit_folder_id,
+            )
+            session.latest_inventory_fetch = merge_inventory_fetch_snapshots(
+                session.latest_inventory_fetch,
+                update,
+            )
+            session._record_event(
+                time.monotonic(),
+                "caps.inventory",
+                f"folder={folder_id} folders={session.latest_inventory_fetch.folder_count} "
+                f"items={session.latest_inventory_fetch.total_item_count}",
+            )
+        finally:
+            pending_inventory_folders.discard(folder_id)
+
+    def on_inventory_open_folder(folder_id: UUID) -> None:
+        asyncio.create_task(fetch_inventory_folder(folder_id))
+
     def on_render_mode_change(mode: str) -> None:
         nonlocal renderer
         if mode == "3d":
@@ -292,6 +369,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         ),
         on_center=center_on_avatar,
         on_teleport=on_teleport,
+        on_inventory_open_folder=on_inventory_open_folder,
         on_render_mode_change=on_render_mode_change,
         on_render_setting_change=on_render_setting_change,
         initial_render_mode=initial_mode,

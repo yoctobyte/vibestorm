@@ -269,6 +269,175 @@ class RenderModeMenuTests(unittest.TestCase):
 
         self.assertEqual(hud.render_mode, RENDER_MODE_3D)
 
+    def test_inventory_rows_include_folders_children_items_and_details(self) -> None:
+        from uuid import UUID
+
+        from vibestorm.caps.inventory_client import (
+            InventoryCategoryEntry,
+            InventoryFetchSnapshot,
+            InventoryFolderContents,
+            InventoryItemEntry,
+        )
+        from vibestorm.viewer3d.hud import inventory_snapshot_rows
+
+        root_id = UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c")
+        child_id = UUID("1f1cfb33-61db-4b40-894a-85f917fe3ad5")
+        item_id = UUID("ef7ec4c0-a227-4d72-a489-a9b316e38514")
+        rows = inventory_snapshot_rows(
+            InventoryFetchSnapshot(
+                folders=(
+                    InventoryFolderContents(
+                        folder_id=root_id,
+                        owner_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                        agent_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                        descendents=2,
+                        version=7,
+                        categories=(
+                            InventoryCategoryEntry(
+                                category_id=child_id,
+                                parent_id=root_id,
+                                name="Objects",
+                                type_default=6,
+                                version=1,
+                            ),
+                        ),
+                        items=(
+                            InventoryItemEntry(
+                                item_id=item_id,
+                                asset_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+                                parent_id=root_id,
+                                name="Test Object",
+                                description="rezzable",
+                                type=6,
+                                inv_type=6,
+                                flags=0,
+                            ),
+                        ),
+                    ),
+                ),
+                inventory_root_folder_id=root_id,
+            )
+        )
+
+        row_texts = [row.text for row in rows]
+        self.assertIn("▾ ◼ Inventory Root [root]", row_texts)
+        self.assertIn("   ▸ ◻ Objects (not loaded)", row_texts)
+        self.assertIn("      • Test Object", row_texts)
+        item_detail = rows[row_texts.index("      • Test Object")].detail_html
+        self.assertIn("Kind: item", item_detail)
+        self.assertIn("Description: rezzable", item_detail)
+        self.assertIn(str(item_id), item_detail)
+
+    def test_inventory_window_uses_selection_list_and_details_pane(self) -> None:
+        from uuid import UUID
+
+        from vibestorm.caps.inventory_client import (
+            InventoryFetchSnapshot,
+            InventoryFolderContents,
+            InventoryItemEntry,
+        )
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene
+
+        root_id = UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c")
+        item_id = UUID("ef7ec4c0-a227-4d72-a489-a9b316e38514")
+        scene = Scene()
+        scene.inventory_snapshot = InventoryFetchSnapshot(
+            folders=(
+                InventoryFolderContents(
+                    folder_id=root_id,
+                    owner_id=None,
+                    agent_id=None,
+                    descendents=1,
+                    version=1,
+                    categories=(),
+                    items=(
+                        InventoryItemEntry(
+                            item_id=item_id,
+                            asset_id=None,
+                            parent_id=root_id,
+                            name="Snapshot Notecard",
+                            description="debug note",
+                            type=7,
+                            inv_type=7,
+                            flags=0,
+                        ),
+                    ),
+                ),
+            ),
+            inventory_root_folder_id=root_id,
+        )
+        hud = HUD((640, 480), on_chat_submit=lambda text: None)
+
+        hud.update(0.016, scene)
+        selection = "      • Snapshot Notecard"
+        event = self.pygame.event.Event(
+            self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+            {"ui_element": hud.inventory_list, "text": selection},
+        )
+        consumed = hud.process_event(event)
+
+        self.assertTrue(consumed)
+        self.assertIn("Folders: 1 | Items: 1", hud.inventory_summary.text)
+        self.assertIn("Snapshot Notecard", hud.inventory_details.html_text)
+        self.assertIn("debug note", hud.inventory_details.html_text)
+
+    def test_inventory_open_button_requests_unloaded_folder(self) -> None:
+        from uuid import UUID
+
+        from vibestorm.caps.inventory_client import (
+            InventoryCategoryEntry,
+            InventoryFetchSnapshot,
+            InventoryFolderContents,
+        )
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene
+
+        root_id = UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c")
+        child_id = UUID("1f1cfb33-61db-4b40-894a-85f917fe3ad5")
+        scene = Scene()
+        scene.inventory_snapshot = InventoryFetchSnapshot(
+            folders=(
+                InventoryFolderContents(
+                    folder_id=root_id,
+                    owner_id=None,
+                    agent_id=None,
+                    descendents=1,
+                    version=1,
+                    categories=(
+                        InventoryCategoryEntry(
+                            category_id=child_id,
+                            parent_id=root_id,
+                            name="Objects",
+                            type_default=6,
+                            version=1,
+                        ),
+                    ),
+                    items=(),
+                ),
+            ),
+            inventory_root_folder_id=root_id,
+        )
+        opened: list[UUID] = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_inventory_open_folder=opened.append,
+        )
+        hud.update(0.016, scene)
+
+        selection = "   ▸ ◻ Objects (not loaded)"
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": hud.inventory_list, "text": selection},
+            )
+        )
+        consumed = self._click(hud, hud.inventory_open_button)
+
+        self.assertTrue(consumed)
+        self.assertEqual(opened, [child_id])
+
 
 if __name__ == "__main__":
     unittest.main()

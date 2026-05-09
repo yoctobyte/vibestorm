@@ -77,7 +77,7 @@ messages for later fixture work.
 `./run.sh viewer` runs the pygame bird's-eye viewer against the same live session path. It
 auto-scales the UI from the desktop size and accepts `--ui-scale`, `--width`, and `--height`
 overrides. The viewer exposes a pygame_gui menu/status shell, movement help, chat, a local
-teleport-location request dialog, and the first read-only inventory snapshot window.
+teleport-location request dialog, and the first read-only inventory manager window.
 
 ## Next Step
 

@@ -26,7 +26,7 @@
 
 - File -> Quit exits the viewer
 - View -> Show Chat opens the chat window
-- View -> Inventory opens the current inventory snapshot
+- View -> Inventory opens the current inventory manager snapshot
 - Tools -> Teleport opens the local teleport request dialog
 - Tools -> Options shows currently available viewer options
 - Help -> Movement Help opens this help text
