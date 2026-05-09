@@ -67,6 +67,14 @@ def handle_event(event: pygame.event.Event, camera: Camera, bus: Bus) -> ViewerI
         return intent
 
     if event.type == pygame.KEYDOWN:
+        if camera.mode == "orbit":
+            mods = pygame.key.get_mods()
+            if mods & pygame.KMOD_SHIFT and event.key == pygame.K_PAGEUP:
+                camera.orbit_lift(2.0)
+                return intent
+            if mods & pygame.KMOD_SHIFT and event.key == pygame.K_PAGEDOWN:
+                camera.orbit_lift(-2.0)
+                return intent
         if event.key == pygame.K_c:
             intent.request_center_on_avatar = True
             return intent
@@ -85,6 +93,9 @@ def handle_event(event: pygame.event.Event, camera: Camera, bus: Bus) -> ViewerI
         return intent
 
     if event.type == pygame.MOUSEWHEEL:
+        if camera.mode == "orbit":
+            camera.orbit_zoom(float(event.y))
+            return intent
         # +1 wheel up → zoom in. Anchor on mouse position.
         try:
             mx, my = pygame.mouse.get_pos()
@@ -95,10 +106,17 @@ def handle_event(event: pygame.event.Event, camera: Camera, bus: Bus) -> ViewerI
         return intent
 
     if event.type == pygame.MOUSEMOTION:
-        # Right-button drag → pan.
+        # Right-button drag → pan in map mode, rotate in orbit mode.
         if event.buttons[2]:
             dx, dy = event.rel
-            camera.pan_screen(dx, dy)
+            if camera.mode == "orbit":
+                mods = pygame.key.get_mods()
+                if mods & pygame.KMOD_SHIFT:
+                    camera.orbit_pan(float(dx), float(dy))
+                else:
+                    camera.orbit_rotate(float(dx), float(dy))
+            else:
+                camera.pan_screen(dx, dy)
         return intent
 
     return intent

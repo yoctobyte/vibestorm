@@ -8,12 +8,11 @@ golden output later.
 """
 
 import math
-import struct
 import unittest
 
 
 class BitPackTests(unittest.TestCase):
-    def test_unpack_bits_reads_msb_first(self) -> None:
+    def test_unpack_bits_reads_msb_first_within_byte_chunks(self) -> None:
         from vibestorm.world.terrain import BitPack
 
         # 0b10110100 0b00001111 = 0xB4 0x0F.
@@ -23,13 +22,35 @@ class BitPackTests(unittest.TestCase):
         self.assertEqual(bp.unpack_bits(4), 0b0100)
         self.assertEqual(bp.unpack_bits(8), 0x0F)
 
-    def test_unpack_bits_across_byte_boundary(self) -> None:
+    def test_unpack_bits_across_byte_boundary_uses_openmetaverse_chunk_order(self) -> None:
         from vibestorm.world.terrain import BitPack
 
         # 0xAA 0x55 = 10101010 01010101.
         bp = BitPack(bytes([0xAA, 0x55]))
-        self.assertEqual(bp.unpack_bits(12), 0b101010100101)
+        # OpenMetaverse appends the second byte chunk above the first chunk.
+        self.assertEqual(bp.unpack_bits(12), 0x5AA)
         self.assertEqual(bp.unpack_bits(4), 0b0101)
+
+    def test_unpack_bits_matches_openmetaverse_terrain_header_prefix(self) -> None:
+        from vibestorm.world.terrain import BitPack
+
+        # OpenSim/OpenMetaverse PackBits(264, 16), PackBits(16, 8),
+        # PackBits(0x4c, 8). This is the prefix observed in live LayerData.
+        bp = BitPack(bytes.fromhex("0801104c"))
+
+        self.assertEqual(bp.unpack_bits(16), 264)
+        self.assertEqual(bp.unpack_bits(8), 16)
+        self.assertEqual(bp.unpack_bits(8), 0x4C)
+
+    def test_unpack_bits_matches_openmetaverse_non_aligned_multibyte_value(self) -> None:
+        from vibestorm.world.terrain import BitPack
+
+        # OpenMetaverse writes PackBits(2, 2); PackBits(0x123, 10) as 88 d0.
+        # This catches coefficient magnitudes that start mid-byte.
+        bp = BitPack(bytes.fromhex("88d0"))
+
+        self.assertEqual(bp.unpack_bits(2), 2)
+        self.assertEqual(bp.unpack_bits(10), 0x123)
 
     def test_unpack_bits_running_off_end_raises(self) -> None:
         from vibestorm.world.terrain import BitPack, TerrainDecodeError
@@ -59,6 +80,48 @@ class BitPackTests(unittest.TestCase):
 
 
 class BitPackWriterRoundTripTests(unittest.TestCase):
+    def test_writer_matches_openmetaverse_terrain_header_prefix(self) -> None:
+        from vibestorm.world.terrain import BitPackWriter
+
+        w = BitPackWriter()
+        w.pack_bits(264, 16)
+        w.pack_bits(16, 8)
+        w.pack_bits(0x4C, 8)
+
+        self.assertEqual(w.to_bytes(), bytes.fromhex("0801104c"))
+
+    def test_writer_matches_openmetaverse_prefix_codes(self) -> None:
+        from vibestorm.world.terrain import BitPackWriter
+
+        eob = BitPackWriter()
+        eob.pack_bits(0b10, 2)
+        positive = BitPackWriter()
+        positive.pack_bits(0b110, 3)
+        negative = BitPackWriter()
+        negative.pack_bits(0b111, 3)
+
+        self.assertEqual(eob.to_bytes(), bytes([0x80]))
+        self.assertEqual(positive.to_bytes(), bytes([0xC0]))
+        self.assertEqual(negative.to_bytes(), bytes([0xE0]))
+
+    def test_writer_matches_openmetaverse_end_of_patches_marker(self) -> None:
+        from vibestorm.world.terrain import END_OF_PATCHES, BitPackWriter
+
+        w = BitPackWriter()
+        w.pack_bits(END_OF_PATCHES, 8)
+
+        self.assertEqual(END_OF_PATCHES, 97)
+        self.assertEqual(w.to_bytes(), bytes.fromhex("61"))
+
+    def test_writer_matches_openmetaverse_non_aligned_multibyte_value(self) -> None:
+        from vibestorm.world.terrain import BitPackWriter
+
+        w = BitPackWriter()
+        w.pack_bits(2, 2)
+        w.pack_bits(0x123, 10)
+
+        self.assertEqual(w.to_bytes(), bytes.fromhex("88d0"))
+
     def test_writer_reader_round_trip_arbitrary_widths(self) -> None:
         from vibestorm.world.terrain import BitPack, BitPackWriter
 
@@ -80,7 +143,7 @@ class BitPackWriterRoundTripTests(unittest.TestCase):
 # tooling that we don't host.
 
 
-def _encode_group_header(stride: int, patch_size: int, layer_type: int) -> "BitPackWriter":  # type: ignore[name-defined]
+def _encode_group_header(stride: int, patch_size: int, layer_type: int):
     from vibestorm.world.terrain import BitPackWriter
 
     w = BitPackWriter()
@@ -108,12 +171,10 @@ def _encode_patch_header_into(
 def _encode_zero_block(w, block_size: int) -> None:
     """Encode an all-zero coefficient block via the EOB shortcut.
 
-    Each patch starts with a 0 bit (zero coefficient), then a 1 bit
-    triggers libomv's "rest is zero" early-out. So 2 bits cover the
-    whole block.
+    libomv's ZERO_EOB is the two-bit code ``10``.
     """
-    w.pack_bits(0, 1)  # zero
-    w.pack_bits(1, 1)  # EOB
+    del block_size
+    w.pack_bits(0b10, 2)
 
 
 def _encode_eod(w) -> None:
@@ -221,24 +282,23 @@ class CoefficientDecodeTests(unittest.TestCase):
         self.assertTrue(all(c == 0 for c in coeffs))
 
     def test_mixed_nonzero_coefficients(self) -> None:
-        from vibestorm.world.terrain import (
-            BitPackWriter,
-            decode_layer_blob,
-        )
+        from vibestorm.world.terrain import decode_layer_blob
 
         # Word bits = (0x10 & 0x0F) + 2 = 2. Coefficients in [-3, 3].
         w = _encode_group_header(stride=264, patch_size=16, layer_type=0x4C)
         _encode_patch_header_into(w, 0x10, 0.0, 1, 1, 1)
 
         # Coefficient stream: +1, -2, 0, then EOB.
-        # Layout: bit=1 sign=0 mag=01    -> +1
-        #         bit=1 sign=1 mag=10    -> -2
-        #         bit=0 bit=0            -> single 0
-        #         bit=0 bit=1            -> EOB, rest zero
-        w.pack_bits(1, 1); w.pack_bits(0, 1); w.pack_bits(0b01, 2)
-        w.pack_bits(1, 1); w.pack_bits(1, 1); w.pack_bits(0b10, 2)
-        w.pack_bits(0, 1); w.pack_bits(0, 1)
-        w.pack_bits(0, 1); w.pack_bits(1, 1)
+        # Layout: 110 mag=01 -> +1
+        #         111 mag=10 -> -2
+        #         0          -> single 0
+        #         10         -> EOB, rest zero
+        w.pack_bits(0b110, 3)
+        w.pack_bits(0b01, 2)
+        w.pack_bits(0b111, 3)
+        w.pack_bits(0b10, 2)
+        w.pack_bits(0, 1)
+        w.pack_bits(0b10, 2)
         _encode_eod(w)
 
         _group, patches = decode_layer_blob(w.to_bytes())
@@ -262,6 +322,109 @@ class CoefficientDecodeTests(unittest.TestCase):
         headers = list(iter_patch_headers(w.to_bytes()))
         positions = [(h.patch_x, h.patch_y) for h in headers]
         self.assertEqual(positions, [(0, 0), (1, 2), (4, 4)])
+
+
+class TerrainDecompressionTests(unittest.TestCase):
+    def test_dequantize_table_matches_libomv_formula(self) -> None:
+        from vibestorm.world.terrain import DEQUANTIZE_TABLE16
+
+        self.assertEqual(DEQUANTIZE_TABLE16[0], 1.0)
+        self.assertEqual(DEQUANTIZE_TABLE16[1], 3.0)
+        self.assertEqual(DEQUANTIZE_TABLE16[16], 3.0)
+        self.assertEqual(DEQUANTIZE_TABLE16[255], 61.0)
+
+    def test_copy_matrix_uses_libomv_diagonal_serpentine(self) -> None:
+        from vibestorm.world.terrain import COPY_MATRIX16
+
+        self.assertEqual(COPY_MATRIX16[:8], (0, 1, 5, 6, 14, 15, 27, 28))
+        self.assertEqual(COPY_MATRIX16[16:24], (2, 4, 7, 13, 16, 26, 29, 43))
+        self.assertEqual(sorted(COPY_MATRIX16), list(range(16 * 16)))
+
+    def test_zero_patch_decompresses_to_addval(self) -> None:
+        from vibestorm.world.terrain import decode_height_patches
+
+        w = _encode_group_header(stride=264, patch_size=16, layer_type=0x4C)
+        _encode_patch_header_into(w, 0x30, 20.0, 16, 0, 0)  # prequant=5
+        _encode_zero_block(w, 16 * 16)
+        _encode_eod(w)
+
+        _group, patches = decode_height_patches(w.to_bytes())
+
+        self.assertEqual(len(patches), 1)
+        heights = patches[0].heights
+        self.assertEqual(len(heights), 16 * 16)
+        self.assertTrue(all(abs(value - 28.0) < 1e-6 for value in heights))
+
+    def test_dc_only_patch_is_constant_after_idct(self) -> None:
+        from vibestorm.world.terrain import decode_height_patches
+
+        w = _encode_group_header(stride=264, patch_size=16, layer_type=0x4C)
+        _encode_patch_header_into(w, 0x34, 20.0, 16, 0, 0)  # word_bits=6
+        w.pack_bits(0b110, 3)
+        w.pack_bits(16, 6)
+        w.pack_bits(0b10, 2)
+        _encode_eod(w)
+
+        _group, patches = decode_height_patches(w.to_bytes())
+
+        self.assertEqual(len(set(round(v, 6) for v in patches[0].heights)), 1)
+        self.assertAlmostEqual(patches[0].heights[0], 28.5, places=6)
+
+    def test_region_heightmap_accumulates_patch_at_grid_position(self) -> None:
+        from vibestorm.world.terrain import RegionHeightmap
+
+        w = _encode_group_header(stride=264, patch_size=16, layer_type=0x4C)
+        _encode_patch_header_into(w, 0x30, 10.0, 4, 2, 3)
+        _encode_zero_block(w, 16 * 16)
+        _encode_eod(w)
+
+        heightmap = RegionHeightmap()
+        _group, patches = heightmap.apply_layer_blob(w.to_bytes())
+
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(heightmap.revision, 1)
+        index = (3 * 16) * 256 + (2 * 16)
+        self.assertAlmostEqual(heightmap.samples[index], 12.0, places=6)
+        self.assertEqual(heightmap.samples[0], 0.0)
+        self.assertIsNotNone(heightmap.latest_layer_stats)
+        assert heightmap.latest_layer_stats is not None
+        self.assertEqual(heightmap.latest_layer_stats.patch_count, 1)
+        self.assertEqual(heightmap.latest_layer_stats.positions, ((2, 3),))
+        self.assertEqual(heightmap.latest_layer_stats.ranges, (4,))
+        self.assertEqual(heightmap.latest_layer_stats.nonzero_coefficients, 0)
+        self.assertAlmostEqual(heightmap.latest_layer_stats.height_min, 12.0, places=6)
+
+    def test_decodes_opensim_compressed_sloped_patch_fixture(self) -> None:
+        from vibestorm.world.terrain import decode_height_patches
+
+        # Generated with OpenSimTerrainCompressor.CreatePatchFromTerrainData
+        # from a patch where height = 20 + x * 0.05 + y * 0.02.
+        data = bytes.fromhex(
+            "0801104c8a0000a041020000399ff712ff4038e81c2c01c180381000e0400001c04261"
+        )
+
+        group, patches = decode_height_patches(data)
+
+        self.assertEqual(group.stride, 264)
+        self.assertEqual(group.patch_size, 16)
+        self.assertEqual(len(patches), 1)
+        heights = patches[0].heights
+        self.assertAlmostEqual(heights[0], 20.0, delta=0.01)
+        self.assertAlmostEqual(heights[15], 20.75, delta=0.01)
+        self.assertAlmostEqual(heights[15 * 16], 20.3, delta=0.01)
+        self.assertAlmostEqual(heights[15 * 16 + 15], 21.05, delta=0.01)
+
+    def test_synthetic_heightmap_has_debug_shape_and_patch_keys(self) -> None:
+        from vibestorm.world.terrain import synthetic_heightmap
+
+        heightmap = synthetic_heightmap(width=32, height=32)
+
+        self.assertEqual(heightmap.width, 32)
+        self.assertEqual(heightmap.height, 32)
+        self.assertEqual(heightmap.revision, 1)
+        self.assertEqual(heightmap.patch_count, 4)
+        self.assertLess(heightmap.sample_min, heightmap.sample_max)
+        self.assertEqual(heightmap.first_patch_keys, ((0, 0), (0, 1), (1, 0), (1, 1)))
 
 
 if __name__ == "__main__":

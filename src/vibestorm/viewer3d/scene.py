@@ -25,10 +25,14 @@ if TYPE_CHECKING:
         ChatLocal,
         ChatOutbound,
         InventorySnapshotReady,
+        LayerDataReceived,
         RegionChanged,
         RegionMapTileReady,
+        TextureAssetReady,
     )
     from vibestorm.caps.inventory_client import InventoryFetchSnapshot
+    from vibestorm.world.terrain import RegionHeightmap
+    from vibestorm.world.texture_entry import TextureEntry
 
 # Marker color per pcode (libomv pcode constants):
 PCODE_PRIM = 9
@@ -44,6 +48,7 @@ PCODE_COLORS: dict[int, tuple[int, int, int]] = {
     PCODE_PARTICLE_SYSTEM: (200, 80, 200),
 }
 DEFAULT_MARKER_COLOR: tuple[int, int, int] = (140, 140, 140)
+DEFAULT_WATER_HEIGHT_M: float = 20.0
 
 
 EntityKind = Literal["prim", "avatar", "tree", "grass", "particle", "unknown"]
@@ -136,6 +141,7 @@ class SceneEntity:
     rotation_z_radians: float                           # yaw, derived from rotation
     name: str | None = None
     default_texture_id: UUID | None = None
+    texture_entry: TextureEntry | None = None
     shape: PrimShape | None = None  # populated once parser surfaces path/profile curves
     tint: tuple[int, int, int] = DEFAULT_MARKER_COLOR
 
@@ -156,30 +162,51 @@ class Scene:
 
     region_handle: int | None = None
     region_name: str | None = None
+    water_height: float = DEFAULT_WATER_HEIGHT_M
     avatar_position: tuple[float, float, float] | None = None
     parcel_name: str | None = None
     map_tile_path: Path | None = None
+    texture_paths: dict[UUID, Path] = field(default_factory=dict)
     inventory_snapshot: InventoryFetchSnapshot | None = None
+    terrain_heightmap: RegionHeightmap | None = None
+    debug_terrain_source: str | None = None
+    terrain_z_scale: float = 1.0
+    render_terrain: bool = True
+    render_terrain_lines: bool = True
+    render_water: bool = True
+    render_objects: bool = True
+    water_alpha: float = 0.72
     object_entities: dict[int, SceneEntity] = field(default_factory=dict)
     avatar_entities: dict[int, SceneEntity] = field(default_factory=dict)
     sun_phase: float | None = None
+    sun_direction: tuple[float, float, float] | None = None
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
 
     # ---- bus event handlers ----------------------------------------------
 
     def apply_region_changed(self, event: RegionChanged) -> None:
+        debug_heightmap = self.terrain_heightmap if self.debug_terrain_source is not None else None
+        debug_source = self.debug_terrain_source
         self.region_handle = event.region_handle
         self.region_name = event.region_name
+        self.water_height = DEFAULT_WATER_HEIGHT_M
         self.avatar_position = None
         self.parcel_name = None
         self.object_entities.clear()
         self.avatar_entities.clear()
+        self.texture_paths.clear()
+        self.terrain_heightmap = debug_heightmap
+        self.debug_terrain_source = debug_source
         # Map tile is region-scoped; clear so a stale tile from the old region isn't shown.
         self.map_tile_path = None
 
     def apply_map_tile_ready(self, event: RegionMapTileReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:
             self.map_tile_path = Path(event.cache_path)
+
+    def apply_texture_asset_ready(self, event: TextureAssetReady) -> None:
+        if event.region_handle == self.region_handle or self.region_handle is None:
+            self.texture_paths[event.texture_id] = Path(event.cache_path)
 
     def apply_chat_local(self, event: ChatLocal) -> None:
         self.chat_lines.append(
@@ -201,6 +228,31 @@ class Scene:
         if event.region_handle == self.region_handle or self.region_handle is None:
             self.inventory_snapshot = event.snapshot
 
+    def apply_layer_data_received(self, event: LayerDataReceived) -> None:
+        if event.region_handle != self.region_handle and self.region_handle is not None:
+            return
+        from vibestorm.world.terrain import (
+            LAYER_TYPE_LAND,
+            LAYER_TYPE_LAND_EXTENDED,
+            RegionHeightmap,
+            TerrainDecodeError,
+        )
+
+        if event.layer_type not in (LAYER_TYPE_LAND, LAYER_TYPE_LAND_EXTENDED):
+            return
+        heightmap = self.terrain_heightmap
+        if self.debug_terrain_source is not None:
+            return
+        if heightmap is None:
+            heightmap = RegionHeightmap()
+            self.terrain_heightmap = heightmap
+        try:
+            heightmap.apply_layer_blob(event.data)
+        except TerrainDecodeError:
+            # Bad terrain packets should not take down the viewer loop;
+            # packet-level logging already records decode failures.
+            return
+
     # ---- WorldView snapshot ----------------------------------------------
 
     def refresh_from_world_view(self, world_view: object | None) -> None:
@@ -220,6 +272,10 @@ class Scene:
         self.sun_phase = (
             float(time_snapshot.sun_phase) if time_snapshot is not None else None
         )
+        raw_sun_direction = (
+            getattr(time_snapshot, "sun_direction", None) if time_snapshot is not None else None
+        )
+        self.sun_direction = _as_vec3(raw_sun_direction)
 
         # Full ObjectUpdate-derived objects (have rich data).
         for obj in getattr(world_view, "objects", {}).values():
@@ -247,6 +303,7 @@ class Scene:
                 rotation_z_radians=yaw,
                 name=name,
                 default_texture_id=getattr(obj, "default_texture_id", None),
+                texture_entry=getattr(obj, "texture_entry", None),
                 shape=shape,
                 tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
             )
@@ -281,6 +338,10 @@ class Scene:
 
         if world_view.region is not None and self.region_name is None:
             self.region_name = world_view.region.name
+        if world_view.region is not None:
+            water_height = getattr(world_view.region, "water_height", None)
+            if water_height is not None:
+                self.water_height = float(water_height)
 
 
 def _self_avatar_position(world_view: object) -> tuple[float, float, float] | None:
@@ -291,6 +352,16 @@ def _self_avatar_position(world_view: object) -> tuple[float, float, float] | No
         if getattr(terse, "is_avatar", False):
             return getattr(terse, "position", None)
     return None
+
+
+def _as_vec3(value: object | None) -> tuple[float, float, float] | None:
+    if value is None:
+        return None
+    try:
+        x, y, z = value  # type: ignore[misc]
+        return (float(x), float(y), float(z))
+    except (TypeError, ValueError):
+        return None
 
 
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:
@@ -324,5 +395,6 @@ __all__ = [
     "Scene",
     "PCODE_AVATAR",
     "PCODE_PRIM",
+    "DEFAULT_WATER_HEIGHT_M",
     "classify_prim_shape",
 ]

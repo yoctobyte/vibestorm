@@ -10,41 +10,44 @@ import socket
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 from uuid import UUID
 
-from vibestorm.login.models import LoginBootstrap
 from vibestorm.assets.j2k import J2KDecodeError, decode_j2k
 from vibestorm.caps.client import CapabilityClient, CapabilityError
 from vibestorm.caps.get_texture_client import GetTextureClient, GetTextureError
-from vibestorm.caps.upload_baked_texture_client import UploadBakedTextureClient, UploadBakedTextureError
 from vibestorm.caps.inventory_client import (
     InventoryCapabilityClient,
     InventoryCapabilityError,
     InventoryFetchSnapshot,
     InventoryFolderRequest,
     InventoryItemRequest,
-    parse_inventory_items_payload,
     parse_inventory_descendents_payload,
+    parse_inventory_items_payload,
+)
+from vibestorm.caps.upload_baked_texture_client import (
+    UploadBakedTextureClient,
+    UploadBakedTextureError,
 )
 from vibestorm.event_queue.client import EventQueueClient, EventQueueError
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
+from vibestorm.login.models import LoginBootstrap
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
-    AgentCachedTextureResponseMessage,
-    AvatarAppearanceMessage,
-    MessageDecodeError,
-    AgentWearablesUpdateMessage,
+    DEFAULT_AVATAR_BAKE_INDICES,
     DEFAULT_AVATAR_SIZE,
     DEFAULT_AVATAR_TEXTURE_ENTRY,
     DEFAULT_AVATAR_VISUAL_PARAMS,
-    DEFAULT_AVATAR_BAKE_INDICES,
+    AgentCachedTextureResponseMessage,
+    AgentWearablesUpdateMessage,
+    AvatarAppearanceMessage,
+    MessageDecodeError,
     WearableCacheEntry,
     encode_agent_cached_texture,
-    encode_agent_update,
     encode_agent_is_now_wearing,
     encode_agent_set_appearance,
     encode_agent_throttle,
+    encode_agent_update,
     encode_agent_wearables_request,
     encode_chat_from_viewer,
     encode_complete_agent_movement,
@@ -59,8 +62,8 @@ from vibestorm.udp.messages import (
     encode_teleport_location_request,
     encode_use_circuit_code,
     parse_agent_alert_message,
-    parse_agent_movement_complete,
     parse_agent_cached_texture_response,
+    parse_agent_movement_complete,
     parse_agent_wearables_update,
     parse_alert_message,
     parse_avatar_appearance,
@@ -88,6 +91,9 @@ from vibestorm.udp.template import (
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
 from vibestorm.world.models import WorldView
 from vibestorm.world.updater import WorldUpdater
+
+if TYPE_CHECKING:
+    from vibestorm.udp.world_client import WorldClient
 
 
 @dataclass(slots=True, frozen=True)
@@ -203,6 +209,8 @@ class LiveCircuitSession:
     region_map_image_id: UUID | None = None
     region_map_fetched: bool = False
     region_map_path: Path | None = None
+    texture_paths: dict[UUID, Path] = field(default_factory=dict)
+    texture_fetch_attempted: set[UUID] = field(default_factory=set)
     # Most-recent LayerData blob per layer-type byte (0x4C 'L', 0x57 'W',
     # 0x37 '7', etc.). Patches arrive incrementally — the wire-side
     # session just keeps the latest blob; reassembly into a heightmap
@@ -1490,7 +1498,7 @@ async def run_live_session(
     on_event: Callable[[SessionEvent], None] | None = None,
     world_view: WorldView | None = None,
     stop_event: asyncio.Event | None = None,
-    world_client: "WorldClient | None" = None,
+    world_client: WorldClient | None = None,
 ) -> SessionReport:
     from vibestorm.udp.world_client import WorldClient
 
@@ -1592,6 +1600,20 @@ async def run_live_session(
                 if cached is not None:
                     session.region_map_path = cached
 
+            if session.get_texture_url is not None:
+                pending_texture_id = _next_pending_object_texture_id(session)
+                if pending_texture_id is not None:
+                    session.texture_fetch_attempted.add(pending_texture_id)
+                    cached = await _fetch_and_cache_texture_asset(
+                        session,
+                        session.get_texture_url,
+                        pending_texture_id,
+                        _TEXTURE_CACHE_DIR,
+                        loop.time(),
+                    )
+                    if cached is not None:
+                        session.texture_paths[pending_texture_id] = cached
+
         for packet in session.build_shutdown_packets(loop.time()):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
@@ -1621,6 +1643,7 @@ async def run_live_session(
 _BAKED_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "baked-cache"
 _APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
 _MAP_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "map-cache"
+_TEXTURE_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "texture-cache"
 
 
 async def _fetch_and_cache_region_map(
@@ -1673,6 +1696,71 @@ async def _fetch_and_cache_region_map(
         now,
         "map.cache.ok",
         f"path={output_path} size={decoded.width}x{decoded.height} mode={decoded.mode}",
+    )
+    return output_path
+
+
+def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
+    for obj in session.world_view.objects.values():
+        texture_ids = [obj.default_texture_id]
+        if obj.texture_entry is not None:
+            texture_ids.extend(texture_id for _face, texture_id in obj.texture_entry.face_texture_ids)
+        for texture_id in texture_ids:
+            if texture_id is None or texture_id.int == 0:
+                continue
+            if texture_id == session.region_map_image_id:
+                continue
+            if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
+                continue
+            return texture_id
+    return None
+
+
+async def _fetch_and_cache_texture_asset(
+    session: LiveCircuitSession,
+    cap_url: str,
+    texture_id: UUID,
+    cache_dir: Path,
+    now: float,
+) -> Path | None:
+    """Fetch an object texture via GetTexture, decode it, and cache it as PNG."""
+    output_path = cache_dir / f"{texture_id}.png"
+    if output_path.exists():
+        session._record_event(now, "texture.cache.ok", f"id={texture_id} path={output_path}")
+        return output_path
+
+    client = GetTextureClient(timeout_seconds=10.0)
+    try:
+        fetched = await client.fetch(cap_url, texture_id)
+    except GetTextureError as exc:
+        session._record_event(now, "texture.fetch.error", f"id={texture_id} error={exc}")
+        return None
+
+    try:
+        decoded = decode_j2k(fetched.data)
+    except J2KDecodeError as exc:
+        session._record_event(now, "texture.decode.error", f"id={texture_id} error={exc}")
+        return None
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write_png() -> None:
+        from PIL import Image
+
+        Image.frombytes(decoded.mode, (decoded.width, decoded.height), decoded.pixels).save(
+            output_path, format="PNG"
+        )
+
+    try:
+        await asyncio.to_thread(_write_png)
+    except (OSError, ImportError) as exc:
+        session._record_event(now, "texture.cache.error", f"id={texture_id} error={exc}")
+        return None
+
+    session._record_event(
+        now,
+        "texture.cache.ok",
+        f"id={texture_id} path={output_path} size={decoded.width}x{decoded.height}",
     )
     return output_path
 

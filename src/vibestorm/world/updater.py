@@ -48,6 +48,7 @@ class WorldUpdater:
             name=handshake.sim_name,
             grid_x=region_x // 256,
             grid_y=region_y // 256,
+            water_height=handshake.water_height,
         )
         return WorldUpdateEvent(
             kind="handshake.region",

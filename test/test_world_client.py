@@ -64,7 +64,7 @@ class WorldClientTests(unittest.TestCase):
         a = LiveCircuitSession(_make_bootstrap(region_x=256, region_y=512, sim_port=9000), self.dispatcher)
         b = LiveCircuitSession(_make_bootstrap(region_x=512, region_y=512, sim_port=9001), self.dispatcher)
 
-        handle_a = client.add_circuit(a)
+        client.add_circuit(a)
         handle_b = client.add_circuit(b)
 
         self.assertIs(client.current, a)
@@ -123,7 +123,6 @@ class WorldClientBusBridgeTests(unittest.TestCase):
 
     def test_chat_local_session_event_publishes_typed_chatlocal(self) -> None:
         from vibestorm.bus.events import ChatLocal
-        from vibestorm.udp.session import SessionEvent
 
         client = WorldClient()
         session = self._make_session()
@@ -277,6 +276,26 @@ class WorldClientBusBridgeTests(unittest.TestCase):
 
         self.assertEqual(len(received), 1)
         self.assertIs(received[0].snapshot, snapshot)
+
+    def test_texture_cache_event_publishes_texture_asset_ready(self) -> None:
+        from vibestorm.bus.events import TextureAssetReady
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[TextureAssetReady] = []
+        client.bus.subscribe(TextureAssetReady, received.append)
+
+        texture_id = UUID("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")
+        session._record_event(
+            0.0,
+            "texture.cache.ok",
+            f"id={texture_id} path=/tmp/{texture_id}.png size=4x4",
+        )
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].texture_id, texture_id)
+        self.assertEqual(received[0].cache_path, f"/tmp/{texture_id}.png")
 
 
 class WorldClientCommandHandlerTests(unittest.TestCase):

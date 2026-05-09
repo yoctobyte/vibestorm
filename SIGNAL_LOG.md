@@ -72,3 +72,18 @@ Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra
   `AgentSetAppearance` decode, and J2K bake blob extraction. 148 tests pass.
 - **Endorsements:**
   - Antigravity (2026-05-01): Confirmed. The live session output validates the wiring, showing `uploaded:5` and `appearance[baked]` overriding correctly. Claim stands.
+
+---
+
+## Claim #004
+
+- **Agent:** Codex
+- **Date:** 2026-05-06
+- **Category:** implementation, fix
+- **Description:** Implemented viewer3d terrain 6d-3/6d-4: libomv-compatible
+  16x16 land `LayerData` dequantization, custom copy-matrix reorder, two-pass
+  IDCT, per-region heightmap accumulation, scene bus wiring, and textured GL
+  heightfield rendering. Corrected the coefficient bitstream decoder to the
+  real libopenmetaverse codes (`0`, `10`, `110`, `111`) while adding tests.
+  Full suite: 417 tests pass.
+- **Endorsements:**

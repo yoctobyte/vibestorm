@@ -106,6 +106,13 @@ class RegionMapTileReady:
     cache_path: str  # absolute path to the cached PNG
 
 
+@dataclass(slots=True, frozen=True)
+class TextureAssetReady:
+    region_handle: int
+    texture_id: UUID
+    cache_path: str  # absolute path to the cached PNG
+
+
 # ---- terrain --------------------------------------------------------------
 
 @dataclass(slots=True, frozen=True)
@@ -135,5 +142,6 @@ __all__ = [
     "RegionChanged",
     "RegionMapTileReady",
     "SessionClosed",
+    "TextureAssetReady",
     "WorldStateChanged",
 ]

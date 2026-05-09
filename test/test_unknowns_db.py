@@ -48,6 +48,7 @@ class UnknownsDatabaseTests(unittest.TestCase):
                 ps_block_size=0,
                 extra_params_size=0,
                 default_texture_id=UUID("00895567-4724-cb43-ed92-0b47caed1546"),
+                texture_entry=None,
                 interesting_payloads=(
                     ObjectUpdatePayloadSummary(
                         field_name="TextureEntry",
@@ -344,6 +345,7 @@ class UnknownsDatabaseTests(unittest.TestCase):
                     extra_params_size=0,
                     extra_params_entries=(),
                     default_texture_id=None,
+                    texture_entry=None,
                     interesting_payloads=(),
                 ),
             )

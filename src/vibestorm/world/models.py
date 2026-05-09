@@ -7,6 +7,7 @@ from math import sqrt
 from uuid import UUID
 
 from vibestorm.udp.messages import (
+    CoarseLocationUpdateMessage,
     ExtraParamEntry,
     ImprovedTerseObjectUpdateMessage,
     KillObjectMessage,
@@ -17,6 +18,7 @@ from vibestorm.udp.messages import (
     SimStatsMessage,
     SimulatorViewerTimeMessage,
 )
+from vibestorm.world.texture_entry import TextureEntry, parse_texture_entry
 
 
 @dataclass(slots=True, frozen=True)
@@ -24,6 +26,7 @@ class RegionInfo:
     name: str
     grid_x: int
     grid_y: int
+    water_height: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -41,6 +44,7 @@ class SimulatorTimeSnapshot:
     sec_per_day: int
     sec_per_year: int
     sun_phase: float
+    sun_direction: tuple[float, float, float] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -94,6 +98,7 @@ class WorldObject:
     extra_params_size: int
     extra_params_entries: tuple[ExtraParamEntry, ...]
     default_texture_id: UUID | None
+    texture_entry: TextureEntry | None = None
     shape: PrimShapeData | None = None
     properties_family: ObjectPropertiesFamilyMessage | None = None
 
@@ -140,7 +145,9 @@ class WorldView:
     def terse_prim_count(self) -> int:
         return sum(1 for obj in self.terse_objects.values() if not obj.is_avatar)
 
-    def nearest_coarse_agent_for_terse(self, local_id: int) -> tuple[CoarseAgentLocation, float] | None:
+    def nearest_coarse_agent_for_terse(
+        self, local_id: int
+    ) -> tuple[CoarseAgentLocation, float] | None:
         terse = self.terse_objects.get(local_id)
         if terse is None or not terse.is_avatar or not self.coarse_agents:
             return None
@@ -159,8 +166,20 @@ class WorldView:
             return None
         return nearest, nearest_distance
 
-    def set_region(self, *, name: str, grid_x: int, grid_y: int) -> None:
-        self.region = RegionInfo(name=name, grid_x=grid_x, grid_y=grid_y)
+    def set_region(
+        self,
+        *,
+        name: str,
+        grid_x: int,
+        grid_y: int,
+        water_height: float | None = None,
+    ) -> None:
+        self.region = RegionInfo(
+            name=name,
+            grid_x=grid_x,
+            grid_y=grid_y,
+            water_height=water_height,
+        )
 
     def apply_sim_stats(self, message: SimStatsMessage) -> None:
         self.latest_sim_stats = SimStatSnapshot(
@@ -178,6 +197,7 @@ class WorldView:
             sec_per_day=message.sec_per_day,
             sec_per_year=message.sec_per_year,
             sun_phase=message.sun_phase,
+            sun_direction=message.sun_direction,
         )
         self.time_updates += 1
 
@@ -245,8 +265,13 @@ class WorldView:
                 extra_params_size=obj.extra_params_size,
                 extra_params_entries=obj.extra_params_entries,
                 default_texture_id=obj.default_texture_id,
+                texture_entry=obj.texture_entry,
                 shape=obj.shape,
-                properties_family=self.objects.get(obj.full_id).properties_family if obj.full_id in self.objects else None,
+                properties_family=(
+                    self.objects.get(obj.full_id).properties_family
+                    if obj.full_id in self.objects
+                    else None
+                ),
             )
             self.objects[obj.full_id] = new_obj
             self.local_id_to_full_id[obj.local_id] = obj.full_id
@@ -303,6 +328,9 @@ class WorldView:
                 default_texture_id=UUID(bytes=entry.texture_entry[:16])
                 if entry.texture_entry and len(entry.texture_entry) >= 16
                 else obj.default_texture_id,
+                texture_entry=_parse_texture_entry_or_none(entry.texture_entry)
+                if entry.texture_entry and len(entry.texture_entry) >= 16
+                else obj.texture_entry,
                 shape=obj.shape,
                 properties_family=obj.properties_family,
             )
@@ -347,6 +375,14 @@ class WorldView:
             extra_params_size=existing.extra_params_size,
             extra_params_entries=existing.extra_params_entries,
             default_texture_id=existing.default_texture_id,
+            texture_entry=existing.texture_entry,
             shape=existing.shape,
             properties_family=message,
         )
+
+
+def _parse_texture_entry_or_none(data: bytes | None) -> TextureEntry | None:
+    try:
+        return parse_texture_entry(data)
+    except ValueError:
+        return None

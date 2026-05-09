@@ -8,6 +8,7 @@ from struct import pack, unpack_from
 from uuid import UUID
 
 from vibestorm.udp.template import MessageDispatch
+from vibestorm.world.texture_entry import TextureEntry, parse_texture_entry
 
 
 class MessageDecodeError(ValueError):
@@ -411,6 +412,7 @@ class ObjectUpdateEntry:
     ps_block_size: int
     extra_params_size: int
     default_texture_id: UUID | None
+    texture_entry: TextureEntry | None
     interesting_payloads: tuple[ObjectUpdatePayloadSummary, ...]
     extra_params_entries: tuple[ExtraParamEntry, ...] = ()
     shape: PrimShapeData | None = None
@@ -1363,14 +1365,20 @@ def decode_compressed_object_data(
         variant = "prim_basic"
 
     default_texture_id: UUID | None = None
+    parsed_texture_entry: TextureEntry | None = None
     if texture_entry_size >= 16:
         # The texture entry payload starts after the 4-byte length prefix; we already
         # advanced past it, so re-read from pos - texture_entry_size
         te_start = pos - texture_entry_size
         try:
-            default_texture_id = UUID(bytes=data[te_start : te_start + 16])
-        except Exception:
-            pass
+            parsed_texture_entry = parse_texture_entry(data[te_start:pos])
+        except ValueError:
+            parsed_texture_entry = None
+        default_texture_id = (
+            parsed_texture_entry.default_texture_id
+            if parsed_texture_entry is not None
+            else UUID(bytes=data[te_start : te_start + 16])
+        )
 
     return ObjectUpdateEntry(
         local_id=local_id,
@@ -1396,6 +1404,7 @@ def decode_compressed_object_data(
         ps_block_size=0,
         extra_params_size=extra_params_size,
         default_texture_id=default_texture_id,
+        texture_entry=parsed_texture_entry,
         interesting_payloads=(),
         extra_params_entries=extra_params_entries,
     )
@@ -1810,6 +1819,7 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
     ps_block_size = 0
     extra_params_size = 0
     default_texture_id: UUID | None = None
+    parsed_texture_entry: TextureEntry | None = None
     extra_params_entries: tuple[ExtraParamEntry, ...] = ()
     interesting_payloads: list[ObjectUpdatePayloadSummary] = []
     next_offset = offset + 8
@@ -1867,7 +1877,15 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
 
     texture_entry_size = len(texture_entry_payload)
     if texture_entry_size >= 16:
-        default_texture_id = UUID(bytes=texture_entry_payload[:16])
+        try:
+            parsed_texture_entry = parse_texture_entry(texture_entry_payload)
+        except ValueError:
+            parsed_texture_entry = None
+        default_texture_id = (
+            parsed_texture_entry.default_texture_id
+            if parsed_texture_entry is not None
+            else UUID(bytes=texture_entry_payload[:16])
+        )
     texture_anim_size = len(texture_anim_payload)
     data_size = len(data_payload)
     text_size = len(text_payload)
@@ -1935,6 +1953,7 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
         ps_block_size=ps_block_size,
         extra_params_size=extra_params_size,
         default_texture_id=default_texture_id,
+        texture_entry=parsed_texture_entry,
         interesting_payloads=tuple(interesting_payloads),
         extra_params_entries=extra_params_entries,
         shape=shape,

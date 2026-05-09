@@ -124,6 +124,50 @@ each object.” The stronger current model is:
 2. the client can influence interest with camera/far/throttle/appearance traffic
 3. the server still chooses what to push, and whether that arrives as full, cached, compressed, or terse
 
+## Terrain `LayerData`
+
+Current implementation status:
+
+- `LayerData` is parsed as `Type U8` plus a U16-length raw Data blob.
+- Land layer type `0x4C` contains a bit-packed group:
+  - group header: `stride U16`, `patch_size U8`, redundant `layer_type U8`
+  - repeated patch records until end marker `97` decimal (`0x61`)
+  - patch header: `quant_wbits U8`, `dc_offset F32`, `range U16`, `patch_ids 10 bits`
+  - patch IDs pack high 5 bits as X and low 5 bits as Y for the standard 16x16 patch grid
+- Important `BitPack` detail: OpenMetaverse treats each integer as little-endian
+  bytes, serializes each complete byte MSB-first, and serializes a final partial
+  byte using only its low significant bits MSB-first. For example,
+  `PackBits(264, 16); PackBits(16, 8); PackBits(0x4c, 8)` appears on the wire
+  as `08 01 10 4c`, and coefficient code `0b110` appears as leading bits
+  `110` (`c0` in a fresh byte). Non-byte-aligned magnitudes matter: after
+  `PackBits(2, 2)`, `PackBits(0x123, 10)` appears as `88 d0`. Treating the
+  whole stream as one MSB-first integer stream scrambles `range`, patch IDs,
+  and the coefficient walk.
+- Coefficient stream codes follow libopenmetaverse:
+  - `0` = one zero coefficient
+  - `10` = end of block, rest zero
+  - `110` + magnitude = positive coefficient
+  - `111` + magnitude = negative coefficient
+- `quant_wbits` decodes as:
+  - `word_bits = (quant_wbits & 0x0F) + 2`
+  - `prequant = (quant_wbits >> 4) + 2`
+- For 16x16 land patches, Vibestorm now applies libomv-compatible:
+  - `DequantizeTable16[n] = 1 + 2 * (x + y)`
+  - `CopyMatrix16` diagonal serpentine reorder, not standard JPEG zigzag
+  - two-pass 16-point inverse DCT
+- Final per-sample arithmetic:
+  - `mult = (1 / (1 << prequant)) * range`
+  - `addval = mult * (1 << (prequant - 1)) + dc_offset`
+  - `height = idct_value * mult + addval`
+- `RegionHeightmap` accumulates decoded land patches into a 256x256 row-major height array keyed by patch X/Y.
+- Viewer3D water rendering should use `RegionHandshake.WaterHeight`; local source and the Linden viewer both treat
+  that field as the region water height. A hardcoded 20 m value is only a fallback/default.
+
+Current limitations:
+
+- only standard 16x16 patches are decompressed; extended 32x32 patch IDCT is still intentionally rejected
+- wind/cloud `LayerData` packet receipt is surfaced but not converted to render data
+
 ### Appearance / Cloud-State Notes
 
 The local OpenSim source also reinforces that avatar appearance is a separate session concern:
@@ -170,6 +214,30 @@ Current implication:
   - this is consistent with the current live symptom: zero cached textures plus persistent cloud state
 
 ## Additional LLUDP Update Families
+
+### `TextureEntry`
+
+Current implementation status:
+
+- Vibestorm now parses the first `TextureEntry` section: image UUIDs.
+- The blob starts with a default texture UUID.
+- It is followed by zero or more face-mask + texture UUID overrides.
+- Face masks use the same MSB-first 7-bit group encoding pinned by the
+  `AgentSetAppearance` texture-entry tests:
+  `faceBits = (faceBits << 7) | (byte & 0x7F)`, with bit 7 as continuation.
+- A zero face mask terminates the image UUID section.
+- Parsed data is carried as `TextureEntry(default_texture_id,
+  face_texture_ids)` through `ObjectUpdateEntry`, `WorldObject`, and
+  `viewer3d.SceneEntity`.
+
+Current limitations:
+
+- Later `TextureEntry` material sections are still not decoded: color/alpha,
+  repeats, offsets, rotation, glow, fullbright, media/material flags, and
+  related fields remain raw/implicit.
+- The 3D renderer still uses default-texture draw groups. Face-specific
+  texture IDs are now available to the scene layer but not yet used for
+  per-face mesh batching.
 
 ### `ObjectUpdateCached`
 Structure:

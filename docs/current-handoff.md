@@ -1,6 +1,241 @@
 # Current Handoff
 
-Last updated: 2026-05-04
+Last updated: 2026-05-09
+
+## Update 2026-05-06: Terrain Heightmap + Surface Mesh
+
+Viewer3D terrain work has moved past raw patch extraction.
+
+- `src/vibestorm/world/terrain.py` now decodes standard 16x16 land
+  `LayerData` patches all the way to height samples: libomv-compatible
+  dequant table, copy-matrix reorder, two-pass IDCT, and final
+  `mult/addval` height arithmetic.
+- Important correction: the coefficient stream decoder now matches
+  libopenmetaverse's real bit codes (`0` zero, `10` EOB, `110` positive,
+  `111` negative). The earlier synthetic tests had encoded a different
+  symmetric shape, so they were corrected at the same time.
+- `RegionHeightmap` accumulates decoded land patches into a 256x256
+  row-major sample array and tracks a `revision` for render-cache rebuilds.
+- `viewer3d.Scene` consumes `LayerDataReceived` bus events, ignores non-land
+  layers and other regions, and keeps the current `terrain_heightmap`.
+- `PerspectiveRenderer` now builds a textured terrain heightfield mesh from
+  the scene heightmap and draws it through the existing ground shader. It
+  falls back to the flat region ground quad until terrain packets arrive.
+
+Verification:
+
+- `uv run pytest test/test_world_terrain.py test/test_viewer3d_scene.py -q`
+- `uv run pytest test/test_viewer3d_perspective_gl.py -q`
+
+Known remaining terrain gaps:
+
+- Extended 32x32 patches are still rejected; only standard 16x16 land
+  patches are decompressed.
+- Wind/cloud layer data is surfaced but not rendered.
+- No live OpenSim visual pass was run in this handoff; next concrete step is
+  `./run.sh opensim` plus `./run.sh viewer3d`, then switch to 3D and confirm
+  the ground surface is visibly elevated instead of flat.
+
+Follow-up from the first live check:
+
+- `viewer3d` now starts in 3D mode by default (`--render-mode 2d-map` is
+  available for the old startup behavior).
+- The viewer loop is capped at 20 FPS by default via `--max-fps 20`; pass
+  `--max-fps 0` to disable the cap.
+- The perspective renderer now draws terrain with a 1x1 fallback ground
+  texture if terrain height data exists before the region map tile has loaded.
+  This fixes the "no map tile means no terrain draw" path.
+- A Diagnostics window is visible by default in 3D mode and available from
+  Debug -> Diagnostics. It reports FPS, mode, region/map path, terrain
+  dimensions/patch count/revision/min/max height, water level plus avatar
+  under/above-water status, object/avatar/texture/chat counts.
+
+Second follow-up from live debugging:
+
+- The water plane now uses the parsed `RegionHandshake.WaterHeight` stored in
+  `WorldView.region.water_height` instead of always using the default 20 m.
+  The diagnostics window reports that same scene value.
+- Basic 3D orbit inspection controls are wired:
+  - right-drag rotates the orbit camera
+  - mouse wheel changes orbit distance
+  - Shift+right-drag pans the orbit target
+  - Shift+PageUp/PageDown lifts/lowers the orbit target
+  - Center/C now retargets orbit mode to the avatar/coarse self position
+
+Third follow-up from live debugging:
+
+- The water shader now applies subtle coordinate-based noise so the water
+  plane is visually readable instead of a flat translucent sheet.
+- Terrain heightfields now draw a bright green wire/grid overlay on top of the
+  filled terrain mesh. This is intentionally texture-independent, so it should
+  confirm whether `LayerData` has produced a mesh even when the map/terrain
+  texture is missing or visually ambiguous.
+
+Fourth follow-up for terrain diagnosis:
+
+- `viewer3d` now accepts `--debug-terrain synthetic`. This seeds
+  `Scene.terrain_heightmap` with a deterministic hill/valley/ripple surface
+  and ignores live land `LayerData` while the override is active.
+- Diagnostics now show terrain source (`live`/`synthetic`), min/max/mean,
+  first patch keys, and the first four sample values. This should make it
+  clear whether we are failing before GL (bad/flat decoded samples) or in GL
+  (synthetic terrain also fails to draw).
+- Follow-up after synthetic showed only grid lines: terrain fill is now a
+  solid untextured green material whenever a heightmap exists. The textured
+  ground path is left for the no-heightmap flat floor and future texture work.
+- Follow-up after synthetic still looked flat: rendered terrain gained
+  height-based color grading and a `--terrain-z-scale` option. It temporarily
+  defaulted to `4.0` while geometry was suspect; later live validation moved
+  the default back to real meter scale.
+- Follow-up after synthetic still looked flat again: `Scene.apply_region_changed`
+  was clearing the synthetic debug heightmap during the initial live
+  `RegionChanged` event. Synthetic terrain now survives region changes, while
+  normal live terrain is still cleared on region change.
+- To diagnose live flat terrain, `RegionHeightmap.latest_layer_stats` now records
+  the latest land LayerData packet's patch positions, ranges, DC offsets,
+  prequant values, nonzero coefficient count, max absolute coefficient, and
+  decoded per-packet height min/max/mean. Diagnostics shows these as `layer:`
+  and `coeff:` lines.
+
+Fifth follow-up for live flat terrain:
+
+- Debug -> Sim Debug opens a "Sim Debug Heightmap" window showing the current
+  `Scene.terrain_heightmap.samples` as a black/white normalized image. This is
+  intentionally independent from the 3D mesh/material path; if live terrain is
+  still flat in-world but the image has contrast, the bug is in mesh upload or
+  render scaling. If the image is uniform gray, the decoded server heightmap is
+  actually flat at the sample-array level.
+- The heightmap window status line reports source (`live`/`synthetic`),
+  dimensions, patch count, and min/max height for quick screenshots/logging.
+- Focused verification: `uv run --extra viewer pytest
+  test/test_viewer3d_hud_render_mode.py`.
+
+Sixth follow-up after Sim Debug showed uniform gray live terrain:
+
+- The root cause was the terrain `BitPack` bit order. OpenMetaverse writes
+  integer fields as little-endian byte chunks while retaining MSB-first
+  ordering inside each chunk. Live OpenSim LayerData starts with `08 01 10 4c`
+  for stride 264, patch size 16, land type 0x4c; the previous reader treated
+  the whole stream as MSB-first.
+- `BitPack` and `BitPackWriter` now match OpenMetaverse chunk order. Tests pin
+  the live header prefix (`0801104c`) and coefficient prefix-code bytes
+  (`10 -> 80`, `110 -> c0`, `111 -> e0`).
+- Saved LayerData previews now decode to plausible headers such as stride 264,
+  patch size 16, land type 0x4c, ranges 1/3, and valid patch coordinates.
+
+Seventh follow-up after live terrain had plausible heights but wrong shape:
+
+- The first `BitPack` correction still mishandled non-byte-aligned multi-byte
+  values. OpenMetaverse continues a split input byte across output-byte
+  boundaries; after `PackBits(2, 2)`, `PackBits(0x123, 10)` must produce
+  `88 d0`. The Python reader/writer now pins and matches that behavior.
+- `END_OF_PATCHES` is decimal `97` (`0x61`), not hex `0x97`; the old constant
+  came from misreading the name/comment. Tests now pin the marker byte.
+- Added an OpenSim-generated sloped-patch fixture using
+  `OpenSimTerrainCompressor.CreatePatchFromTerrainData`; Python decode
+  recovers `height = 20 + x * 0.05 + y * 0.02` within about 0.01 m. This
+  verifies coefficient magnitudes, EOD, dequant, copy matrix, IDCT, and
+  per-patch placement against the actual OpenSim compressor.
+
+Eighth follow-up after live terrain shape looked correct:
+
+- `--terrain-z-scale` now defaults to `1.0` again so rendered terrain uses
+  real meter scale. The option remains available for debugging exaggerated
+  relief, e.g. `--terrain-z-scale 4`.
+
+Ninth follow-up for render-debug controls:
+
+- View -> Render Settings now opens a small render settings window. It exposes
+  checkbox-style buttons for Terrain Surface, Mesh Lines, Water, and Objects.
+  These write through to `Scene.render_terrain`, `render_terrain_lines`,
+  `render_water`, and `render_objects`.
+- The same window has a Water opacity slider. `Scene.water_alpha` defaults to
+  `0.72`, making water less transparent than the original debug plane while
+  still leaving submerged terrain readable.
+- The renderer honors those scene flags in `PerspectiveRenderer.render_gl`.
+  Mesh lines can now be hidden without disabling terrain fill; water and
+  object rendering can also be isolated while debugging.
+
+Tenth follow-up for first-pass lighting:
+
+- `SimulatorTimeSnapshot` now retains the UDP `SunDirection`, and
+  `viewer3d.Scene` surfaces it as `Scene.sun_direction` alongside
+  `sun_phase`.
+- The 3D renderer applies ambient + directional lighting to object meshes.
+  Primitive normals are currently approximated from local vertex position, so
+  this is a visual depth cue rather than final face-accurate prim shading.
+- Filled terrain now uses a fragment normal derived from the rendered height
+  surface and shades against the same sun direction. Mesh lines remain
+  unlit/debug-bright.
+- Texturing has not started yet beyond the existing map-tile/fallback terrain
+  texture path. The next concrete rendering step is proper terrain/prim texture
+  interpretation, starting with full `TextureEntry` decode and asset lookup.
+
+Eleventh follow-up for first-pass texturing:
+
+- When a terrain heightmap exists and the region map tile has been cached, the
+  3D renderer now drapes that map tile over the terrain mesh instead of using
+  only the debug height-color fill. If no map tile is available, the existing
+  untextured height-color fill remains the fallback.
+- The live session now watches `WorldView.objects` for non-zero
+  `default_texture_id` values, fetches one pending texture at a time via the
+  existing `GetTexture` capability, decodes JPEG2000, and caches PNGs under
+  `local/texture-cache/<uuid>.png`.
+- `texture.cache.ok` session events are bridged to a typed
+  `TextureAssetReady` bus event. `viewer3d.Scene` records those paths in
+  `Scene.texture_paths`.
+- `PerspectiveRenderer` groups primitive draws by shape and available default
+  texture. Textured prims use a coarse generated UV projection in the shader;
+  this is intentionally first-pass only and not a replacement for proper
+  `TextureEntry` per-face UV/material decode.
+- Verification: `uv run --extra viewer pytest test/test_world_client.py
+  test/test_udp_session.py test/test_viewer3d_scene.py
+  test/test_viewer3d_perspective_gl.py`.
+
+Twelfth follow-up for object UV scaling:
+
+- The first object texture shader projected every prim texture through local
+  XY. That made side faces collapse to a single texture column/row and looked
+  like the object was sampling one pixel.
+- Object texture sampling now uses generated per-face projection in the shader:
+  X-facing faces sample Y/Z, Y-facing faces sample X/Z, and Z-facing faces
+  sample X/Y. UVs are clamped to the unit face instead of wrapped at exact
+  edges.
+- Added a matching pure `generated_texture_uv()` helper and tests so the
+  intended projection stays pinned.
+- This still is not full SL `TextureEntry` material fidelity. It fixes the
+  gross scale/projection issue for default-textured prim draw groups; per-face
+  image IDs, repeats, offsets, rotations, alpha, and glow still need real
+  `TextureEntry` decode and mesh/material batching.
+
+Thirteenth follow-up for per-face texture plumbing:
+
+- Added `vibestorm.world.texture_entry` with a first-pass `TextureEntry`
+  parser. It decodes the image UUID section: default texture UUID plus
+  face-mask texture UUID overrides using the OpenMetaverse MSB-first 7-bit
+  mask encoding.
+- `ObjectUpdateEntry`, `WorldObject`, and `viewer3d.SceneEntity` now retain the
+  parsed `TextureEntry` object while preserving the existing
+  `default_texture_id` field for fallback rendering.
+- Improved-terse texture-entry payloads also update the retained parsed
+  texture entry when they carry at least a default UUID.
+- The renderer is not yet using per-face overrides. The next concrete step is
+  to add logical face IDs to cube mesh triangles and batch/draw cube faces by
+  `texture_entry.texture_for_face(face_index)`, falling back to the default
+  texture for shapes without face IDs.
+
+Fourteenth follow-up for cube per-face texture rendering:
+
+- Cube rendering now draws six logical face submeshes. Each face resolves its
+  texture through `SceneEntity.texture_entry.texture_for_face(face_index)` and
+  falls back to `default_texture_id`/tint if the override or cached asset is
+  unavailable.
+- The object texture fetch queue now includes face-override texture UUIDs from
+  parsed `TextureEntry`, not only default texture IDs.
+- Non-cube primitive shapes still use the default texture draw path. That keeps
+  spheres/cylinders/tori/prisms stable until their SL face mapping is modeled.
+- Focused verification: `uv run --extra viewer pytest
+  test/test_viewer3d_perspective_gl.py test/test_udp_session.py`.
 
 ## Update 2026-05-04: 3D Viewer Fork
 

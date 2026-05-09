@@ -34,6 +34,18 @@ class RenderModeMenuTests(unittest.TestCase):
 
         self.assertEqual(hud.render_mode, RENDER_MODE_2D)
 
+    def test_initial_render_mode_can_start_in_3d(self) -> None:
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+
+        self.assertEqual(hud.render_mode, RENDER_MODE_3D)
+        self.assertTrue(hud.diagnostics_window.visible)
+
     def test_clicking_3d_button_changes_mode_and_fires_callback(self) -> None:
         from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
 
@@ -109,6 +121,143 @@ class RenderModeMenuTests(unittest.TestCase):
         hud.update(0.016, scene)
 
         self.assertIn("mode=3D", hud.status_right.text)
+
+    def test_diagnostics_window_reports_scene_counts(self) -> None:
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+        from vibestorm.world.terrain import LayerDecodeStats, RegionHeightmap
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+        scene = Scene(region_name="TestSim", avatar_position=(1.0, 2.0, 19.0))
+        scene.water_height = 6.5
+        scene.debug_terrain_source = "synthetic"
+        scene.terrain_z_scale = 4.0
+        scene.terrain_heightmap = RegionHeightmap(width=2, height=2, samples=[1.0, 2.0, 3.0, 4.0])
+        scene.terrain_heightmap.patch_keys.add((0, 0))
+        scene.terrain_heightmap.latest_layer_stats = LayerDecodeStats(
+            patch_count=1,
+            positions=((0, 0),),
+            ranges=(16,),
+            dc_offsets=(10.0,),
+            prequants=(5,),
+            nonzero_coefficients=3,
+            coefficient_abs_max=9,
+            height_min=1.0,
+            height_max=4.0,
+            height_mean=2.5,
+        )
+
+        hud.update(0.05, scene)
+
+        text = hud.diagnostics_text.html_text
+        self.assertIn("fps:", text)
+        self.assertIn("terrain: synthetic 2x2 patches=1 rev=0 zscale=4.00", text)
+        self.assertIn("height: min=1.00 max=4.00 mean=2.50", text)
+        self.assertIn("patch keys: ((0, 0),)", text)
+        self.assertIn("samples[0:4]: [1.0, 2.0, 3.0, 4.0]", text)
+        self.assertIn("layer: patches=1 pos=((0, 0),)", text)
+        self.assertIn("coeff: nz=3 absmax=9 h=min 1.00 max 4.00 mean 2.50", text)
+        self.assertIn("water: level=6.5 avatar_z=19.0 above", text)
+
+    def test_heightmap_debug_surface_maps_samples_to_grayscale(self) -> None:
+        from vibestorm.viewer3d.hud import heightmap_debug_surface
+        from vibestorm.world.terrain import RegionHeightmap
+
+        terrain = RegionHeightmap(width=2, height=2, samples=[0.0, 1.0, 2.0, 3.0])
+
+        surface = heightmap_debug_surface(self.pygame, terrain, size=2)
+
+        self.assertEqual(surface.get_at((0, 0)).r, 0)
+        self.assertEqual(surface.get_at((1, 1)).r, 255)
+        self.assertEqual(surface.get_at((0, 0)).g, surface.get_at((0, 0)).r)
+        self.assertEqual(surface.get_at((0, 0)).b, surface.get_at((0, 0)).r)
+
+    def test_heightmap_menu_button_toggles_debug_window(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+
+        hud = HUD((640, 480), on_chat_submit=lambda text: None)
+        self.assertFalse(hud.heightmap_window.visible)
+
+        self._click(hud, hud.debug_button)
+        self.assertEqual(hud._open_menu, "debug")
+        consumed = self._click(hud, hud.heightmap_button)
+
+        self.assertTrue(consumed)
+        self.assertTrue(hud.heightmap_window.visible)
+        self.assertIsNone(hud._open_menu)
+
+    def test_heightmap_window_reports_loaded_terrain(self) -> None:
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+        from vibestorm.world.terrain import RegionHeightmap
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+        scene = Scene()
+        scene.terrain_heightmap = RegionHeightmap(width=2, height=2, samples=[2.0, 4.0, 6.0, 8.0])
+        scene.terrain_heightmap.patch_keys.add((0, 0))
+
+        hud.update(0.016, scene)
+
+        self.assertIn("live 2x2 patches=1", hud.heightmap_status.text)
+        self.assertIn("min=2.00 max=8.00", hud.heightmap_status.text)
+
+    def test_render_settings_menu_opens_window(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+
+        hud = HUD((640, 480), on_chat_submit=lambda text: None)
+        self.assertFalse(hud.render_settings_window.visible)
+
+        self._click(hud, hud.view_button)
+        self.assertEqual(hud._open_menu, "view")
+        consumed = self._click(hud, hud.render_settings_button)
+
+        self.assertTrue(consumed)
+        self.assertTrue(hud.render_settings_window.visible)
+        self.assertIsNone(hud._open_menu)
+
+    def test_render_settings_toggle_calls_callback(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+
+        calls: list[tuple[str, object]] = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_render_setting_change=lambda name, value: calls.append((name, value)),
+        )
+
+        consumed = self._click(hud, hud.render_terrain_lines_button)
+
+        self.assertTrue(consumed)
+        self.assertEqual(calls, [("render_terrain_lines", False)])
+        self.assertIn("[ ] Mesh Lines", hud.render_terrain_lines_button.text)
+
+    def test_water_opacity_slider_calls_callback(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+
+        calls: list[tuple[str, object]] = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_render_setting_change=lambda name, value: calls.append((name, value)),
+        )
+        event = self.pygame.event.Event(
+            self.pygame_gui.UI_HORIZONTAL_SLIDER_MOVED,
+            {"ui_element": hud.water_alpha_slider, "value": 85},
+        )
+
+        consumed = hud.process_event(event)
+
+        self.assertTrue(consumed)
+        self.assertEqual(calls, [("water_alpha", 0.85)])
+        self.assertIn("85%", hud.water_alpha_label.text)
 
     def test_callback_optional(self) -> None:
         from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D

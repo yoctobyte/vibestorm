@@ -78,6 +78,7 @@ class WorldUpdaterTests(unittest.TestCase):
         assert world.region is not None
         self.assertEqual(world.region.name, "Vibestorm Test")
         self.assertEqual((world.region.grid_x, world.region.grid_y), (1000, 1001))
+        self.assertEqual(world.region.water_height, 20.0)
 
     def test_apply_dispatch_updates_world_from_simstats(self) -> None:
         world = WorldView()

@@ -32,8 +32,10 @@ from vibestorm.bus.events import (
     ChatLocal,
     ChatOutbound,
     InventorySnapshotReady,
+    LayerDataReceived,
     RegionChanged,
     RegionMapTileReady,
+    TextureAssetReady,
 )
 from vibestorm.login.client import LoginClient
 from vibestorm.login.models import LoginCredentials, LoginRequest
@@ -126,6 +128,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", default="last")
     parser.add_argument("--agent-update-interval", type=float, default=1.0)
     parser.add_argument("--camera-sweep", action="store_true")
+    parser.add_argument(
+        "--render-mode",
+        choices=("2d-map", "3d"),
+        default="3d",
+        help="Initial renderer mode. Defaults to 3d.",
+    )
+    parser.add_argument(
+        "--max-fps",
+        type=float,
+        default=20.0,
+        help="Frame-rate cap for the viewer loop. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--debug-terrain",
+        choices=("off", "synthetic"),
+        default="off",
+        help="Override live terrain with a deterministic debug heightmap.",
+    )
+    parser.add_argument(
+        "--terrain-z-scale",
+        type=float,
+        default=1.0,
+        help="Vertical scale applied to rendered terrain. Use values above 1 for debugging.",
+    )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument(
@@ -177,9 +203,22 @@ async def run_viewer(args: argparse.Namespace) -> int:
 
     client = WorldClient()
     scene = Scene()
+    scene.terrain_z_scale = max(0.01, float(args.terrain_z_scale))
+    if args.debug_terrain == "synthetic":
+        from vibestorm.world.terrain import synthetic_heightmap
+
+        scene.terrain_heightmap = synthetic_heightmap()
+        scene.debug_terrain_source = "synthetic"
     camera = Camera(world_center=(128.0, 128.0), zoom=1.0, screen_size=screen_size)
     camera.fit_region(padding_px=56)
-    renderer: ViewerRenderer = build_renderer("2d-map", camera, ctx=ctx)
+    initial_mode = args.render_mode
+    if initial_mode == "3d":
+        camera.set_mode("orbit")
+        camera.pitch = 0.5
+        camera.distance = 50.0
+    else:
+        camera.set_mode("map")
+    renderer: ViewerRenderer = build_renderer(initial_mode, camera, ctx=ctx)
 
     _wire_scene(client, scene)
 
@@ -188,10 +227,16 @@ async def run_viewer(args: argparse.Namespace) -> int:
         if world is not None:
             for coarse in world.coarse_agents:
                 if coarse.is_you:
+                    if camera.mode == "orbit":
+                        camera.target = (float(coarse.x), float(coarse.y), float(coarse.z))
+                        return
                     camera.center_on(float(coarse.x), float(coarse.y))
                     return
         entity = next(iter(scene.avatar_entities.values()), None)
         if entity is not None:
+            if camera.mode == "orbit":
+                camera.target = entity.position
+                return
             camera.center_on(entity.position[0], entity.position[1])
 
     def on_chat_submit(text: str) -> None:
@@ -225,6 +270,17 @@ async def run_viewer(args: argparse.Namespace) -> int:
         renderer.clear_caches()
         renderer = build_renderer(mode, camera, ctx=ctx)
 
+    def on_render_setting_change(name: str, value: object) -> None:
+        if name in {
+            "render_terrain",
+            "render_terrain_lines",
+            "render_water",
+            "render_objects",
+        }:
+            setattr(scene, name, bool(value))
+        elif name == "water_alpha":
+            scene.water_alpha = max(0.1, min(1.0, float(value)))
+
     hud = HUD(
         screen_size,
         on_chat_submit=on_chat_submit,
@@ -237,6 +293,8 @@ async def run_viewer(args: argparse.Namespace) -> int:
         on_center=center_on_avatar,
         on_teleport=on_teleport,
         on_render_mode_change=on_render_mode_change,
+        on_render_setting_change=on_render_setting_change,
+        initial_render_mode=initial_mode,
         help_text=_load_viewer_help(),
         ui_scale=ui_scale,
     )
@@ -257,9 +315,11 @@ async def run_viewer(args: argparse.Namespace) -> int:
     )
 
     running = True
+    max_fps = float(args.max_fps)
+    frame_cap = int(max(1.0, max_fps)) if max_fps > 0.0 else 0
     try:
         while running and not session_task.done():
-            dt = clock.tick(60) / 1000.0
+            dt = clock.tick(frame_cap) / 1000.0
             for event in pygame.event.get():
                 consumed_by_ui = hud.process_event(event)
                 if hud.quit_requested:
@@ -338,11 +398,13 @@ def _auto_ui_scale(pygame_module) -> float:
 def _wire_scene(client: WorldClient, scene: Scene) -> None:
     client.bus.subscribe(RegionChanged, _with_render_cache_clear(scene.apply_region_changed))
     client.bus.subscribe(RegionMapTileReady, scene.apply_map_tile_ready)
+    client.bus.subscribe(TextureAssetReady, scene.apply_texture_asset_ready)
     client.bus.subscribe(ChatLocal, scene.apply_chat_local)
     client.bus.subscribe(ChatIM, scene.apply_chat_im)
     client.bus.subscribe(ChatAlert, scene.apply_chat_alert)
     client.bus.subscribe(ChatOutbound, scene.apply_chat_outbound)
     client.bus.subscribe(InventorySnapshotReady, scene.apply_inventory_snapshot_ready)
+    client.bus.subscribe(LayerDataReceived, scene.apply_layer_data_received)
 
 
 def _with_render_cache_clear(handler):

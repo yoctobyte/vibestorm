@@ -178,6 +178,33 @@ class Camera3D:
         drift_y = sy_after - screen_y
         self.world_center = (cx_old + drift_x / self.zoom, cy_old - drift_y / self.zoom)
 
+    def orbit_rotate(self, dx_px: float, dy_px: float, *, sensitivity: float = 0.01) -> None:
+        """Rotate the orbit camera from a mouse-drag delta."""
+        self.yaw -= dx_px * sensitivity
+        limit = math.radians(89.0)
+        self.pitch = max(-limit, min(limit, self.pitch + dy_px * sensitivity))
+
+    def orbit_zoom(self, steps: float, *, factor_per_step: float = 1.12) -> None:
+        """Move the orbit camera closer/farther from its target."""
+        if factor_per_step <= 1.0:
+            raise ValueError("factor_per_step must be > 1")
+        if steps > 0:
+            self.distance /= factor_per_step ** steps
+        elif steps < 0:
+            self.distance *= factor_per_step ** abs(steps)
+        self.distance = max(2.0, min(512.0, self.distance))
+
+    def orbit_pan(self, dx_px: float, dy_px: float, *, sensitivity: float = 0.08) -> None:
+        """Pan the orbit target along world X/Y from a mouse-drag delta."""
+        tx, ty, tz = self.target
+        scale = sensitivity * max(1.0, self.distance / 50.0)
+        self.target = (tx - dx_px * scale, ty + dy_px * scale, tz)
+
+    def orbit_lift(self, dz_m: float) -> None:
+        """Move the orbit target vertically."""
+        tx, ty, tz = self.target
+        self.target = (tx, ty, tz + dz_m)
+
     def fit_region(self, padding_px: int = 0) -> None:
         """Zoom so a 256m region fits within (screen - 2*padding)."""
         sw, sh = self.screen_size

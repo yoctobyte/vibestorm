@@ -147,5 +147,39 @@ class BuildRendererTests(unittest.TestCase):
                 self.assertIs(renderer.camera, camera)
 
 
+class Viewer3DParserTests(unittest.TestCase):
+    def test_defaults_start_in_3d_with_modest_frame_cap(self) -> None:
+        from vibestorm.viewer3d.app import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--login-uri", "http://example.test",
+                "--first", "A",
+                "--last", "B",
+                "--password", "pw",
+            ]
+        )
+
+        self.assertEqual(args.render_mode, "3d")
+        self.assertEqual(args.max_fps, 20.0)
+        self.assertEqual(args.debug_terrain, "off")
+        self.assertEqual(args.terrain_z_scale, 1.0)
+
+    def test_debug_terrain_parser_accepts_synthetic(self) -> None:
+        from vibestorm.viewer3d.app import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--login-uri", "http://example.test",
+                "--first", "A",
+                "--last", "B",
+                "--password", "pw",
+                "--debug-terrain", "synthetic",
+            ]
+        )
+
+        self.assertEqual(args.debug_terrain, "synthetic")
+
+
 if __name__ == "__main__":
     unittest.main()

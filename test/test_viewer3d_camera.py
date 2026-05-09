@@ -180,5 +180,34 @@ class CameraBackwardsCompatTests(unittest.TestCase):
         self.assertAlmostEqual(camera.yaw, math.pi / 4)
 
 
+class Camera3DOrbitControlTests(unittest.TestCase):
+    def test_orbit_rotate_updates_yaw_and_pitch(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D()
+        camera.orbit_rotate(10.0, -5.0, sensitivity=0.1)
+
+        self.assertAlmostEqual(camera.yaw, -1.0)
+        self.assertAlmostEqual(camera.pitch, -0.5)
+
+    def test_orbit_zoom_changes_distance(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D(distance=50.0)
+        camera.orbit_zoom(1.0, factor_per_step=2.0)
+        self.assertAlmostEqual(camera.distance, 25.0)
+        camera.orbit_zoom(-1.0, factor_per_step=2.0)
+        self.assertAlmostEqual(camera.distance, 50.0)
+
+    def test_orbit_pan_and_lift_move_target(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D(target=(10.0, 20.0, 5.0), distance=50.0)
+        camera.orbit_pan(10.0, -20.0, sensitivity=0.1)
+        camera.orbit_lift(3.0)
+
+        self.assertEqual(camera.target, (9.0, 18.0, 8.0))
+
+
 if __name__ == "__main__":
     unittest.main()

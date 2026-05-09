@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from threading import Lock
+from uuid import UUID
 
 from vibestorm.bus import Bus, NoHandlerError
 from vibestorm.bus.commands import (
@@ -43,6 +44,7 @@ from vibestorm.bus.events import (
     RegionChanged,
     RegionMapTileReady,
     SessionClosed,
+    TextureAssetReady,
     WorldStateChanged,
 )
 from vibestorm.udp.session import LiveCircuitSession, SessionEvent
@@ -246,6 +248,23 @@ class WorldClient:
                         cache_path=path,
                     )
                 )
+        elif kind == "texture.cache.ok":
+            parts = _kv_split(event.detail)
+            path = parts.get("path")
+            texture_id_raw = parts.get("id")
+            if not path or texture_id_raw is None:
+                return
+            try:
+                texture_id = UUID(texture_id_raw)
+            except ValueError:
+                return
+            self.bus.publish(
+                TextureAssetReady(
+                    region_handle=handle,
+                    texture_id=texture_id,
+                    cache_path=path,
+                )
+            )
         elif kind == "terrain.layer_data":
             # detail looks like ``type=0x4c bytes=NN``. Pull the type
             # back out and republish the most-recent blob from the

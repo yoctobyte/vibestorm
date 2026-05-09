@@ -7,47 +7,47 @@ from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
     AgentWearableEntry,
     encode_agent_cached_texture,
-    encode_object_add,
     encode_agent_is_now_wearing,
     encode_agent_set_appearance,
-    encode_agent_update,
     encode_agent_throttle,
+    encode_agent_update,
     encode_agent_wearables_request,
     encode_chat_from_viewer,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_map_block_request,
+    encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
     encode_teleport_location_request,
     encode_use_circuit_code,
-    parse_coarse_location_update,
-    parse_improved_terse_object_update,
     parse_agent_alert_message,
-    parse_alert_message,
-    parse_improved_instant_message,
-    parse_kill_object,
-    parse_map_block_reply,
-    parse_object_extra_params,
-    parse_object_update,
-    parse_object_update_cached,
-    parse_object_update_compressed,
-    parse_object_properties_family,
-    parse_object_update_summary,
-    parse_packet_ack,
     parse_agent_cached_texture_response,
     parse_agent_movement_complete,
     parse_agent_wearables_update,
+    parse_alert_message,
     parse_avatar_appearance,
     parse_chat_from_simulator,
-    parse_layer_data,
+    parse_coarse_location_update,
     parse_complete_ping_check,
+    parse_improved_instant_message,
+    parse_improved_terse_object_update,
+    parse_kill_object,
+    parse_layer_data,
+    parse_map_block_reply,
+    parse_object_extra_params,
+    parse_object_properties_family,
+    parse_object_update,
+    parse_object_update_cached,
+    parse_object_update_compressed,
+    parse_object_update_summary,
+    parse_packet_ack,
     parse_region_handshake,
+    parse_shape_extra_params,
     parse_sim_stats,
     parse_simulator_viewer_time,
     parse_start_ping_check,
     parse_use_circuit_code,
-    parse_shape_extra_params,
 )
 
 
@@ -598,6 +598,8 @@ class SemanticMessageTests(unittest.TestCase):
 
         self.assertEqual(parsed.objects[0].texture_entry_size, 64)
         self.assertEqual(parsed.objects[0].default_texture_id, texture_id)
+        assert parsed.objects[0].texture_entry is not None
+        self.assertEqual(parsed.objects[0].texture_entry.default_texture_id, texture_id)
         self.assertEqual(parsed.objects[0].interesting_payloads[0].field_name, "TextureEntry")
         self.assertEqual(parsed.objects[0].interesting_payloads[0].size, 64)
 
@@ -817,7 +819,6 @@ class SemanticMessageTests(unittest.TestCase):
         from vibestorm.udp.messages import (
             LAYER_TYPE_LAND,
             LayerDataMessage,
-            MessageDecodeError,
         )
 
         payload = bytes(range(64))  # 64 bytes of stand-in patch data

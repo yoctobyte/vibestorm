@@ -54,6 +54,7 @@ class WorldViewTests(unittest.TestCase):
         )
         assert world.latest_time is not None
         self.assertEqual(world.latest_time.sun_phase, 5.5)
+        self.assertEqual(world.latest_time.sun_direction, (1.0, 0.0, 0.0))
         self.assertEqual(len(world.coarse_agents), 1)
         self.assertTrue(world.coarse_agents[0].is_you)
         self.assertIn(agent_id, world.agent_presences)
@@ -90,6 +91,7 @@ class WorldViewTests(unittest.TestCase):
                         ps_block_size=0,
                         extra_params_size=0,
                         default_texture_id=UUID("00895567-4724-cb43-ed92-0b47caed1546"),
+                        texture_entry=None,
                         interesting_payloads=(),
                     ),
                 ),
@@ -105,3 +107,4 @@ class WorldViewTests(unittest.TestCase):
             world.objects[object_id].default_texture_id,
             UUID("00895567-4724-cb43-ed92-0b47caed1546"),
         )
+        self.assertIsNone(world.objects[object_id].texture_entry)

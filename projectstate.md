@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-05-03
+Last updated: 2026-05-09
 
 ## Current Summary
 
@@ -26,6 +26,28 @@ The repo already supports:
 - viewer menu/status shell with movement help, chat, local teleport-location requests,
   and a read-only inventory snapshot sourced from `FetchInventoryDescendents2` /
   `FetchInventory2`
+- viewer3d terrain path for standard 16x16 land `LayerData`: bitstream decode,
+  dequantization + IDCT, 256x256 heightmap accumulation, and textured GL
+  heightfield rendering
+- terrain `BitPack` now matches OpenMetaverse's live wire order (`0801104c`
+  for stride 264 / patch size 16 / land type, `88d0` for a non-byte-aligned
+  10-bit magnitude after a 2-bit prefix), fixing the uniform-gray and distorted
+  live heightmap failure modes seen in Sim Debug
+- viewer3d starts in 3D mode by default, caps rendering at 20 FPS by default,
+  and includes in-app Diagnostics / Sim Debug / Render Settings windows for
+  terrain, water, object, and mesh-line debugging
+- viewer3d has first-pass ambient + sun-direction lighting for primitives and
+  filled terrain surfaces
+- viewer3d has first-pass texturing: cached region map tiles can be draped
+  over terrain heightfields, and object `default_texture_id` assets are fetched
+  through `GetTexture`, cached as PNG, and bound to primitive draw groups with
+  coarse generated UVs
+- the first `TextureEntry` image section is decoded and retained through the
+  world/viewer3d scene models: default texture UUID plus per-face image UUID
+  overrides
+- cube primitives render parsed per-face texture UUID overrides; non-cube
+  primitives still use the default-texture fallback until their face mapping is
+  modeled
 
 ## What Is Stable
 
@@ -54,6 +76,10 @@ Main implemented areas:
 - `src/vibestorm/world/`: normalized world-state models and updater
 - `src/vibestorm/viewer/`: pygame 2D viewer, camera, scene aggregation, UI shell,
   input, rendering
+- `src/vibestorm/viewer3d/`: forked pygame/moderngl viewer with selectable 2D/3D
+  render modes, primitive shape meshes, water plane, decoded terrain surface
+  rendering, first-pass directional lighting, and first-pass terrain/object
+  texturing
 - `src/vibestorm/fixtures/`: fixture inventory and SQLite unknowns database
 - `docs/viewer-help.md`: in-app movement/menu help loaded by the pygame viewer
 
@@ -66,8 +92,10 @@ Current object/world coverage:
 - first keyed object entities from `ObjectUpdate`
 - known `prim_basic` and `avatar_basic` `ObjectUpdate` variants
 - first conservative texture UUID extraction from rich prim `TextureEntry`
+- first-pass `TextureEntry` image UUID-section decode
 - structural `ImprovedTerseObjectUpdate` parsing with per-entry payload and texture-entry sizing
 - multi-object `ObjectUpdate` semantic decoding and fixed-tail advancement
+- standard land `LayerData` terrain patch decompression and accumulation
 
 ## Current Gaps
 
@@ -78,12 +106,13 @@ Main gaps:
 - better census of all visible scene objects
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
-- full `TextureEntry` decoding
+- full `TextureEntry` material decoding and renderer use of per-face overrides
 - `ExtraParams` and related rich-tail fields
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
 - parcel name/status is still a placeholder until `ParcelOverlay` and parcel metadata
   are decoded
+- extended-region 32x32 terrain patches are not decompressed yet
 - inventory is currently read-only; asset create/upload/store management is not
   implemented yet beyond existing appearance/baked-texture upload support
 
@@ -138,13 +167,14 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 
 ## Recommended Next Step
 
-Run the 2D viewer against the local OpenSim target and do a visual/interaction pass:
+Run the 3D viewer against the local OpenSim target and inspect first-pass
+texturing:
 
 1. Start OpenSim: `./run.sh opensim`
-2. Run the viewer: `./run.sh viewer`
-3. Check that the cached map tile appears, object/avatar markers update, WASD/arrows move the agent,
-   mouse wheel/right-drag camera controls feel usable, the main menu/status bar scale correctly,
-   the resizable chat window sends local chat, Help opens movement instructions, View -> Inventory
-   shows the fetched snapshot, and Tools -> Teleport sends a local `TeleportLocationRequest`.
-4. If rendering is visually cramped or misleading, tune marker sizing/colors in
-   `src/vibestorm/viewer/render.py` and `src/vibestorm/viewer/scene.py`.
+2. Run the viewer: `./run.sh viewer3d`
+3. Use View -> Render Settings to isolate terrain, mesh lines, water, and
+   objects while checking whether the map tile drapes correctly over terrain
+   and whether default prim textures appear as their assets arrive.
+4. Continue texturing with full `TextureEntry` per-face decode, authored mesh
+   UVs/normals, and simulator terrain material parameters instead of the
+   temporary region-map drape.

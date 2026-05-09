@@ -60,6 +60,8 @@ class HUD:
         on_center: Callable[[], None] | None = None,
         on_teleport: Callable[[tuple[float, float, float]], None] | None = None,
         on_render_mode_change: Callable[[str], None] | None = None,
+        on_render_setting_change: Callable[[str, object], None] | None = None,
+        initial_render_mode: str = RENDER_MODE_2D,
         help_text: str = DEFAULT_HELP_TEXT,
         theme_path: str | None = None,
         ui_scale: float = 1.0,
@@ -77,11 +79,26 @@ class HUD:
         self.on_center = on_center
         self.on_teleport = on_teleport
         self.on_render_mode_change = on_render_mode_change
-        self.render_mode: str = RENDER_MODE_2D
+        self.on_render_setting_change = on_render_setting_change
+        self.render_mode: str = (
+            initial_render_mode if initial_render_mode in RENDER_MODE_LABELS else RENDER_MODE_2D
+        )
         self.help_text = help_text
+        self._last_fps = 0.0
+        self._last_diagnostics_html: str | None = None
         self._open_menu: str | None = None
         self._last_chat_container_size: tuple[int, int] | None = None
         self._last_inventory_text: str | None = None
+        self._last_heightmap_signature: (
+            tuple[int, int, int, float | None, float | None] | None
+        ) = None
+        self._render_setting_values: dict[str, object] = {
+            "render_terrain": True,
+            "render_terrain_lines": True,
+            "render_water": True,
+            "render_objects": True,
+            "water_alpha": 0.72,
+        }
         self.quit_requested = False
 
         manager_kwargs: dict = {}
@@ -207,6 +224,7 @@ class HUD:
             rows=(
                 ("Show Chat", "show_chat_button"),
                 ("Inventory", "inventory_button"),
+                ("Render Settings", "render_settings_button"),
                 ("Render: 2D Map", "render_mode_2d_button"),
                 ("Render: 3D", "render_mode_3d_button"),
             ),
@@ -214,8 +232,10 @@ class HUD:
         self.debug_menu = self._build_menu_panel(
             x=self._s(122),
             y=menu_h,
-            width=self._s(170),
+            width=self._s(180),
             rows=(
+                ("Diagnostics", "diagnostics_button"),
+                ("Sim Debug", "heightmap_button"),
                 ("Zoom In", "zoom_in_button"),
                 ("Zoom Out", "zoom_out_button"),
                 ("Center", "center_button"),
@@ -334,9 +354,49 @@ class HUD:
         if self.on_render_mode_change is not None:
             self.on_render_mode_change(mode)
 
+    def _toggle_render_bool(self, name: str) -> None:
+        value = not bool(self._render_setting_values.get(name, True))
+        self._set_render_setting(name, value)
+
+    def _set_render_setting(self, name: str, value: object) -> None:
+        self._render_setting_values[name] = value
+        self._refresh_render_settings_controls()
+        if self.on_render_setting_change is not None:
+            self.on_render_setting_change(name, value)
+
+    def _refresh_render_settings_controls(self) -> None:
+        labels = {
+            "render_terrain": "Terrain Surface",
+            "render_terrain_lines": "Mesh Lines",
+            "render_water": "Water",
+            "render_objects": "Objects",
+        }
+        buttons = {
+            "render_terrain": self.render_terrain_button,
+            "render_terrain_lines": self.render_terrain_lines_button,
+            "render_water": self.render_water_button,
+            "render_objects": self.render_objects_button,
+        }
+        for key, button in buttons.items():
+            marker = "x" if bool(self._render_setting_values.get(key, True)) else " "
+            button.set_text(f"[{marker}] {labels[key]}")
+        alpha = max(0.1, min(1.0, float(self._render_setting_values.get("water_alpha", 0.72))))
+        percent = int(round(alpha * 100.0))
+        self.water_alpha_label.set_text(f"Water opacity: {percent}%")
+        if int(round(self.water_alpha_slider.get_current_value())) != percent:
+            self.water_alpha_slider.set_current_value(percent)
+
     def _build_aux_windows(self, sw: int, sh: int) -> None:
         import pygame
-        from pygame_gui.elements import UIButton, UILabel, UITextBox, UITextEntryLine, UIWindow
+        from pygame_gui.elements import (
+            UIButton,
+            UIHorizontalSlider,
+            UIImage,
+            UILabel,
+            UITextBox,
+            UITextEntryLine,
+            UIWindow,
+        )
 
         self.help_window = UIWindow(
             rect=pygame.Rect(self._s(70), self._s(70), self._s(460), self._s(360)),
@@ -419,6 +479,54 @@ class HUD:
         )
         self.options_window.hide()
 
+        self.render_settings_window = UIWindow(
+            rect=pygame.Rect(self._s(110), self._s(90), self._s(360), self._s(310)),
+            manager=self.manager,
+            window_display_title="Render Settings",
+            resizable=False,
+        )
+        rs_container = self.render_settings_window.get_container()
+        self.render_terrain_button = UIButton(
+            relative_rect=pygame.Rect(self._s(10), self._s(12), self._s(220), self._s(28)),
+            text="",
+            manager=self.manager,
+            container=rs_container,
+        )
+        self.render_terrain_lines_button = UIButton(
+            relative_rect=pygame.Rect(self._s(10), self._s(48), self._s(220), self._s(28)),
+            text="",
+            manager=self.manager,
+            container=rs_container,
+        )
+        self.render_water_button = UIButton(
+            relative_rect=pygame.Rect(self._s(10), self._s(84), self._s(220), self._s(28)),
+            text="",
+            manager=self.manager,
+            container=rs_container,
+        )
+        self.render_objects_button = UIButton(
+            relative_rect=pygame.Rect(self._s(10), self._s(120), self._s(220), self._s(28)),
+            text="",
+            manager=self.manager,
+            container=rs_container,
+        )
+        self.water_alpha_label = UILabel(
+            relative_rect=pygame.Rect(self._s(10), self._s(166), self._s(300), self._s(24)),
+            text="Water opacity: 72%",
+            manager=self.manager,
+            container=rs_container,
+        )
+        self.water_alpha_slider = UIHorizontalSlider(
+            relative_rect=pygame.Rect(self._s(10), self._s(198), self._s(300), self._s(28)),
+            start_value=72,
+            value_range=(10, 100),
+            manager=self.manager,
+            container=rs_container,
+            click_increment=5,
+        )
+        self._refresh_render_settings_controls()
+        self.render_settings_window.hide()
+
         self.inventory_window = UIWindow(
             rect=pygame.Rect(
                 max(self._s(120), sw - self._s(520)),
@@ -437,6 +545,52 @@ class HUD:
             container=self.inventory_window.get_container(),
         )
         self.inventory_window.hide()
+
+        self.diagnostics_window = UIWindow(
+            rect=pygame.Rect(
+                max(self._s(120), sw - self._s(450)),
+                self._s(70),
+                self._s(390),
+                self._s(300),
+            ),
+            manager=self.manager,
+            window_display_title="Diagnostics",
+            resizable=True,
+        )
+        self.diagnostics_text = UITextBox(
+            html_text="Diagnostics pending.",
+            relative_rect=pygame.Rect(self._s(8), self._s(8), self._s(350), self._s(230)),
+            manager=self.manager,
+            container=self.diagnostics_window.get_container(),
+        )
+        if self.render_mode != RENDER_MODE_3D:
+            self.diagnostics_window.hide()
+
+        self.heightmap_window = UIWindow(
+            rect=pygame.Rect(
+                max(self._s(80), sw - self._s(390)),
+                self._s(390),
+                self._s(330),
+                self._s(360),
+            ),
+            manager=self.manager,
+            window_display_title="Sim Debug Heightmap",
+            resizable=True,
+        )
+        hm_container = self.heightmap_window.get_container()
+        self.heightmap_image = UIImage(
+            relative_rect=pygame.Rect(self._s(10), self._s(10), self._s(256), self._s(256)),
+            image_surface=heightmap_debug_surface(self._pygame, None, size=self._s(256)),
+            manager=self.manager,
+            container=hm_container,
+        )
+        self.heightmap_status = UILabel(
+            relative_rect=pygame.Rect(self._s(10), self._s(276), self._s(290), self._s(24)),
+            text="heightmap: none",
+            manager=self.manager,
+            container=hm_container,
+        )
+        self.heightmap_window.hide()
 
     # ------------------------------------------------------------------ pump
 
@@ -479,6 +633,11 @@ class HUD:
                 self._hide_all_menus()
                 self._open_menu = None
                 return True
+            if event.ui_element is self.render_settings_button:
+                self.render_settings_window.show()
+                self._hide_all_menus()
+                self._open_menu = None
+                return True
             if event.ui_element is self.render_mode_2d_button:
                 self._set_render_mode(RENDER_MODE_2D)
                 self._hide_all_menus()
@@ -498,6 +657,34 @@ class HUD:
             elif event.ui_element is self.center_button and self.on_center is not None:
                 self.on_center()
                 return True
+            if event.ui_element is self.render_terrain_button:
+                self._toggle_render_bool("render_terrain")
+                return True
+            if event.ui_element is self.render_terrain_lines_button:
+                self._toggle_render_bool("render_terrain_lines")
+                return True
+            if event.ui_element is self.render_water_button:
+                self._toggle_render_bool("render_water")
+                return True
+            if event.ui_element is self.render_objects_button:
+                self._toggle_render_bool("render_objects")
+                return True
+            if event.ui_element is self.diagnostics_button:
+                if self.diagnostics_window.visible:
+                    self.diagnostics_window.hide()
+                else:
+                    self.diagnostics_window.show()
+                self._hide_all_menus()
+                self._open_menu = None
+                return True
+            if event.ui_element is self.heightmap_button:
+                if self.heightmap_window.visible:
+                    self.heightmap_window.hide()
+                else:
+                    self.heightmap_window.show()
+                self._hide_all_menus()
+                self._open_menu = None
+                return True
             if event.ui_element is self.teleport_button:
                 self.teleport_window.show()
                 self._hide_all_menus()
@@ -516,15 +703,30 @@ class HUD:
             if event.ui_element is self.teleport_go_button:
                 self._submit_teleport()
                 return True
+        elif event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
+            if event.ui_element is self.water_alpha_slider:
+                value = max(0.1, min(1.0, float(event.value) / 100.0))
+                self._set_render_setting("water_alpha", value)
+                return True
         elif event.type == pygame_gui.UI_WINDOW_RESIZED and event.ui_element is self.chat_window:
             self._layout_chat_window()
             return True
         return False
 
     def update(self, time_delta_s: float, scene: Scene | None = None) -> None:
+        if time_delta_s > 0.0:
+            instant_fps = 1.0 / time_delta_s
+            self._last_fps = (
+                instant_fps
+                if self._last_fps <= 0.0
+                else self._last_fps * 0.85 + instant_fps * 0.15
+            )
         if scene is not None:
             self._refresh_ticker(scene)
             self._refresh_status(scene)
+            self._refresh_diagnostics(scene)
+            self._refresh_heightmap(scene)
+            self._refresh_render_settings_from_scene(scene)
         self._layout_chat_window_if_needed()
         self.manager.update(time_delta_s)
 
@@ -550,6 +752,9 @@ class HUD:
             self.file_menu,
             self.view_menu,
             self.debug_menu,
+            self.diagnostics_window,
+            self.heightmap_window,
+            self.render_settings_window,
             self.chat_window,
             self.ticker,
             self.chat_input,
@@ -564,11 +769,14 @@ class HUD:
             self.file_quit_button,
             self.show_chat_button,
             self.inventory_button,
+            self.render_settings_button,
             self.render_mode_2d_button,
             self.render_mode_3d_button,
             self.zoom_in_button,
             self.zoom_out_button,
             self.center_button,
+            self.diagnostics_button,
+            self.heightmap_button,
             self.teleport_button,
             self.options_button,
             self.movement_help_button,
@@ -583,12 +791,23 @@ class HUD:
             self.teleport_status,
             self.options_window,
             self.options_text,
+            self.render_terrain_button,
+            self.render_terrain_lines_button,
+            self.render_water_button,
+            self.render_objects_button,
+            self.water_alpha_label,
+            self.water_alpha_slider,
             self.inventory_window,
             self.inventory_text,
+            self.diagnostics_text,
+            self.heightmap_image,
+            self.heightmap_status,
         ):
             element.kill()
         self._last_chat_container_size = None
         self._last_inventory_text = None
+        self._last_diagnostics_html = None
+        self._last_heightmap_signature = None
         self._build_widgets()
 
     # ----------------------------------------------------------- refresh
@@ -653,6 +872,143 @@ class HUD:
         )
         self._refresh_inventory(scene)
 
+    def _refresh_diagnostics(self, scene: Scene) -> None:
+        mode_label = RENDER_MODE_LABELS.get(self.render_mode, self.render_mode)
+        objects = len(scene.object_entities)
+        avatars = len(scene.avatar_entities)
+        textures = {
+            entity.default_texture_id
+            for entity in (*scene.object_entities.values(), *scene.avatar_entities.values())
+            if entity.default_texture_id is not None
+        }
+        map_path = str(scene.map_tile_path) if scene.map_tile_path is not None else "(none)"
+
+        terrain = scene.terrain_heightmap
+        if terrain is None:
+            terrain_text = "terrain: none"
+            height_text = "height: n/a"
+            patch_text = "patches: n/a"
+            sample_text = "samples: n/a"
+            layer_text = "layer: n/a"
+            coeff_text = "coeff: n/a"
+        else:
+            source = scene.debug_terrain_source or "live"
+            sample_min = terrain.sample_min if terrain.sample_min is not None else 0.0
+            sample_max = terrain.sample_max if terrain.sample_max is not None else 0.0
+            sample_mean = terrain.sample_mean if terrain.sample_mean is not None else 0.0
+            terrain_text = (
+                f"terrain: {source} {terrain.width}x{terrain.height} "
+                f"patches={terrain.patch_count} rev={terrain.revision} "
+                f"zscale={scene.terrain_z_scale:.2f}"
+            )
+            height_text = (
+                f"height: min={sample_min:.2f} max={sample_max:.2f} "
+                f"mean={sample_mean:.2f}"
+            )
+            patch_text = f"patch keys: {terrain.first_patch_keys or '()'}"
+            sample_text = f"samples[0:4]: {[round(value, 2) for value in terrain.samples[:4]]}"
+            stats = terrain.latest_layer_stats
+            if stats is None:
+                layer_text = "layer: n/a"
+                coeff_text = "coeff: n/a"
+            else:
+                h_min = stats.height_min if stats.height_min is not None else 0.0
+                h_max = stats.height_max if stats.height_max is not None else 0.0
+                h_mean = stats.height_mean if stats.height_mean is not None else 0.0
+                layer_text = (
+                    f"layer: patches={stats.patch_count} pos={stats.positions} "
+                    f"range={stats.ranges} dc={stats.dc_offsets} preq={stats.prequants}"
+                )
+                coeff_text = (
+                    f"coeff: nz={stats.nonzero_coefficients} "
+                    f"absmax={stats.coefficient_abs_max} "
+                    f"h=min {h_min:.2f} max {h_max:.2f} mean {h_mean:.2f}"
+                )
+
+        if scene.avatar_position is None:
+            water_text = f"water: level={scene.water_height:.1f} avatar=n/a"
+        else:
+            z = scene.avatar_position[2]
+            relation = "under" if z < scene.water_height else "above"
+            water_text = f"water: level={scene.water_height:.1f} avatar_z={z:.1f} {relation}"
+
+        html = "<br>".join(
+            _html_escape(line)
+            for line in (
+                f"fps: {self._last_fps:.1f}",
+                f"mode: {mode_label}",
+                f"region: {scene.region_name or scene.region_handle or '(none)'}",
+                f"map: {map_path}",
+                terrain_text,
+                height_text,
+                patch_text,
+                sample_text,
+                layer_text,
+                coeff_text,
+                water_text,
+                f"objects: {objects}",
+                f"avatars: {avatars}",
+                f"textures: {len(textures)}",
+                f"chat: {len(scene.chat_lines)}",
+            )
+        )
+        if html == self._last_diagnostics_html:
+            return
+        self._last_diagnostics_html = html
+        try:
+            self.diagnostics_text.set_text(html)
+        except Exception:  # pragma: no cover
+            pass
+
+    def _refresh_heightmap(self, scene: Scene) -> None:
+        terrain = scene.terrain_heightmap
+        if terrain is None:
+            signature = None
+            status = "heightmap: none"
+        else:
+            signature = (
+                terrain.width,
+                terrain.height,
+                terrain.revision,
+                terrain.sample_min,
+                terrain.sample_max,
+            )
+            source = scene.debug_terrain_source or "live"
+            sample_min = terrain.sample_min if terrain.sample_min is not None else 0.0
+            sample_max = terrain.sample_max if terrain.sample_max is not None else 0.0
+            status = (
+                f"{source} {terrain.width}x{terrain.height} patches={terrain.patch_count} "
+                f"min={sample_min:.2f} max={sample_max:.2f}"
+            )
+
+        if signature != self._last_heightmap_signature:
+            container_width = self.heightmap_window.get_container().get_size()[0]
+            size = max(self._s(64), min(self._s(256), container_width - self._s(20)))
+            surface = heightmap_debug_surface(self._pygame, terrain, size=size)
+            try:
+                self.heightmap_image.set_image(surface)
+                self.heightmap_image.set_dimensions((size, size))
+            except Exception:  # pragma: no cover
+                pass
+            self._last_heightmap_signature = signature
+        try:
+            self.heightmap_status.set_text(status)
+        except Exception:  # pragma: no cover
+            pass
+
+    def _refresh_render_settings_from_scene(self, scene: Scene) -> None:
+        values: dict[str, object] = {
+            "render_terrain": bool(scene.render_terrain),
+            "render_terrain_lines": bool(scene.render_terrain_lines),
+            "render_water": bool(scene.render_water),
+            "render_objects": bool(scene.render_objects),
+            "water_alpha": max(0.1, min(1.0, float(scene.water_alpha))),
+        }
+        if values == self._render_setting_values:
+            return
+        self._render_setting_values = values
+        self._refresh_render_settings_controls()
+
     def _refresh_inventory(self, scene: Scene) -> None:
         html = _inventory_snapshot_html(scene.inventory_snapshot)
         if html == self._last_inventory_text:
@@ -701,6 +1057,52 @@ def _plain_text_to_html(value: str) -> str:
     return "<br>".join(_html_escape(line) for line in value.strip().splitlines())
 
 
+def heightmap_debug_surface(
+    pygame_module,
+    terrain: object | None,
+    *,
+    size: int = 256,
+):
+    """Return a square grayscale preview of the decoded region height samples."""
+
+    size = max(1, int(size))
+    if terrain is None:
+        return pygame_module.Surface((size, size))
+
+    width = int(getattr(terrain, "width", 0))
+    height = int(getattr(terrain, "height", 0))
+    samples = list(getattr(terrain, "samples", ()))
+    if width <= 0 or height <= 0 or len(samples) < width * height:
+        return pygame_module.Surface((size, size))
+
+    sample_min = getattr(terrain, "sample_min", None)
+    sample_max = getattr(terrain, "sample_max", None)
+    if sample_min is None:
+        sample_min = min(samples[: width * height])
+    if sample_max is None:
+        sample_max = max(samples[: width * height])
+    value_range = float(sample_max) - float(sample_min)
+
+    source = pygame_module.Surface((width, height))
+    pixels = pygame_module.PixelArray(source)
+    try:
+        for y in range(height):
+            row_start = y * width
+            for x in range(width):
+                if value_range <= 0.0:
+                    gray = 128
+                else:
+                    normalized = (float(samples[row_start + x]) - float(sample_min)) / value_range
+                    gray = max(0, min(255, int(round(normalized * 255.0))))
+                pixels[x, y] = (gray << 16) | (gray << 8) | gray
+    finally:
+        del pixels
+
+    if width == size and height == size:
+        return source
+    return pygame_module.transform.scale(source, (size, size))
+
+
 def _inventory_snapshot_html(snapshot: object | None) -> str:
     if snapshot is None:
         return "Inventory has not loaded yet."
@@ -741,4 +1143,4 @@ def _folder_display_name(folder: object) -> str:
     return str(folder_id) if folder_id is not None else "Folder"
 
 
-__all__ = ["HUD", "CHAT_TICKER_LINES", "DEFAULT_HELP_TEXT"]
+__all__ = ["HUD", "CHAT_TICKER_LINES", "DEFAULT_HELP_TEXT", "heightmap_debug_surface"]

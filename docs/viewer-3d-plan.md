@@ -81,7 +81,9 @@ Per agent (`WorldView.coarse_agents`):
 
 What is **not** yet available and should be assumed-absent in v1:
 
-- Terrain elevation. `LayerData` (heightmap patches) is undecoded.
+- Terrain elevation. Standard 16x16 land `LayerData` patches now decode into
+  a 256x256 heightmap in `viewer3d`; extended-region 32x32 patches remain
+  unsupported.
 - Per-face textures beyond `default_texture_id`. `TextureEntry` per-face
   decode is deferred per project state.
 - Mesh and sculpt geometry. Asset fetch + decode is unimplemented.
@@ -300,7 +302,8 @@ First 3D target:
 - one directional light driven by `Scene.sun_phase`; ambient fill; simple
   exponential fog.
 - HUD as a fullscreen quad textured from the pygame_gui surface.
-- no mesh/sculpt geometry, no terrain elevation, no per-face textures.
+- no mesh/sculpt geometry, no per-face textures. Terrain elevation is present
+  for standard 256x256 regions when land `LayerData` arrives.
 
 Performance budget for v1: a couple hundred prims, one draw call per primitive
 shape via instancing. Don't optimize further until the live region forces it.
@@ -346,7 +349,8 @@ Keep user muscle memory stable across modes:
 
 ## Acceptable First-Pass Gaps
 
-- No mesh, no sculpt, no terrain elevation.
+- No mesh/sculpt assets. Terrain elevation is available for standard land
+  patches.
 - No per-face textures except possibly the ground map tile.
 - Approximate rotations (use the quat directly; ignore non-uniform scale +
   shear interplay).
@@ -504,24 +508,60 @@ shippable on its own. Cost annotations are rough.
     tripwire for view/projection sign errors after a user report
     that the 3D world looked upside-down (math is fine; the missing
     ground was the visual culprit). *(small)*
-6d-2. **Terrain bitstream reader + patch-header decoder.** *(done 2026-05-06.)*
-    New module `src/vibestorm/world/terrain.py` with a libomv-compatible
-    `BitPack` (MSB-first within each byte; `unpack_float` reinterprets
-    32 bits as a little-endian IEEE float, matching libomv's
-    BitConverter dance) and a symmetric `BitPackWriter` for tests.
+6d-2. **Terrain bitstream reader + patch-header decoder.** *(done 2026-05-06;
+    corrected 2026-05-07.)* New module `src/vibestorm/world/terrain.py`
+    with a libomv-compatible `BitPack` (OpenMetaverse chunk order:
+    least-significant byte chunks first for multi-byte fields, MSB-first inside
+    each chunk; `unpack_float` reinterprets 32 bits as a little-endian IEEE
+    float, matching libomv's BitConverter dance) and a symmetric
+    `BitPackWriter` for tests.
     `decode_layer_blob(data)` walks a complete LayerData payload and
     returns a `GroupHeader` (stride/patch_size/layer_type) plus a list
     of `DecodedPatch` records — each carries a `PatchHeader`
     (quant_wbits/dc_offset/range/patch_x/patch_y, with
     `word_bits`/`prequant` properties) and its 256 raw quantised
-    coefficients. End-of-data is the libomv `0x97` marker on a patch
+    coefficients. End-of-data is libomv's decimal `97` (`0x61`) marker on a patch
     boundary. `iter_patch_headers` is a coefficient-skipping helper
-    for log/replay paths. 12 tests cover bit-level reads (MSB-first,
-    cross-byte, end-of-stream, oversize), float round-trip via the
-    writer, group-header + multi-patch-header decode, and the
-    coefficient walk (zero-block EOB, mixed +/-/0 with explicit
-    bit-pattern fixtures). Dequantisation + IDCT (recovering actual
-    elevation values) lands in 6d-3.
+    for log/replay paths. Tests cover bit-level reads, the live
+    OpenMetaverse terrain prefix (`0801104c` for stride 264 / patch size 16 /
+    land type), non-byte-aligned multi-byte values (`2` for 2 bits plus
+    `0x123` for 10 bits -> `88d0`), prefix-code bytes (`10 -> 80`,
+    `110 -> c0`, `111 -> e0`), the decimal-97 end marker, float round-trip via
+    the writer, group-header + multi-patch-header decode, and the coefficient
+    walk (zero-block EOB, mixed +/-/0 with explicit bit-pattern fixtures).
+    Dequantisation + IDCT (recovering actual elevation values) lands in 6d-3.
+6d-3. **Terrain dequantization + IDCT + heightmap accumulator.** *(done 2026-05-06.)*
+    `world/terrain.py` now ports the libomv 16x16 decompression path:
+    `DequantizeTable16`, the custom diagonal-serpentine `CopyMatrix16`,
+    two-pass 16-point IDCT, and the final `mult/addval` arithmetic.
+    While cross-checking against libopenmetaverse, the coefficient
+    decoder was corrected to the real wire codes (`0`, `10`, `110`,
+    `111`) instead of the earlier symmetric test-only encoding. New
+    `HeightPatch`, `decode_height_patches`, `decompress_patch`, and
+    `RegionHeightmap` accumulate decoded land patches into a 256x256
+    row-major sample array with a revision counter. Extended 32x32
+    patches still raise until their IDCT path is ported. 5 new terrain
+    tests cover the tables, DC/zero patch output, and patch placement.
+6d-4. **Surface mesh rendering from terrain heightmap.** *(done 2026-05-06.)*
+    `viewer3d.Scene` subscribes to `LayerDataReceived`, ignores non-land
+    layers/other regions, and stores a `RegionHeightmap`. The perspective
+    renderer builds a textured heightfield mesh from the current heightmap
+    revision and draws it through the existing ground shader; it falls back
+    to the flat ground quad until terrain arrives. New tests cover scene
+    accumulation, terrain mesh vertex/index layout, and GL terrain mesh
+    upload/release behavior. Follow-up after live testing: if terrain arrives
+    before the cached map tile, the renderer now uses a 1x1 fallback ground
+    texture so the surface still draws; `viewer3d` starts in 3D by default,
+    caps the frame loop at 20 FPS by default, and shows a Diagnostics window
+    with terrain/water/object/texture counts. Follow-up: water height is now
+    sourced from `RegionHandshake.WaterHeight`; basic orbit inspection controls
+    are wired via right-drag, mouse wheel, Shift+right-drag, and
+    Shift+PageUp/PageDown. Follow-up: the terrain heightfield now draws a
+    texture-independent bright wire/grid overlay, and the water shader uses
+    subtle coordinate noise so the plane is easier to read while debugging.
+    Follow-up: `--debug-terrain synthetic` seeds a deterministic hill/valley
+    heightmap and diagnostics now include terrain source, min/max/mean,
+    first patch keys, and first sample values.
 6d-1. **LayerData packet parser + bus event.** *(done 2026-05-06.)*
     Recognise the `LayerData` UDP packet on the wire (high-frequency
     message #11). New `LayerDataMessage` dataclass + `parse_layer_data`
@@ -600,12 +640,15 @@ minimum viable 3D mode. 9–12 are quality-of-life and fidelity follow-ups.
 ## Recommendation
 
 Steps 1a, 1b-i, 1b-ii, 2, 3, 4, 5a, 5b-i, 5b-ii, 6, 6b, and 7 are
-done. The fork now renders real 3D geometry: a textured ground quad
-covers the region floor at Z=0, with one cube/sphere/cylinder/torus/
-prism per `SceneEntity` (chosen from the path/profile classifier)
-above it, drawn through a perspective projection with depth testing
-and the HUD composited on top via the existing GL compositor.
-**The minimum viable 3D mode is shippable.** Next is step 8: light
-the scene from `Scene.sun_phase` and add exponential fog so the
-flat-tinted primitives gain volumetric cues. Skip 2.5D unless a
-concrete need emerges.
+done, and terrain work has advanced into decoded heightmaps and an
+untextured wire/filled surface mesh. Synthetic terrain is the current
+render-path control case and should show visible relief via
+`./run.sh viewer3d --debug-terrain synthetic`.
+
+The active blocker is live terrain diagnosis: OpenSim terrain still appears
+flat. Use Debug -> Diagnostics for numeric decode stats and Debug -> Sim Debug
+for the normalized black/white sample-array preview. If the live preview is
+uniform gray, continue debugging `LayerData` coefficient/dequant/IDCT decode;
+if it has contrast while the world mesh is flat, continue debugging terrain
+mesh upload, z scaling, or camera/framing. Lighting/fog should wait until live
+terrain shape is trustworthy.

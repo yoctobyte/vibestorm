@@ -8,6 +8,7 @@ from vibestorm.bus.events import (
     ChatIM,
     ChatLocal,
     ChatOutbound,
+    LayerDataReceived,
     RegionChanged,
     RegionMapTileReady,
 )
@@ -44,21 +45,45 @@ def _make_entity(local_id: int, pcode: int) -> SceneEntity:
 
 class SceneEventApplicationTests(unittest.TestCase):
     def test_apply_region_changed_clears_entities_and_tile(self) -> None:
+        from vibestorm.world.terrain import RegionHeightmap
+
         scene = Scene(
             object_entities={1: _make_entity(1, PCODE_PRIM)},
             avatar_entities={2: _make_entity(2, PCODE_AVATAR)},
             map_tile_path=Path("/tmp/old.png"),
             region_handle=0xAA,
             region_name="OldSim",
+            terrain_heightmap=RegionHeightmap(),
         )
 
         scene.apply_region_changed(RegionChanged(region_handle=0xBB, region_name="NewSim"))
 
         self.assertEqual(scene.region_handle, 0xBB)
         self.assertEqual(scene.region_name, "NewSim")
+        self.assertEqual(scene.water_height, 20.0)
         self.assertEqual(scene.object_entities, {})
         self.assertEqual(scene.avatar_entities, {})
         self.assertIsNone(scene.map_tile_path)
+        self.assertIsNone(scene.terrain_heightmap)
+        self.assertIsNone(scene.debug_terrain_source)
+
+    def test_apply_region_changed_preserves_synthetic_debug_terrain(self) -> None:
+        from vibestorm.world.terrain import synthetic_heightmap
+
+        heightmap = synthetic_heightmap(width=32, height=32)
+        scene = Scene(
+            region_handle=0xAA,
+            map_tile_path=Path("/tmp/old.png"),
+            terrain_heightmap=heightmap,
+            debug_terrain_source="synthetic",
+        )
+
+        scene.apply_region_changed(RegionChanged(region_handle=0xBB, region_name="NewSim"))
+
+        self.assertEqual(scene.region_handle, 0xBB)
+        self.assertIsNone(scene.map_tile_path)
+        self.assertIs(scene.terrain_heightmap, heightmap)
+        self.assertEqual(scene.debug_terrain_source, "synthetic")
 
     def test_apply_map_tile_ready_sets_path_for_current_region(self) -> None:
         scene = Scene(region_handle=0xAA)
@@ -102,7 +127,9 @@ class SceneEventApplicationTests(unittest.TestCase):
             )
         )
         scene.apply_chat_alert(ChatAlert(region_handle=0, message="restart"))
-        scene.apply_chat_outbound(ChatOutbound(region_handle=0, chat_type=1, channel=0, message="ok"))
+        scene.apply_chat_outbound(
+            ChatOutbound(region_handle=0, chat_type=1, channel=0, message="ok")
+        )
 
         kinds = [line.kind for line in scene.chat_lines]
         self.assertEqual(kinds, ["im", "alert", "outbound"])
@@ -111,10 +138,73 @@ class SceneEventApplicationTests(unittest.TestCase):
         scene = Scene()
         for i in range(200):
             scene.apply_chat_local(
-                ChatLocal(region_handle=0, from_name="A", chat_type=1, audible=1, message=f"m{i}")
+                ChatLocal(
+                    region_handle=0,
+                    from_name="A",
+                    chat_type=1,
+                    audible=1,
+                    message=f"m{i}",
+                )
             )
         self.assertEqual(len(scene.chat_lines), 128)
         self.assertEqual(scene.chat_lines[-1].message, "m199")
+
+    def test_apply_layer_data_accumulates_land_heightmap(self) -> None:
+        from vibestorm.world.terrain import END_OF_PATCHES, LAYER_TYPE_LAND, BitPackWriter
+
+        w = BitPackWriter()
+        w.pack_bits(264, 16)
+        w.pack_bits(16, 8)
+        w.pack_bits(LAYER_TYPE_LAND, 8)
+        w.pack_bits(0x30, 8)  # prequant=5, word_bits=2
+        w.pack_float(10.0)
+        w.pack_bits(4, 16)
+        w.pack_bits((1 << 5) | 2, 10)  # patch x=1, y=2
+        w.pack_bits(0b10, 2)  # all-zero coefficients
+        w.pack_bits(END_OF_PATCHES, 8)
+
+        scene = Scene(region_handle=0xAA)
+        scene.apply_layer_data_received(
+            LayerDataReceived(
+                region_handle=0xAA,
+                layer_type=LAYER_TYPE_LAND,
+                data=w.to_bytes(),
+            )
+        )
+
+        self.assertIsNotNone(scene.terrain_heightmap)
+        assert scene.terrain_heightmap is not None
+        self.assertEqual(scene.terrain_heightmap.revision, 1)
+        index = (2 * 16) * 256 + (1 * 16)
+        self.assertAlmostEqual(scene.terrain_heightmap.samples[index], 12.0, places=6)
+
+    def test_apply_layer_data_ignores_other_regions_and_non_land(self) -> None:
+        scene = Scene(region_handle=0xAA)
+
+        scene.apply_layer_data_received(
+            LayerDataReceived(region_handle=0xBB, layer_type=0x4C, data=b"")
+        )
+        scene.apply_layer_data_received(
+            LayerDataReceived(region_handle=0xAA, layer_type=0x57, data=b"")
+        )
+
+        self.assertIsNone(scene.terrain_heightmap)
+
+    def test_apply_layer_data_preserves_synthetic_debug_terrain(self) -> None:
+        from vibestorm.bus.events import LayerDataReceived
+        from vibestorm.world.terrain import synthetic_heightmap
+
+        scene = Scene(region_handle=0xAA)
+        scene.terrain_heightmap = synthetic_heightmap(width=32, height=32)
+        scene.debug_terrain_source = "synthetic"
+        before = scene.terrain_heightmap
+
+        scene.apply_layer_data_received(
+            LayerDataReceived(region_handle=0xAA, layer_type=0x4C, data=b"bad")
+        )
+
+        self.assertIs(scene.terrain_heightmap, before)
+        self.assertEqual(scene.debug_terrain_source, "synthetic")
 
 
 class SceneWorldViewRefreshTests(unittest.TestCase):
@@ -224,8 +314,11 @@ class SceneWorldViewRefreshTests(unittest.TestCase):
 
     def test_refresh_surfaces_default_texture_id(self) -> None:
         from vibestorm.world.models import WorldObject, WorldView
+        from vibestorm.world.texture_entry import TextureEntry
 
         tex = UUID("12345678-1234-1234-1234-123456789abc")
+        face_tex = UUID("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")
+        texture_entry = TextureEntry(default_texture_id=tex, face_texture_ids=((2, face_tex),))
         view = WorldView()
         view.objects[UUID(int=1)] = WorldObject(
             full_id=UUID(int=1), local_id=10, parent_id=0, pcode=PCODE_PRIM,
@@ -235,26 +328,48 @@ class SceneWorldViewRefreshTests(unittest.TestCase):
             variant="prim_basic", name_values={}, texture_entry_size=16,
             texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
             ps_block_size=0, extra_params_size=0, extra_params_entries=(),
-            default_texture_id=tex,
+            default_texture_id=tex, texture_entry=texture_entry,
         )
 
         scene = Scene()
         scene.refresh_from_world_view(view)
 
         self.assertEqual(scene.object_entities[10].default_texture_id, tex)
+        self.assertIs(scene.object_entities[10].texture_entry, texture_entry)
+
+    def test_apply_texture_asset_ready_records_texture_path(self) -> None:
+        from vibestorm.bus.events import TextureAssetReady
+
+        texture_id = UUID("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")
+        scene = Scene(region_handle=10)
+
+        scene.apply_texture_asset_ready(
+            TextureAssetReady(
+                region_handle=10,
+                texture_id=texture_id,
+                cache_path="/tmp/texture.png",
+            )
+        )
+
+        self.assertEqual(scene.texture_paths[texture_id], Path("/tmp/texture.png"))
 
     def test_refresh_surfaces_sun_phase(self) -> None:
         from vibestorm.world.models import SimulatorTimeSnapshot, WorldView
 
         view = WorldView()
         view.latest_time = SimulatorTimeSnapshot(
-            usec_since_start=0, sec_per_day=14400, sec_per_year=5256000, sun_phase=2.5
+            usec_since_start=0,
+            sec_per_day=14400,
+            sec_per_year=5256000,
+            sun_phase=2.5,
+            sun_direction=(0.1, 0.2, 0.3),
         )
 
         scene = Scene()
         scene.refresh_from_world_view(view)
 
         self.assertEqual(scene.sun_phase, 2.5)
+        self.assertEqual(scene.sun_direction, (0.1, 0.2, 0.3))
 
     def test_refresh_with_no_world_time_leaves_sun_phase_none(self) -> None:
         from vibestorm.world.models import WorldView
@@ -262,6 +377,17 @@ class SceneWorldViewRefreshTests(unittest.TestCase):
         scene = Scene()
         scene.refresh_from_world_view(WorldView())
         self.assertIsNone(scene.sun_phase)
+
+    def test_refresh_surfaces_region_water_height(self) -> None:
+        from vibestorm.world.models import WorldView
+
+        view = WorldView()
+        view.set_region(name="WetSim", grid_x=1, grid_y=2, water_height=6.5)
+
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.water_height, 6.5)
 
 
 class QuatToYawTests(unittest.TestCase):
