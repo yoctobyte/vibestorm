@@ -69,6 +69,7 @@ vibestorm --help
 - `vibestorm handshake-probe`
 - `vibestorm session-run`
 - `./run.sh viewer`
+- `./run.sh viewer3d`
 
 `session-run` is the most complete workflow today. It logs in, establishes the UDP circuit, runs
 a bounded session loop, updates normalized world state, and can optionally capture selected inbound
@@ -78,6 +79,10 @@ messages for later fixture work.
 auto-scales the UI from the desktop size and accepts `--ui-scale`, `--width`, and `--height`
 overrides. The viewer exposes a pygame_gui menu/status shell, movement help, chat, a local
 teleport-location request dialog, and the first read-only inventory manager window.
+
+`./run.sh viewer3d` runs the OpenGL 3D viewer. It starts in 3D mode by default and currently
+renders decoded terrain, water, primitives, first-pass lighting/texturing, diagnostics/render
+settings, user inventory, and the object inspector with read-only task inventory asset viewing.
 
 ## Next Step
 
