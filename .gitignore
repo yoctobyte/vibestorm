@@ -18,9 +18,16 @@ pip-wheel-metadata/
 # Local editor and OS noise
 .DS_Store
 Thumbs.db
+.env
+.env.*
+!.env.example
 
 # Repo-local tool state
 .codex
+scratch/
+scratch_*.py
+test_transfer.py
+tools/dump_te.py
 
 # Runtime logs and databases
 *.log
@@ -33,4 +40,3 @@ local/
 
 # OpenSim full source checkout (reference only, 100MB+)
 opensim-source/
-

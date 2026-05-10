@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGIN_URI="${VIBESTORM_LOGIN_URI:-http://127.0.0.1:9000/}"
 FIRST_NAME="${VIBESTORM_FIRST_NAME:-Vibestorm}"
 LAST_NAME="${VIBESTORM_LAST_NAME:-Admin}"
-PASSWORD="${VIBESTORM_PASSWORD:-changeme123}"
+PASSWORD="${VIBESTORM_PASSWORD:-}"
 START_LOCATION="${VIBESTORM_START_LOCATION:-uri:Vibestorm Test&128&128&25}"
 SESSION_DURATION="${VIBESTORM_SESSION_DURATION:-60}"
 AGENT_UPDATE_INTERVAL="${VIBESTORM_AGENT_UPDATE_INTERVAL:-1.0}"
@@ -34,7 +34,8 @@ Commands:
   fixtures     Rebuild the structured fixture inventory/backlog
   test         Run the unit test suite
 
-Defaults come from the local OpenSim notes and can be overridden with env vars:
+Defaults come from the local OpenSim notes and can be overridden with env vars.
+Set VIBESTORM_PASSWORD before commands that log in:
   VIBESTORM_LOGIN_URI
   VIBESTORM_FIRST_NAME
   VIBESTORM_LAST_NAME
@@ -48,19 +49,29 @@ Defaults come from the local OpenSim notes and can be overridden with env vars:
   VIBESTORM_CAPTURE_MODE
 Examples:
   ./run.sh opensim
-  ./run.sh session
-  ./run.sh session 180
-  ./run.sh session 180 --verbose
-  ./run.sh viewer
-  ./run.sh bootstrap
-  VIBESTORM_SESSION_DURATION=15 ./run.sh session
-  VIBESTORM_CAMERA_SWEEP=1 ./run.sh session
-  VIBESTORM_SPAWN_CUBE=1 ./run.sh session
-  VIBESTORM_CAPTURE_DIR=test/fixtures/live ./run.sh session --capture-message ObjectUpdate
-  VIBESTORM_CAPTURE_DIR=test/fixtures/live VIBESTORM_CAPTURE_MODE=all ./run.sh session --capture-message ObjectUpdate
+  VIBESTORM_PASSWORD=... ./run.sh session
+  VIBESTORM_PASSWORD=... ./run.sh session 180
+  VIBESTORM_PASSWORD=... ./run.sh session 180 --verbose
+  VIBESTORM_PASSWORD=... ./run.sh viewer
+  VIBESTORM_PASSWORD=... ./run.sh bootstrap
+  VIBESTORM_PASSWORD=... VIBESTORM_SESSION_DURATION=15 ./run.sh session
+  VIBESTORM_PASSWORD=... VIBESTORM_CAMERA_SWEEP=1 ./run.sh session
+  VIBESTORM_PASSWORD=... VIBESTORM_SPAWN_CUBE=1 ./run.sh session
+  VIBESTORM_PASSWORD=... VIBESTORM_CAPTURE_DIR=test/fixtures/live ./run.sh session --capture-message ObjectUpdate
+  VIBESTORM_PASSWORD=... VIBESTORM_CAPTURE_DIR=test/fixtures/live VIBESTORM_CAPTURE_MODE=all ./run.sh session --capture-message ObjectUpdate
   ./run.sh unknowns
-  VIBESTORM_PASSWORD=secret ./run.sh handshake
+  VIBESTORM_PASSWORD=... ./run.sh handshake
 EOF
+}
+
+require_password() {
+  if [[ -z "$PASSWORD" ]]; then
+    cat >&2 <<EOF
+VIBESTORM_PASSWORD is required for '$command'.
+Example: VIBESTORM_PASSWORD=... ./run.sh $command
+EOF
+    exit 2
+  fi
 }
 
 python_runner() {
@@ -101,26 +112,32 @@ case "$command" in
     exec "$ROOT_DIR/tools/start_opensim.sh" "$@"
     ;;
   bootstrap)
+    require_password
     cd "$ROOT_DIR"
     python_runner -m vibestorm.app.cli login-bootstrap "${cli_base_args[@]}" "$@"
     ;;
   caps)
+    require_password
     cd "$ROOT_DIR"
     python_runner -m vibestorm.app.cli resolve-seed-caps "${cli_base_args[@]}" EventQueueGet SimulatorFeatures "$@"
     ;;
   eventq)
+    require_password
     cd "$ROOT_DIR"
     python_runner -m vibestorm.app.cli event-queue-once "${cli_base_args[@]}" "$@"
     ;;
   udp)
+    require_password
     cd "$ROOT_DIR"
     python_runner -m vibestorm.app.cli udp-probe "${cli_base_args[@]}" "$@"
     ;;
   handshake)
+    require_password
     cd "$ROOT_DIR"
     python_runner -m vibestorm.app.cli handshake-probe "${cli_base_args[@]}" "$@"
     ;;
   session)
+    require_password
     cd "$ROOT_DIR"
     duration="$SESSION_DURATION"
     if [[ $# -gt 0 && "${1:-}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -146,6 +163,7 @@ case "$command" in
       "$@"
     ;;
   console)
+    require_password
     cd "$ROOT_DIR"
     console_args=()
     if [[ "$CAMERA_SWEEP" == "1" ]]; then
@@ -158,6 +176,7 @@ case "$command" in
       "$@"
     ;;
   viewer)
+    require_password
     cd "$ROOT_DIR"
     viewer_args=()
     if [[ "$CAMERA_SWEEP" == "1" ]]; then
@@ -170,6 +189,7 @@ case "$command" in
       "$@"
     ;;
   viewer3d)
+    require_password
     cd "$ROOT_DIR"
     viewer_args=()
     if [[ "$CAMERA_SWEEP" == "1" ]]; then

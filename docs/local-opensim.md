@@ -18,7 +18,7 @@ Use local OpenSim for:
 - region name: `Vibestorm Test`
 - start location: `uri:Vibestorm Test&128&128&25`
 - test avatar: `Vibestorm Admin`
-- password: `changeme123`
+- password: set locally via `VIBESTORM_PASSWORD`
 
 ## Main Commands
 
@@ -31,13 +31,13 @@ Start OpenSim:
 Run a normal session:
 
 ```bash
-./run.sh session
+VIBESTORM_PASSWORD=... ./run.sh session
 ```
 
 Run a longer reverse-engineering session:
 
 ```bash
-./run.sh session 180 --verbose
+VIBESTORM_PASSWORD=... ./run.sh session 180 --verbose
 ```
 
 Run a sweep-enabled forensic session and save both the session output and `unknowns` report to one text file:

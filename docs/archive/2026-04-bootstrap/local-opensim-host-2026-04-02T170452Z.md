@@ -91,7 +91,7 @@ Created local avatar:
 - first name: `Vibestorm`
 - last name: `Admin`
 - principal ID: `11111111-2222-3333-4444-555555555555`
-- password: `changeme123`
+- password: set locally via `VIBESTORM_PASSWORD`
 
 This account is now usable for repeatable local Vibestorm testing.
 
@@ -127,7 +127,7 @@ PYTHONPATH=src python3 -m vibestorm.app.cli login-bootstrap \
   --login-uri http://127.0.0.1:9000/ \
   --first Vibestorm \
   --last Admin \
-  --password changeme123 \
+  --password "$VIBESTORM_PASSWORD" \
   --start 'uri:Vibestorm Test&128&128&25'
 ```
 
@@ -136,7 +136,7 @@ PYTHONPATH=src python3 -m vibestorm.app.cli resolve-seed-caps \
   --login-uri http://127.0.0.1:9000/ \
   --first Vibestorm \
   --last Admin \
-  --password changeme123 \
+  --password "$VIBESTORM_PASSWORD" \
   --start 'uri:Vibestorm Test&128&128&25' \
   EventQueueGet SimulatorFeatures
 ```
@@ -146,7 +146,7 @@ PYTHONPATH=src python3 -m vibestorm.app.cli event-queue-once \
   --login-uri http://127.0.0.1:9000/ \
   --first Vibestorm \
   --last Admin \
-  --password changeme123 \
+  --password "$VIBESTORM_PASSWORD" \
   --start 'uri:Vibestorm Test&128&128&25'
 ```
 
@@ -155,7 +155,7 @@ PYTHONPATH=src python3 -m vibestorm.app.cli handshake-probe \
   --login-uri http://127.0.0.1:9000/ \
   --first Vibestorm \
   --last Admin \
-  --password changeme123 \
+  --password "$VIBESTORM_PASSWORD" \
   --start 'uri:Vibestorm Test&128&128&25'
 ```
 
