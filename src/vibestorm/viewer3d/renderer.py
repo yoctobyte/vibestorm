@@ -38,6 +38,7 @@ class ViewerRenderer(Protocol):
     def update(self, dt: float, scene: Scene) -> None: ...
     def render(self, surface: pygame.Surface, scene: Scene) -> None: ...
     def render_gl(self, scene: Scene, *, aspect: float) -> None: ...
+    def pick(self, x: int, y: int, scene: Scene, *, aspect: float) -> int | None: ...
     def clear_caches(self) -> None: ...
 
 
@@ -58,6 +59,19 @@ class TopDownRenderer:
         # Top-down mode is fully software; the GL framebuffer only
         # receives the uploaded world quad. Nothing to draw here.
         del scene, aspect
+
+    def pick(self, x: int, y: int, scene: Scene, *, aspect: float) -> int | None:
+        world_x, world_y = self.camera.screen_to_world(x, y)
+        best_id = None
+        best_dist = float('inf')
+        for entity in scene.object_entities.values():
+            ex, ey, _ = entity.position
+            dist = (ex - world_x)**2 + (ey - world_y)**2
+            # rough radius check
+            if dist < 4.0 and dist < best_dist:
+                best_dist = dist
+                best_id = entity.local_id
+        return best_id
 
     def clear_caches(self) -> None:
         clear_tile_cache()

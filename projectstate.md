@@ -26,6 +26,9 @@ The repo already supports:
 - viewer menu/status shell with movement help, chat, local teleport-location
   requests, and a first inventory-manager window sourced from the current
   `FetchInventoryDescendents2` / `FetchInventory2` snapshot
+- viewer3d Object Inspector with read-only object details plus first-pass
+  read-only object/task inventory loading through `RequestTaskInventory` and
+  xfer assembly
 - viewer3d terrain path for standard 16x16 land `LayerData`: bitstream decode,
   dequantization + IDCT, 256x256 heightmap accumulation, and textured GL
   heightfield rendering
@@ -114,7 +117,9 @@ Main gaps:
   are decoded
 - extended-region 32x32 terrain patches are not decompressed yet
 - inventory is currently read-only; user-inventory folders can be opened
-  lazily through `FetchInventoryDescendents2`, but object inventory, asset
+  lazily through `FetchInventoryDescendents2`, and object/task inventory can
+  be listed through `RequestTaskInventory` + xfer; successful empty folder and
+  object replies are represented as loaded-empty, but asset open/save,
   create/upload/store management, multi-save, and multi-upload-from-file are
   not implemented yet beyond existing appearance/baked-texture upload support
 

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from uuid import UUID  # noqa: F401  - used by RegionMapTileReady etc.
 
 from vibestorm.caps.inventory_client import InventoryFetchSnapshot
+from vibestorm.world.object_inventory import ObjectInventorySnapshot
 
 # ---- session lifecycle ----------------------------------------------------
 
@@ -97,6 +98,12 @@ class InventorySnapshotReady:
     snapshot: InventoryFetchSnapshot
 
 
+@dataclass(slots=True, frozen=True)
+class ObjectInventorySnapshotReady:
+    region_handle: int
+    snapshot: ObjectInventorySnapshot
+
+
 # ---- map / texture -------------------------------------------------------
 
 @dataclass(slots=True, frozen=True)
@@ -139,6 +146,7 @@ __all__ = [
     "InventorySnapshotReady",
     "LayerDataReceived",
     "LoginComplete",
+    "ObjectInventorySnapshotReady",
     "RegionChanged",
     "RegionMapTileReady",
     "SessionClosed",

@@ -282,6 +282,51 @@ Structure from local OpenSim source:
 - Vibestorm currently parses this family tolerantly and accepts either short-length or byte-length strings.
 - Current local implementation uses it to enrich an already-known `WorldObject` with latest object-property metadata keyed by `ObjectID`.
 
+### Object / Task Inventory
+
+Current first-pass implementation:
+
+- The viewer can request inventory for a rezzed object with `RequestTaskInventory`
+  (`Low/289`):
+  - `AgentID UUID`
+  - `SessionID UUID`
+  - `LocalID U32`
+- OpenSim replies with `ReplyTaskInventory` (`Low/290`):
+  - `TaskID UUID`
+  - `Serial S16`
+  - `Filename Variable 1`
+- If `Filename` is empty, Vibestorm treats the object inventory as
+  successfully loaded but empty and does not request an xfer.
+- The reply only names a simulator-hosted xfer file. The actual inventory
+  contents arrive through the older xfer path:
+  1. client sends `RequestXfer` (`Low/156`) for the returned filename
+  2. simulator sends one or more `SendXferPacket` (`High/18`) packets
+  3. client replies with `ConfirmXferPacket` (`High/19`) for each packet
+  4. final packet is detected by the high bit on `Packet`; the low 31 bits are
+     the packet index
+  5. packet 0 starts with a little-endian U32 total payload size before the
+     first bytes of the file
+- OpenSim source confirms `ReplyTaskInventory` is built as a reliable low
+  message and `SendXferPacket` is used with task throttle for task inventory.
+- Vibestorm now assembles that xfer into an `ObjectInventorySnapshot` keyed by
+  object local ID and parses common `inv_item` blocks from the Linden/OpenSim
+  task-inventory text format.
+- OpenSim's `HandleRequestXfer` path only passes xfer ID and filename to the
+  request handler, so the current object-inventory xfer implementation relies
+  on the filename returned by `ReplyTaskInventory`.
+
+Current limitations:
+
+- Parser is intentionally conservative: it extracts item UUIDs, asset UUIDs,
+  parent IDs, name, description, asset type, inventory type, and raw fields.
+  It does not yet fully model permissions, sale fields, creation date, script
+  running state, or nested folder semantics.
+- Save/upload/edit is not implemented. Later write paths likely involve
+  `UpdateTaskInventory`, `RemoveTaskInventory`, `MoveTaskInventory`, and caps
+  such as `UpdateScriptTaskInventory` / `UpdateNotecardTaskInventory`.
+- The UI is read-only and displays object inventory under the selected object
+  in the Object Inspector.
+
 ### `ObjectExtraParams`
 Current implementation status:
 - standalone `ObjectExtraParams` is parsed as:

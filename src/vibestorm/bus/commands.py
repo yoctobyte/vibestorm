@@ -76,10 +76,17 @@ class TeleportLocation:
     look_at: tuple[float, float, float] = (1.0, 0.0, 0.0)
 
 
+@dataclass(slots=True, frozen=True)
+class RequestObjectInventory:
+    """Request task inventory for an in-world object by simulator local ID."""
+    local_id: int
+
+
 __all__ = [
     "AddControlFlags",
     "ClearControlFlags",
     "RemoveControlFlags",
+    "RequestObjectInventory",
     "SendChat",
     "SetBodyRotation",
     "SetCamera",

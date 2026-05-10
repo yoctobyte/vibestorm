@@ -27,6 +27,7 @@ from vibestorm.bus.commands import (
     AddControlFlags,
     ClearControlFlags,
     RemoveControlFlags,
+    RequestObjectInventory,
     SendChat,
     SetBodyRotation,
     SetCamera,
@@ -41,6 +42,7 @@ from vibestorm.bus.events import (
     ChatOutbound,
     InventorySnapshotReady,
     LayerDataReceived,
+    ObjectInventorySnapshotReady,
     RegionChanged,
     RegionMapTileReady,
     SessionClosed,
@@ -295,6 +297,28 @@ class WorldClient:
                     snapshot=session.latest_inventory_fetch,
                 )
             )
+        elif kind == "task_inventory.ready":
+            parts = _kv_split(event.detail)
+            try:
+                local_id = int(parts["local_id"])
+            except (KeyError, ValueError):
+                return
+            snapshot = session.object_inventory_snapshots.get(local_id)
+            if snapshot is None:
+                print(
+                    "[world_client] task_inventory.ready without snapshot "
+                    f"local_id={local_id} handle={handle:#018x}",
+                    flush=True,
+                )
+                return
+            print(
+                "[world_client] object_inventory.publish "
+                f"handle={handle:#018x} local_id={local_id} items={snapshot.item_count}",
+                flush=True,
+            )
+            self.bus.publish(
+                ObjectInventorySnapshotReady(region_handle=handle, snapshot=snapshot)
+            )
         elif kind.startswith("world."):
             self.bus.publish(WorldStateChanged(region_handle=handle, reason=kind[len("world."):]))
 
@@ -313,6 +337,7 @@ class WorldClient:
         self.bus.register_handler(SetCamera, self._handle_set_camera)
         self.bus.register_handler(SendChat, self._handle_send_chat)
         self.bus.register_handler(TeleportLocation, self._handle_teleport_location)
+        self.bus.register_handler(RequestObjectInventory, self._handle_request_object_inventory)
 
     def _require_current(self) -> LiveCircuitSession:
         current = self.current
@@ -367,6 +392,17 @@ class WorldClient:
             look_at=cmd.look_at,
         )
         self.queue_outbound_packet(handle, packet)
+        return packet
+
+    def _handle_request_object_inventory(self, cmd: RequestObjectInventory) -> bytes:
+        current = self._require_current()
+        local_id = int(cmd.local_id)
+        full_id = current.world_view.local_id_to_full_id.get(local_id)
+        if full_id is not None:
+            current.pending_task_inventory_by_task[full_id] = local_id
+        packet = current.build_request_task_inventory_packet(local_id)
+        if self.current_handle is not None:
+            self.queue_outbound_packet(self.current_handle, packet)
         return packet
 
     # ------------------------------------------------------- event parsing

@@ -329,6 +329,34 @@ def merge_inventory_fetch_snapshots(
     )
 
 
+def snapshot_with_loaded_empty_folder(
+    snapshot: InventoryFetchSnapshot,
+    *,
+    folder_id: UUID,
+    owner_id: UUID,
+    agent_id: UUID | None = None,
+) -> InventoryFetchSnapshot:
+    """Ensure a successful empty folder fetch is represented as loaded."""
+
+    if snapshot.folder_by_id(folder_id) is not None:
+        return snapshot
+    empty = InventoryFolderContents(
+        folder_id=folder_id,
+        owner_id=owner_id,
+        agent_id=agent_id or owner_id,
+        descendents=0,
+        version=None,
+        categories=(),
+        items=(),
+    )
+    return InventoryFetchSnapshot(
+        folders=(*snapshot.folders, empty),
+        inventory_root_folder_id=snapshot.inventory_root_folder_id,
+        current_outfit_folder_id=snapshot.current_outfit_folder_id,
+        resolved_items=snapshot.resolved_items,
+    )
+
+
 def _parse_uuid(value: object) -> UUID | None:
     if value is None:
         return None

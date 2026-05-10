@@ -7,6 +7,7 @@ The HUD owns its own UIManager; the app forwards pygame events to
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -52,6 +53,13 @@ class InventoryDisplayRow:
     can_open: bool = False
 
 
+@dataclass(slots=True, frozen=True)
+class InspectorDisplayRow:
+    text: str
+    detail_html: str
+    local_id: int
+
+
 class HUD:
     """Main-menu strip, status bar, and a resizable chat subwindow.
 
@@ -70,6 +78,7 @@ class HUD:
         on_center: Callable[[], None] | None = None,
         on_teleport: Callable[[tuple[float, float, float]], None] | None = None,
         on_inventory_open_folder: Callable[[UUID], None] | None = None,
+        on_object_inventory_request: Callable[[int], None] | None = None,
         on_render_mode_change: Callable[[str], None] | None = None,
         on_render_setting_change: Callable[[str, object], None] | None = None,
         initial_render_mode: str = RENDER_MODE_2D,
@@ -90,6 +99,7 @@ class HUD:
         self.on_center = on_center
         self.on_teleport = on_teleport
         self.on_inventory_open_folder = on_inventory_open_folder
+        self.on_object_inventory_request = on_object_inventory_request
         self.on_render_mode_change = on_render_mode_change
         self.on_render_setting_change = on_render_setting_change
         self.render_mode: str = (
@@ -104,9 +114,16 @@ class HUD:
         self._inventory_row_details: dict[str, str] = {}
         self._inventory_openable_rows: dict[str, UUID] = {}
         self._selected_inventory_row: str | None = None
-        self._last_heightmap_signature: (
-            tuple[int, int, int, float | None, float | None] | None
-        ) = None
+        self._last_inspector_signature: tuple[tuple[object, ...], ...] | None = None
+        self._inspector_row_details: dict[str, str] = {}
+        self._inspector_row_texts_by_local_id: dict[int, str] = {}
+        self._inspector_local_ids_by_row_text: dict[str, int] = {}
+        self._inspector_inventory_details: dict[int, str] = {}
+        self._selected_inspector_row: str | None = None
+        self._last_inspector_inventory_html: str | None = None
+        self._last_heightmap_signature: tuple[int, int, int, float | None, float | None] | None = (
+            None
+        )
         self._render_setting_values: dict[str, object] = {
             "render_terrain": True,
             "render_terrain_lines": True,
@@ -261,6 +278,7 @@ class HUD:
             y=menu_h,
             width=self._s(180),
             rows=(
+                ("Object Inspector", "inspector_button"),
                 ("Teleport", "teleport_button"),
                 ("Options", "options_button"),
             ),
@@ -413,6 +431,10 @@ class HUD:
             UITextEntryLine,
             UIWindow,
         )
+
+        class HideOnCloseWindow(UIWindow):
+            def on_close_window_button_pressed(self):
+                self.hide()
 
         self.help_window = UIWindow(
             rect=pygame.Rect(self._s(70), self._s(70), self._s(460), self._s(360)),
@@ -583,6 +605,46 @@ class HUD:
         )
         self.inventory_window.hide()
 
+        self.inspector_window = HideOnCloseWindow(
+            rect=pygame.Rect(
+                max(self._s(80), sw - self._s(700)),
+                self._s(150),
+                self._s(650),
+                self._s(460),
+            ),
+            manager=self.manager,
+            window_display_title="Object Inspector",
+            resizable=True,
+        )
+        insp_container = self.inspector_window.get_container()
+        self.inspector_list = UISelectionList(
+            relative_rect=pygame.Rect(self._s(8), self._s(8), self._s(285), self._s(410)),
+            item_list=[],
+            manager=self.manager,
+            container=insp_container,
+            allow_multi_select=False,
+        )
+        self.inspector_details = UITextBox(
+            html_text="Select an object.",
+            relative_rect=pygame.Rect(self._s(305), self._s(8), self._s(325), self._s(250)),
+            manager=self.manager,
+            container=insp_container,
+        )
+        self.inspector_load_inventory_button = UIButton(
+            relative_rect=pygame.Rect(self._s(305), self._s(266), self._s(150), self._s(28)),
+            text="Load Inventory",
+            manager=self.manager,
+            container=insp_container,
+        )
+        self.inspector_load_inventory_button.disable()
+        self.inspector_inventory = UITextBox(
+            html_text="<b>Object Inventory</b><br>not requested yet",
+            relative_rect=pygame.Rect(self._s(305), self._s(302), self._s(325), self._s(116)),
+            manager=self.manager,
+            container=insp_container,
+        )
+        self.inspector_window.hide()
+
         self.diagnostics_window = UIWindow(
             rect=pygame.Rect(
                 max(self._s(120), sw - self._s(450)),
@@ -726,6 +788,15 @@ class HUD:
                 self._hide_all_menus()
                 self._open_menu = None
                 return True
+            if event.ui_element is self.inspector_button:
+                self.inspector_window.show()
+                self._layout_inspector_window()
+                self._hide_all_menus()
+                self._open_menu = None
+                return True
+            if event.ui_element is self.inspector_load_inventory_button:
+                self._request_selected_object_inventory()
+                return True
             if event.ui_element is self.teleport_button:
                 self.teleport_window.show()
                 self._hide_all_menus()
@@ -754,6 +825,10 @@ class HUD:
                 selection = str(getattr(event, "text", "") or "")
                 self._select_inventory_row(selection)
                 return True
+            if event.ui_element is self.inspector_list:
+                selection = str(getattr(event, "text", "") or "")
+                self._select_inspector_row(selection)
+                return True
         elif event.type == pygame_gui.UI_SELECTION_LIST_DOUBLE_CLICKED_SELECTION:
             if event.ui_element is self.inventory_list:
                 selection = str(getattr(event, "text", "") or "")
@@ -764,20 +839,24 @@ class HUD:
             self._layout_chat_window()
             return True
         elif (
-            event.type == pygame_gui.UI_WINDOW_RESIZED
-            and event.ui_element is self.inventory_window
+            event.type == pygame_gui.UI_WINDOW_RESIZED and event.ui_element is self.inventory_window
         ):
             self._layout_inventory_window()
             return True
+        elif (
+            event.type == pygame_gui.UI_WINDOW_RESIZED and event.ui_element is self.inspector_window
+        ):
+            self._layout_inspector_window()
+            return True
         return False
 
-    def update(self, time_delta_s: float, scene: Scene | None = None) -> None:
+    def update(
+        self, time_delta_s: float, scene: Scene | None = None, world_view: object | None = None
+    ) -> None:
         if time_delta_s > 0.0:
             instant_fps = 1.0 / time_delta_s
             self._last_fps = (
-                instant_fps
-                if self._last_fps <= 0.0
-                else self._last_fps * 0.85 + instant_fps * 0.15
+                instant_fps if self._last_fps <= 0.0 else self._last_fps * 0.85 + instant_fps * 0.15
             )
         if scene is not None:
             self._refresh_ticker(scene)
@@ -785,6 +864,7 @@ class HUD:
             self._refresh_diagnostics(scene)
             self._refresh_heightmap(scene)
             self._refresh_render_settings_from_scene(scene)
+            self._refresh_inspector(scene, world_view)
         self._layout_chat_window_if_needed()
         self.manager.update(time_delta_s)
 
@@ -860,6 +940,11 @@ class HUD:
             self.inventory_open_button,
             self.inventory_list,
             self.inventory_details,
+            self.inspector_window,
+            self.inspector_list,
+            self.inspector_details,
+            self.inspector_load_inventory_button,
+            self.inspector_inventory,
             self.diagnostics_text,
             self.heightmap_image,
             self.heightmap_status,
@@ -870,6 +955,12 @@ class HUD:
         self._inventory_row_details = {}
         self._inventory_openable_rows = {}
         self._selected_inventory_row = None
+        self._last_inspector_signature = None
+        self._inspector_row_details = {}
+        self._inspector_local_ids_by_row_text = {}
+        self._inspector_inventory_details = {}
+        self._selected_inspector_row = None
+        self._last_inspector_inventory_html = None
         self._last_diagnostics_html = None
         self._last_heightmap_signature = None
         self._build_widgets()
@@ -910,14 +1001,59 @@ class HUD:
         right_w = max(self._s(120), content_w - left_w - gap)
         self.inventory_summary.set_relative_position((margin, margin))
         self.inventory_summary.set_dimensions((content_w, summary_h))
-        self.inventory_open_button.set_relative_position(
-            (margin, margin + summary_h + button_gap)
-        )
+        self.inventory_open_button.set_relative_position((margin, margin + summary_h + button_gap))
         self.inventory_open_button.set_dimensions((min(left_w, self._s(110)), button_h))
         self.inventory_list.set_relative_position((margin, list_y))
         self.inventory_list.set_dimensions((left_w, max(self._s(80), ch - list_y - margin)))
         self.inventory_details.set_relative_position((margin + left_w + gap, details_y))
         self.inventory_details.set_dimensions((right_w, max(self._s(80), ch - details_y - margin)))
+
+    def _layout_inspector_window(self) -> None:
+        container = self.inspector_window.get_container()
+        cw, ch = container.get_size()
+        margin = self._s(8)
+        gap = self._s(10)
+        content_w = max(self._s(160), cw - margin * 2)
+        left_w = max(self._s(180), min(self._s(340), (content_w - gap) // 2))
+        right_w = max(self._s(120), content_w - left_w - gap)
+
+        self.inspector_list.set_relative_position((margin, margin))
+        self.inspector_list.set_dimensions((left_w, max(self._s(80), ch - margin * 2)))
+
+        button_h = self._s(28)
+        details_h = max(self._s(100), int((ch - margin * 2 - gap - button_h) * 0.58))
+        inv_h = max(self._s(60), ch - margin * 2 - gap * 2 - button_h - details_h)
+
+        self.inspector_details.set_relative_position((margin + left_w + gap, margin))
+        self.inspector_details.set_dimensions((right_w, details_h))
+
+        button_y = margin + details_h + gap
+        self.inspector_load_inventory_button.set_relative_position(
+            (margin + left_w + gap, button_y)
+        )
+        self.inspector_load_inventory_button.set_dimensions((min(right_w, self._s(150)), button_h))
+        self.inspector_inventory.set_relative_position(
+            (margin + left_w + gap, button_y + button_h + gap)
+        )
+        self.inspector_inventory.set_dimensions((right_w, inv_h))
+
+    def _set_inspector_inventory_text(self, html_text: str) -> None:
+        from pygame_gui.elements import UITextBox
+
+        if html_text == self._last_inspector_inventory_html:
+            return
+        self._last_inspector_inventory_html = html_text
+        try:
+            rect = self.inspector_inventory.relative_rect.copy()
+            self.inspector_inventory.kill()
+            self.inspector_inventory = UITextBox(
+                html_text=html_text,
+                relative_rect=rect,
+                manager=self.manager,
+                container=self.inspector_window.get_container(),
+            )
+        except Exception as exc:  # pragma: no cover
+            print(f"[viewer3d] object_inventory.hud_update_error {exc!r}", flush=True)
 
     def _refresh_ticker(self, scene: Scene) -> None:
         # Take last N chat lines, format with kind-colored prefix.
@@ -990,8 +1126,7 @@ class HUD:
                 f"zscale={scene.terrain_z_scale:.2f}"
             )
             height_text = (
-                f"height: min={sample_min:.2f} max={sample_max:.2f} "
-                f"mean={sample_mean:.2f}"
+                f"height: min={sample_min:.2f} max={sample_max:.2f} mean={sample_mean:.2f}"
             )
             patch_text = f"patch keys: {terrain.first_patch_keys or '()'}"
             sample_text = f"samples[0:4]: {[round(value, 2) for value in terrain.samples[:4]]}"
@@ -1106,9 +1241,7 @@ class HUD:
         self._last_inventory_signature = signature
         self._inventory_row_details = {row.text: row.detail_html for row in rows}
         self._inventory_openable_rows = {
-            row.text: row.folder_id
-            for row in rows
-            if row.can_open and row.folder_id is not None
+            row.text: row.folder_id for row in rows if row.can_open and row.folder_id is not None
         }
         if self._selected_inventory_row not in self._inventory_row_details:
             self._selected_inventory_row = row_texts[0] if row_texts else None
@@ -1156,6 +1289,97 @@ class HUD:
             return
         self.on_inventory_open_folder(folder_id)
 
+    def _refresh_inspector(self, scene: Scene, world_view: object | None) -> None:
+        if not self.inspector_window.visible:
+            return
+        rows = inspector_rows(scene, world_view)
+        row_texts = tuple(row.text for row in rows)
+        signature = tuple(
+            (
+                row.text,
+                row.detail_html,
+                row.local_id,
+                scene.object_inventory_snapshots.get(row.local_id),
+            )
+            for row in rows
+        )
+        if signature == self._last_inspector_signature:
+            return
+        self._last_inspector_signature = signature
+        self._inspector_row_details = {row.text: row.detail_html for row in rows}
+        self._inspector_row_texts_by_local_id = {row.local_id: row.text for row in rows}
+        self._inspector_local_ids_by_row_text = {row.text: row.local_id for row in rows}
+        self._inspector_inventory_details = {
+            row.local_id: _object_inventory_html(
+                scene.object_inventory_snapshots.get(row.local_id)
+            )
+            for row in rows
+        }
+        selected_local_id = (
+            self._inspector_local_ids_by_row_text.get(self._selected_inspector_row)
+            if self._selected_inspector_row
+            else None
+        )
+        if selected_local_id is not None:
+            snapshot = scene.object_inventory_snapshots.get(selected_local_id)
+            if snapshot is not None:
+                print(
+                    "[viewer3d] object_inventory.hud "
+                    f"local_id={selected_local_id} items={snapshot.item_count}",
+                    flush=True,
+                )
+        if self._selected_inspector_row not in self._inspector_row_details:
+            self._selected_inspector_row = row_texts[0] if row_texts else None
+
+        try:
+            self.inspector_list.set_item_list(list(row_texts))
+            self._select_inspector_row(self._selected_inspector_row)
+        except Exception:  # pragma: no cover
+            pass
+
+    def select_inspector_object(self, local_id: int) -> None:
+        """Open the inspector window and select the row for the given local_id."""
+        if not self.inspector_window.visible:
+            self.inspector_window.show()
+        row_text = self._inspector_row_texts_by_local_id.get(local_id)
+        if row_text:
+            self._select_inspector_row(row_text)
+
+    def _select_inspector_row(self, selection: str | None) -> None:
+        self._selected_inspector_row = selection if selection else None
+        local_id = self._inspector_local_ids_by_row_text.get(selection) if selection else None
+        detail = (
+            self._inspector_row_details.get(selection, "Select an object.")
+            if selection
+            else "Select an object."
+        )
+        inventory = (
+            self._inspector_inventory_details.get(local_id, "<b>Object Inventory</b><br>not requested yet")
+            if local_id is not None
+            else "<b>Object Inventory</b><br>not requested yet"
+        )
+        try:
+            if local_id is None:
+                self.inspector_load_inventory_button.disable()
+            else:
+                self.inspector_load_inventory_button.enable()
+            self.inspector_details.set_text(detail)
+            self._set_inspector_inventory_text(inventory)
+        except Exception:  # pragma: no cover
+            pass
+
+    def _request_selected_object_inventory(self) -> None:
+        if self.on_object_inventory_request is None or self._selected_inspector_row is None:
+            return
+        local_id = self._inspector_local_ids_by_row_text.get(self._selected_inspector_row)
+        if local_id is None:
+            return
+        self.on_object_inventory_request(local_id)
+        try:
+            self._set_inspector_inventory_text("<b>Object Inventory</b><br>request sent")
+        except Exception:  # pragma: no cover
+            pass
+
     def _submit_teleport(self) -> None:
         try:
             position = (
@@ -1183,11 +1407,10 @@ def _kind_color_html(kind: str) -> str:
 
 
 def _html_escape(value: str) -> str:
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    # pygame_gui rejects embedded NULs in UITextBox text. Protocol strings may
+    # be C-style terminated, so strip control terminators at the display edge.
+    clean = value.replace("\x00", "")
+    return clean.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _plain_text_to_html(value: str) -> str:
@@ -1406,11 +1629,181 @@ def _folder_display_name(folder: object) -> str:
     return str(folder_id) if folder_id is not None else "Folder"
 
 
+def inspector_rows(scene: Scene, world_view: object | None) -> tuple[InspectorDisplayRow, ...]:
+    if not scene.object_entities:
+        return ()
+
+    avatar_pos = scene.avatar_position
+
+    def dist(pos: tuple[float, float, float]) -> float:
+        if avatar_pos is None:
+            return 0.0
+        dx = pos[0] - avatar_pos[0]
+        dy = pos[1] - avatar_pos[1]
+        dz = pos[2] - avatar_pos[2]
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    entities = list(scene.object_entities.values())
+    if avatar_pos is not None:
+        entities.sort(key=lambda e: dist(e.position))
+    else:
+        entities.sort(key=lambda e: e.local_id)
+
+    rows: list[InspectorDisplayRow] = []
+
+    world_objects = getattr(world_view, "objects", {}) if world_view else {}
+    local_to_full = getattr(world_view, "local_id_to_full_id", {}) if world_view else {}
+
+    for e in entities:
+        world_obj = None
+        full_id = local_to_full.get(e.local_id)
+        if full_id is not None:
+            world_obj = world_objects.get(full_id)
+
+        name = e.name
+        if not name and world_obj and getattr(world_obj, "properties_family", None):
+            name = getattr(world_obj.properties_family, "name", None)
+        if not name:
+            name = f"Object {e.local_id}"
+
+        d = dist(e.position)
+        dist_str = f" [{d:.1f}m]" if avatar_pos is not None else ""
+        row_text = f"{name}{dist_str}"
+
+        detail_html = _inspector_detail_html(e, world_obj)
+        rows.append(
+            InspectorDisplayRow(text=row_text, detail_html=detail_html, local_id=e.local_id)
+        )
+
+    return tuple(rows)
+
+
+def _inspector_detail_html(e: object, w: object | None) -> str:
+    lines = []
+
+    # Identity
+    uuid_str = str(w.full_id) if w and hasattr(w, "full_id") else "(unknown)"
+    name_str = getattr(e, "name", None)
+    if not name_str and w and getattr(w, "properties_family", None):
+        name_str = getattr(w.properties_family, "name", None)
+    name_str = name_str or "(unknown)"
+
+    lines.append("<b>Identity</b>")
+    lines.append(f"Name: {_html_escape(name_str)}")
+    lines.append(f"Local ID: {getattr(e, 'local_id', 'unknown')}")
+    lines.append(f"UUID: {_html_escape(uuid_str)}")
+    lines.append("")
+
+    # Transform
+    pos_t = getattr(e, "position", (0, 0, 0))
+    pos = f"{pos_t[0]:.2f}, {pos_t[1]:.2f}, {pos_t[2]:.2f}"
+    scale_t = getattr(e, "scale", (0, 0, 0))
+    scale = f"{scale_t[0]:.2f}, {scale_t[1]:.2f}, {scale_t[2]:.2f}"
+    rot = getattr(e, "rotation", None)
+    yaw = getattr(e, "rotation_z_radians", 0.0)
+    if rot:
+        rot_str = f"{rot[0]:.2f}, {rot[1]:.2f}, {rot[2]:.2f}, {rot[3]:.2f} (yaw: {yaw:.2f})"
+    else:
+        rot_str = "unknown"
+    lines.append("<b>Transform</b>")
+    lines.append(f"Position: {pos}")
+    lines.append(f"Rotation: {rot_str}")
+    lines.append(f"Scale: {scale}")
+    lines.append("")
+
+    # Shape/render
+    lines.append("<b>Shape / Render</b>")
+    lines.append(f"PCode: {getattr(e, 'pcode', 'unknown')} / Kind: {getattr(e, 'kind', 'unknown')}")
+    lines.append(f"Shape: {getattr(e, 'shape', None) or 'unknown'}")
+
+    material = getattr(w, "material", "unknown") if w else "unknown"
+    click_action = getattr(w, "click_action", "unknown") if w else "unknown"
+    lines.append(f"Material: {material}")
+    lines.append(f"Click Action: {click_action}")
+
+    def_tex = getattr(e, "default_texture_id", None)
+    lines.append(f"Default Texture: {def_tex or '(none)'}")
+
+    te = getattr(e, "texture_entry", None)
+    if te and hasattr(te, "face_texture_ids") and te.face_texture_ids:
+        faces = [f"{face}: {tid}" for face, tid in te.face_texture_ids.items()]
+        lines.append(f"Face Textures: {', '.join(faces)}")
+    lines.append("")
+
+    # Object update/debug
+    lines.append("<b>Update / Debug</b>")
+    variant = getattr(w, "variant", "unknown") if w else "unknown"
+    flags = (
+        f"0x{getattr(w, 'update_flags', 0):08x}" if w and hasattr(w, "update_flags") else "unknown"
+    )
+    crc = getattr(w, "crc", "unknown") if w else "unknown"
+    lines.append(f"Variant: {variant}")
+    lines.append(f"Update Flags: {flags}")
+    lines.append(f"CRC: {crc}")
+
+    if w:
+        data_s = getattr(w, "data_size", 0)
+        text_s = getattr(w, "text_size", 0)
+        media_s = getattr(w, "media_url_size", 0)
+        extra_s = getattr(w, "extra_params_size", 0)
+        lines.append(f"Sizes: data={data_s} text={text_s} media={media_s} extra={extra_s}")
+    lines.append("")
+
+    # Properties
+    lines.append("<b>Properties</b>")
+    prop = getattr(w, "properties_family", None) if w else None
+    if prop:
+        lines.append(f"Owner ID: {getattr(prop, 'owner_id', 'unknown')}")
+        lines.append(f"Group ID: {getattr(prop, 'group_id', 'unknown')}")
+        lines.append(f"Base Mask: 0x{getattr(prop, 'base_mask', 0):08x}")
+        lines.append(f"Owner Mask: 0x{getattr(prop, 'owner_mask', 0):08x}")
+        lines.append(f"Group Mask: 0x{getattr(prop, 'group_mask', 0):08x}")
+        lines.append(f"Everyone Mask: 0x{getattr(prop, 'everyone_mask', 0):08x}")
+        lines.append(f"Next Owner Mask: 0x{getattr(prop, 'next_owner_mask', 0):08x}")
+        lines.append(f"Description: {_html_escape(getattr(prop, 'description', '') or '')}")
+        lines.append(
+            f"Sale Type: {getattr(prop, 'sale_type', 'unknown')} / Price: {getattr(prop, 'sale_price', 'unknown')}"
+        )
+    else:
+        lines.append("No properties available")
+
+    return "<br>".join(lines)
+
+
+def _object_inventory_html(snapshot: object | None) -> str:
+    if snapshot is None:
+        return "<b>Object Inventory</b><br>not requested yet"
+    items = list(getattr(snapshot, "items", ()))
+    rows = [
+        "<b>Object Inventory</b>",
+        f"Items: {len(items)}",
+        f"Serial: {getattr(snapshot, 'serial', 0)}",
+    ]
+    filename = getattr(snapshot, "filename", "")
+    if filename:
+        rows.append(f"File: {_html_escape(str(filename))}")
+    if not items:
+        rows.append("(empty)")
+    for item in items[:24]:
+        name = getattr(item, "name", "") or "(unnamed)"
+        inv_type = getattr(item, "inventory_type", "") or "unknown"
+        item_id = getattr(item, "item_id", None)
+        suffix = f" [{inv_type}]"
+        if item_id is not None:
+            suffix += f" {item_id}"
+        rows.append(f"• {_html_escape(name + suffix)}")
+    if len(items) > 24:
+        rows.append(f"... {len(items) - 24} more")
+    return "<br>".join(rows)
+
+
 __all__ = [
     "HUD",
     "CHAT_TICKER_LINES",
     "DEFAULT_HELP_TEXT",
+    "InspectorDisplayRow",
     "InventoryDisplayRow",
     "heightmap_debug_surface",
+    "inspector_rows",
     "inventory_snapshot_rows",
 ]

@@ -26,11 +26,13 @@ if TYPE_CHECKING:
         ChatOutbound,
         InventorySnapshotReady,
         LayerDataReceived,
+        ObjectInventorySnapshotReady,
         RegionChanged,
         RegionMapTileReady,
         TextureAssetReady,
     )
     from vibestorm.caps.inventory_client import InventoryFetchSnapshot
+    from vibestorm.world.object_inventory import ObjectInventorySnapshot
     from vibestorm.world.terrain import RegionHeightmap
     from vibestorm.world.texture_entry import TextureEntry
 
@@ -168,6 +170,7 @@ class Scene:
     map_tile_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
     inventory_snapshot: InventoryFetchSnapshot | None = None
+    object_inventory_snapshots: dict[int, ObjectInventorySnapshot] = field(default_factory=dict)
     terrain_heightmap: RegionHeightmap | None = None
     debug_terrain_source: str | None = None
     terrain_z_scale: float = 1.0
@@ -195,6 +198,7 @@ class Scene:
         self.object_entities.clear()
         self.avatar_entities.clear()
         self.texture_paths.clear()
+        self.object_inventory_snapshots.clear()
         self.terrain_heightmap = debug_heightmap
         self.debug_terrain_source = debug_source
         # Map tile is region-scoped; clear so a stale tile from the old region isn't shown.
@@ -227,6 +231,23 @@ class Scene:
     def apply_inventory_snapshot_ready(self, event: InventorySnapshotReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:
             self.inventory_snapshot = event.snapshot
+
+    def apply_object_inventory_snapshot_ready(self, event: ObjectInventorySnapshotReady) -> None:
+        if event.region_handle == self.region_handle or self.region_handle is None:
+            self.object_inventory_snapshots[event.snapshot.local_id] = event.snapshot
+            print(
+                "[viewer3d] object_inventory.scene "
+                f"region={event.region_handle:#018x} scene_region={self.region_handle} "
+                f"local_id={event.snapshot.local_id} items={event.snapshot.item_count}",
+                flush=True,
+            )
+            return
+        print(
+            "[viewer3d] object_inventory.scene_ignored "
+            f"region={event.region_handle:#018x} scene_region={self.region_handle} "
+            f"local_id={event.snapshot.local_id} items={event.snapshot.item_count}",
+            flush=True,
+        )
 
     def apply_layer_data_received(self, event: LayerDataReceived) -> None:
         if event.region_handle != self.region_handle and self.region_handle is not None:

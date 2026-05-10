@@ -11,6 +11,7 @@ from vibestorm.caps.inventory_client import (
     merge_inventory_fetch_snapshots,
     parse_inventory_descendents_payload,
     parse_inventory_items_payload,
+    snapshot_with_loaded_empty_folder,
 )
 
 
@@ -259,3 +260,49 @@ class InventoryCapabilityClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(merged.folders[1].folder_id, child_id)
         self.assertEqual(merged.folders[1].items[0].name, "Loaded child item")
         self.assertEqual(merged.resolved_items[0].name, "Resolved")
+
+    def test_snapshot_with_loaded_empty_folder_materializes_missing_folder(self) -> None:
+        root_id = UUID("49cb1ed7-e8b2-4de5-84d7-4222f540634c")
+        child_id = UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        owner_id = UUID("11111111-2222-3333-4444-555555555555")
+        snapshot = InventoryFetchSnapshot(
+            folders=(),
+            inventory_root_folder_id=root_id,
+        )
+
+        updated = snapshot_with_loaded_empty_folder(
+            snapshot,
+            folder_id=child_id,
+            owner_id=owner_id,
+        )
+
+        folder = updated.folder_by_id(child_id)
+        self.assertIsNotNone(folder)
+        assert folder is not None
+        self.assertEqual(folder.owner_id, owner_id)
+        self.assertEqual(folder.descendents, 0)
+        self.assertEqual(folder.categories, ())
+        self.assertEqual(folder.items, ())
+        self.assertEqual(updated.inventory_root_folder_id, root_id)
+
+    def test_snapshot_with_loaded_empty_folder_leaves_existing_folder(self) -> None:
+        child_id = UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        owner_id = UUID("11111111-2222-3333-4444-555555555555")
+        folder = InventoryFolderContents(
+            folder_id=child_id,
+            owner_id=owner_id,
+            agent_id=owner_id,
+            descendents=3,
+            version=2,
+            categories=(),
+            items=(),
+        )
+        snapshot = InventoryFetchSnapshot(folders=(folder,))
+
+        updated = snapshot_with_loaded_empty_folder(
+            snapshot,
+            folder_id=child_id,
+            owner_id=owner_id,
+        )
+
+        self.assertIs(updated, snapshot)

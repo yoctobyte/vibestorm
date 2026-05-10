@@ -229,6 +229,20 @@ class ObjectPropertiesFamilyMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class ReplyTaskInventoryMessage:
+    task_id: UUID
+    serial: int
+    filename: str
+
+
+@dataclass(slots=True, frozen=True)
+class SendXferPacketMessage:
+    xfer_id: int
+    packet: int
+    data: bytes
+
+
+@dataclass(slots=True, frozen=True)
 class ExtraParamEntry:
     param_type: int
     param_in_use: bool
@@ -1471,6 +1485,37 @@ def parse_object_properties_family(message: MessageDispatch) -> ObjectProperties
     )
 
 
+def parse_reply_task_inventory(message: MessageDispatch) -> ReplyTaskInventoryMessage:
+    if message.summary.name != "ReplyTaskInventory":
+        raise MessageDecodeError(f"expected ReplyTaskInventory, got {message.summary.name}")
+    if len(message.body) < 19:
+        raise MessageDecodeError("ReplyTaskInventory body is too short")
+    task_id = UUID(bytes=message.body[0:16])
+    serial = unpack_from("<h", message.body, 16)[0]
+    filename_len = message.body[18]
+    if len(message.body) < 19 + filename_len:
+        raise MessageDecodeError("ReplyTaskInventory filename length exceeds body")
+    filename = message.body[19 : 19 + filename_len].decode("utf-8", errors="replace")
+    return ReplyTaskInventoryMessage(task_id=task_id, serial=serial, filename=filename)
+
+
+def parse_send_xfer_packet(message: MessageDispatch) -> SendXferPacketMessage:
+    if message.summary.name != "SendXferPacket":
+        raise MessageDecodeError(f"expected SendXferPacket, got {message.summary.name}")
+    if len(message.body) < 14:
+        raise MessageDecodeError("SendXferPacket body is too short")
+    xfer_id = unpack_from("<Q", message.body, 0)[0]
+    packet = unpack_from("<I", message.body, 8)[0]
+    data_len = unpack_from("<H", message.body, 12)[0]
+    if len(message.body) < 14 + data_len:
+        raise MessageDecodeError("SendXferPacket data length exceeds body")
+    return SendXferPacketMessage(
+        xfer_id=xfer_id,
+        packet=packet,
+        data=message.body[14 : 14 + data_len],
+    )
+
+
 def parse_object_extra_params(message: MessageDispatch) -> ObjectExtraParamsMessage:
     if message.summary.name != "ObjectExtraParams":
         raise MessageDecodeError(f"expected ObjectExtraParams, got {message.summary.name}")
@@ -2387,3 +2432,50 @@ def encode_request_multiple_objects(
         bytes([0]) + pack("<I", lid) for lid in local_ids
     )
     return header + agent_data + object_data
+
+
+def encode_request_task_inventory(agent_id: UUID, session_id: UUID, local_id: int) -> bytes:
+    """RequestTaskInventory (Low/289, Unencoded) for one task/object local ID."""
+    if not 0 <= int(local_id) <= 0xFFFFFFFF:
+        raise ValueError("local_id must fit in U32")
+    return b"\xFF\xFF\x01\x21" + agent_id.bytes + session_id.bytes + pack("<I", int(local_id))
+
+
+def encode_request_xfer(
+    xfer_id: int,
+    filename: str,
+    *,
+    file_path: int = 0,
+    delete_on_completion: bool = True,
+    use_big_packets: bool = False,
+    vfile_id: UUID | None = None,
+    vfile_type: int = -1,
+) -> bytes:
+    """RequestXfer (Low/156, Zerocoded) for a simulator-hosted xfer file."""
+    if not 0 <= int(xfer_id) <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("xfer_id must fit in U64")
+    if not 0 <= int(file_path) <= 0xFF:
+        raise ValueError("file_path must fit in U8")
+    if not -(2**15) <= int(vfile_type) <= 2**15 - 1:
+        raise ValueError("vfile_type must fit in S16")
+    filename_bytes = filename.encode("utf-8")
+    if len(filename_bytes) > 0xFF:
+        raise ValueError("filename must fit in Variable 1")
+    return (
+        b"\xFF\xFF\x00\x9C"
+        + pack("<Q", int(xfer_id))
+        + bytes([len(filename_bytes)])
+        + filename_bytes
+        + bytes([int(file_path), 1 if delete_on_completion else 0, 1 if use_big_packets else 0])
+        + (vfile_id or UUID(int=0)).bytes
+        + pack("<h", int(vfile_type))
+    )
+
+
+def encode_confirm_xfer_packet(xfer_id: int, packet: int) -> bytes:
+    """ConfirmXferPacket (High/19, Unencoded)."""
+    if not 0 <= int(xfer_id) <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("xfer_id must fit in U64")
+    if not 0 <= int(packet) <= 0xFFFFFFFF:
+        raise ValueError("packet must fit in U32")
+    return b"\x13" + pack("<Q", int(xfer_id)) + pack("<I", int(packet))

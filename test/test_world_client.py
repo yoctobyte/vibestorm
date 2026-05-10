@@ -413,6 +413,19 @@ class WorldClientCommandHandlerTests(unittest.TestCase):
         self.assertEqual(client.drain_outbound_packets(handle), ((handle, result),))
         self.assertEqual(result[6:10], b"\xFF\xFF\x00\x3F")
 
+    def test_request_object_inventory_command_queues_task_inventory_request(self) -> None:
+        from vibestorm.bus.commands import RequestObjectInventory
+
+        client = WorldClient()
+        session = self._make_session()
+        handle = client.add_circuit(session)
+
+        result = client.bus.dispatch(RequestObjectInventory(local_id=42))
+
+        self.assertEqual(client.drain_outbound_packets(handle), ((handle, result),))
+        self.assertEqual(result[6:10], b"\xFF\xFF\x01\x21")
+        self.assertIn(42, session.pending_task_inventory_requests)
+
     def test_command_without_current_circuit_raises(self) -> None:
         from vibestorm.bus.commands import SetControlFlags
         from vibestorm.udp.world_client import WorldClientError

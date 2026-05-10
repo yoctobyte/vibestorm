@@ -1,0 +1,19 @@
+{
+    "@selection_list_item": {
+        "colours": {
+            "normal_bg": "#2A2A2A",
+            "hovered_bg": "#3A3A3A",
+            "selected_bg": "#1E90FF",
+            "active_bg": "#1E90FF"
+        },
+        "misc": {
+            "text_horiz_alignment": "left"
+        }
+    },
+    "selection_list": {
+        "colours": {
+            "dark_bg": "#2A2A2A",
+            "normal_bg": "#2A2A2A"
+        }
+    }
+}

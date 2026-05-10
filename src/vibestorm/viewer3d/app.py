@@ -27,7 +27,7 @@ from uuid import UUID
 
 from vibestorm import __version__
 from vibestorm.bus import BusDeliveryError, BusError
-from vibestorm.bus.commands import SendChat, TeleportLocation
+from vibestorm.bus.commands import RequestObjectInventory, SendChat, TeleportLocation
 from vibestorm.bus.events import (
     ChatAlert,
     ChatIM,
@@ -35,6 +35,7 @@ from vibestorm.bus.events import (
     ChatOutbound,
     InventorySnapshotReady,
     LayerDataReceived,
+    ObjectInventorySnapshotReady,
     RegionChanged,
     RegionMapTileReady,
     TextureAssetReady,
@@ -45,6 +46,7 @@ from vibestorm.caps.inventory_client import (
     InventoryFolderRequest,
     merge_inventory_fetch_snapshots,
     parse_inventory_descendents_payload,
+    snapshot_with_loaded_empty_folder,
 )
 from vibestorm.login.client import LoginClient
 from vibestorm.login.models import LoginCredentials, LoginRequest
@@ -189,9 +191,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
     pygame.init()
     pygame.display.set_caption("Vibestorm 3D Viewer")
     ui_scale = (
-        float(args.ui_scale)
-        if args.ui_scale and args.ui_scale > 0
-        else _auto_ui_scale(pygame)
+        float(args.ui_scale) if args.ui_scale and args.ui_scale > 0 else _auto_ui_scale(pygame)
     )
     desktop_w, desktop_h = _desktop_size(pygame)
     default_w = int(round(1180 * ui_scale))
@@ -316,6 +316,13 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 inventory_root_folder_id=session.bootstrap.inventory_root_folder_id,
                 current_outfit_folder_id=session.bootstrap.current_outfit_folder_id,
             )
+            if update.folder_by_id(folder_id) is None:
+                update = snapshot_with_loaded_empty_folder(
+                    update,
+                    folder_id=folder_id,
+                    owner_id=session.bootstrap.agent_id,
+                    agent_id=session.bootstrap.agent_id,
+                )
             session.latest_inventory_fetch = merge_inventory_fetch_snapshots(
                 session.latest_inventory_fetch,
                 update,
@@ -331,6 +338,14 @@ async def run_viewer(args: argparse.Namespace) -> int:
 
     def on_inventory_open_folder(folder_id: UUID) -> None:
         asyncio.create_task(fetch_inventory_folder(folder_id))
+
+    def on_object_inventory_request(local_id: int) -> None:
+        try:
+            client.bus.dispatch(RequestObjectInventory(local_id))
+        except (BusError, BusDeliveryError, RuntimeError, ValueError) as exc:
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
+            )
 
     def on_render_mode_change(mode: str) -> None:
         nonlocal renderer
@@ -370,14 +385,28 @@ async def run_viewer(args: argparse.Namespace) -> int:
         on_center=center_on_avatar,
         on_teleport=on_teleport,
         on_inventory_open_folder=on_inventory_open_folder,
+        on_object_inventory_request=on_object_inventory_request,
         on_render_mode_change=on_render_mode_change,
         on_render_setting_change=on_render_setting_change,
         initial_render_mode=initial_mode,
         help_text=_load_viewer_help(),
+        theme_path=Path(__file__).parent / "theme.json",
         ui_scale=ui_scale,
     )
 
     stop_event = asyncio.Event()
+
+    def on_session_event(event) -> None:
+        interesting_prefixes = (
+            "task_inventory.",
+            "xfer.",
+        )
+        if event.kind.startswith(interesting_prefixes):
+            print(
+                f"[viewer3d {event.at_seconds:8.3f}] {event.kind} {event.detail}",
+                flush=True,
+            )
+
     session_task = asyncio.create_task(
         run_live_session(
             bootstrap,
@@ -389,12 +418,17 @@ async def run_viewer(args: argparse.Namespace) -> int:
             ),
             stop_event=stop_event,
             world_client=client,
+            on_event=on_session_event,
         )
     )
 
     running = True
     max_fps = float(args.max_fps)
     frame_cap = int(max(1.0, max_fps)) if max_fps > 0.0 else 0
+    left_click_start_pos: tuple[int, int] | None = None
+    left_click_start_time: float | None = None
+    right_click_start_pos: tuple[int, int] | None = None
+    right_click_start_time: float | None = None
     try:
         while running and not session_task.done():
             dt = clock.tick(frame_cap) / 1000.0
@@ -420,6 +454,38 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     hud.focus_chat()
                 if intent.request_center_on_avatar:
                     center_on_avatar()
+
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1:
+                        left_click_start_pos = event.pos
+                        left_click_start_time = time.monotonic()
+                    elif event.button == 3:
+                        right_click_start_pos = event.pos
+                        right_click_start_time = time.monotonic()
+
+                if event.type == pygame.MOUSEBUTTONUP:
+                    if event.button == 1 and left_click_start_pos is not None:
+                        dx = event.pos[0] - left_click_start_pos[0]
+                        dy = event.pos[1] - left_click_start_pos[1]
+                        dt_click = time.monotonic() - (left_click_start_time or 0.0)
+                        if dt_click < 0.4 and (dx * dx + dy * dy) < 25:
+                            aspect = screen_size[0] / max(1, screen_size[1])
+                            local_id = renderer.pick(event.pos[0], event.pos[1], scene, aspect=aspect)
+                            if local_id is not None:
+                                scene.apply_chat_alert(ChatAlert(region_handle=client.current_handle or 0, message=f"Touched object {local_id} (ObjectGrab not yet implemented)"))
+                        left_click_start_pos = None
+
+                    elif event.button == 3 and right_click_start_pos is not None:
+                        dx = event.pos[0] - right_click_start_pos[0]
+                        dy = event.pos[1] - right_click_start_pos[1]
+                        dt_click = time.monotonic() - (right_click_start_time or 0.0)
+                        if dt_click < 0.4 and (dx * dx + dy * dy) < 25:
+                            aspect = screen_size[0] / max(1, screen_size[1])
+                            local_id = renderer.pick(event.pos[0], event.pos[1], scene, aspect=aspect)
+                            if local_id is not None:
+                                hud.select_inspector_object(local_id)
+                        right_click_start_pos = None
+
                 if event.type == pygame.VIDEORESIZE:
                     screen_size = (max(1, event.w), max(1, event.h))
                     pygame.display.set_mode(screen_size, display_flags)
@@ -432,7 +498,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             renderer.update(dt, scene)
             renderer.render(world_surface, scene)
             hud_surface.fill((0, 0, 0, 0))
-            hud.update(dt, scene)
+            hud.update(dt, scene, client.world_view())
             hud.draw(hud_surface)
 
             compositor.clear((0.0, 0.0, 0.0, 1.0))
@@ -482,6 +548,10 @@ def _wire_scene(client: WorldClient, scene: Scene) -> None:
     client.bus.subscribe(ChatAlert, scene.apply_chat_alert)
     client.bus.subscribe(ChatOutbound, scene.apply_chat_outbound)
     client.bus.subscribe(InventorySnapshotReady, scene.apply_inventory_snapshot_ready)
+    client.bus.subscribe(
+        ObjectInventorySnapshotReady,
+        scene.apply_object_inventory_snapshot_ready,
+    )
     client.bus.subscribe(LayerDataReceived, scene.apply_layer_data_received)
 
 

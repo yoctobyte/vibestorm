@@ -12,6 +12,7 @@ from vibestorm.login.models import (
 )
 from vibestorm.udp.control_flags import DIRECTION_BITS, AgentControlFlags
 from vibestorm.udp.dispatch import MessageDispatcher
+from vibestorm.udp.messages import ReplyTaskInventoryMessage
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, LL_ZERO_CODE_FLAG, build_packet, split_packet
 from vibestorm.udp.session import (
     LiveCircuitSession,
@@ -1500,6 +1501,35 @@ class AgentControlFlagsTests(unittest.TestCase):
         self.assertEqual(int(AgentControlFlags.ML_LBUTTON_UP), 0x80000000)
         # DIRECTION_BITS sums distinct bit positions; popcount matches member count.
         self.assertEqual(bin(DIRECTION_BITS).count("1"), 14)
+
+    def test_reply_task_inventory_empty_filename_marks_object_inventory_loaded(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        task_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        session.pending_task_inventory_by_task[task_id] = 42
+        reply = ReplyTaskInventoryMessage(task_id=task_id, serial=7, filename="")
+
+        packets = session._handle_reply_task_inventory(reply, 12.0)
+
+        self.assertEqual(packets, [])
+        self.assertNotIn(42, session.pending_task_inventory_requests)
+        snapshot = session.object_inventory_snapshots[42]
+        self.assertEqual(snapshot.task_id, task_id)
+        self.assertEqual(snapshot.serial, 7)
+        self.assertEqual(snapshot.item_count, 0)
+        self.assertTrue(any(event.kind == "task_inventory.ready" for event in session.events))
+
+    def test_reply_task_inventory_single_pending_local_id_falls_back_for_empty_reply(
+        self,
+    ) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        task_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        session.pending_task_inventory_requests.add(42)
+        reply = ReplyTaskInventoryMessage(task_id=task_id, serial=7, filename="")
+
+        session._handle_reply_task_inventory(reply, 12.0)
+
+        self.assertIn(42, session.object_inventory_snapshots)
+        self.assertNotIn(42, session.pending_task_inventory_requests)
 
     def test_set_control_flags_threads_through_next_agent_update(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)

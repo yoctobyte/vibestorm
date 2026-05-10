@@ -52,6 +52,7 @@ from vibestorm.udp.messages import (
     encode_chat_from_viewer,
     encode_complete_agent_movement,
     encode_complete_ping_check,
+    encode_confirm_xfer_packet,
     encode_logout_request,
     encode_map_block_request,
     encode_object_add,
@@ -59,6 +60,8 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_request_multiple_objects,
     encode_request_object_properties_family,
+    encode_request_task_inventory,
+    encode_request_xfer,
     encode_teleport_location_request,
     encode_use_circuit_code,
     parse_agent_alert_message,
@@ -79,6 +82,8 @@ from vibestorm.udp.messages import (
     parse_object_update_summary,
     parse_packet_ack,
     parse_region_handshake,
+    parse_reply_task_inventory,
+    parse_send_xfer_packet,
     parse_start_ping_check,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
@@ -90,6 +95,10 @@ from vibestorm.udp.template import (
 )
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
 from vibestorm.world.models import WorldView
+from vibestorm.world.object_inventory import (
+    ObjectInventorySnapshot,
+    parse_task_inventory_text,
+)
 from vibestorm.world.updater import WorldUpdater
 
 if TYPE_CHECKING:
@@ -122,6 +131,16 @@ class SessionEvent:
     at_seconds: float
     kind: str
     detail: str
+
+
+@dataclass(slots=True)
+class PendingTaskInventoryXfer:
+    local_id: int
+    task_id: UUID
+    serial: int
+    filename: str
+    expected_size: int | None = None
+    chunks: dict[int, bytes] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -202,6 +221,10 @@ class LiveCircuitSession:
     latest_self_avatar_appearance: AvatarAppearanceMessage | None = None
     latest_cached_texture_response: AgentCachedTextureResponseMessage | None = None
     latest_inventory_fetch: InventoryFetchSnapshot | None = None
+    object_inventory_snapshots: dict[int, ObjectInventorySnapshot] = field(default_factory=dict)
+    pending_task_inventory_by_xfer: dict[int, PendingTaskInventoryXfer] = field(default_factory=dict)
+    pending_task_inventory_by_task: dict[UUID, int] = field(default_factory=dict)
+    pending_task_inventory_requests: set[int] = field(default_factory=set)
     fetch_inventory_descendents_url: str | None = None
     fetch_inventory2_url: str | None = None
     caps_udp_listen_port: int | None = None
@@ -420,6 +443,22 @@ class LiveCircuitSession:
                 f"type={layer.layer_type:#04x} bytes={len(layer.data)}",
             )
             return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "ReplyTaskInventory":
+            try:
+                reply = parse_reply_task_inventory(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "task_inventory.reply.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            return self._handle_reply_task_inventory(reply, now)
+
+        if dispatched.summary.name == "SendXferPacket":
+            try:
+                xfer = parse_send_xfer_packet(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "xfer.packet.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            return self._handle_send_xfer_packet(xfer, now)
 
         if dispatched.summary.name == "StartPingCheck":
             ping = parse_start_ping_check(dispatched)
@@ -796,6 +835,178 @@ class LiveCircuitSession:
             ),
         )
         return packet
+
+    def build_request_task_inventory_packet(
+        self,
+        local_id: int,
+        *,
+        now: float | None = None,
+    ) -> bytes:
+        """Build RequestTaskInventory for one in-world object local ID."""
+        packet = self._build_outbound_packet(
+            encode_request_task_inventory(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                int(local_id),
+            ),
+            reliable=True,
+            now=now,
+            label="RequestTaskInventory",
+        )
+        self.pending_task_inventory_requests.add(int(local_id))
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "task_inventory.request",
+            f"local_id={int(local_id)} pending={len(self.pending_task_inventory_requests)}",
+        )
+        return packet
+
+    def _handle_reply_task_inventory(self, reply, now: float) -> list[bytes]:
+        local_id = self.pending_task_inventory_by_task.pop(
+            reply.task_id,
+            None,
+        )
+        if local_id is None:
+            local_id = self._local_id_for_task_id(reply.task_id)
+        if local_id is None and len(self.pending_task_inventory_requests) == 1:
+            local_id = next(iter(self.pending_task_inventory_requests))
+        if local_id is None:
+            self._record_event(
+                now,
+                "task_inventory.reply.unknown",
+                f"task={reply.task_id} serial={reply.serial} filename={reply.filename!r}",
+            )
+            return self._flush_transport_packets(now)
+
+        self.pending_task_inventory_requests.discard(local_id)
+        self._record_event(
+            now,
+            "task_inventory.reply",
+            (
+                f"local_id={local_id} task={reply.task_id} serial={reply.serial} "
+                f"filename={reply.filename!r} filename_len={len(reply.filename.encode('utf-8'))}"
+            ),
+        )
+        if not reply.filename:
+            snapshot = ObjectInventorySnapshot(
+                local_id=local_id,
+                task_id=reply.task_id,
+                serial=reply.serial,
+                filename=reply.filename,
+                items=(),
+                raw_text="",
+            )
+            self.object_inventory_snapshots[local_id] = snapshot
+            self._record_event(
+                now,
+                "task_inventory.ready",
+                f"local_id={local_id} task={reply.task_id} items=0 empty=1",
+            )
+            return self._flush_transport_packets(now)
+
+        xfer_id = random.getrandbits(63)
+        self.pending_task_inventory_by_xfer[xfer_id] = PendingTaskInventoryXfer(
+            local_id=local_id,
+            task_id=reply.task_id,
+            serial=reply.serial,
+            filename=reply.filename,
+        )
+        packet = self._build_outbound_packet(
+            encode_request_xfer(xfer_id, reply.filename),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="RequestXfer",
+        )
+        self._record_event(
+            now,
+            "task_inventory.xfer.request",
+            (
+                f"local_id={local_id} task={reply.task_id} serial={reply.serial} "
+                f"xfer_id={xfer_id} file={reply.filename!r}"
+            ),
+        )
+        packets = self._flush_transport_packets(now)
+        packets.append(packet)
+        return packets
+
+    def _handle_send_xfer_packet(self, xfer, now: float) -> list[bytes]:
+        state = self.pending_task_inventory_by_xfer.get(xfer.xfer_id)
+        packet_index = int(xfer.packet) & 0x7FFFFFFF
+        is_last = bool(int(xfer.packet) & 0x80000000)
+        self._record_event(
+            now,
+            "task_inventory.xfer.packet",
+            (
+                f"xfer_id={xfer.xfer_id} packet={packet_index} final={int(is_last)} "
+                f"raw_packet={int(xfer.packet)} data_len={len(xfer.data)} "
+                f"matched={int(state is not None)}"
+            ),
+        )
+        confirm = self._build_outbound_packet(
+            encode_confirm_xfer_packet(xfer.xfer_id, xfer.packet),
+            now=now,
+            label="ConfirmXferPacket",
+        )
+        packets = self._flush_transport_packets(now)
+        packets.append(confirm)
+        self._record_event(
+            now,
+            "task_inventory.xfer.confirm",
+            f"xfer_id={xfer.xfer_id} packet={packet_index} raw_packet={int(xfer.packet)}",
+        )
+        if state is None:
+            pending = ",".join(str(xfer_id) for xfer_id in self.pending_task_inventory_by_xfer)
+            self._record_event(
+                now,
+                "task_inventory.xfer.unknown",
+                f"xfer_id={xfer.xfer_id} pending={pending or 'none'}",
+            )
+            return packets
+
+        data = xfer.data
+        if packet_index == 0:
+            if len(data) < 4:
+                self._record_event(now, "task_inventory.xfer.error", "first packet too short")
+                return packets
+            state.expected_size = int.from_bytes(data[:4], "little", signed=False)
+            data = data[4:]
+            self._record_event(
+                now,
+                "task_inventory.xfer.size",
+                f"xfer_id={xfer.xfer_id} expected={state.expected_size} first_payload={len(data)}",
+            )
+        state.chunks[packet_index] = data
+        if not is_last:
+            return packets
+
+        assembled = b"".join(state.chunks[index] for index in sorted(state.chunks))
+        if state.expected_size is not None:
+            assembled = assembled[: state.expected_size]
+        snapshot = parse_task_inventory_text(
+            assembled,
+            local_id=state.local_id,
+            task_id=state.task_id,
+            serial=state.serial,
+            filename=state.filename,
+        )
+        self.object_inventory_snapshots[state.local_id] = snapshot
+        self.pending_task_inventory_by_xfer.pop(xfer.xfer_id, None)
+        self._record_event(
+            now,
+            "task_inventory.ready",
+            (
+                f"local_id={state.local_id} task={state.task_id} items={snapshot.item_count} "
+                f"bytes={len(assembled)} chunks={len(state.chunks)}"
+            ),
+        )
+        return packets
+
+    def _local_id_for_task_id(self, task_id: UUID) -> int | None:
+        obj = self.world_view.objects.get(task_id)
+        if obj is not None:
+            return int(obj.local_id)
+        return None
 
     def build_shutdown_packets(self, now: float) -> list[bytes]:
         if self.logout_sent or not self.started:

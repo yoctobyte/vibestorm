@@ -15,10 +15,13 @@ from vibestorm.udp.messages import (
     encode_chat_from_viewer,
     encode_complete_agent_movement,
     encode_complete_ping_check,
+    encode_confirm_xfer_packet,
     encode_map_block_request,
     encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
+    encode_request_task_inventory,
+    encode_request_xfer,
     encode_teleport_location_request,
     encode_use_circuit_code,
     parse_agent_alert_message,
@@ -43,6 +46,8 @@ from vibestorm.udp.messages import (
     parse_object_update_summary,
     parse_packet_ack,
     parse_region_handshake,
+    parse_reply_task_inventory,
+    parse_send_xfer_packet,
     parse_shape_extra_params,
     parse_sim_stats,
     parse_simulator_viewer_time,
@@ -1284,6 +1289,51 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(int.from_bytes(body[32:40], "little"), (256 << 32) | 512)
         self.assertEqual(body[40:52], pack("<fff", 10.0, 20.0, 30.0))
         self.assertEqual(body[52:64], pack("<fff", 1.0, 0.0, 0.0))
+
+    def test_task_inventory_and_xfer_messages_round_trip(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+
+        request = self.dispatcher.dispatch(
+            encode_request_task_inventory(agent_id, session_id, 42)
+        )
+        self.assertEqual(request.summary.name, "RequestTaskInventory")
+        self.assertEqual(UUID(bytes=request.body[0:16]), agent_id)
+        self.assertEqual(UUID(bytes=request.body[16:32]), session_id)
+        self.assertEqual(int.from_bytes(request.body[32:36], "little"), 42)
+
+        reply_body = (
+            UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").bytes
+            + pack("<h", 7)
+            + bytes([8])
+            + b"task.inv"
+        )
+        reply = parse_reply_task_inventory(
+            self.dispatcher.dispatch(b"\xff\xff\x01\x22" + reply_body)
+        )
+        self.assertEqual(reply.serial, 7)
+        self.assertEqual(reply.filename, "task.inv")
+
+        xfer_request = self.dispatcher.dispatch(encode_request_xfer(99, "task.inv"))
+        self.assertEqual(xfer_request.summary.name, "RequestXfer")
+        self.assertEqual(int.from_bytes(xfer_request.body[0:8], "little"), 99)
+
+        xfer_packet = parse_send_xfer_packet(
+            self.dispatcher.dispatch(
+                b"\x12"
+                + pack("<Q", 99)
+                + pack("<I", 0x80000000)
+                + pack("<H", 3)
+                + b"abc"
+            )
+        )
+        self.assertEqual(xfer_packet.xfer_id, 99)
+        self.assertEqual(xfer_packet.packet, 0x80000000)
+        self.assertEqual(xfer_packet.data, b"abc")
+
+        confirm = self.dispatcher.dispatch(encode_confirm_xfer_packet(99, 0x80000000))
+        self.assertEqual(confirm.summary.name, "ConfirmXferPacket")
+        self.assertEqual(int.from_bytes(confirm.body[0:8], "little"), 99)
 
     def test_parse_improved_instant_message_decodes_basic_im(self) -> None:
         agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

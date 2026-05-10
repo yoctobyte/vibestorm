@@ -403,6 +403,20 @@ def model_matrix(
     )
 
 
+def _quat_rotate(q: tuple[float, float, float, float], v: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Rotate vector v by quaternion q = (x, y, z, w)."""
+    qx, qy, qz, qw = q
+    vx, vy, vz = v
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+    return (
+        vx + qw * tx + qy * tz - qz * ty,
+        vy + qw * ty + qz * tx - qx * tz,
+        vz + qw * tz + qx * ty - qy * tx,
+    )
+
+
 @dataclass(slots=True)
 class _ShapeMesh:
     """GL resources for one primitive mesh.
@@ -636,6 +650,86 @@ class PerspectiveRenderer:
             # Leave the depth state predictable for the HUD overlay
             # quad and the next frame's compositor draws.
             ctx.disable(ctx.DEPTH_TEST)
+
+    def pick(self, x: int, y: int, scene: Scene, *, aspect: float) -> int | None:
+        if aspect <= 0.0:
+            return None
+
+        # Unproject screen to ray
+        camera = self.camera
+        if camera.mode == "orbit":
+            eye = camera.orbit_eye()
+        else:
+            eye = camera.eye_position
+
+        # Reconstruct camera frame
+        from vibestorm.viewer3d.camera import _sub, _cross, _normalize, DEFAULT_UP, DEFAULT_FOV_Y_RADIANS
+        forward = _normalize(_sub(camera.target, eye))
+        side = _normalize(_cross(forward, DEFAULT_UP))
+        upward = _cross(side, forward)
+
+        sw, sh = camera.screen_size
+        if sw == 0 or sh == 0:
+            return None
+
+        ndc_x = (2.0 * x / sw) - 1.0
+        ndc_y = 1.0 - (2.0 * y / sh)
+        tan_half_fov = math.tan(DEFAULT_FOV_Y_RADIANS / 2.0)
+        view_dir_x = ndc_x * aspect * tan_half_fov
+        view_dir_y = ndc_y * tan_half_fov
+
+        ray_dir = _normalize((
+            view_dir_x * side[0] + view_dir_y * upward[0] + forward[0],
+            view_dir_x * side[1] + view_dir_y * upward[1] + forward[1],
+            view_dir_x * side[2] + view_dir_y * upward[2] + forward[2],
+        ))
+
+        # Ray-OBB intersection
+        best_id = None
+        best_dist = float('inf')
+
+        for entity in scene.object_entities.values():
+            if entity.scale is None or entity.position is None:
+                continue
+
+            # Inverse transform ray to local space
+            # Translate
+            lx = eye[0] - entity.position[0]
+            ly = eye[1] - entity.position[1]
+            lz = eye[2] - entity.position[2]
+
+            # Rotate
+            qx, qy, qz, qw = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
+            inv_q = (-qx, -qy, -qz, qw)
+            local_origin = _quat_rotate(inv_q, (lx, ly, lz))
+            local_dir = _quat_rotate(inv_q, ray_dir)
+
+            tmin = 0.0
+            tmax = float('inf')
+            hit = True
+            for i in range(3):
+                half_extent = entity.scale[i] / 2.0
+                if abs(local_dir[i]) < 1e-6:
+                    if abs(local_origin[i]) > half_extent:
+                        hit = False
+                        break
+                else:
+                    ood = 1.0 / local_dir[i]
+                    t1 = (-half_extent - local_origin[i]) * ood
+                    t2 = (half_extent - local_origin[i]) * ood
+                    if t1 > t2:
+                        t1, t2 = t2, t1
+                    if t1 > tmin: tmin = t1
+                    if t2 < tmax: tmax = t2
+                    if tmin > tmax:
+                        hit = False
+                        break
+
+            if hit and tmin > 0.0 and tmin < best_dist:
+                best_dist = tmin
+                best_id = entity.local_id
+
+        return best_id
 
     # -------------------------------------------------------------- caches
 

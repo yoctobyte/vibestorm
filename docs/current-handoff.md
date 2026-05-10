@@ -38,119 +38,59 @@ Verification:
 
 Known remaining inventory/tooling work:
 
-- object inspector is not started yet; useful first slice is a nearby-object
-  list plus grouped object property details from existing `SceneEntity` /
-  `ObjectPropertiesFamily` data
-- object inventory tree is protocol work after that: request/load inventory for
-  selected nearby objects, then build editor/open/save/upload commands on top
+- object inspector UI is now implemented with a read-only list of nearby objects and property joining.
+- object inventory tree is protocol work after that: request/load inventory for selected nearby objects, then build editor/open/save/upload commands on top.
 
-### Object Inspector Plan for the Next Agent
+### Next Steps for Object Inventory
 
 Goal:
 
-- Add a viewer3d object inspector/editor window before attempting object
-  inventory editing.
-- First make it read-only and useful for debugging. Editing and object
-  inventory save/upload can land after selection and inspection are solid.
+- The View/Tools menu now has an "Object Inspector" window.
+- The window provides a split-pane interface. The left pane shows nearby objects from `Scene.object_entities`, sorted by distance from `Scene.avatar_position` when available.
+- The right pane shows grouped details joined from `SceneEntity` and `WorldView.objects` using `local_id_to_full_id`:
+  - Identity: local ID, full UUID, display name
+  - Transform: position, rotation, scale
+  - Shape/render: pcode, kind, primitive shape, material, click action, default texture UUID, and per-face texture UUIDs
+  - Object update/debug: variant, update flags, CRC, and data sizes
+  - Properties: owner/group/permissions, name, description, sale fields from `ObjectPropertiesFamily`
+- The bottom right pane contains an "Object Inventory" placeholder ("not requested yet").
+- Tests were added in `test/test_viewer3d_object_inspector.py`.
 
-Recommended first slice:
+Verification:
 
-1. Add View or Tools -> Object Inspector.
-2. Left pane: nearby objects from `Scene.object_entities`, sorted by distance
-   from `Scene.avatar_position` when available, otherwise by `local_id`.
-3. Selecting a row fills right-side grouped details:
-   - Identity: `local_id`, full UUID if known, display name
-   - Transform: position, rotation/yaw, scale
-   - Shape/render: pcode/kind, primitive `shape`, material, click action,
-     default texture UUID, parsed per-face texture UUIDs if present
-   - Object update/debug: `variant`, `update_flags`, `crc`,
-     object/data/text/media/extra-param sizes
-   - Properties: owner/group/permissions/name/description/sale fields from
-     `ObjectPropertiesFamily` when present
-4. Bottom half: reserve an "Object Inventory" pane with a clear placeholder
-   such as "not requested yet"; do not fake contents.
-
-Important current data paths:
-
-- `viewer3d.Scene.object_entities` is keyed by simulator `local_id`, not UUID.
-  It is good for rendering and selection, but it intentionally does not carry
-  every protocol field yet.
-- The richer source of object data is `WorldView.objects` in
-  `src/vibestorm/world/models.py`, keyed by full object UUID and containing
-  `WorldObject.local_id`. Build an inspector row helper that joins
-  `Scene.object_entities[local_id]` to the matching `WorldObject`.
-- `WorldObject.properties_family` is populated by
-  `WorldView.apply_object_properties_family()` when an
-  `ObjectPropertiesFamily` packet arrives.
-- `LiveCircuitSession._drain_properties_requests()` already sends
-  `RequestObjectPropertiesFamily` for tracked objects after movement/setup,
-  capped at 10 per drain cycle. Do not add a second blind request flood unless
-  the existing path proves insufficient.
-- `KillObject` is already applied in `WorldView.apply_kill_object()`, so an
-  inspector should refresh from the current scene/model every frame or clear a
-  selection whose object vanished.
-
-Protocol hints and pitfalls:
-
-- Local IDs are U32 simulator-local handles. They are the right handle for
-  selecting rendered/nearby objects, but not stable across regions or sessions.
-- Full object UUIDs are what `RequestObjectPropertiesFamily` uses and what
-  object inventory flows are likely to key from. Always preserve both.
-- `ObjectPropertiesFamily` is parsed in `src/vibestorm/udp/messages.py` and
-  documented in `docs/reverse-engineered-protocol.md`. It includes owner/group
-  UUIDs, permission masks, sale/category fields, last owner, name, and
-  description. The name/description length encoding is intentionally tolerant
-  because OpenSim/source/template clues do not fully agree.
-- `ObjectUpdateCached` is a cache-miss lane. The session already responds by
-  sending `RequestMultipleObjects` cache-miss requests. Do not treat cached
-  updates as full object state in the inspector.
-- `ImprovedTerseObjectUpdate` is a partial transform/state lane. Terse-only
-  entries may have a `local_id` and transform but no UUID/name/properties yet;
-  display them as placeholders rather than inventing identity fields.
-- `ObjectUpdateCompressed` remains mostly undecoded. If the inspector shows
-  missing objects, this may be one cause, but do not block the first inspector
-  on compressed decode.
+- `uv run ruff check src/vibestorm/viewer3d/hud.py test/test_viewer3d_object_inspector.py`
+- `uv run --extra viewer pytest test/test_viewer3d_object_inspector.py -q`
 
 Object inventory notes:
 
-- User inventory via `FetchInventoryDescendents2` is not the same thing as
-  inventory inside a rezzed object.
-- Object inventory likely needs additional UDP object/task inventory messages
-  and/or caps depending on OpenSim behavior. Search local OpenSim source for
-  terms such as `RequestTaskInventory`, `ReplyTaskInventory`,
-  `UpdateTaskInventory`, `RemoveTaskInventory`, `TaskInventory`, and
-  `ScriptRunningReply`.
-- For the eventual object inventory tree, model it separately from
-  `InventoryFetchSnapshot`; do not jam object contents into the user inventory
-  snapshot. A separate DTO/event such as `ObjectInventorySnapshotReady` will
-  keep later multi-save/multi-upload behavior much cleaner.
-- Multi-save and multi-upload-from-file should be command-layer features, not
-  direct widget hacks. Recommended future shape:
-  `OpenInventoryAsset`, `SaveInventoryAsset`, `UploadInventoryAsset`,
-  `MoveInventoryItems`, with object/user inventory backends implementing the
-  protocol differences underneath.
+- Object inventory loading is now wired read-only for the inspector.
+- The inspector bottom pane has a "Load Inventory" button. It dispatches
+  `RequestObjectInventory(local_id)`, which queues `RequestTaskInventory`.
+- The simulator's `ReplyTaskInventory` supplies a task UUID, serial, and xfer
+  filename. Vibestorm now sends `RequestXfer`, confirms `SendXferPacket`
+  packets, assembles the xfer payload, parses common `inv_item` blocks, and
+  publishes `ObjectInventorySnapshotReady`.
+- Empty `ReplyTaskInventory` filenames are treated as successful empty object
+  inventory loads. This avoids leaving the inspector stuck in "request sent"
+  when an object simply has no contents.
+- Viewer3D prints object-inventory debug events to stdout while running:
+  `task_inventory.request`, `reply`, `xfer.request`, `xfer.packet`,
+  `xfer.confirm`, `xfer.unknown`, and `ready`. Use these lines to distinguish
+  a missing simulator xfer from an xfer ID/packet parsing problem.
+- `Scene.object_inventory_snapshots[local_id]` stores loaded object inventory,
+  and the inspector displays item name/type/UUID in the bottom pane.
+- Lazy user-inventory folder loads also materialize a successful empty response
+  as a loaded folder with zero descendants, so the tree can distinguish
+  "empty" from "not loaded yet".
+- The parser is intentionally partial and read-only. It does not yet implement
+  item open, asset download, save, upload, move, delete, script running state,
+  or permission editing.
 
-Suggested implementation files:
+Verification:
 
-- `src/vibestorm/viewer3d/hud.py`: add the Object Inspector window and row
-  selection UI, following the inventory manager's row-helper/test pattern.
-- `src/vibestorm/viewer3d/scene.py`: either add a lightweight
-  `Scene.object_model_by_local_id` reference/DTO, or keep the scene pure and
-  pass `client.world_view()` into a HUD refresh helper from `viewer3d/app.py`.
-  The second option is less invasive for a first read-only inspector.
-- `test/test_viewer3d_hud_render_mode.py` or a new
-  `test/test_viewer3d_object_inspector.py`: pin row formatting, selection, and
-  grouped details using synthetic `SceneEntity` + `WorldObject` data.
-
-Concrete first test:
-
-- Create a fake `Scene` with one `SceneEntity(local_id=7, name="Cube")` and a
-  fake `WorldView.objects` entry whose `WorldObject.local_id == 7` and whose
-  `properties_family.name == "Cube"`.
-- Call the HUD refresh/update path.
-- Assert the inspector row contains `Cube` / `local 7`, and the details pane
-  includes UUID, position, scale, shape, texture UUID, owner UUID, and
-  description.
+- `uv run ruff check --select F,I src/vibestorm/world/object_inventory.py src/vibestorm/udp/messages.py src/vibestorm/udp/session.py src/vibestorm/udp/world_client.py src/vibestorm/bus/commands.py src/vibestorm/bus/events.py src/vibestorm/viewer3d/app.py src/vibestorm/viewer3d/hud.py src/vibestorm/viewer3d/scene.py test/test_object_inventory.py test/test_udp_messages.py test/test_world_client.py test/test_viewer3d_object_inspector.py`
+- `uv run --extra viewer pytest test/test_object_inventory.py test/test_udp_messages.py test/test_world_client.py test/test_viewer3d_object_inspector.py -q`
+- `uv run --extra viewer pytest`
 
 ## Update 2026-05-06: Terrain Heightmap + Surface Mesh
 
