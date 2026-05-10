@@ -23,6 +23,17 @@ The project has moved past initial scaffolding. The current codebase already inc
 The main remaining work is deeper message coverage and richer world decoding, especially around
 object-update tails, appearance/state, and broader simulator behavior.
 
+## Protocol Work
+
+Vibestorm is a new client implementation, built from public protocol artifacts, live traces, and
+local OpenSim behavior. OpenSim has been the main practical reference target: running a local region
+lets us compare packet shapes, capability flows, terrain data, inventory behavior, and simulator
+edge cases without relying on a production grid.
+
+This is not clean-room engineering; it is more like clean-kitchen engineering, where the counters
+are covered with packet captures and source references. The goal is still a clean, independent
+client codebase rather than a fork of an existing viewer.
+
 ## Layout
 
 - `docs/`: current docs plus archived planning/progress notes
