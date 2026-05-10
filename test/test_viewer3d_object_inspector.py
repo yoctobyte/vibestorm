@@ -224,10 +224,53 @@ class ObjectInspectorTests(unittest.TestCase):
         )
         hud.update(0.016, scene, None)
 
-        self.assertIn("Read Me", hud.inspector_inventory.html_text)
-        self.assertIn("notecard", hud.inspector_inventory.html_text)
-        self.assertIn("task.inv", hud.inspector_inventory.html_text)
-        self.assertNotIn("\x00", hud.inspector_inventory.html_text)
+        # inspector_inventory is now a UISelectionList; check its item strings
+        inv_items = [row["text"] for row in hud.inspector_inventory.item_list]
+        inv_text = "\n".join(inv_items)
+        self.assertIn("Read Me", inv_text)
+        self.assertIn("notecard", inv_text)
+        # filename shown in summary row (note: null-stripped by _object_inventory_html)
+        self.assertIn("task.inv", inv_text)
+        self.assertNotIn("\x00", inv_text)
+
+    def test_object_inspector_reports_withheld_asset_id_without_requesting(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.world.object_inventory import parse_task_inventory_text
+
+        requested: list[tuple[UUID, int, UUID | None, UUID | None]] = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_view_asset=lambda asset_id, asset_type, task_id, item_id: requested.append(
+                (asset_id, asset_type, task_id, item_id)
+            ),
+        )
+        task_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        item_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        snapshot = parse_task_inventory_text(
+            "inv_item 0\n{\n"
+            f" item_id {item_id}\n"
+            " asset_id 00000000-0000-0000-0000-000000000000\n"
+            " type lsltext\n"
+            " inv_type lsl\n"
+            " name Test Script|\n"
+            "}\n",
+            local_id=7,
+            task_id=task_id,
+            serial=1,
+            filename="task.inv",
+        )
+
+        hud.register_inventory_snapshot_for_view(snapshot)
+        key = "Test Script [lsltext] asset withheld"
+        hud.enable_view_for_item(key)
+        hud._view_selected_asset()
+
+        self.assertEqual(requested, [])
+        self.assertTrue(hud.asset_viewer_window.visible)
+        self.assertIn("withheld its asset UUID", hud.asset_viewer_text.html_text)
+        self.assertIn(str(task_id), hud.asset_viewer_text.html_text)
+
 
 
 if __name__ == "__main__":

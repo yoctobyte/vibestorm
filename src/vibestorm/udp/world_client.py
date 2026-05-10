@@ -27,6 +27,7 @@ from vibestorm.bus.commands import (
     AddControlFlags,
     ClearControlFlags,
     RemoveControlFlags,
+    RequestAssetData,
     RequestObjectInventory,
     SendChat,
     SetBodyRotation,
@@ -36,6 +37,7 @@ from vibestorm.bus.commands import (
     TeleportLocation,
 )
 from vibestorm.bus.events import (
+    AssetDataReady,
     ChatAlert,
     ChatIM,
     ChatLocal,
@@ -319,6 +321,29 @@ class WorldClient:
             self.bus.publish(
                 ObjectInventorySnapshotReady(region_handle=handle, snapshot=snapshot)
             )
+        elif kind == "transfer.complete":
+            parts = _kv_split(event.detail)
+            asset_raw = parts.get("asset")
+            type_raw = parts.get("type")
+            if not asset_raw or type_raw is None:
+                return
+            try:
+                from uuid import UUID as _UUID
+                asset_id = _UUID(asset_raw)
+                asset_type = int(type_raw)
+            except (ValueError, KeyError):
+                return
+            data = session.fetched_assets.get(asset_id)
+            if data is None:
+                return
+            self.bus.publish(
+                AssetDataReady(
+                    region_handle=handle,
+                    asset_id=asset_id,
+                    asset_type=asset_type,
+                    data=data,
+                )
+            )
         elif kind.startswith("world."):
             self.bus.publish(WorldStateChanged(region_handle=handle, reason=kind[len("world."):]))
 
@@ -338,6 +363,7 @@ class WorldClient:
         self.bus.register_handler(SendChat, self._handle_send_chat)
         self.bus.register_handler(TeleportLocation, self._handle_teleport_location)
         self.bus.register_handler(RequestObjectInventory, self._handle_request_object_inventory)
+        self.bus.register_handler(RequestAssetData, self._handle_request_asset_data)
 
     def _require_current(self) -> LiveCircuitSession:
         current = self.current
@@ -404,6 +430,26 @@ class WorldClient:
         if self.current_handle is not None:
             self.queue_outbound_packet(self.current_handle, packet)
         return packet
+
+    def _handle_request_asset_data(self, cmd: RequestAssetData) -> None:
+        current = self._require_current()
+
+        owner_id = None
+        if cmd.task_id is not None:
+            obj = current.world_view.objects.get(cmd.task_id)
+            if obj and obj.properties_family:
+                owner_id = obj.properties_family.owner_id
+
+        packet = current.build_transfer_request_packet(
+            cmd.asset_id,
+            cmd.asset_type,
+            task_id=cmd.task_id,
+            item_id=cmd.item_id,
+            owner_id=owner_id,
+        )
+        if self.current_handle is not None:
+            self.queue_outbound_packet(self.current_handle, packet)
+
 
     # ------------------------------------------------------- event parsing
 

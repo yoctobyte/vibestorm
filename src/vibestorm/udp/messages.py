@@ -1516,6 +1516,65 @@ def parse_send_xfer_packet(message: MessageDispatch) -> SendXferPacketMessage:
     )
 
 
+@dataclass(slots=True, frozen=True)
+class TransferInfoMessage:
+    transfer_id: UUID
+    channel_type: int
+    target_type: int
+    status: int
+    size: int
+    params: bytes
+
+
+def parse_transfer_info(message: MessageDispatch) -> TransferInfoMessage:
+    if message.summary.name != "TransferInfo":
+        raise MessageDecodeError(f"expected TransferInfo, got {message.summary.name}")
+    if len(message.body) < 32:
+        raise MessageDecodeError("TransferInfo body is too short")
+    transfer_id = UUID(bytes=message.body[0:16])
+    channel_type = unpack_from("<i", message.body, 16)[0]
+    target_type = unpack_from("<i", message.body, 20)[0]
+    status = unpack_from("<i", message.body, 24)[0]
+    size = unpack_from("<i", message.body, 28)[0]
+    params, _ = _read_variable_field(message.body, 32, 2, "TransferInfo.Params")
+    return TransferInfoMessage(
+        transfer_id=transfer_id,
+        channel_type=channel_type,
+        target_type=target_type,
+        status=status,
+        size=size,
+        params=params,
+    )
+
+
+@dataclass(slots=True, frozen=True)
+class TransferPacketMessage:
+    transfer_id: UUID
+    channel_type: int
+    packet: int
+    status: int
+    data: bytes
+
+
+def parse_transfer_packet(message: MessageDispatch) -> TransferPacketMessage:
+    if message.summary.name != "TransferPacket":
+        raise MessageDecodeError(f"expected TransferPacket, got {message.summary.name}")
+    if len(message.body) < 28:
+        raise MessageDecodeError("TransferPacket body is too short")
+    transfer_id = UUID(bytes=message.body[0:16])
+    channel_type = unpack_from("<i", message.body, 16)[0]
+    packet = unpack_from("<i", message.body, 20)[0]
+    status = unpack_from("<i", message.body, 24)[0]
+    data, _ = _read_variable_field(message.body, 28, 2, "TransferPacket.Data")
+    return TransferPacketMessage(
+        transfer_id=transfer_id,
+        channel_type=channel_type,
+        packet=packet,
+        status=status,
+        data=data,
+    )
+
+
 def parse_object_extra_params(message: MessageDispatch) -> ObjectExtraParamsMessage:
     if message.summary.name != "ObjectExtraParams":
         raise MessageDecodeError(f"expected ObjectExtraParams, got {message.summary.name}")
@@ -2479,3 +2538,22 @@ def encode_confirm_xfer_packet(xfer_id: int, packet: int) -> bytes:
     if not 0 <= int(packet) <= 0xFFFFFFFF:
         raise ValueError("packet must fit in U32")
     return b"\x13" + pack("<Q", int(xfer_id)) + pack("<I", int(packet))
+
+
+def encode_transfer_request(
+    transfer_id: UUID,
+    channel_type: int,
+    source_type: int,
+    priority: float,
+    params: bytes,
+) -> bytes:
+    """TransferRequest (Low/153, Zerocoded)"""
+    return (
+        b"\xFF\xFF\x00\x99"
+        + transfer_id.bytes
+        + pack("<i", channel_type)
+        + pack("<i", source_type)
+        + pack("<f", priority)
+        + pack("<H", len(params))
+        + params
+    )

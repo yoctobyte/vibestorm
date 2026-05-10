@@ -1531,6 +1531,58 @@ class AgentControlFlagsTests(unittest.TestCase):
         self.assertIn(42, session.object_inventory_snapshots)
         self.assertNotIn(42, session.pending_task_inventory_requests)
 
+    def test_task_inventory_asset_transfer_request_uses_opensim_param_offsets(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        owner_id = UUID("10101010-1010-4010-8010-101010101010")
+        task_id = UUID("20202020-2020-4020-8020-202020202020")
+        item_id = UUID("30303030-3030-4030-8030-303030303030")
+        asset_id = UUID("40404040-4040-4040-8040-404040404040")
+
+        packet = session.build_transfer_request_packet(
+            asset_id,
+            10,
+            task_id=task_id,
+            item_id=item_id,
+            owner_id=owner_id,
+            now=12.0,
+        )
+
+        message = split_packet(decode_zerocode(packet)).message
+        request = self.dispatcher.dispatch(message)
+        self.assertEqual(request.summary.name, "TransferRequest")
+        body = request.body
+        self.assertEqual(unpack_from("<i", body, 16)[0], 2)
+        self.assertEqual(unpack_from("<i", body, 20)[0], 3)
+        params_len = unpack_from("<H", body, 28)[0]
+        params = body[30:30 + params_len]
+        self.assertEqual(params_len, 101)
+        self.assertEqual(UUID(bytes=params[0:16]), self.bootstrap.agent_id)
+        self.assertEqual(UUID(bytes=params[16:32]), self.bootstrap.session_id)
+        self.assertEqual(UUID(bytes=params[32:48]), owner_id)
+        self.assertEqual(UUID(bytes=params[48:64]), task_id)
+        self.assertEqual(UUID(bytes=params[64:80]), item_id)
+        self.assertEqual(UUID(bytes=params[80:96]), asset_id)
+        self.assertEqual(unpack_from("<i", params, 96)[0], 10)
+        self.assertEqual(params[100], 0)
+
+    def test_global_asset_transfer_request_uses_asset_source(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        asset_id = UUID("40404040-4040-4040-8040-404040404040")
+
+        packet = session.build_transfer_request_packet(asset_id, 7, now=12.0)
+
+        message = split_packet(decode_zerocode(packet)).message
+        request = self.dispatcher.dispatch(message)
+        self.assertEqual(request.summary.name, "TransferRequest")
+        body = request.body
+        self.assertEqual(unpack_from("<i", body, 16)[0], 2)
+        self.assertEqual(unpack_from("<i", body, 20)[0], 2)
+        params_len = unpack_from("<H", body, 28)[0]
+        params = body[30:30 + params_len]
+        self.assertEqual(params_len, 20)
+        self.assertEqual(UUID(bytes=params[0:16]), asset_id)
+        self.assertEqual(unpack_from("<i", params, 16)[0], 7)
+
     def test_set_control_flags_threads_through_next_agent_update(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         self._drive_to_movement_complete(session)

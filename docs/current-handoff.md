@@ -1,6 +1,133 @@
 # Current Handoff
 
-Last updated: 2026-05-09
+Last updated: 2026-05-10
+
+## Update 2026-05-10: Asset Viewer — Read-Only Notecard / Script / Texture Display
+
+### What Changed
+
+Full end-to-end plumbing for viewing object-inventory assets (notecards, LSL scripts,
+textures) in the 3D viewer. Read-only, no upload/edit yet.
+
+**Protocol layer (`src/vibestorm/udp/`)**
+
+- `messages.py`: Added `TransferInfoMessage`, `parse_transfer_info`,
+  `TransferPacketMessage`, `parse_transfer_packet`, and `encode_transfer_request`.
+  These cover the `TransferInfo` and `TransferPacket` UDP messages used by the
+  simulator's asset-delivery channel.
+- `session.py`: Added `PendingAssetTransfer` dataclass; `fetched_assets: dict[UUID, bytes]`
+  and `pending_asset_transfers: dict[UUID, PendingAssetTransfer]` on
+  `LiveCircuitSession`. Added `build_transfer_request_packet()`,
+  `_handle_transfer_info()`, and `_handle_transfer_packet()` methods.
+  - Supports **TaskInventory (source_type=3)** transfers: when `task_id` and `item_id`
+    are provided, the expanded `TransferRequest` params are used (allowing
+    retrieval of copy-protected scripts/notecards from object inventory).
+  - Uses `item_id` as a surrogate `asset_id` for completion tracking when the
+    sim hides the real asset UUID (sending zeros).
+- `world_client.py`: Resolves `owner_id` from `world_view` when performing a
+  `TaskInventory` transfer.
+
+
+**Bus layer (`src/vibestorm/bus/`)**
+
+- `commands.py`: Added `RequestAssetData(asset_id, asset_type)` command.
+- `events.py`: Added `AssetDataReady(region_handle, asset_id, asset_type, data)` event.
+
+**World client (`src/vibestorm/udp/world_client.py`)**
+
+- Registered handler for `RequestAssetData` → calls `build_transfer_request_packet`
+  and queues the outbound packet.
+- Translates `transfer.complete` session events into typed `AssetDataReady` bus events.
+
+**HUD (`src/vibestorm/viewer3d/hud.py`)**
+
+- `inspector_inventory` changed from `UITextBox` → `UISelectionList` so items are
+  individually selectable.
+- `_object_inventory_html()` (renamed semantically; returns `list[str]`) now renders
+  each inventory item as `"Name [asset_type_or_inv_type]"`, with NUL-char stripping.
+- New `on_view_asset: Callable[[UUID, int], None]` callback on `HUD.__init__`.
+- New `inspector_view_asset_button` beside Load Inventory; enabled when an inventory
+  item with a viewable asset is selected.
+- `register_inventory_snapshot_for_view(snapshot)` — called when inventory arrives;
+  builds `_inspector_item_asset_map` so the button knows which asset+type to request.
+- `enable_view_for_item(item_key)` — called when a selection-list row is highlighted.
+- `show_asset_data(asset_id, asset_type, data, item_name=…)` — decodes and displays:
+  - asset_type 7 (notecard) / 10 (lsltext): UTF-8 text in `asset_viewer_text`.
+  - asset_type 0 (texture): decoded via PIL → pygame Surface in `asset_viewer_image`.
+  - Other types: size/type summary.
+- New `asset_viewer_window` (`UIWindow`, resizable, hidden by default).
+- `_asset_type_string_to_int()` module-level helper converts string → int.
+
+**App (`src/vibestorm/viewer3d/app.py`)**
+
+- `on_view_asset` callback wired to `client.bus.dispatch(RequestAssetData(…))`.
+- Bus subscriptions added after HUD creation:
+  - `AssetDataReady` → `hud.show_asset_data(…)`.
+  - `ObjectInventorySnapshotReady` → `hud.register_inventory_snapshot_for_view(…)`.
+- Session-event logging extended to include `"transfer."` prefix.
+
+### What Is Now Known
+
+- The Transfer protocol handshake (TransferRequest → TransferInfo → TransferPacket*)
+  works identically to the Xfer handshake but uses a different packet set.
+- Texture bytes coming through Transfer are raw J2K; PIL can decode them if installed.
+- The `_ASSET_TYPE_MAP` in hud.py lists all known SL/OpenSim asset type strings and
+  their integer equivalents.
+
+### What Remains Unknown / TODO
+
+- Real-world test against a live OpenSim instance (no live session done yet).
+- Texture assets via the GetTexture capability (HTTP) are faster; Transfer is UDP only.
+  A future pass should prefer GetTexture for texture type=0 when the cap is available.
+- Download / save-to-disk is not wired; next feature track.
+- Upload (create/edit notecard, script) is not wired; later feature track.
+
+### What Was Verified
+
+- **Protocol plumbing**:
+    - `TransferRequest` (source_type=2) baseline successfully retrieves global assets.
+    - Correction from OpenSim source: `TransferRequest` (source_type=3 / `SimInventoryItem`) uses 101-byte params, not 85 bytes:
+      `AgentID, SessionID, OwnerID, TaskID, ItemID, AssetID, AssetType, IsPriority`.
+      OpenSim reads `TaskID` at offset 48, `ItemID` at 64, and the requested
+      asset UUID at 80 before fetching from the asset service.
+    - Status=1 in `TransferPacket` is now correctly treated as 'Done' rather than an error.
+    - Asset data up to 80KB+ successfully received and reassembled across 130+ packets.
+- **UI Integration**:
+    - HUD successfully captures and passes `task_id` and `item_id` to the session layer.
+    - Automated test script (verified locally then removed) successfully completed the full login -> object search -> inventory load -> asset fetch loop.
+- `python3 -m pytest` → **479 passed, 0 failed**.
+
+### Concrete Next Step
+
+Perform a final manual visual check in the 3D viewer: select a scripted object, load its inventory, and "View" a script or notecard. Then proceed to the next feature track: **Download / Save to Disk**.
+
+
+### Blocker: Task Inventory Asset Silence
+
+While the protocol plumbing for `TransferRequest` is implemented and verified for global assets (`source_type=2`), requests for protected object inventory assets (`source_type=3`) currently result in simulator silence in the manual viewer run.
+
+- **Status**:
+    - `TransferRequest` (source=3) now dispatches the OpenSim-compatible 101-byte parameter block: `AgentID(16), SessionID(16), OwnerID(16), TaskID(16), ItemID(16), AssetID(16), AssetType(4), IsPriority(1)`.
+    - `OwnerID` is resolved from `ObjectPropertiesFamily` before the request.
+    - If the object-inventory listing reports a zero asset UUID, Vibestorm no
+      longer sends a doomed transfer request. The Object Inspector marks the row
+      as `asset withheld`, opens an explanatory Asset Viewer message, and logs
+      `object_inventory.asset_withheld`.
+    - OpenSim source shows zero asset IDs are intentional when the simulator
+      withholds task inventory asset UUIDs because object inventory edit rights
+      or script/notecard permissions are insufficient.
+- **Known Working Case**:
+    - An automated test once successfully fetched ~80KB for a `source_type=3` request, but results are inconsistent.
+- **Top Hypotheses**:
+    1. **Permission Denial**: The simulator may be silently dropping the request if the `OwnerID` or `AgentID` don't have view permissions for the specific `item_id`.
+    2. **Xfer/Transfer Conflict**: The simulator may be ignoring new `TransferRequest`s while an `Xfer` (used for the initial inventory listing) is still technically open or being cleaned up.
+    3. **Identifier Mismatch**: Verify if `TaskID` must be the object's root UUID or if it needs to be the specific part UUID for multi-part objects.
+    4. **Zeroed AssetID**: OpenSim may send all zeros for `AssetID` in some task inventory listings. Source_type=3 still needs the requested asset UUID at offset 80, so zero IDs are currently treated as server-withheld assets rather than downloadable assets.
+
+---
+
+
+
 
 ## Update 2026-05-09: First Inventory Manager UI
 

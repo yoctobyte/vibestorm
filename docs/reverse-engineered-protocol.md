@@ -314,6 +314,31 @@ Current first-pass implementation:
 - OpenSim's `HandleRequestXfer` path only passes xfer ID and filename to the
   request handler, so the current object-inventory xfer implementation relies
   on the filename returned by `ReplyTaskInventory`.
+- Object/task inventory asset bytes are requested over the UDP transfer path
+  with `TransferRequest` (`Low/153`) using `SourceType=3`
+  (`SimInventoryItem`) when task/item context is known. Local OpenSim source
+  reads the task-asset params at fixed offsets:
+  - `0..15`: `AgentID`
+  - `16..31`: `SessionID`
+  - `32..47`: `OwnerID`
+  - `48..63`: `TaskID` / prim UUID
+  - `64..79`: `ItemID`
+  - `80..95`: requested asset UUID
+  - `96..99`: asset type `S32`
+  - `100`: priority flag byte
+  This is important because direct `SourceType=2` asset requests are rejected
+  for LSL text assets, and omitting the requested asset UUID at offset 80 can
+  make OpenSim's async permission/request path fail without a useful viewer-side
+  response.
+- Local OpenSim source also explains the `asset_id_zero=1` live symptom:
+  `SceneObjectPartInventory.RequestInventoryFile()` writes real task inventory
+  `asset_id` values only when `CanEditObjectInventory()` allows it. For normal
+  users, script/notecard asset IDs are further gated by item permissions
+  (`Modify|Copy` for notecards, exactly `Modify|Copy` for scripts). Otherwise
+  the xfer file contains `asset_id 00000000-0000-0000-0000-000000000000`.
+  In that case the viewer can list the item but cannot retrieve asset bytes via
+  UDP `TransferRequest`, because OpenSim's asset fetch uses the UUID at params
+  offset 80.
 
 Current limitations:
 

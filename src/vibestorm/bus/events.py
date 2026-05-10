@@ -104,6 +104,15 @@ class ObjectInventorySnapshotReady:
     snapshot: ObjectInventorySnapshot
 
 
+@dataclass(slots=True, frozen=True)
+class AssetDataReady:
+    """Emitted when a Transfer-protocol asset download completes."""
+    region_handle: int
+    asset_id: UUID
+    asset_type: int     # numeric SL asset type (7=notecard, 10=lsltext, 0=texture, …)
+    data: bytes
+
+
 # ---- map / texture -------------------------------------------------------
 
 @dataclass(slots=True, frozen=True)
@@ -139,6 +148,7 @@ class LayerDataReceived:
 
 
 __all__ = [
+    "AssetDataReady",
     "ChatAlert",
     "ChatIM",
     "ChatLocal",

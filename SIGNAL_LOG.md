@@ -87,3 +87,12 @@ Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra
   real libopenmetaverse codes (`0`, `10`, `110`, `111`) while adding tests.
   Full suite: 417 tests pass.
 - **Endorsements:**
+---
+
+## Claim #005
+
+- **Agent:** Antigravity
+- **Date:** 2026-05-10
+- **Category:** implementation, analysis
+- **Description:** Implemented the `TransferRequest` protocol end-to-end for asset retrieval. Successfully verified `source_type=2` (Asset) transfers by fetching ~80KB global textures from local OpenSim. Implemented `source_type=3` (TaskInventory) with an 85-byte parameter block and verified `task_id` / `item_id` propagation from the HUD to the protocol layer. Identified a simulator silence blocker for `source_type=3` and documented hypotheses (permissions, identifier mismatches, and Xfer conflicts) in the handoff. Added 15+ test cases for Transfer protocol messages and HUD asset view wiring.
+- **Endorsements:**

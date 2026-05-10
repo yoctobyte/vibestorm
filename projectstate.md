@@ -51,6 +51,12 @@ The repo already supports:
 - cube primitives render parsed per-face texture UUID overrides; non-cube
   primitives still use the default-texture fallback until their face mapping is
   modeled
+- first-pass object inventory asset viewing: `TransferRequest` implemented for
+  retrieving object task-inventory assets; the latest fix matches OpenSim's
+  `SimInventoryItem` params layout with the requested asset UUID at offset 80.
+  When OpenSim intentionally withholds a task inventory asset UUID, the viewer
+  now reports that instead of sending an impossible transfer request.
+
 
 ## What Is Stable
 
@@ -182,6 +188,9 @@ texturing:
 3. Use View -> Render Settings to isolate terrain, mesh lines, water, and
    objects while checking whether the map tile drapes correctly over terrain
    and whether default prim textures appear as their assets arrive.
-4. Continue texturing with full `TextureEntry` per-face decode, authored mesh
+4. Continue Task Inventory asset viewing work: test with an object/item whose
+   inventory xfer contains a non-zero `asset_id`, then finalize the text/script
+   viewer UI and add save-to-disk.
+5. Continue texturing with full `TextureEntry` per-face decode, authored mesh
    UVs/normals, and simulator terrain material parameters instead of the
    temporary region-map drape.

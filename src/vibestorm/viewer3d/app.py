@@ -27,8 +27,14 @@ from uuid import UUID
 
 from vibestorm import __version__
 from vibestorm.bus import BusDeliveryError, BusError
-from vibestorm.bus.commands import RequestObjectInventory, SendChat, TeleportLocation
+from vibestorm.bus.commands import (
+    RequestAssetData,
+    RequestObjectInventory,
+    SendChat,
+    TeleportLocation,
+)
 from vibestorm.bus.events import (
+    AssetDataReady,
     ChatAlert,
     ChatIM,
     ChatLocal,
@@ -347,6 +353,27 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
             )
 
+    def on_view_asset(
+        asset_id: UUID,
+        asset_type: int,
+        task_id: UUID | None = None,
+        item_id: UUID | None = None,
+    ) -> None:
+        try:
+            client.bus.dispatch(
+                RequestAssetData(
+                    asset_id=asset_id,
+                    asset_type=asset_type,
+                    task_id=task_id,
+                    item_id=item_id,
+                )
+            )
+        except (BusError, BusDeliveryError, RuntimeError, ValueError) as exc:
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
+            )
+
+
     def on_render_mode_change(mode: str) -> None:
         nonlocal renderer
         if mode == "3d":
@@ -386,6 +413,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         on_teleport=on_teleport,
         on_inventory_open_folder=on_inventory_open_folder,
         on_object_inventory_request=on_object_inventory_request,
+        on_view_asset=on_view_asset,
         on_render_mode_change=on_render_mode_change,
         on_render_setting_change=on_render_setting_change,
         initial_render_mode=initial_mode,
@@ -400,12 +428,35 @@ async def run_viewer(args: argparse.Namespace) -> int:
         interesting_prefixes = (
             "task_inventory.",
             "xfer.",
+            "transfer.",
         )
         if event.kind.startswith(interesting_prefixes):
             print(
                 f"[viewer3d {event.at_seconds:8.3f}] {event.kind} {event.detail}",
                 flush=True,
             )
+
+    # Wire HUD-level subscriptions that need the hud instance.
+    def _on_asset_data_ready(event: AssetDataReady) -> None:
+        # Find item_name from hud's known asset map (best-effort)
+        item_name = ""
+        for key, (aid, atype, name) in hud._inspector_item_asset_map.items():
+            if aid == event.asset_id:
+                item_name = name
+                break
+        hud.show_asset_data(
+            event.asset_id,
+            event.asset_type,
+            event.data,
+            item_name=item_name,
+        )
+
+    def _on_object_inventory_snapshot_ready(event: ObjectInventorySnapshotReady) -> None:
+        # Let the scene update first (already subscribed), then register for view
+        hud.register_inventory_snapshot_for_view(event.snapshot)
+
+    client.bus.subscribe(AssetDataReady, _on_asset_data_ready)
+    client.bus.subscribe(ObjectInventorySnapshotReady, _on_object_inventory_snapshot_ready)
 
     session_task = asyncio.create_task(
         run_live_session(

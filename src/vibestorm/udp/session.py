@@ -11,7 +11,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from vibestorm.assets.j2k import J2KDecodeError, decode_j2k
 from vibestorm.caps.client import CapabilityClient, CapabilityError
@@ -63,6 +63,7 @@ from vibestorm.udp.messages import (
     encode_request_task_inventory,
     encode_request_xfer,
     encode_teleport_location_request,
+    encode_transfer_request,
     encode_use_circuit_code,
     parse_agent_alert_message,
     parse_agent_cached_texture_response,
@@ -85,6 +86,8 @@ from vibestorm.udp.messages import (
     parse_reply_task_inventory,
     parse_send_xfer_packet,
     parse_start_ping_check,
+    parse_transfer_info,
+    parse_transfer_packet,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.template import (
@@ -139,6 +142,15 @@ class PendingTaskInventoryXfer:
     task_id: UUID
     serial: int
     filename: str
+    expected_size: int | None = None
+    chunks: dict[int, bytes] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class PendingAssetTransfer:
+    transfer_id: UUID
+    asset_id: UUID
+    asset_type: int
     expected_size: int | None = None
     chunks: dict[int, bytes] = field(default_factory=dict)
 
@@ -225,6 +237,8 @@ class LiveCircuitSession:
     pending_task_inventory_by_xfer: dict[int, PendingTaskInventoryXfer] = field(default_factory=dict)
     pending_task_inventory_by_task: dict[UUID, int] = field(default_factory=dict)
     pending_task_inventory_requests: set[int] = field(default_factory=set)
+    pending_asset_transfers: dict[UUID, PendingAssetTransfer] = field(default_factory=dict)
+    fetched_assets: dict[UUID, bytes] = field(default_factory=dict)
     fetch_inventory_descendents_url: str | None = None
     fetch_inventory2_url: str | None = None
     caps_udp_listen_port: int | None = None
@@ -459,6 +473,22 @@ class LiveCircuitSession:
                 self._record_event(now, "xfer.packet.decode_error", str(exc))
                 return self._flush_transport_packets(now)
             return self._handle_send_xfer_packet(xfer, now)
+
+        if dispatched.summary.name == "TransferInfo":
+            try:
+                info = parse_transfer_info(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "transfer.info.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            return self._handle_transfer_info(info, now)
+
+        if dispatched.summary.name == "TransferPacket":
+            try:
+                packet_msg = parse_transfer_packet(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "transfer.packet.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            return self._handle_transfer_packet(packet_msg, now)
 
         if dispatched.summary.name == "StartPingCheck":
             ping = parse_start_ping_check(dispatched)
@@ -1702,6 +1732,120 @@ class LiveCircuitSession:
             payload=message,
             error_text=error_text,
         )
+
+    def build_transfer_request_packet(
+        self,
+        asset_id: UUID,
+        asset_type: int,
+        *,
+        task_id: UUID | None = None,
+        item_id: UUID | None = None,
+        owner_id: UUID | None = None,
+        now: float | None = None,
+    ) -> bytes:
+        transfer_id = uuid4()
+        is_task_request = task_id is not None and item_id is not None
+
+        if is_task_request:
+            source_type = 3  # SimInventoryItem / task inventory item.
+            oid = owner_id if owner_id is not None else self.bootstrap.agent_id
+            params = (
+                self.bootstrap.agent_id.bytes
+                + self.bootstrap.session_id.bytes
+                + oid.bytes
+                + task_id.bytes
+                + item_id.bytes
+                + asset_id.bytes
+                + int.to_bytes(asset_type, 4, "little", signed=True)
+                + b"\x00"
+            )
+        else:
+            source_type = 2  # Asset
+            params = asset_id.bytes + int.to_bytes(asset_type, 4, "little", signed=True)
+
+        outbound = encode_transfer_request(
+            transfer_id,
+            channel_type=2,  # Asset
+            source_type=source_type,
+            priority=100.0,
+            params=params,
+        )
+
+        packet = self._build_outbound_packet(
+            outbound,
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="TransferRequest",
+        )
+
+        self.pending_asset_transfers[transfer_id] = PendingAssetTransfer(
+            transfer_id=transfer_id,
+            asset_id=asset_id if (asset_id and any(asset_id.bytes)) else (item_id or asset_id),
+            asset_type=asset_type,
+        )
+
+        msg = f"asset={asset_id} type={asset_type} transfer_id={transfer_id} source={source_type}"
+        if task_id:
+            msg += f" task={task_id} item={item_id}"
+            if not any(asset_id.bytes):
+                msg += " asset_id_zero=1"
+        self._record_event(now if now is not None else 0.0, "transfer.request", msg)
+        return packet
+
+
+    def _handle_transfer_info(self, info, now: float) -> list[bytes]:
+        transfer = self.pending_asset_transfers.get(info.transfer_id)
+        if transfer is None:
+            self._record_event(now, "transfer.info.unknown", f"transfer_id={info.transfer_id}")
+            return self._flush_transport_packets(now)
+
+        if info.status != 0:
+            self._record_event(now, "transfer.info.error", f"transfer_id={info.transfer_id} status={info.status}")
+            self.pending_asset_transfers.pop(info.transfer_id, None)
+            return self._flush_transport_packets(now)
+
+        transfer.expected_size = info.size
+        self._record_event(
+            now,
+            "transfer.info",
+            f"transfer_id={info.transfer_id} size={info.size} asset={transfer.asset_id}",
+        )
+        return self._flush_transport_packets(now)
+
+    def _handle_transfer_packet(self, packet_msg, now: float) -> list[bytes]:
+        transfer = self.pending_asset_transfers.get(packet_msg.transfer_id)
+        if transfer is None:
+            self._record_event(now, "transfer.packet.unknown", f"transfer_id={packet_msg.transfer_id}")
+            return self._flush_transport_packets(now)
+
+        if packet_msg.status != 0 and packet_msg.status != 1:
+            self._record_event(now, "transfer.packet.error", f"transfer_id={packet_msg.transfer_id} status={packet_msg.status}")
+            self.pending_asset_transfers.pop(packet_msg.transfer_id, None)
+            return self._flush_transport_packets(now)
+
+        # The OpenMetaverse client checks packet index but we just append to chunks based on packet
+        transfer.chunks[packet_msg.packet] = packet_msg.data
+
+        received = sum(len(c) for c in transfer.chunks.values())
+        if transfer.expected_size is not None and received >= transfer.expected_size:
+            # Assembly complete
+            ordered_data = b"".join(transfer.chunks[i] for i in sorted(transfer.chunks.keys()))
+            self.fetched_assets[transfer.asset_id] = ordered_data
+            self.pending_asset_transfers.pop(packet_msg.transfer_id, None)
+            self._record_event(
+                now,
+                "transfer.complete",
+                f"asset={transfer.asset_id} size={len(ordered_data)} type={transfer.asset_type}",
+            )
+        else:
+            self._record_event(
+                now,
+                "transfer.progress",
+                f"transfer_id={packet_msg.transfer_id} packet={packet_msg.packet} received={received}/{transfer.expected_size}",
+            )
+
+        return self._flush_transport_packets(now)
 
 
 async def run_live_session(

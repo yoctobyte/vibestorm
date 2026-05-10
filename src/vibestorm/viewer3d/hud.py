@@ -79,6 +79,7 @@ class HUD:
         on_teleport: Callable[[tuple[float, float, float]], None] | None = None,
         on_inventory_open_folder: Callable[[UUID], None] | None = None,
         on_object_inventory_request: Callable[[int], None] | None = None,
+        on_view_asset: Callable[[UUID, int, UUID | None, UUID | None], None] | None = None,
         on_render_mode_change: Callable[[str], None] | None = None,
         on_render_setting_change: Callable[[str, object], None] | None = None,
         initial_render_mode: str = RENDER_MODE_2D,
@@ -100,6 +101,7 @@ class HUD:
         self.on_teleport = on_teleport
         self.on_inventory_open_folder = on_inventory_open_folder
         self.on_object_inventory_request = on_object_inventory_request
+        self.on_view_asset = on_view_asset
         self.on_render_mode_change = on_render_mode_change
         self.on_render_setting_change = on_render_setting_change
         self.render_mode: str = (
@@ -132,6 +134,13 @@ class HUD:
             "water_alpha": 0.72,
         }
         self.quit_requested = False
+        # asset viewer state
+        self._asset_viewer_title: str = ""
+        self._pending_asset_ids: set[UUID] = set()  # requested but not yet received
+        # map: item_label -> (asset_id, asset_type, item_name, task_id, item_id)
+        self._inspector_item_asset_map: dict[str, tuple[UUID, int, str, UUID | None, UUID | None]] = {}
+        # selected item key in asset list
+        self._selected_asset_item: str | None = None
 
         manager_kwargs: dict = {}
         if theme_path is not None:
@@ -637,13 +646,65 @@ class HUD:
             container=insp_container,
         )
         self.inspector_load_inventory_button.disable()
-        self.inspector_inventory = UITextBox(
-            html_text="<b>Object Inventory</b><br>not requested yet",
-            relative_rect=pygame.Rect(self._s(305), self._s(302), self._s(325), self._s(116)),
+        self.inspector_view_asset_button = UIButton(
+            relative_rect=pygame.Rect(self._s(465), self._s(266), self._s(110), self._s(28)),
+            text="View Asset",
             manager=self.manager,
             container=insp_container,
         )
+        self.inspector_view_asset_button.disable()
+        self.inspector_inventory = UISelectionList(
+            relative_rect=pygame.Rect(self._s(305), self._s(302), self._s(325), self._s(116)),
+            item_list=[],
+            manager=self.manager,
+            container=insp_container,
+            allow_multi_select=False,
+        )
         self.inspector_window.hide()
+
+        # Asset viewer window (text for notecard/script, image for texture)
+        self.asset_viewer_window = UIWindow(
+            rect=pygame.Rect(
+                max(self._s(40), sw // 2 - self._s(320)),
+                self._s(120),
+                self._s(640),
+                self._s(480),
+            ),
+            manager=self.manager,
+            window_display_title="Asset Viewer",
+            resizable=True,
+        )
+        av_container = self.asset_viewer_window.get_container()
+        self.asset_viewer_text = UITextBox(
+            html_text="<i>No asset loaded.</i>",
+            relative_rect=pygame.Rect(
+                self._s(8), self._s(8),
+                self._s(608), self._s(426),
+            ),
+            manager=self.manager,
+            container=av_container,
+        )
+        self.asset_viewer_image = UIImage(
+            relative_rect=pygame.Rect(
+                self._s(8), self._s(8),
+                self._s(256), self._s(256),
+            ),
+            image_surface=self._pygame.Surface((self._s(256), self._s(256))),
+            manager=self.manager,
+            container=av_container,
+        )
+        self.asset_viewer_image.hide()
+        self.asset_viewer_status = UILabel(
+            relative_rect=pygame.Rect(
+                self._s(8), self._s(276),
+                self._s(608), self._s(24),
+            ),
+            text="",
+            manager=self.manager,
+            container=av_container,
+        )
+        self.asset_viewer_status.hide()
+        self.asset_viewer_window.hide()
 
         self.diagnostics_window = UIWindow(
             rect=pygame.Rect(
@@ -797,6 +858,9 @@ class HUD:
             if event.ui_element is self.inspector_load_inventory_button:
                 self._request_selected_object_inventory()
                 return True
+            if event.ui_element is self.inspector_view_asset_button:
+                self._view_selected_asset()
+                return True
             if event.ui_element is self.teleport_button:
                 self.teleport_window.show()
                 self._hide_all_menus()
@@ -829,6 +893,11 @@ class HUD:
                 selection = str(getattr(event, "text", "") or "")
                 self._select_inspector_row(selection)
                 return True
+            if event.ui_element is self.inspector_inventory:
+                selection = str(getattr(event, "text", "") or "")
+                self.enable_view_for_item(selection if selection else None)
+                return True
+
         elif event.type == pygame_gui.UI_SELECTION_LIST_DOUBLE_CLICKED_SELECTION:
             if event.ui_element is self.inventory_list:
                 selection = str(getattr(event, "text", "") or "")
@@ -837,6 +906,12 @@ class HUD:
                 return True
         elif event.type == pygame_gui.UI_WINDOW_RESIZED and event.ui_element is self.chat_window:
             self._layout_chat_window()
+            return True
+        elif (
+            event.type == pygame_gui.UI_WINDOW_RESIZED
+            and event.ui_element is self.asset_viewer_window
+        ):
+            self._layout_asset_viewer_window()
             return True
         elif (
             event.type == pygame_gui.UI_WINDOW_RESIZED and event.ui_element is self.inventory_window
@@ -1028,30 +1103,38 @@ class HUD:
         self.inspector_details.set_dimensions((right_w, details_h))
 
         button_y = margin + details_h + gap
-        self.inspector_load_inventory_button.set_relative_position(
-            (margin + left_w + gap, button_y)
-        )
-        self.inspector_load_inventory_button.set_dimensions((min(right_w, self._s(150)), button_h))
+        rx = margin + left_w + gap
+        load_w = min(max(self._s(110), (right_w - gap) // 2), self._s(150))
+        view_w = min(max(self._s(80), right_w - load_w - gap), self._s(120))
+        self.inspector_load_inventory_button.set_relative_position((rx, button_y))
+        self.inspector_load_inventory_button.set_dimensions((load_w, button_h))
+        self.inspector_view_asset_button.set_relative_position((rx + load_w + gap, button_y))
+        self.inspector_view_asset_button.set_dimensions((view_w, button_h))
         self.inspector_inventory.set_relative_position(
             (margin + left_w + gap, button_y + button_h + gap)
         )
         self.inspector_inventory.set_dimensions((right_w, inv_h))
 
-    def _set_inspector_inventory_text(self, html_text: str) -> None:
-        from pygame_gui.elements import UITextBox
 
-        if html_text == self._last_inspector_inventory_html:
+
+    def _set_inspector_inventory_text(self, items_or_html) -> None:
+        """Update the inspector inventory list.
+
+        Accepts either a list of row strings (for UISelectionList) or a
+        legacy html string (which is split on <br> tags as a fallback).
+        """
+        if isinstance(items_or_html, list):
+            rows = items_or_html
+        else:
+            # Legacy html text path — strip simple tags to get plain rows
+            import re as _re
+            plain = _re.sub(r"<[^>]+>", "", str(items_or_html))
+            rows = [r.strip() for r in plain.split("\n") if r.strip()]
+        if rows == self._last_inspector_inventory_html:
             return
-        self._last_inspector_inventory_html = html_text
+        self._last_inspector_inventory_html = rows  # type: ignore[assignment]
         try:
-            rect = self.inspector_inventory.relative_rect.copy()
-            self.inspector_inventory.kill()
-            self.inspector_inventory = UITextBox(
-                html_text=html_text,
-                relative_rect=rect,
-                manager=self.manager,
-                container=self.inspector_window.get_container(),
-            )
+            self.inspector_inventory.set_item_list(rows)
         except Exception as exc:  # pragma: no cover
             print(f"[viewer3d] object_inventory.hud_update_error {exc!r}", flush=True)
 
@@ -1354,19 +1437,25 @@ class HUD:
             else "Select an object."
         )
         inventory = (
-            self._inspector_inventory_details.get(local_id, "<b>Object Inventory</b><br>not requested yet")
+            self._inspector_inventory_details.get(local_id, ["(not requested yet)"])
             if local_id is not None
-            else "<b>Object Inventory</b><br>not requested yet"
+            else ["(not requested yet)"]
         )
+        # Update inspector_item_asset_map from the current scene's inventory snapshot
+        # (populated by the scene when ObjectInventorySnapshotReady fires)
         try:
             if local_id is None:
                 self.inspector_load_inventory_button.disable()
+                self.inspector_view_asset_button.disable()
             else:
                 self.inspector_load_inventory_button.enable()
+                # View Asset button stays disabled until user selects an item in the inv list
+                self.inspector_view_asset_button.disable()
             self.inspector_details.set_text(detail)
             self._set_inspector_inventory_text(inventory)
         except Exception:  # pragma: no cover
             pass
+
 
     def _request_selected_object_inventory(self) -> None:
         if self.on_object_inventory_request is None or self._selected_inspector_row is None:
@@ -1376,9 +1465,199 @@ class HUD:
             return
         self.on_object_inventory_request(local_id)
         try:
-            self._set_inspector_inventory_text("<b>Object Inventory</b><br>request sent")
+            self._set_inspector_inventory_text(["(request sent…)"])
         except Exception:  # pragma: no cover
             pass
+
+
+    def _view_selected_asset(self) -> None:
+        """Trigger an asset view request for the currently selected inventory item."""
+        if self.on_view_asset is None or self._selected_asset_item is None:
+            return
+        entry = self._inspector_item_asset_map.get(self._selected_asset_item)
+        if entry is None:
+            return
+        asset_id, asset_type, item_name, task_id, item_id = entry
+        if asset_id.int == 0:
+            self._open_asset_viewer_window(
+                f"Asset: {item_name}",
+                html_text=_asset_withheld_html(item_name, asset_type, task_id, item_id),
+                mode="text",
+            )
+            print(
+                "[viewer3d] object_inventory.asset_withheld "
+                f"name={item_name!r} type={asset_type} task={task_id} item={item_id}",
+                flush=True,
+            )
+            return
+        # If asset_id is zeros, use item_id as the tracking key for window updates
+        tracking_id = asset_id if (asset_id and any(asset_id.bytes)) else (item_id or asset_id)
+        if tracking_id:
+            self._pending_asset_ids.add(tracking_id)
+        self._open_asset_viewer_window(f"Asset: {item_name}", loading=True)
+        self.on_view_asset(asset_id, asset_type, task_id, item_id)
+
+
+    def register_inventory_snapshot_for_view(
+        self, snapshot: object
+    ) -> None:
+        """Called by the app when an ObjectInventorySnapshotReady fires.
+
+        Populates the _inspector_item_asset_map so the View Asset button
+        knows which asset to request for each inventory item.
+        """
+        task_id = getattr(snapshot, "task_id", None)
+        items = list(getattr(snapshot, "items", ()))
+        for item in items:
+            name = (getattr(item, "name", "") or "(unnamed)").replace("\x00", "").strip()
+            item_id = getattr(item, "item_id", None)
+            asset_id = getattr(item, "asset_id", None)
+            asset_type_str = (getattr(item, "asset_type", "") or "").replace("\x00", "").strip()
+            inv_type_str = (getattr(item, "inventory_type", "") or "").replace("\x00", "").strip()
+            # Map to integer using asset_type preferentially, then inv_type as fallback
+            asset_type_int = _asset_type_string_to_int(asset_type_str) or _asset_type_string_to_int(inv_type_str)
+            if asset_id is not None and asset_type_int is not None:
+                key = _object_inventory_item_label(item)
+                self._inspector_item_asset_map[key] = (asset_id, asset_type_int, name, task_id, item_id)
+
+
+
+    def enable_view_for_item(self, item_key: str | None) -> None:
+        """Called when an inventory item row is highlighted to toggle the View button."""
+        self._selected_asset_item = item_key
+        try:
+            if item_key and item_key in self._inspector_item_asset_map:
+                self.inspector_view_asset_button.enable()
+            else:
+                self.inspector_view_asset_button.disable()
+        except Exception:  # pragma: no cover
+            pass
+
+    def show_asset_data(
+        self,
+        asset_id: UUID,
+        asset_type: int,
+        data: bytes,
+        *,
+        item_name: str = "",
+    ) -> None:
+        """Display received asset data in the asset viewer window."""
+        self._pending_asset_ids.discard(asset_id)
+        title = f"Asset: {item_name}" if item_name else f"Asset {str(asset_id)[:8]}…"
+        # asset_type 0=texture, 7=notecard, 10=lsltext/script
+        if asset_type in (7, 10):
+            # Decode text
+            try:
+                text = data.decode("utf-8", errors="replace")
+            except Exception:
+                text = repr(data[:500])
+            html = _plain_text_to_html(text)
+            self._open_asset_viewer_window(title, html_text=html, mode="text")
+        elif asset_type == 0:
+            # Texture — try to decode from the cache path using PIL or pygame
+            self._open_asset_viewer_window(
+                title,
+                html_text=(
+                    f"<b>Texture</b><br>{_html_escape(str(asset_id))}<br>"
+                    f"Size: {len(data)} bytes"
+                ),
+                mode="texture",
+                raw_bytes=data,
+            )
+        else:
+            size_str = f"{len(data)} bytes"
+            self._open_asset_viewer_window(
+                title,
+                html_text=f"<b>Asset type {asset_type}</b><br>{size_str}",
+                mode="text",
+            )
+
+    def _open_asset_viewer_window(
+        self,
+        title: str,
+        *,
+        html_text: str = "<i>Loading…</i>",
+        mode: str = "text",
+        raw_bytes: bytes | None = None,
+        loading: bool = False,
+    ) -> None:
+        try:
+            self.asset_viewer_window.set_display_title(title)
+        except Exception:  # pragma: no cover
+            pass
+        if loading:
+            html_text = "<i>Requesting asset from server…</i>"
+        # Show/hide text vs image
+        try:
+            if mode == "texture" and raw_bytes is not None:
+                self.asset_viewer_text.hide()
+                surf = self._decode_texture_surface(raw_bytes)
+                if surf is not None:
+                    self.asset_viewer_image.set_image(surf)
+                    self.asset_viewer_image.show()
+                    self.asset_viewer_status.set_text(
+                        f"{len(raw_bytes)} bytes (texture)"
+                    )
+                    self.asset_viewer_status.show()
+                else:
+                    self.asset_viewer_text.set_text(
+                        "<b>Texture</b><br>Could not decode image data."
+                    )
+                    self.asset_viewer_text.show()
+                    self.asset_viewer_image.hide()
+                    self.asset_viewer_status.hide()
+            else:
+                self.asset_viewer_image.hide()
+                self.asset_viewer_status.hide()
+                self.asset_viewer_text.set_text(html_text)
+                self.asset_viewer_text.show()
+        except Exception:  # pragma: no cover
+            pass
+        self.asset_viewer_window.show()
+        self._layout_asset_viewer_window()
+
+    def _decode_texture_surface(self, data: bytes):
+        """Try to decode raw image bytes (J2K or PNG) to a pygame Surface."""
+        import io
+        try:
+            import PIL.Image  # type: ignore[import]
+            img = PIL.Image.open(io.BytesIO(data))
+            img = img.convert("RGBA")
+            w, h = img.size
+            max_dim = self._s(256)
+            if w > max_dim or h > max_dim:
+                img.thumbnail((max_dim, max_dim), PIL.Image.LANCZOS)
+                w, h = img.size
+            surf = self._pygame.image.fromstring(img.tobytes(), (w, h), "RGBA")
+            return surf
+        except Exception:
+            pass
+        # Fallback: try pygame directly (works for PNG)
+        try:
+            import io
+            buf = io.BytesIO(data)
+            surf = self._pygame.image.load(buf)
+            return surf
+        except Exception:
+            return None
+
+    def _layout_asset_viewer_window(self) -> None:
+        try:
+            container = self.asset_viewer_window.get_container()
+            cw, ch = container.get_size()
+            margin = self._s(8)
+            content_w = max(self._s(100), cw - margin * 2)
+            content_h = max(self._s(60), ch - margin * 2)
+            self.asset_viewer_text.set_relative_position((margin, margin))
+            self.asset_viewer_text.set_dimensions((content_w, content_h))
+            max_img = min(self._s(256), content_h - self._s(32))
+            self.asset_viewer_image.set_relative_position((margin, margin))
+            self.asset_viewer_image.set_dimensions((max_img, max_img))
+            self.asset_viewer_status.set_relative_position((margin, margin + max_img + self._s(4)))
+            self.asset_viewer_status.set_dimensions((content_w, self._s(24)))
+        except Exception:  # pragma: no cover
+            pass
+
 
     def _submit_teleport(self) -> None:
         try:
@@ -1406,6 +1685,47 @@ def _kind_color_html(kind: str) -> str:
     }.get(kind, "#aaaaaa")
 
 
+# SL/OpenSim asset type string → integer mapping (covers the types we care about for viewing)
+_ASSET_TYPE_MAP: dict[str, int] = {
+    "texture": 0,
+    "sound": 1,
+    "calling_card": 2,
+    "landmark": 3,
+    "script": 4,      # legacy
+    "clothing": 5,
+    "object": 6,
+    "notecard": 7,
+    "category": 8,
+    "root_category": 9,
+    "lsltext": 10,    # LSL script (current)
+    "lslbytecode": 11,
+    "texture_tga": 12,
+    "bodypart": 13,
+    "trash": 14,
+    "snapshot_category": 15,
+    "lost_and_found": 16,
+    "sound_wav": 17,
+    "image_tga": 18,
+    "image_jpeg": 19,
+    "animation": 20,
+    "gesture": 21,
+    "simstate": 22,
+}
+
+
+def _asset_type_string_to_int(asset_type_str: str) -> int | None:
+    """Convert a task-inventory asset type string to its integer equivalent."""
+    s = asset_type_str.strip().lower()
+    if s in _ASSET_TYPE_MAP:
+        return _ASSET_TYPE_MAP[s]
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
+
+
 def _html_escape(value: str) -> str:
     # pygame_gui rejects embedded NULs in UITextBox text. Protocol strings may
     # be C-style terminated, so strip control terminators at the display edge.
@@ -1415,6 +1735,37 @@ def _html_escape(value: str) -> str:
 
 def _plain_text_to_html(value: str) -> str:
     return "<br>".join(_html_escape(line) for line in value.strip().splitlines())
+
+
+def _clean_inventory_text(value: object) -> str:
+    return str(value or "").replace("\x00", "").strip()
+
+
+def _object_inventory_item_label(item: object) -> str:
+    name = _clean_inventory_text(getattr(item, "name", "") or "(unnamed)")
+    asset_type_str = _clean_inventory_text(getattr(item, "asset_type", "") or "")
+    inv_type_str = _clean_inventory_text(getattr(item, "inventory_type", "") or "")
+    type_label = asset_type_str or inv_type_str or "?"
+    asset_id = getattr(item, "asset_id", None)
+    suffix = " asset withheld" if getattr(asset_id, "int", None) == 0 else ""
+    return f"{name} [{type_label}]{suffix}"
+
+
+def _asset_withheld_html(
+    item_name: str,
+    asset_type: int,
+    task_id: UUID | None,
+    item_id: UUID | None,
+) -> str:
+    lines = [
+        f"<b>{_html_escape(item_name)}</b>",
+        "The simulator listed this object inventory item, but withheld its asset UUID.",
+        "Without that UUID the UDP TransferRequest cannot fetch asset bytes.",
+        f"Asset Type: {asset_type}",
+        f"Task ID: {_html_escape(str(task_id)) if task_id is not None else '(none)'}",
+        f"Item ID: {_html_escape(str(item_id)) if item_id is not None else '(none)'}",
+    ]
+    return "<br>".join(lines)
 
 
 def heightmap_debug_surface(
@@ -1770,31 +2121,31 @@ def _inspector_detail_html(e: object, w: object | None) -> str:
     return "<br>".join(lines)
 
 
-def _object_inventory_html(snapshot: object | None) -> str:
+def _object_inventory_html(snapshot: object | None) -> list[str]:
+    """Return a list of display strings for the inspector inventory UISelectionList."""
+
+    def _clean(s: str) -> str:
+        return s.replace("\x00", "").strip()
+
     if snapshot is None:
-        return "<b>Object Inventory</b><br>not requested yet"
+        return ["(not loaded)"]
     items = list(getattr(snapshot, "items", ()))
-    rows = [
-        "<b>Object Inventory</b>",
-        f"Items: {len(items)}",
-        f"Serial: {getattr(snapshot, 'serial', 0)}",
+    rows: list[str] = [
+        f"Items: {len(items)}  serial={getattr(snapshot, 'serial', 0)}",
     ]
-    filename = getattr(snapshot, "filename", "")
+    filename = _clean(str(getattr(snapshot, "filename", "") or ""))
     if filename:
-        rows.append(f"File: {_html_escape(str(filename))}")
+        rows.append(f"file: {filename}")
     if not items:
         rows.append("(empty)")
-    for item in items[:24]:
-        name = getattr(item, "name", "") or "(unnamed)"
-        inv_type = getattr(item, "inventory_type", "") or "unknown"
-        item_id = getattr(item, "item_id", None)
-        suffix = f" [{inv_type}]"
-        if item_id is not None:
-            suffix += f" {item_id}"
-        rows.append(f"• {_html_escape(name + suffix)}")
-    if len(items) > 24:
-        rows.append(f"... {len(items) - 24} more")
-    return "<br>".join(rows)
+    for item in items[:50]:
+        rows.append(_object_inventory_item_label(item))
+
+    if len(items) > 50:
+        rows.append(f"... {len(items) - 50} more")
+    return rows
+
+
 
 
 __all__ = [

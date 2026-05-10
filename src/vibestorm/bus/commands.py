@@ -11,6 +11,7 @@ AgentUpdate carries them. Chat commands build packets immediately.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 # ---- movement (mutates session state; takes effect on next AgentUpdate) ----
 
@@ -82,10 +83,27 @@ class RequestObjectInventory:
     local_id: int
 
 
+@dataclass(slots=True, frozen=True)
+class RequestAssetData:
+    """Request raw asset bytes via the Transfer protocol.
+
+    asset_type is the numeric SL/OpenSim asset type:
+      0  = texture (use GetTexture cap instead when available)
+      7  = notecard
+      10 = lsltext (script)
+    """
+    asset_id: UUID
+    asset_type: int
+    task_id: UUID | None = None
+    item_id: UUID | None = None
+
+
+
 __all__ = [
     "AddControlFlags",
     "ClearControlFlags",
     "RemoveControlFlags",
+    "RequestAssetData",
     "RequestObjectInventory",
     "SendChat",
     "SetBodyRotation",
