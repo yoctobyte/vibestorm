@@ -33,6 +33,7 @@ Timestamped historical notes live under `docs/archive/` and are not the primary 
 - When you learn something protocol-specific, update `docs/reverse-engineered-protocol.md`.
 - When you change the current recommended workflow or repo structure, update `projectstate.md` or `docs/README.md`.
 - When you stop with work in progress, update `docs/current-handoff.md`.
+- Do not auto-push by default. Commit locally when appropriate, and push only when the user explicitly asks for it.
 
 ## Handoff Expectations
 
