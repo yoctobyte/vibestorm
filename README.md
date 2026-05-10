@@ -31,8 +31,9 @@ lets us compare packet shapes, capability flows, terrain data, inventory behavio
 edge cases without relying on a production grid.
 
 This is not clean-room engineering; it is more like clean-kitchen engineering, where the counters
-are covered with packet captures and source references. The goal is still a clean, independent
-client codebase rather than a fork of an existing viewer.
+are covered with packet captures and source references. Nobody wore gloves, and OpenSim was
+standing right there explaining the packets. The goal is still a clean, independent client codebase
+rather than a fork of an existing viewer.
 
 ## Layout
 
