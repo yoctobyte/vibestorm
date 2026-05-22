@@ -23,6 +23,11 @@ Use local OpenSim for:
   `local/vibestorm-login.env` profile. The built-in `tester` profile does not
   include a password.
 
+Localhost/OpenSim test passwords are allowed in tracked docs or fixtures only
+when they are trivial, disposable, and clearly scoped to local testing. Never
+track credentials for OSgrid, Second Life, GitHub, hosting providers, or other
+real services.
+
 ## Main Commands
 
 Start OpenSim:

@@ -7,10 +7,14 @@ Last checked: 2026-05-10
 - Do not commit `.env` files, local databases, packet captures, or scratch
   scripts.
 - `run.sh` may prompt for login details and store them in ignored
-  `local/vibestorm-login.env` with mode `600`; do not commit that file or a
-  reusable local test password.
-- Local OpenSim docs mention env/profile setup rather than recording a reusable
-  local test password.
+  `local/vibestorm-login.env` with mode `600`; do not commit that file.
+- Trivial localhost/OpenSim test credentials may be committed when they are
+  clearly documented as local-only fixtures and cannot authenticate against
+  OSgrid, Second Life, GitHub, hosting providers, or any other real service.
+- Do not commit real grid credentials, API tokens, SSH/private keys, OAuth
+  tokens, cloud credentials, or reusable passwords for non-local services.
+- Local OpenSim docs may record local-only test credentials when needed for
+  repeatable tests, but should label them as disposable localhost credentials.
 
 Useful checks:
 
