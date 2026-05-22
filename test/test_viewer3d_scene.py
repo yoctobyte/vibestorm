@@ -378,6 +378,22 @@ class SceneWorldViewRefreshTests(unittest.TestCase):
         scene.refresh_from_world_view(WorldView())
         self.assertIsNone(scene.sun_phase)
 
+    def test_apply_mesh_asset_ready_records_cache_path(self) -> None:
+        from vibestorm.bus.events import MeshAssetReady
+
+        mesh_id = UUID("11111111-2222-3333-4444-555555555555")
+        scene = Scene(region_handle=0x1234)
+
+        scene.apply_mesh_asset_ready(
+            MeshAssetReady(
+                region_handle=0x1234,
+                mesh_id=mesh_id,
+                cache_path="/tmp/mesh.llmesh",
+            )
+        )
+
+        self.assertEqual(scene.mesh_paths[mesh_id], Path("/tmp/mesh.llmesh"))
+
     def test_refresh_surfaces_region_water_height(self) -> None:
         from vibestorm.world.models import WorldView
 
@@ -519,6 +535,113 @@ class SceneShapePopulatedTests(unittest.TestCase):
         scene.refresh_from_world_view(view)
 
         self.assertEqual(scene.object_entities[10].shape, "sphere")
+
+    def test_refresh_routes_mesh_extra_param_to_mesh_placeholder(self) -> None:
+        from vibestorm.udp.messages import ExtraParamEntry, PrimShapeData
+        from vibestorm.world.models import WorldObject, WorldView
+
+        mesh_asset_id = UUID("11111111-2222-3333-4444-555555555555")
+        cube_shape = PrimShapeData(
+            path_curve=PATH_CURVE_LINE,
+            profile_curve=PROFILE_CURVE_SQUARE,
+            path_begin=0, path_end=0, path_scale_x=100, path_scale_y=100,
+            path_shear_x=0, path_shear_y=0, path_twist=0, path_twist_begin=0,
+            path_radius_offset=0, path_taper_x=0, path_taper_y=0,
+            path_revolutions=0, path_skew=0,
+            profile_begin=0, profile_end=0, profile_hollow=0,
+        )
+        view = WorldView()
+        view.objects[UUID(int=1)] = WorldObject(
+            full_id=UUID(int=1), local_id=10, parent_id=0, pcode=PCODE_PRIM,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
+            update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
+            position=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=24,
+            extra_params_entries=(
+                ExtraParamEntry(
+                    param_type=0x30,
+                    param_in_use=True,
+                    param_data=mesh_asset_id.bytes + bytes([5]),
+                ),
+            ),
+            default_texture_id=None, shape=cube_shape,
+        )
+
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        entity = scene.object_entities[10]
+
+        self.assertEqual(entity.shape, "mesh")
+        self.assertEqual(entity.mesh_source_kind, "mesh")
+        self.assertEqual(entity.mesh_asset_id, mesh_asset_id)
+        self.assertEqual(entity.sculpt_type, 5)
+
+    def test_refresh_routes_sculpt_extra_param_to_sculpt_placeholder(self) -> None:
+        from vibestorm.udp.messages import ExtraParamEntry
+        from vibestorm.world.models import WorldObject, WorldView
+
+        sculpt_asset_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        view = WorldView()
+        view.objects[UUID(int=1)] = WorldObject(
+            full_id=UUID(int=1), local_id=10, parent_id=0, pcode=PCODE_PRIM,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
+            update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
+            position=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=24,
+            extra_params_entries=(
+                ExtraParamEntry(
+                    param_type=0x30,
+                    param_in_use=True,
+                    param_data=sculpt_asset_id.bytes + bytes([2]),
+                ),
+            ),
+            default_texture_id=None, shape=None,
+        )
+
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        entity = scene.object_entities[10]
+
+        self.assertEqual(entity.shape, "torus")
+        self.assertEqual(entity.mesh_source_kind, "sculpt")
+        self.assertEqual(entity.mesh_asset_id, sculpt_asset_id)
+        self.assertEqual(entity.sculpt_type, 2)
+
+    def test_refresh_preserves_sculpt_flags_on_scene_entity(self) -> None:
+        from vibestorm.udp.messages import ExtraParamEntry
+        from vibestorm.world.models import WorldObject, WorldView
+
+        sculpt_asset_id = UUID("bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee")
+        view = WorldView()
+        view.objects[UUID(int=1)] = WorldObject(
+            full_id=UUID(int=1), local_id=10, parent_id=0, pcode=PCODE_PRIM,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
+            update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
+            position=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=24,
+            extra_params_entries=(
+                ExtraParamEntry(
+                    param_type=0x30,
+                    param_in_use=True,
+                    param_data=sculpt_asset_id.bytes + bytes([0x80 | 0x40 | 2]),
+                ),
+            ),
+            default_texture_id=None, shape=None,
+        )
+
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        entity = scene.object_entities[10]
+
+        self.assertEqual(entity.shape, "torus")
+        self.assertEqual(entity.mesh_source_kind, "sculpt")
+        self.assertEqual(entity.sculpt_type, 0xC2)
 
     def test_refresh_leaves_shape_none_when_world_object_has_no_shape(self) -> None:
         from vibestorm.world.models import WorldObject, WorldView

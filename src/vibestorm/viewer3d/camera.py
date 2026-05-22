@@ -29,6 +29,7 @@ from typing import Literal
 REGION_SIZE_METERS: float = 256.0
 
 CameraMode = Literal["map", "orbit", "eye", "free"]
+CameraPreset = Literal["sim", "avatar_behind", "avatar_eye"]
 
 DEFAULT_FOV_Y_RADIANS: float = math.radians(60.0)
 DEFAULT_NEAR_PLANE_M: float = 0.1
@@ -222,6 +223,54 @@ class Camera3D:
         ``view_matrix()`` instead."""
         self.mode = mode
 
+    def set_sim_overview(self) -> None:
+        """Frame the whole region from the current orbit camera."""
+        self.set_mode("orbit")
+        self.target = (128.0, 128.0, 24.0)
+        self.distance = 190.0
+        self.yaw = math.radians(45.0)
+        self.pitch = math.radians(58.0)
+
+    def set_avatar_behind(
+        self,
+        position: tuple[float, float, float],
+        rotation: tuple[float, float, float, float] | None,
+        *,
+        distance_m: float = 10.0,
+    ) -> None:
+        """Third-person camera behind the avatar, looking over the head."""
+        forward = _avatar_forward(rotation)
+        px, py, pz = position
+        eye = (
+            px - forward[0] * distance_m,
+            py - forward[1] * distance_m,
+            pz + 3.2,
+        )
+        target = (px + forward[0] * 1.8, py + forward[1] * 1.8, pz + 1.8)
+        self.set_mode("free")
+        self.eye_position = eye
+        self.target = target
+
+    def set_avatar_eye(
+        self,
+        position: tuple[float, float, float],
+        rotation: tuple[float, float, float, float] | None,
+        *,
+        eye_height_m: float = 1.65,
+    ) -> None:
+        """First-person eye camera from the avatar's current rotation."""
+        forward = _avatar_forward(rotation)
+        px, py, pz = position
+        eye = (px, py, pz + eye_height_m)
+        target = (
+            eye[0] + forward[0] * 8.0,
+            eye[1] + forward[1] * 8.0,
+            eye[2] + forward[2] * 8.0,
+        )
+        self.set_mode("eye")
+        self.eye_position = eye
+        self.target = target
+
     # ----- 3D matrices -----------------------------------------------------
 
     def orbit_eye(self) -> tuple[float, float, float]:
@@ -281,4 +330,30 @@ class Camera3D:
 Camera = Camera3D
 
 
-__all__ = ["Camera", "Camera3D", "CameraMode", "REGION_SIZE_METERS"]
+def _avatar_forward(
+    rotation: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float]:
+    if rotation is None:
+        return (1.0, 0.0, 0.0)
+    qx, qy, qz, qw = rotation
+    # Rotate local +X by quaternion q=(x,y,z,w).
+    vx, vy, vz = (1.0, 0.0, 0.0)
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+    return _normalize(
+        (
+            vx + qw * tx + qy * tz - qz * ty,
+            vy + qw * ty + qz * tx - qx * tz,
+            vz + qw * tz + qx * ty - qy * tx,
+        )
+    )
+
+
+__all__ = [
+    "Camera",
+    "Camera3D",
+    "CameraMode",
+    "CameraPreset",
+    "REGION_SIZE_METERS",
+]

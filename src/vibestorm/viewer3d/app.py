@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import platform
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -41,11 +42,18 @@ from vibestorm.bus.events import (
     ChatOutbound,
     InventorySnapshotReady,
     LayerDataReceived,
+    MeshAssetReady,
     ObjectInventorySnapshotReady,
     RegionChanged,
     RegionMapTileReady,
     TextureAssetReady,
 )
+from vibestorm.caps.asset_upload_client import (
+    AssetUploadClient,
+    AssetUploadError,
+    NewFileInventoryRequest,
+)
+from vibestorm.caps.client import CapabilityClient, CapabilityError
 from vibestorm.caps.inventory_client import (
     InventoryCapabilityClient,
     InventoryCapabilityError,
@@ -54,14 +62,14 @@ from vibestorm.caps.inventory_client import (
     parse_inventory_descendents_payload,
     snapshot_with_loaded_empty_folder,
 )
-from vibestorm.login.client import LoginClient
+from vibestorm.login.client import LoginClient, LoginError
 from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient
-from vibestorm.viewer3d.camera import Camera
+from vibestorm.viewer3d.camera import Camera, CameraPreset
 from vibestorm.viewer3d.gl_compositor import GLCompositor
-from vibestorm.viewer3d.hud import HUD
+from vibestorm.viewer3d.hud import HUD, ObjectAssetSelection
 from vibestorm.viewer3d.input import handle_event
 from vibestorm.viewer3d.perspective import PerspectiveRenderer
 from vibestorm.viewer3d.render import clear_tile_cache
@@ -71,6 +79,17 @@ from vibestorm.viewer3d.scene import Scene
 if TYPE_CHECKING:
     import moderngl
     import pygame
+
+
+TEXT_ASSET_TYPES = {7, 10}
+DEFAULT_ASSET_DOWNLOAD_DIR = Path("local/asset-downloads")
+DEFAULT_ASSET_UPLOAD_DIR = Path("local/upload")
+
+
+@dataclass(slots=True, frozen=True)
+class PendingAssetSave:
+    selection: ObjectAssetSelection
+    target_path: Path
 
 
 def build_renderer(
@@ -136,6 +155,22 @@ def composite_frame(
     composite_hud(compositor, hud_surface)
 
 
+def _camera_avatar_entity(scene: Scene):
+    if scene.avatar_entities:
+        if scene.avatar_position is not None:
+            ax, ay, az = scene.avatar_position
+            return min(
+                scene.avatar_entities.values(),
+                key=lambda entity: (
+                    (entity.position[0] - ax) ** 2
+                    + (entity.position[1] - ay) ** 2
+                    + (entity.position[2] - az) ** 2
+                ),
+            )
+        return next(iter(scene.avatar_entities.values()))
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vibestorm-viewer3d")
     parser.add_argument("--login-uri", required=True)
@@ -145,6 +180,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", default="last")
     parser.add_argument("--agent-update-interval", type=float, default=1.0)
     parser.add_argument("--camera-sweep", action="store_true")
+    parser.add_argument(
+        "--no-auto-bake-upload",
+        action="store_true",
+        help="Do not automatically upload baked appearance textures during session setup.",
+    )
     parser.add_argument(
         "--render-mode",
         choices=("2d-map", "3d"),
@@ -271,6 +311,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             )
 
     pending_inventory_folders: set[UUID] = set()
+    pending_asset_saves: dict[UUID, list[PendingAssetSave]] = {}
 
     async def fetch_inventory_folder(folder_id: UUID) -> None:
         session = client.current
@@ -373,17 +414,151 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
             )
 
+    def on_save_asset(selection: ObjectAssetSelection, target_path: Path | None = None) -> None:
+        queue_asset_save(selection, target_path=target_path)
+        on_view_asset(
+            selection.asset_id,
+            selection.asset_type,
+            selection.task_id,
+            selection.item_id,
+        )
+
+    def on_save_object_text_assets(
+        selections: tuple[ObjectAssetSelection, ...],
+        target_dir: Path | None = None,
+    ) -> None:
+        queued = 0
+        for selection in selections:
+            if selection.asset_type not in TEXT_ASSET_TYPES or selection.asset_id.int == 0:
+                continue
+            queue_asset_save(selection, target_dir=target_dir)
+            on_view_asset(
+                selection.asset_id,
+                selection.asset_type,
+                selection.task_id,
+                selection.item_id,
+            )
+            queued += 1
+        scene.apply_chat_alert(
+            ChatAlert(
+                region_handle=client.current_handle or 0,
+                message=f"Queued {queued} object text asset download(s).",
+            )
+        )
+
+    def queue_asset_save(
+        selection: ObjectAssetSelection,
+        *,
+        target_path: Path | None = None,
+        target_dir: Path | None = None,
+    ) -> None:
+        if target_path is None:
+            target_path = _download_path_for_selection(selection, target_dir=target_dir)
+        pending_asset_saves.setdefault(selection.asset_id, []).append(
+            PendingAssetSave(selection=selection, target_path=target_path)
+        )
+        scene.apply_chat_alert(
+            ChatAlert(
+                region_handle=client.current_handle or 0,
+                message=f"Saving {selection.item_name} to {target_path}",
+            )
+        )
+
+    def on_upload_files(path: Path | None = None) -> None:
+        asyncio.create_task(upload_files_from_path(path))
+
+    async def upload_files_from_path(path: Path | None = None) -> None:
+        session = client.current
+        handle = client.current_handle or 0
+        if session is None:
+            scene.apply_chat_alert(ChatAlert(region_handle=handle, message="Upload is not connected."))
+            return
+        root_folder_id = session.bootstrap.inventory_root_folder_id
+        if root_folder_id is None:
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=handle, message="Upload needs an inventory root folder.")
+            )
+            return
+        upload_path = _resolve_user_path(path or DEFAULT_ASSET_UPLOAD_DIR)
+        if upload_path.is_dir():
+            upload_path.mkdir(parents=True, exist_ok=True)
+            files = tuple(path for path in sorted(upload_path.iterdir()) if path.is_file())
+        elif upload_path.is_file():
+            files = (upload_path,)
+        else:
+            upload_path.parent.mkdir(parents=True, exist_ok=True)
+            files = ()
+            if path is None:
+                upload_path.mkdir(parents=True, exist_ok=True)
+        files = tuple(path for path in files if _upload_kind_for_path(path) is not None)
+        if not files:
+            scene.apply_chat_alert(
+                ChatAlert(
+                    region_handle=handle,
+                    message=f"No uploadable files at {upload_path} (.lsl, .txt, .nc).",
+                )
+            )
+            return
+        try:
+            caps = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
+                session.bootstrap.seed_capability,
+                ["NewFileAgentInventory"],
+                udp_listen_port=session.caps_udp_listen_port,
+                user_agent="Vibestorm",
+            )
+        except CapabilityError as exc:
+            scene.apply_chat_alert(ChatAlert(region_handle=handle, message=str(exc)))
+            return
+        upload_url = caps.get("NewFileAgentInventory")
+        if not upload_url:
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=handle, message="NewFileAgentInventory is not available.")
+            )
+            return
+        uploader = AssetUploadClient(timeout_seconds=20.0)
+        uploaded = 0
+        for path in files:
+            kind = _upload_kind_for_path(path)
+            if kind is None:
+                continue
+            asset_type, inventory_type = kind
+            try:
+                result = await uploader.upload_new_file(
+                    upload_url,
+                    NewFileInventoryRequest(
+                        folder_id=root_folder_id,
+                        name=path.name,
+                        description=f"Uploaded by Vibestorm from {path}",
+                        asset_type=asset_type,
+                        inventory_type=inventory_type,
+                    ),
+                    path.read_bytes(),
+                    udp_listen_port=session.caps_udp_listen_port,
+                    user_agent="Vibestorm",
+                )
+            except (AssetUploadError, OSError) as exc:
+                scene.apply_chat_alert(
+                    ChatAlert(region_handle=handle, message=f"Upload failed for {path.name}: {exc}")
+                )
+                continue
+            uploaded += 1
+            scene.apply_chat_alert(
+                ChatAlert(
+                    region_handle=handle,
+                    message=(
+                        f"Uploaded {path.name}: asset={result.new_asset_id} "
+                        f"item={result.new_inventory_item_id}"
+                    ),
+                )
+            )
+        scene.apply_chat_alert(
+            ChatAlert(region_handle=handle, message=f"Uploaded {uploaded}/{len(files)} file(s).")
+        )
 
     def on_render_mode_change(mode: str) -> None:
         nonlocal renderer
         if mode == "3d":
-            # Tilt + back off the orbit camera so the region floor and
-            # most cubes are framed at startup. Without orbit input
-            # wired (step 9), the user otherwise lands at pitch=0
-            # distance=8 which looks "into" objects with no ground.
-            camera.set_mode("orbit")
-            camera.pitch = 0.5
-            camera.distance = 50.0
+            camera.set_sim_overview()
         else:
             camera.set_mode("map")
         renderer.clear_caches()
@@ -414,6 +589,9 @@ async def run_viewer(args: argparse.Namespace) -> int:
         on_inventory_open_folder=on_inventory_open_folder,
         on_object_inventory_request=on_object_inventory_request,
         on_view_asset=on_view_asset,
+        on_save_asset=on_save_asset,
+        on_save_object_text_assets=on_save_object_text_assets,
+        on_upload_files=on_upload_files,
         on_render_mode_change=on_render_mode_change,
         on_render_setting_change=on_render_setting_change,
         initial_render_mode=initial_mode,
@@ -437,25 +615,11 @@ async def run_viewer(args: argparse.Namespace) -> int:
             )
 
     # Wire HUD-level subscriptions that need the hud instance.
-    def _on_asset_data_ready(event: AssetDataReady) -> None:
-        # Find item_name from hud's known asset map (best-effort)
-        item_name = ""
-        for key, (aid, atype, name) in hud._inspector_item_asset_map.items():
-            if aid == event.asset_id:
-                item_name = name
-                break
-        hud.show_asset_data(
-            event.asset_id,
-            event.asset_type,
-            event.data,
-            item_name=item_name,
-        )
-
     def _on_object_inventory_snapshot_ready(event: ObjectInventorySnapshotReady) -> None:
         # Let the scene update first (already subscribed), then register for view
         hud.register_inventory_snapshot_for_view(event.snapshot)
 
-    client.bus.subscribe(AssetDataReady, _on_asset_data_ready)
+    client.bus.subscribe(AssetDataReady, _make_asset_data_ready_handler(hud, pending_asset_saves))
     client.bus.subscribe(ObjectInventorySnapshotReady, _on_object_inventory_snapshot_ready)
 
     session_task = asyncio.create_task(
@@ -466,6 +630,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 duration_seconds=86400.0,
                 agent_update_interval_seconds=args.agent_update_interval,
                 camera_sweep=args.camera_sweep,
+                auto_upload_bakes=not args.no_auto_bake_upload,
             ),
             stop_event=stop_event,
             world_client=client,
@@ -480,6 +645,38 @@ async def run_viewer(args: argparse.Namespace) -> int:
     left_click_start_time: float | None = None
     right_click_start_pos: tuple[int, int] | None = None
     right_click_start_time: float | None = None
+    active_camera_preset: CameraPreset = "sim"
+
+    def apply_camera_preset(preset: CameraPreset) -> None:
+        nonlocal active_camera_preset
+        active_camera_preset = preset
+        if preset == "sim":
+            camera.set_sim_overview()
+            return
+        avatar = _camera_avatar_entity(scene)
+        if avatar is None:
+            scene.apply_chat_alert(
+                ChatAlert(
+                    region_handle=client.current_handle or 0,
+                    message="Avatar camera preset unavailable until an avatar update arrives.",
+                )
+            )
+            return
+        if preset == "avatar_behind":
+            camera.set_avatar_behind(avatar.position, avatar.rotation)
+        elif preset == "avatar_eye":
+            camera.set_avatar_eye(avatar.position, avatar.rotation)
+
+    def refresh_avatar_camera_preset() -> None:
+        if active_camera_preset in ("avatar_behind", "avatar_eye"):
+            avatar = _camera_avatar_entity(scene)
+            if avatar is None:
+                return
+            if active_camera_preset == "avatar_behind":
+                camera.set_avatar_behind(avatar.position, avatar.rotation)
+            else:
+                camera.set_avatar_eye(avatar.position, avatar.rotation)
+
     try:
         while running and not session_task.done():
             dt = clock.tick(frame_cap) / 1000.0
@@ -505,6 +702,8 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     hud.focus_chat()
                 if intent.request_center_on_avatar:
                     center_on_avatar()
+                if intent.camera_preset is not None:
+                    apply_camera_preset(intent.camera_preset)
 
                 if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:
@@ -546,6 +745,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     hud.resize(screen_size)
 
             scene.refresh_from_world_view(client.world_view())
+            refresh_avatar_camera_preset()
             renderer.update(dt, scene)
             renderer.render(world_surface, scene)
             hud_surface.fill((0, 0, 0, 0))
@@ -594,6 +794,7 @@ def _wire_scene(client: WorldClient, scene: Scene) -> None:
     client.bus.subscribe(RegionChanged, _with_render_cache_clear(scene.apply_region_changed))
     client.bus.subscribe(RegionMapTileReady, scene.apply_map_tile_ready)
     client.bus.subscribe(TextureAssetReady, scene.apply_texture_asset_ready)
+    client.bus.subscribe(MeshAssetReady, scene.apply_mesh_asset_ready)
     client.bus.subscribe(ChatLocal, scene.apply_chat_local)
     client.bus.subscribe(ChatIM, scene.apply_chat_im)
     client.bus.subscribe(ChatAlert, scene.apply_chat_alert)
@@ -606,12 +807,97 @@ def _wire_scene(client: WorldClient, scene: Scene) -> None:
     client.bus.subscribe(LayerDataReceived, scene.apply_layer_data_received)
 
 
+def _make_asset_data_ready_handler(
+    hud,
+    pending_asset_saves: dict[UUID, list[PendingAssetSave]] | None = None,
+):
+    def _on_asset_data_ready(event: AssetDataReady) -> None:
+        # Find item_name from hud's known asset map (best-effort). Entries are:
+        # (asset_id, asset_type, item_name, task_id, item_id).
+        item_name = ""
+        for entry in hud._inspector_item_asset_map.values():
+            aid, _atype, name, _task_id, _item_id = entry
+            if aid == event.asset_id:
+                item_name = name
+                break
+        if pending_asset_saves is not None:
+            for pending_save in pending_asset_saves.pop(event.asset_id, []):
+                _write_asset_save(pending_save.target_path, event.data)
+                print(
+                    "[viewer3d] asset.save "
+                    f"name={pending_save.selection.item_name!r} path={pending_save.target_path}",
+                    flush=True,
+                )
+        hud.show_asset_data(
+            event.asset_id,
+            event.asset_type,
+            event.data,
+            item_name=item_name,
+        )
+
+    return _on_asset_data_ready
+
+
 def _with_render_cache_clear(handler):
     def _wrapped(event):
         clear_tile_cache()
         handler(event)
 
     return _wrapped
+
+
+def _download_path_for_selection(
+    selection: ObjectAssetSelection,
+    *,
+    target_dir: Path | None = None,
+) -> Path:
+    if target_dir is None:
+        base_dir = Path.cwd() / DEFAULT_ASSET_DOWNLOAD_DIR
+        object_label = (
+            _safe_filename(str(selection.task_id)) if selection.task_id is not None else "agent-assets"
+        )
+        directory = base_dir / object_label
+    else:
+        directory = _resolve_user_path(target_dir)
+    name = _safe_filename(selection.item_name or str(selection.asset_id))
+    suffix = _asset_file_suffix(selection.asset_type)
+    if not name.lower().endswith(suffix):
+        name = f"{name}{suffix}"
+    return directory / name
+
+
+def _write_asset_save(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def _asset_file_suffix(asset_type: int) -> str:
+    if asset_type == 10:
+        return ".lsl"
+    if asset_type == 7:
+        return ".txt"
+    if asset_type == 0:
+        return ".j2k"
+    return ".bin"
+
+
+def _upload_kind_for_path(path: Path) -> tuple[str, str] | None:
+    suffix = path.suffix.lower()
+    if suffix == ".lsl":
+        return ("lsltext", "lsl")
+    if suffix in {".txt", ".nc"}:
+        return ("notecard", "notecard")
+    return None
+
+
+def _resolve_user_path(path: Path) -> Path:
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in value.strip())
+    cleaned = cleaned.strip(" .")
+    return cleaned or "unnamed"
 
 
 def _load_viewer_help() -> str:
@@ -630,4 +916,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except LoginError as exc:
+        print(f"login_error={exc}")
+        raise SystemExit(10) from exc

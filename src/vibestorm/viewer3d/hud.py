@@ -11,6 +11,7 @@ import math
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -60,6 +61,23 @@ class InspectorDisplayRow:
     local_id: int
 
 
+@dataclass(slots=True, frozen=True)
+class ObjectAssetSelection:
+    item_key: str
+    asset_id: UUID
+    asset_type: int
+    item_name: str
+    task_id: UUID | None = None
+    item_id: UUID | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class FileDialogAction:
+    kind: str
+    selection: ObjectAssetSelection | None = None
+    selections: tuple[ObjectAssetSelection, ...] = ()
+
+
 class HUD:
     """Main-menu strip, status bar, and a resizable chat subwindow.
 
@@ -80,6 +98,10 @@ class HUD:
         on_inventory_open_folder: Callable[[UUID], None] | None = None,
         on_object_inventory_request: Callable[[int], None] | None = None,
         on_view_asset: Callable[[UUID, int, UUID | None, UUID | None], None] | None = None,
+        on_save_asset: Callable[[ObjectAssetSelection, Path | None], None] | None = None,
+        on_save_object_text_assets: Callable[[tuple[ObjectAssetSelection, ...], Path | None], None]
+        | None = None,
+        on_upload_files: Callable[[Path | None], None] | None = None,
         on_render_mode_change: Callable[[str], None] | None = None,
         on_render_setting_change: Callable[[str, object], None] | None = None,
         initial_render_mode: str = RENDER_MODE_2D,
@@ -102,6 +124,9 @@ class HUD:
         self.on_inventory_open_folder = on_inventory_open_folder
         self.on_object_inventory_request = on_object_inventory_request
         self.on_view_asset = on_view_asset
+        self.on_save_asset = on_save_asset
+        self.on_save_object_text_assets = on_save_object_text_assets
+        self.on_upload_files = on_upload_files
         self.on_render_mode_change = on_render_mode_change
         self.on_render_setting_change = on_render_setting_change
         self.render_mode: str = (
@@ -139,8 +164,11 @@ class HUD:
         self._pending_asset_ids: set[UUID] = set()  # requested but not yet received
         # map: item_label -> (asset_id, asset_type, item_name, task_id, item_id)
         self._inspector_item_asset_map: dict[str, tuple[UUID, int, str, UUID | None, UUID | None]] = {}
+        self._inspector_asset_rows_by_local_id: dict[int, dict[str, ObjectAssetSelection]] = {}
         # selected item key in asset list
         self._selected_asset_item: str | None = None
+        self._file_dialog = None
+        self._file_dialog_action: FileDialogAction | None = None
 
         manager_kwargs: dict = {}
         if theme_path is not None:
@@ -653,8 +681,38 @@ class HUD:
             container=insp_container,
         )
         self.inspector_view_asset_button.disable()
+        self.inspector_save_asset_button = UIButton(
+            relative_rect=pygame.Rect(self._s(305), self._s(302), self._s(100), self._s(28)),
+            text="Save Item",
+            manager=self.manager,
+            container=insp_container,
+        )
+        self.inspector_save_asset_button.disable()
+        self.inspector_save_all_text_button = UIButton(
+            relative_rect=pygame.Rect(self._s(415), self._s(302), self._s(120), self._s(28)),
+            text="Save Text",
+            manager=self.manager,
+            container=insp_container,
+        )
+        self.inspector_save_all_text_button.disable()
+        self.inspector_upload_files_button = UIButton(
+            relative_rect=pygame.Rect(self._s(545), self._s(302), self._s(85), self._s(28)),
+            text="Upload File",
+            manager=self.manager,
+            container=insp_container,
+        )
+        if self.on_upload_files is None:
+            self.inspector_upload_files_button.disable()
+        self.inspector_upload_folder_button = UIButton(
+            relative_rect=pygame.Rect(self._s(305), self._s(338), self._s(105), self._s(28)),
+            text="Upload Dir",
+            manager=self.manager,
+            container=insp_container,
+        )
+        if self.on_upload_files is None:
+            self.inspector_upload_folder_button.disable()
         self.inspector_inventory = UISelectionList(
-            relative_rect=pygame.Rect(self._s(305), self._s(302), self._s(325), self._s(116)),
+            relative_rect=pygame.Rect(self._s(305), self._s(374), self._s(325), self._s(44)),
             item_list=[],
             manager=self.manager,
             container=insp_container,
@@ -758,6 +816,9 @@ class HUD:
         import pygame_gui
 
         self.manager.process_events(event)
+        if event.type == pygame_gui.UI_FILE_DIALOG_PATH_PICKED and event.ui_element is self._file_dialog:
+            self._handle_file_dialog_path(Path(event.text))
+            return True
         if event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED and event.ui_element is self.chat_input:
             text = event.text.strip()
             self.chat_input.set_text("")
@@ -860,6 +921,18 @@ class HUD:
                 return True
             if event.ui_element is self.inspector_view_asset_button:
                 self._view_selected_asset()
+                return True
+            if event.ui_element is self.inspector_save_asset_button:
+                self._save_selected_asset()
+                return True
+            if event.ui_element is self.inspector_save_all_text_button:
+                self._save_selected_object_text_assets()
+                return True
+            if event.ui_element is self.inspector_upload_files_button:
+                self._open_upload_file_dialog()
+                return True
+            if event.ui_element is self.inspector_upload_folder_button:
+                self._open_upload_folder_dialog()
                 return True
             if event.ui_element is self.teleport_button:
                 self.teleport_window.show()
@@ -1019,7 +1092,16 @@ class HUD:
             self.inspector_list,
             self.inspector_details,
             self.inspector_load_inventory_button,
+            self.inspector_view_asset_button,
+            self.inspector_save_asset_button,
+            self.inspector_save_all_text_button,
+            self.inspector_upload_files_button,
+            self.inspector_upload_folder_button,
             self.inspector_inventory,
+            self.asset_viewer_window,
+            self.asset_viewer_text,
+            self.asset_viewer_image,
+            self.asset_viewer_status,
             self.diagnostics_text,
             self.heightmap_image,
             self.heightmap_status,
@@ -1036,6 +1118,11 @@ class HUD:
         self._inspector_inventory_details = {}
         self._selected_inspector_row = None
         self._last_inspector_inventory_html = None
+        self._inspector_item_asset_map = {}
+        self._inspector_asset_rows_by_local_id = {}
+        self._selected_asset_item = None
+        self._file_dialog = None
+        self._file_dialog_action = None
         self._last_diagnostics_html = None
         self._last_heightmap_signature = None
         self._build_widgets()
@@ -1096,8 +1183,16 @@ class HUD:
         self.inspector_list.set_dimensions((left_w, max(self._s(80), ch - margin * 2)))
 
         button_h = self._s(28)
-        details_h = max(self._s(100), int((ch - margin * 2 - gap - button_h) * 0.58))
-        inv_h = max(self._s(60), ch - margin * 2 - gap * 2 - button_h - details_h)
+        action_h = self._s(28)
+        upload_h = self._s(28)
+        details_h = max(
+            self._s(100),
+            int((ch - margin * 2 - gap * 3 - button_h - action_h - upload_h) * 0.58),
+        )
+        inv_h = max(
+            self._s(44),
+            ch - margin * 2 - gap * 4 - button_h - action_h - upload_h - details_h,
+        )
 
         self.inspector_details.set_relative_position((margin + left_w + gap, margin))
         self.inspector_details.set_dimensions((right_w, details_h))
@@ -1110,8 +1205,24 @@ class HUD:
         self.inspector_load_inventory_button.set_dimensions((load_w, button_h))
         self.inspector_view_asset_button.set_relative_position((rx + load_w + gap, button_y))
         self.inspector_view_asset_button.set_dimensions((view_w, button_h))
+        action_y = button_y + button_h + gap
+        save_w = min(max(self._s(82), (right_w - gap * 2) // 3), self._s(110))
+        save_all_w = min(max(self._s(92), (right_w - gap * 2) // 3), self._s(126))
+        upload_w = max(self._s(88), right_w - save_w - save_all_w - gap * 2)
+        self.inspector_save_asset_button.set_relative_position((rx, action_y))
+        self.inspector_save_asset_button.set_dimensions((save_w, action_h))
+        self.inspector_save_all_text_button.set_relative_position((rx + save_w + gap, action_y))
+        self.inspector_save_all_text_button.set_dimensions((save_all_w, action_h))
+        self.inspector_upload_files_button.set_relative_position(
+            (rx + save_w + gap + save_all_w + gap, action_y)
+        )
+        self.inspector_upload_files_button.set_dimensions((upload_w, action_h))
+        upload_y = action_y + action_h + gap
+        half_upload_w = max(self._s(98), (right_w - gap) // 2)
+        self.inspector_upload_folder_button.set_relative_position((rx, upload_y))
+        self.inspector_upload_folder_button.set_dimensions((half_upload_w, upload_h))
         self.inspector_inventory.set_relative_position(
-            (margin + left_w + gap, button_y + button_h + gap)
+            (margin + left_w + gap, upload_y + upload_h + gap)
         )
         self.inspector_inventory.set_dimensions((right_w, inv_h))
 
@@ -1398,6 +1509,10 @@ class HUD:
             )
             for row in rows
         }
+        for row in rows:
+            snapshot = scene.object_inventory_snapshots.get(row.local_id)
+            if snapshot is not None:
+                self.register_inventory_snapshot_for_view(snapshot)
         selected_local_id = (
             self._inspector_local_ids_by_row_text.get(self._selected_inspector_row)
             if self._selected_inspector_row
@@ -1447,10 +1562,20 @@ class HUD:
             if local_id is None:
                 self.inspector_load_inventory_button.disable()
                 self.inspector_view_asset_button.disable()
+                self.inspector_save_asset_button.disable()
+                self.inspector_save_all_text_button.disable()
             else:
                 self.inspector_load_inventory_button.enable()
-                # View Asset button stays disabled until user selects an item in the inv list
+                # Item buttons stay disabled until user selects an item in the inventory list.
                 self.inspector_view_asset_button.disable()
+                self.inspector_save_asset_button.disable()
+                if self.on_save_object_text_assets is not None and self._text_asset_rows_for_local_id(local_id):
+                    self.inspector_save_all_text_button.enable()
+                else:
+                    self.inspector_save_all_text_button.disable()
+            if self.on_upload_files is not None:
+                self.inspector_upload_files_button.enable()
+                self.inspector_upload_folder_button.enable()
             self.inspector_details.set_text(detail)
             self._set_inspector_inventory_text(inventory)
         except Exception:  # pragma: no cover
@@ -1474,10 +1599,14 @@ class HUD:
         """Trigger an asset view request for the currently selected inventory item."""
         if self.on_view_asset is None or self._selected_asset_item is None:
             return
-        entry = self._inspector_item_asset_map.get(self._selected_asset_item)
-        if entry is None:
+        selection = self._selected_object_asset_selection()
+        if selection is None:
             return
-        asset_id, asset_type, item_name, task_id, item_id = entry
+        asset_id = selection.asset_id
+        asset_type = selection.asset_type
+        item_name = selection.item_name
+        task_id = selection.task_id
+        item_id = selection.item_id
         if asset_id.int == 0:
             self._open_asset_viewer_window(
                 f"Asset: {item_name}",
@@ -1497,6 +1626,120 @@ class HUD:
         self._open_asset_viewer_window(f"Asset: {item_name}", loading=True)
         self.on_view_asset(asset_id, asset_type, task_id, item_id)
 
+    def _save_selected_asset(self) -> None:
+        if self.on_save_asset is None:
+            return
+        selection = self._selected_object_asset_selection()
+        if selection is None or selection.asset_id.int == 0:
+            return
+        self._open_save_item_dialog(selection)
+
+    def _save_selected_object_text_assets(self) -> None:
+        if self.on_save_object_text_assets is None:
+            return
+        local_id = self._selected_local_id()
+        if local_id is None:
+            return
+        selections = tuple(self._text_asset_rows_for_local_id(local_id))
+        if selections:
+            self._open_save_all_text_dialog(selections)
+
+    def _open_save_item_dialog(self, selection: ObjectAssetSelection) -> None:
+        initial_path = _default_download_path_for_selection(selection)
+        self._open_file_dialog(
+            FileDialogAction(kind="save_item", selection=selection),
+            title="Save Asset",
+            initial_path=initial_path,
+            allow_existing_files_only=False,
+            allow_picking_directories=False,
+        )
+
+    def _open_save_all_text_dialog(self, selections: tuple[ObjectAssetSelection, ...]) -> None:
+        initial_path = _default_download_dir_for_selections(selections)
+        self._open_file_dialog(
+            FileDialogAction(kind="save_text", selections=selections),
+            title="Save Object Text Assets",
+            initial_path=initial_path,
+            allow_existing_files_only=True,
+            allow_picking_directories=True,
+        )
+
+    def _open_upload_file_dialog(self) -> None:
+        if self.on_upload_files is None:
+            return
+        self._open_file_dialog(
+            FileDialogAction(kind="upload_path"),
+            title="Upload File",
+            initial_path=Path("local/upload"),
+            allowed_suffixes={".lsl", ".txt", ".nc"},
+            allow_existing_files_only=True,
+            allow_picking_directories=False,
+        )
+
+    def _open_upload_folder_dialog(self) -> None:
+        if self.on_upload_files is None:
+            return
+        self._open_file_dialog(
+            FileDialogAction(kind="upload_path"),
+            title="Upload Folder",
+            initial_path=Path("local/upload"),
+            allow_existing_files_only=True,
+            allow_picking_directories=True,
+        )
+
+    def _open_file_dialog(
+        self,
+        action: FileDialogAction,
+        *,
+        title: str,
+        initial_path: Path,
+        allowed_suffixes: set[str] | None = None,
+        allow_existing_files_only: bool,
+        allow_picking_directories: bool,
+    ) -> None:
+        import pygame
+        from pygame_gui.windows import UIFileDialog
+
+        if self._file_dialog is not None:
+            try:
+                self._file_dialog.kill()
+            except Exception:  # pragma: no cover
+                pass
+        sw, sh = self.screen_size
+        rect = pygame.Rect(
+            max(self._s(24), sw // 2 - self._s(330)),
+            max(self._s(48), sh // 2 - self._s(220)),
+            min(self._s(660), max(self._s(520), sw - self._s(48))),
+            min(self._s(440), max(self._s(360), sh - self._s(96))),
+        )
+        self._file_dialog_action = action
+        self._file_dialog = UIFileDialog(
+            rect=rect,
+            manager=self.manager,
+            window_title=title,
+            allowed_suffixes=allowed_suffixes,
+            initial_file_path=str(initial_path),
+            allow_existing_files_only=allow_existing_files_only,
+            allow_picking_directories=allow_picking_directories,
+            always_on_top=True,
+        )
+
+    def _handle_file_dialog_path(self, path: Path) -> None:
+        action = self._file_dialog_action
+        self._file_dialog = None
+        self._file_dialog_action = None
+        if action is None:
+            return
+        if action.kind == "save_item" and self.on_save_asset is not None and action.selection is not None:
+            self.on_save_asset(action.selection, path)
+            return
+        if action.kind == "save_text" and self.on_save_object_text_assets is not None:
+            self.on_save_object_text_assets(action.selections, path)
+            return
+        if action.kind == "upload_path" and self.on_upload_files is not None:
+            self.on_upload_files(path)
+            return
+
 
     def register_inventory_snapshot_for_view(
         self, snapshot: object
@@ -1507,7 +1750,9 @@ class HUD:
         knows which asset to request for each inventory item.
         """
         task_id = getattr(snapshot, "task_id", None)
+        local_id = int(getattr(snapshot, "local_id", 0) or 0)
         items = list(getattr(snapshot, "items", ()))
+        rows_by_key: dict[str, ObjectAssetSelection] = {}
         for item in items:
             name = (getattr(item, "name", "") or "(unnamed)").replace("\x00", "").strip()
             item_id = getattr(item, "item_id", None)
@@ -1518,20 +1763,75 @@ class HUD:
             asset_type_int = _asset_type_string_to_int(asset_type_str) or _asset_type_string_to_int(inv_type_str)
             if asset_id is not None and asset_type_int is not None:
                 key = _object_inventory_item_label(item)
+                selection = ObjectAssetSelection(
+                    item_key=key,
+                    asset_id=asset_id,
+                    asset_type=asset_type_int,
+                    item_name=name,
+                    task_id=task_id,
+                    item_id=item_id,
+                )
+                rows_by_key[key] = selection
                 self._inspector_item_asset_map[key] = (asset_id, asset_type_int, name, task_id, item_id)
+        if local_id:
+            self._inspector_asset_rows_by_local_id[local_id] = rows_by_key
 
 
 
     def enable_view_for_item(self, item_key: str | None) -> None:
         """Called when an inventory item row is highlighted to toggle the View button."""
         self._selected_asset_item = item_key
+        selection = self._selected_object_asset_selection()
         try:
-            if item_key and item_key in self._inspector_item_asset_map:
+            if selection is not None:
                 self.inspector_view_asset_button.enable()
             else:
                 self.inspector_view_asset_button.disable()
+            if (
+                self.on_save_asset is not None
+                and selection is not None
+                and selection.asset_id.int != 0
+            ):
+                self.inspector_save_asset_button.enable()
+            else:
+                self.inspector_save_asset_button.disable()
         except Exception:  # pragma: no cover
             pass
+
+    def _selected_local_id(self) -> int | None:
+        if self._selected_inspector_row is None:
+            return None
+        return self._inspector_local_ids_by_row_text.get(self._selected_inspector_row)
+
+    def _selected_object_asset_selection(self) -> ObjectAssetSelection | None:
+        if self._selected_asset_item is None:
+            return None
+        local_id = self._selected_local_id()
+        if local_id is not None:
+            selection = self._inspector_asset_rows_by_local_id.get(local_id, {}).get(
+                self._selected_asset_item
+            )
+            if selection is not None:
+                return selection
+        entry = self._inspector_item_asset_map.get(self._selected_asset_item)
+        if entry is None:
+            return None
+        asset_id, asset_type, item_name, task_id, item_id = entry
+        return ObjectAssetSelection(
+            item_key=self._selected_asset_item,
+            asset_id=asset_id,
+            asset_type=asset_type,
+            item_name=item_name,
+            task_id=task_id,
+            item_id=item_id,
+        )
+
+    def _text_asset_rows_for_local_id(self, local_id: int) -> tuple[ObjectAssetSelection, ...]:
+        return tuple(
+            selection
+            for selection in self._inspector_asset_rows_by_local_id.get(local_id, {}).values()
+            if selection.asset_type in (7, 10) and selection.asset_id.int != 0
+        )
 
     def show_asset_data(
         self,
@@ -1722,6 +2022,37 @@ def _asset_type_string_to_int(asset_type_str: str) -> int | None:
         return int(s)
     except (ValueError, TypeError):
         return None
+
+
+def _default_download_path_for_selection(selection: ObjectAssetSelection) -> Path:
+    directory = _default_download_dir_for_selections((selection,))
+    name = _safe_filename(selection.item_name or str(selection.asset_id))
+    suffix = _asset_file_suffix(selection.asset_type)
+    if not name.lower().endswith(suffix):
+        name = f"{name}{suffix}"
+    return directory / name
+
+
+def _default_download_dir_for_selections(selections: tuple[ObjectAssetSelection, ...]) -> Path:
+    task_id = next((selection.task_id for selection in selections if selection.task_id is not None), None)
+    object_label = _safe_filename(str(task_id)) if task_id is not None else "agent-assets"
+    return Path("local/asset-downloads") / object_label
+
+
+def _asset_file_suffix(asset_type: int) -> str:
+    if asset_type == 10:
+        return ".lsl"
+    if asset_type == 7:
+        return ".txt"
+    if asset_type == 0:
+        return ".j2k"
+    return ".bin"
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in value.strip())
+    cleaned = cleaned.strip(" .")
+    return cleaned or "unnamed"
 
 
 

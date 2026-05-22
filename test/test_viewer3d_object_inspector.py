@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from pathlib import Path
 from uuid import UUID
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -270,6 +271,101 @@ class ObjectInspectorTests(unittest.TestCase):
         self.assertTrue(hud.asset_viewer_window.visible)
         self.assertIn("withheld its asset UUID", hud.asset_viewer_text.html_text)
         self.assertIn(str(task_id), hud.asset_viewer_text.html_text)
+
+    def test_object_inspector_save_buttons_emit_asset_selections(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+        from vibestorm.world.object_inventory import parse_task_inventory_text
+
+        saved = []
+        saved_all = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_save_asset=lambda selection, path: saved.append((selection, path)),
+            on_save_object_text_assets=lambda selections, path: saved_all.append((selections, path)),
+        )
+        scene = Scene()
+        scene.object_entities[7] = SceneEntity(
+            local_id=7,
+            pcode=9,
+            kind="prim",
+            position=(10.0, 10.0, 20.0),
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            name="Script Box",
+            shape="cube",
+        )
+        task_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        asset_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+        item_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        scene.object_inventory_snapshots[7] = parse_task_inventory_text(
+            "inv_item 0\n{\n"
+            f" item_id {item_id}\n"
+            f" asset_id {asset_id}\n"
+            " type lsltext\n"
+            " inv_type lsl\n"
+            " name Main Script|\n"
+            "}\n",
+            local_id=7,
+            task_id=task_id,
+            serial=1,
+            filename="task.inv",
+        )
+        hud.register_inventory_snapshot_for_view(scene.object_inventory_snapshots[7])
+        hud.inspector_window.show()
+        hud.update(0.016, scene, None)
+
+        object_row = next(row["text"] for row in hud.inspector_list.item_list if "Script Box" in row["text"])
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": hud.inspector_list, "text": object_row},
+            )
+        )
+        item_row = next(row["text"] for row in hud.inspector_inventory.item_list if "Main Script" in row["text"])
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": hud.inspector_inventory, "text": item_row},
+            )
+        )
+
+        self.assertTrue(hud.inspector_save_asset_button.is_enabled)
+        self.assertTrue(hud.inspector_save_all_text_button.is_enabled)
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_BUTTON_PRESSED,
+                {"ui_element": hud.inspector_save_asset_button},
+            )
+        )
+        self.assertIsNotNone(hud._file_dialog)
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_FILE_DIALOG_PATH_PICKED,
+                {"ui_element": hud._file_dialog, "text": "/tmp/Main Script.lsl"},
+            )
+        )
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_BUTTON_PRESSED,
+                {"ui_element": hud.inspector_save_all_text_button},
+            )
+        )
+        self.assertIsNotNone(hud._file_dialog)
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_FILE_DIALOG_PATH_PICKED,
+                {"ui_element": hud._file_dialog, "text": "/tmp/object-scripts"},
+            )
+        )
+
+        self.assertEqual([selection.item_name for selection, _path in saved], ["Main Script"])
+        self.assertEqual([path for _selection, path in saved], [Path("/tmp/Main Script.lsl")])
+        saved_all_selections, saved_all_path = saved_all[0]
+        self.assertEqual([selection.asset_id for selection in saved_all_selections], [asset_id])
+        self.assertEqual(saved_all_path, Path("/tmp/object-scripts"))
 
 
 

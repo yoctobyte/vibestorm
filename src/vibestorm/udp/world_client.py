@@ -44,6 +44,7 @@ from vibestorm.bus.events import (
     ChatOutbound,
     InventorySnapshotReady,
     LayerDataReceived,
+    MeshAssetReady,
     ObjectInventorySnapshotReady,
     RegionChanged,
     RegionMapTileReady,
@@ -266,6 +267,23 @@ class WorldClient:
                 TextureAssetReady(
                     region_handle=handle,
                     texture_id=texture_id,
+                    cache_path=path,
+                )
+            )
+        elif kind == "mesh.cache.ok":
+            parts = _kv_split(event.detail)
+            path = parts.get("path")
+            mesh_id_raw = parts.get("id")
+            if not path or mesh_id_raw is None:
+                return
+            try:
+                mesh_id = UUID(mesh_id_raw)
+            except ValueError:
+                return
+            self.bus.publish(
+                MeshAssetReady(
+                    region_handle=handle,
+                    mesh_id=mesh_id,
                     cache_path=path,
                 )
             )

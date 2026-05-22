@@ -297,6 +297,26 @@ class WorldClientBusBridgeTests(unittest.TestCase):
         self.assertEqual(received[0].texture_id, texture_id)
         self.assertEqual(received[0].cache_path, f"/tmp/{texture_id}.png")
 
+    def test_mesh_cache_event_publishes_mesh_asset_ready(self) -> None:
+        from vibestorm.bus.events import MeshAssetReady
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[MeshAssetReady] = []
+        client.bus.subscribe(MeshAssetReady, received.append)
+
+        mesh_id = UUID("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")
+        session._record_event(
+            0.0,
+            "mesh.cache.ok",
+            f"id={mesh_id} path=/tmp/{mesh_id}.llmesh bytes=123",
+        )
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].mesh_id, mesh_id)
+        self.assertEqual(received[0].cache_path, f"/tmp/{mesh_id}.llmesh")
+
 
 class WorldClientCommandHandlerTests(unittest.TestCase):
     def setUp(self) -> None:

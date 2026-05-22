@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         ChatOutbound,
         InventorySnapshotReady,
         LayerDataReceived,
+        MeshAssetReady,
         ObjectInventorySnapshotReady,
         RegionChanged,
         RegionMapTileReady,
@@ -54,7 +55,17 @@ DEFAULT_WATER_HEIGHT_M: float = 20.0
 
 
 EntityKind = Literal["prim", "avatar", "tree", "grass", "particle", "unknown"]
-PrimShape = Literal["cube", "sphere", "cylinder", "torus", "prism", "ring", "tube"]
+PrimShape = Literal[
+    "cube",
+    "sphere",
+    "cylinder",
+    "torus",
+    "prism",
+    "ring",
+    "tube",
+    "mesh",
+]
+MeshSourceKind = Literal["primitive", "sculpt", "mesh"]
 
 # Path/profile curve constants from libomv (PathCurve U8, ProfileCurve & 0x07).
 PATH_CURVE_LINE = 0x10
@@ -69,6 +80,14 @@ PROFILE_CURVE_ISO_TRIANGLE = 2
 PROFILE_CURVE_EQUIL_TRIANGLE = 3
 PROFILE_CURVE_RIGHT_TRIANGLE = 4
 PROFILE_CURVE_HALF_CIRCLE = 5
+
+EXTRA_PARAM_SCULPT = 0x30
+SCULPT_TYPE_SPHERE = 1
+SCULPT_TYPE_TORUS = 2
+SCULPT_TYPE_PLANE = 3
+SCULPT_TYPE_CYLINDER = 4
+SCULPT_TYPE_MESH = 5
+SCULPT_TYPE_MASK = 0x0F
 
 
 def _kind_for_pcode(pcode: int) -> EntityKind:
@@ -122,6 +141,61 @@ def classify_prim_shape(path_curve: int, profile_curve: int) -> PrimShape | None
 
 
 @dataclass(slots=True, frozen=True)
+class SculptMeshHint:
+    """Approximate render hint decoded from the sculpt extra-param block."""
+
+    source_kind: MeshSourceKind
+    asset_id: UUID
+    sculpt_type: int
+    shape: PrimShape
+
+
+def decode_sculpt_mesh_hint(extra_params: object) -> SculptMeshHint | None:
+    """Decode the sculpt/mesh extra-param into a placeholder mesh hint.
+
+    SL mesh objects ride the same sculpt extra-param lane with sculpt
+    type 5. Until the real sculpt-map and mesh-asset decoders exist,
+    this keeps them out of the anonymous cube bucket and preserves the
+    asset UUID for the future fetch/decode path.
+    """
+    for entry in extra_params or ():
+        if getattr(entry, "param_type", None) != EXTRA_PARAM_SCULPT:
+            continue
+        if not getattr(entry, "param_in_use", True):
+            continue
+        data = getattr(entry, "param_data", b"")
+        if not isinstance(data, (bytes, bytearray)) or len(data) < 17:
+            continue
+        asset_id = UUID(bytes=bytes(data[:16]))
+        sculpt_type = int(data[16])
+        base_type = sculpt_type & SCULPT_TYPE_MASK
+        if base_type == SCULPT_TYPE_MESH:
+            return SculptMeshHint(
+                source_kind="mesh",
+                asset_id=asset_id,
+                sculpt_type=sculpt_type,
+                shape="mesh",
+            )
+        return SculptMeshHint(
+            source_kind="sculpt",
+            asset_id=asset_id,
+            sculpt_type=sculpt_type,
+            shape=_shape_for_sculpt_type(base_type),
+        )
+    return None
+
+
+def _shape_for_sculpt_type(sculpt_type: int) -> PrimShape:
+    if sculpt_type == SCULPT_TYPE_TORUS:
+        return "torus"
+    if sculpt_type == SCULPT_TYPE_CYLINDER:
+        return "cylinder"
+    if sculpt_type == SCULPT_TYPE_PLANE:
+        return "cube"
+    return "sphere"
+
+
+@dataclass(slots=True, frozen=True)
 class ChatLine:
     kind: str          # "local" | "im" | "alert" | "outbound"
     sender: str        # display name (or "" / "*system*")
@@ -145,6 +219,9 @@ class SceneEntity:
     default_texture_id: UUID | None = None
     texture_entry: TextureEntry | None = None
     shape: PrimShape | None = None  # populated once parser surfaces path/profile curves
+    mesh_source_kind: MeshSourceKind = "primitive"
+    mesh_asset_id: UUID | None = None
+    sculpt_type: int | None = None
     tint: tuple[int, int, int] = DEFAULT_MARKER_COLOR
 
     @property
@@ -169,6 +246,7 @@ class Scene:
     parcel_name: str | None = None
     map_tile_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
+    mesh_paths: dict[UUID, Path] = field(default_factory=dict)
     inventory_snapshot: InventoryFetchSnapshot | None = None
     object_inventory_snapshots: dict[int, ObjectInventorySnapshot] = field(default_factory=dict)
     terrain_heightmap: RegionHeightmap | None = None
@@ -198,6 +276,7 @@ class Scene:
         self.object_entities.clear()
         self.avatar_entities.clear()
         self.texture_paths.clear()
+        self.mesh_paths.clear()
         self.object_inventory_snapshots.clear()
         self.terrain_heightmap = debug_heightmap
         self.debug_terrain_source = debug_source
@@ -211,6 +290,10 @@ class Scene:
     def apply_texture_asset_ready(self, event: TextureAssetReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:
             self.texture_paths[event.texture_id] = Path(event.cache_path)
+
+    def apply_mesh_asset_ready(self, event: MeshAssetReady) -> None:
+        if event.region_handle == self.region_handle or self.region_handle is None:
+            self.mesh_paths[event.mesh_id] = Path(event.cache_path)
 
     def apply_chat_local(self, event: ChatLocal) -> None:
         self.chat_lines.append(
@@ -314,6 +397,9 @@ class Scene:
             shape: PrimShape | None = None
             if shape_data is not None:
                 shape = classify_prim_shape(shape_data.path_curve, shape_data.profile_curve)
+            mesh_hint = decode_sculpt_mesh_hint(getattr(obj, "extra_params_entries", ()))
+            if mesh_hint is not None:
+                shape = mesh_hint.shape
             entity = SceneEntity(
                 local_id=obj.local_id,
                 pcode=obj.pcode,
@@ -326,6 +412,9 @@ class Scene:
                 default_texture_id=getattr(obj, "default_texture_id", None),
                 texture_entry=getattr(obj, "texture_entry", None),
                 shape=shape,
+                mesh_source_kind=mesh_hint.source_kind if mesh_hint is not None else "primitive",
+                mesh_asset_id=mesh_hint.asset_id if mesh_hint is not None else None,
+                sculpt_type=mesh_hint.sculpt_type if mesh_hint is not None else None,
                 tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
             )
             if obj.pcode == PCODE_AVATAR:
@@ -414,8 +503,11 @@ __all__ = [
     "PrimShape",
     "SceneEntity",
     "Scene",
+    "SculptMeshHint",
+    "MeshSourceKind",
     "PCODE_AVATAR",
     "PCODE_PRIM",
     "DEFAULT_WATER_HEIGHT_M",
     "classify_prim_shape",
+    "decode_sculpt_mesh_hint",
 ]

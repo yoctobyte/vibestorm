@@ -1,6 +1,429 @@
 # Current Handoff
 
-Last updated: 2026-05-10
+Last updated: 2026-05-17
+
+## Where To Move Next
+
+Two coherent next tracks are open:
+
+1. Object-local script/notecard sync, as described below.
+2. Continue real mesh/sculpt rendering:
+   - live-verify `GetMesh` against a local OpenSim mesh object
+   - add normals/UVs and per-face/material grouping to decoded mesh assets
+   - live-verify sculpt map fetch/deformation against local OpenSim sculpted prims
+   - add viewer-grade sculpt stitching/normals/UVs
+
+The object sync track remains the next protocol write path. The sculpt/mesh
+track is the next rendering path.
+
+## Object Sync Track
+
+The next coherent file feature track is object-local script/notecard sync, not
+more generic user-inventory upload.
+
+Implement it in this order:
+
+1. Add a task-inventory asset update CAP client beside
+   `src/vibestorm/caps/asset_upload_client.py`.
+   - Resolve `UpdateScriptTask` first, then fall back to
+     `UpdateScriptTaskInventory` for script rows.
+   - Resolve `UpdateNotecardTaskInventory` for notecard rows.
+   - Match OpenSim's two-step shape: POST LLSD metadata to the CAP, receive
+     `state=upload` plus `uploader`, then POST raw file bytes to the uploader.
+2. Start with updating existing object inventory items only.
+   - Script metadata is `item_id`, `task_id`, and `is_script_running`.
+   - Notecard task updates appear to share the broader item-asset update path;
+     verify the exact request keys against `referencedocs/Caps/BunchOfCaps/UpdateItemAsset.cs`
+     before coding.
+   - Do not create new object inventory rows yet; that can follow after update
+     is proven live.
+3. Add a narrow sync planner in `viewer3d`.
+   - Use the selected object's `task_id` as the local folder key:
+     `local/asset-downloads/<task-id>/`.
+   - Match `.lsl` files to visible script inventory rows and `.txt` / `.nc`
+     files to visible notecard rows by sanitized item name.
+   - For the first pass, upload only exact name matches and report skipped
+     files in chat/status.
+4. Wire Object Inspector `Upload` to selected-object sync when an object
+   inventory row set is loaded; keep the current user-inventory upload as the
+   fallback when no selected object context exists.
+5. Live verify on local OpenSim with `./run.sh tester viewer3d`:
+   download an object's scripts/notecards, edit one local file, upload/sync,
+   reload task inventory, and view the item again.
+
+Keep these scope limits for the first pass:
+
+- no bidirectional conflict resolution
+- no deletes
+- no creating missing object inventory items
+- no recursive folder sync
+- no automatic upload on every file change
+
+## Update 2026-05-17: Sculpt/Mesh Render Placeholders
+
+### What Changed
+
+- `viewer3d` now decodes the sculpt `ExtraParams` block
+  (`ParamType=0x30`, `UUID + sculpt_type`) into renderer-facing scene
+  metadata.
+- Sculpt placeholders now choose an approximate existing primitive mesh:
+  sphere, torus, cylinder, or flat cube/plane.
+- SL mesh objects (`sculpt_type=5`) are tagged as `mesh` and keep their asset
+  UUID on `SceneEntity.mesh_asset_id`; a follow-up update below adds the first
+  actual `GetMesh` fetch/decode path.
+
+### Current Boundary
+
+- This first classification step was visual-only; see the follow-up mesh
+  update below for the first real mesh asset path.
+- Vibestorm still does not fetch or decode sculpt-map textures.
+- Per-face mapping for non-cube primitives is still coarse; cube face-specific
+  texture overrides remain the only detailed face mapping.
+
+### What Was Verified
+
+- `uv run ruff check --select F,I src/vibestorm/viewer3d/scene.py src/vibestorm/viewer3d/perspective.py test/test_viewer3d_scene.py test/test_viewer3d_perspective_gl.py`
+- `uv run --extra viewer pytest test/test_viewer3d_scene.py test/test_viewer3d_perspective_gl.py -q`
+
+### Concrete Next Step
+
+Continue with live verification and renderer fidelity: normals, UVs,
+per-face/material grouping, and viewer-grade sculpt stitching.
+
+## Update 2026-05-17: First Real Mesh Asset Path
+
+### What Changed
+
+- Added `src/vibestorm/caps/get_mesh_client.py` for `GetMesh` asset fetches.
+- The session seed-cap prelude now requests `GetMesh2` and `GetMesh`, prefers
+  `GetMesh2`, and defers mesh fetches until a mesh object is seen.
+- Mesh objects discovered through sculpt `ExtraParams` type `0x30` with
+  `sculpt_type=5` are fetched by `mesh_id`, cached as raw `.llmesh` files
+  under `local/mesh-cache/`, and republished through `MeshAssetReady`.
+- Added `src/vibestorm/assets/sl_mesh.py`, a narrow SL mesh decoder:
+  binary LLSD header, high-LOD block lookup, compressed LLSD submesh array
+  inflate, `Position` dequantization, and `TriangleList` index assembly.
+- `viewer3d` now records mesh cache paths and uploads decoded high-LOD mesh
+  geometry into the existing instanced GL renderer keyed by mesh asset UUID.
+  If fetch/decode is missing or fails, the existing sphere placeholder remains.
+
+### Current Boundary
+
+- Only `high_lod` is decoded.
+- No normals, UVs, skinning/rigging, physics blocks, LOD switching, or
+  per-face material grouping yet.
+- Mesh asset decoding is covered by synthetic tests; it still needs live
+  verification against OpenSim mesh assets.
+- Sculpt maps are handled by the follow-up sculpt update below.
+
+### What Was Verified
+
+- `uv run ruff check --select F,I src/vibestorm/assets/sl_mesh.py src/vibestorm/caps/get_mesh_client.py src/vibestorm/bus/events.py src/vibestorm/udp/session.py src/vibestorm/udp/world_client.py src/vibestorm/viewer3d/scene.py src/vibestorm/viewer3d/app.py src/vibestorm/viewer3d/perspective.py test/test_sl_mesh.py test/test_get_mesh_client.py test/test_viewer3d_scene.py test/test_viewer3d_perspective_gl.py test/test_world_client.py`
+- `uv run pytest test/test_sl_mesh.py test/test_get_mesh_client.py -q`
+- `uv run --extra viewer pytest test/test_viewer3d_scene.py test/test_viewer3d_perspective_gl.py -q`
+- `uv run pytest test/test_udp_session.py test/test_world_client.py -q`
+
+### Concrete Next Step
+
+Create or rez a simple OpenSim mesh object, run `./run.sh tester viewer3d`,
+and watch for `mesh.cache.ok` followed by visible non-placeholder geometry.
+If the mesh appears, add UV/normal decode next; if it does not, inspect the
+cached `.llmesh` header/block layout and adjust the LLSD/decompression path.
+
+## Update 2026-05-17: First Sculpt Map Geometry Path
+
+### What Changed
+
+- Sculpted prims (`ExtraParams type=0x30`, sculpt type `1..4`) now enqueue
+  their referenced sculpt texture UUID through the existing `GetTexture`
+  object-texture fetch path.
+- Added `src/vibestorm/assets/sculpt.py`, which converts RGB/RGBA sculpt-map
+  pixels into a unit-sized triangle mesh:
+  - RGB maps to local `[-0.5, 0.5]` xyz coordinates.
+  - sphere/cylinder wrap horizontally.
+  - torus wraps horizontally and vertically.
+  - plane remains open.
+  - sphere top/bottom rows converge to simple pole averages.
+  - sculpt flags are preserved and applied: `0x40` reverses triangle winding
+    for inside-out/inverted sculpts, and `0x80` mirrors local X.
+  - large maps are downsampled to a 32x32 render grid for now.
+- `viewer3d` now uploads cached sculpt PNGs as per-asset GL meshes keyed by
+  sculpt texture UUID and sculpt type. If the texture is not cached or decode
+  fails, the existing approximate primitive placeholder remains.
+
+### Current Boundary
+
+- This is not viewer-grade sculpt tessellation yet.
+- No authored normals, UV recovery, exact SL stitching, mirror/invert handling,
+  or sculpt LOD behavior.
+- The path is covered by synthetic tests; it still needs live verification
+  against local OpenSim sculpted prims.
+
+### What Was Verified
+
+- `uv run ruff check --select F,I src/vibestorm/assets/sculpt.py src/vibestorm/udp/session.py src/vibestorm/viewer3d/perspective.py test/test_sculpt.py test/test_udp_session.py test/test_viewer3d_perspective_gl.py`
+- `uv run pytest test/test_sculpt.py test/test_udp_session.py -q`
+- `uv run --extra viewer pytest test/test_viewer3d_perspective_gl.py -q`
+
+### Concrete Next Step
+
+Rez or import a known sculpted prim in local OpenSim, run
+`./run.sh tester viewer3d`, and check for its sculpt texture entering
+`local/texture-cache/` followed by visible non-placeholder geometry. If the
+shape is mirrored or pinched, tune the seam/stitching rules from the cached PNG
+and live object's sculpt type.
+
+## Update 2026-05-17: Avatar Placeholder And Camera Presets
+
+### What Changed
+
+- Added a dedicated `avatar_placeholder_mesh()` in `viewer3d.meshes`.
+  Avatars now render as a simple human-like silhouette with torso, head, arms,
+  legs, and a small forward-facing marker, rather than the cube fallback.
+- The avatar mesh faces local +X, so existing ObjectUpdate quaternions visibly
+  rotate the placeholder.
+- Added camera presets:
+  - `F1`: sim-wide orbit view.
+  - `F2`: third-person view behind the avatar at roughly 10 m.
+  - `F3`: avatar eye view.
+- F2/F3 continuously refresh from the current avatar entity transform when
+  world updates arrive.
+- `docs/viewer-help.md` now lists the 3D camera keys.
+
+### Current Boundary
+
+- Avatar mesh is still a placeholder, not appearance-driven.
+- No animations, skeleton, attachments, clothing, or body-shape visual params.
+- First-person uses current avatar rotation only; camera collision and mouselook
+  controls are not implemented.
+
+### What Was Verified
+
+- `uv run ruff check --select F,I src/vibestorm/viewer3d/camera.py src/vibestorm/viewer3d/input.py src/vibestorm/viewer3d/meshes.py src/vibestorm/viewer3d/perspective.py src/vibestorm/viewer3d/app.py test/test_viewer3d_camera.py test/test_viewer3d_input.py test/test_viewer3d_meshes.py test/test_viewer3d_perspective_gl.py`
+- `uv run --extra viewer pytest test/test_viewer3d_camera.py test/test_viewer3d_camera_matrices.py test/test_viewer3d_input.py test/test_viewer3d_meshes.py test/test_viewer3d_perspective_gl.py -q`
+
+### Concrete Next Step
+
+Live-verify F2/F3 against local OpenSim. If the camera points sideways or
+backward, adjust `_avatar_forward()` based on observed avatar quaternion
+convention; then add mouse steering for eye/behind modes.
+
+## Update 2026-05-16: Grid Launchers And SL Guardrails
+
+### What Changed
+
+- Added thin launchers:
+  - `./local.sh ...` uses `VIBESTORM_GRID_MODE=local` and the default
+    `tester` profile.
+  - `./opengrid.sh ...` uses `VIBESTORM_GRID_MODE=opengrid` and the default
+    `osgrid` profile.
+  - `./sl.sh ...` uses `VIBESTORM_GRID_MODE=sl` and the default `sl` profile.
+- `run.sh` now derives a grid mode from `VIBESTORM_GRID_MODE`, the profile
+  name, or a known login URI. `login-show` prints it.
+- SL mode requires explicit confirmation before commands that touch the live
+  simulator beyond plain login/cap inspection (`eventq`, `udp`, `handshake`,
+  `session`, `console`, `viewer`, `viewer3d`, and `upload-smoke`). In
+  non-interactive use, set `VIBESTORM_SL_CONFIRM=1`.
+- SL mode passes `--no-auto-bake-upload` to bounded sessions, console, and both
+  viewers. Deliberate user actions, including manual uploads, remain possible
+  after confirmation.
+- The session runtime now has `SessionConfig.auto_upload_bakes`; the Upload
+  Baked Texture CAP is resolved but ignored when this flag is false.
+
+### What Was Verified
+
+- `bash -n run.sh local.sh opengrid.sh sl.sh`
+- `uv run ruff check --select F,I src/vibestorm/app/cli.py src/vibestorm/viewer/app.py src/vibestorm/viewer3d/app.py src/vibestorm/udp/session.py`
+- `uv run pytest test/test_udp_session.py test/test_viewer3d_app_compositor.py -q`
+- `git diff --check`
+- `./sl.sh login-show` selects the `sl` profile and Agni login URI without
+  requiring credentials.
+- A non-interactive `./sl.sh session 0` with dummy env credentials refuses to
+  continue without `VIBESTORM_SL_CONFIRM=1`.
+
+### Concrete Next Step
+
+Use `./sl.sh login-show`, then `./sl.sh bootstrap`, then a short
+`./sl.sh session 20 --verbose` on a disposable SL account only after accepting
+the explicit confirmation prompt.
+
+## Update 2026-05-17: File Dialogs For Viewer File Actions
+
+### What Changed
+
+- Wired `pygame_gui.windows.UIFileDialog` into the 3D Object Inspector file
+  actions.
+- `Save Item` now opens a save path picker seeded under
+  `local/asset-downloads/<task-id>/`.
+- `Save Text` now opens a directory picker and saves all visible object
+  script/notecard assets into that chosen folder.
+- The Object Inspector now has separate upload actions:
+  - `Upload File` picks one existing `.lsl`, `.txt`, or `.nc` file.
+  - `Upload Dir` picks a folder and uploads all matching files in that folder.
+- The app upload path now accepts either one file or one folder. It still uses
+  the existing `NewFileAgentInventory` user-inventory upload path.
+
+### Current Boundary
+
+- Multi-save is wired for object/task inventory rows whose asset UUIDs are
+  visible and retrievable.
+- User-inventory directory save is not wired yet; that needs user-inventory
+  asset retrieval plumbing comparable to the current object `TransferRequest`
+  path, plus a row-to-folder save planner.
+- Uploading back into the selected object's task inventory is still future
+  work and remains the next protocol task.
+
+### What Was Verified
+
+- `uv run ruff check --select F,I src/vibestorm/viewer3d/hud.py src/vibestorm/viewer3d/app.py test/test_viewer3d_object_inspector.py`
+- `uv run --extra viewer pytest test/test_viewer3d_object_inspector.py -q`
+- `uv run --extra viewer pytest test/test_viewer3d_app_compositor.py test/test_viewer3d_object_inspector.py -q`
+- `git diff --check`
+
+## Update 2026-05-14: Viewer File Actions
+
+### What Changed
+
+- Added Object Inspector buttons for file actions:
+  - `Save Item` queues a download for the selected object inventory asset.
+  - `Save Text` queues downloads for every visible script/notecard asset in the
+    selected object inventory.
+  - `Upload` uploads local `.lsl`, `.txt`, and `.nc` files from `local/upload/`
+    into the user's inventory root through `NewFileAgentInventory`.
+- Downloaded object assets are written under
+  `local/asset-downloads/<task-id>/` with `.lsl` for scripts, `.txt` for
+  notecards, `.j2k` for textures, and `.bin` for unknown asset types.
+- `AssetDataReady` handling now also drains pending file-save requests before
+  showing the asset in the viewer window.
+
+### Current Boundary
+
+- Bulk object download is now wired for assets whose UUID is visible in the
+  task inventory listing. If OpenSim withholds the asset UUID, the viewer still
+  reports that as a permission/protocol limitation rather than issuing a doomed
+  transfer request.
+- Upload is currently user-inventory upload only. True object upload/sync needs
+  the separate task-inventory update caps (`UpdateScriptTaskInventory`,
+  `UpdateNotecardTaskInventory`, etc.) or equivalent UDP update flow.
+
+### What Was Verified
+
+- `uv run ruff check --select F,I src/vibestorm/viewer3d/app.py src/vibestorm/viewer3d/hud.py test/test_viewer3d_object_inspector.py test/test_viewer3d_app_compositor.py`
+- `uv run --extra viewer pytest test/test_viewer3d_object_inspector.py test/test_viewer3d_app_compositor.py -q`
+
+### Concrete Next Step
+
+Implement the task-inventory update capability client and add a sync planner
+that compares `local/asset-downloads/<task-id>/` against the selected object's
+script/notecard inventory before uploading changes back into the object.
+
+## Update 2026-05-14: Interactive Login Profile
+
+### What Changed
+
+- `run.sh` now loads login details from env vars first, then from ignored
+  `local/vibestorm-login.env` if present.
+- `run.sh` now accepts a profile name before the command. The default profile
+  remains `local/vibestorm-login.env`; named profiles use ignored files like
+  `local/vibestorm-login-tester.env`.
+- `./run.sh tester ...` has a built-in local OpenSim fallback for the
+  `Vibestorm Tester` account if that profile file does not exist yet. Env vars
+  and explicit profile files still override the fallback.
+- Added `./run.sh login`, `./run.sh login-show`, and `./run.sh login-reset`
+  for changing user, password, sim preset, or start location without manually
+  editing the profile.
+- If a login command is launched with missing details from an interactive
+  terminal, `run.sh` prompts for sim location (`localhost`, `opengrid`, `sl`,
+  or `custom`), first name, last name, and password.
+- Prompted credentials can be stored in `local/vibestorm-login.env` with mode
+  `600`. This is local-file storage for development convenience, not encrypted
+  OS keyring storage.
+- Login-capable Python entrypoints now translate `LoginError` to exit status
+  `10`. If a saved login command exits with status `10` from an interactive
+  terminal, `run.sh` asks whether to re-enter saved login details and retry
+  once. Other crashes/errors keep their original nonzero status and are not
+  treated as failed logons.
+- The `opengrid`/`osgrid` preset uses OSgrid's published login URI:
+  `http://login.osgrid.org/`.
+- Fixed a 3D viewer asset-view crash where the `AssetDataReady` subscriber
+  unpacked object-inspector asset metadata as three fields even though the HUD
+  stores five fields (`asset_id`, `asset_type`, `item_name`, `task_id`,
+  `item_id`).
+
+### What Was Verified
+
+- Found the existing local test credential in ignored OpenSim console history,
+  not in a tracked env file.
+- `Vibestorm Tester` bootstrap succeeded using that ignored local credential.
+- The upload smoke test succeeded after the stale "already logged in" presence
+  expired.
+- Prompt/storage path was checked against a temporary profile; it wrote a
+  shell-sourceable env file with mode `600` before the intentionally bad login
+  URI failed.
+- `./run.sh login-show` shows only non-secret profile fields plus
+  `password=set/missing`.
+- Failure handling was checked with a temporary stale profile: interactive
+  commands now offer one re-entry/retry path, while noninteractive failure
+  preserves the underlying nonzero exit status.
+- `./run.sh tester login-show` resolves the built-in local test profile when no
+  `local/vibestorm-login-tester.env` file exists.
+- `bash -n run.sh`
+- `uv run ruff check --select F,I src/vibestorm/app/cli.py src/vibestorm/viewer/app.py src/vibestorm/viewer3d/app.py test/test_viewer3d_app_compositor.py`
+- `uv run --extra viewer pytest test/test_viewer3d_app_compositor.py test/test_viewer3d_object_inspector.py -q`
+- `uv run pytest test/test_asset_upload_client.py -q`
+
+### Concrete Next Step
+
+Implement object/task-inventory update caps so the new file UI can upload back
+into the selected object rather than only into user inventory.
+
+## Update 2026-05-13: NewFileAgentInventory Upload Smoke
+
+### What Changed
+
+- Added `src/vibestorm/caps/asset_upload_client.py` for the generic
+  `NewFileAgentInventory` capability flow:
+  - LLSD metadata prelude with `asset_type`, `inventory_type`, `folder_id`,
+    `name`, `description`, and permission masks.
+  - one-shot raw-byte POST to the returned uploader URL.
+  - completion parsing for `state`, `new_asset`, `new_inventory_item`, and
+    returned permission masks.
+- Added `vibestorm upload-empty-text-smoke` and `./run.sh upload-smoke`.
+  The command creates `local/upload-smoke/empty-space.txt` as an empty file,
+  appends one space, uploads that one byte as a notecard/text item, then
+  confirms the returned inventory item through `FetchInventory2`.
+- Added focused tests in `test/test_asset_upload_client.py`.
+
+### What Is Now Known
+
+- Local OpenSim source for `NewAgentInventoryRequest` creates both the asset
+  UUID and inventory item UUID server-side (`UUID.Random()`), so the new-file
+  upload path should always return fresh GUIDs rather than client-chosen IDs.
+- The generic upload completion reply shape is close to baked-texture upload
+  but includes `new_inventory_item` and permission-mask fields.
+
+### What Remains Unknown / TODO
+
+- This is a CLI smoke path only. Viewer create/save/upload UI is still not
+  wired.
+- Object/task-inventory update caps (`UpdateScriptTaskInventory` /
+  `UpdateNotecardTaskInventory`) are still separate future work.
+
+### What Was Verified
+
+- `uv run ruff check src/vibestorm/caps/asset_upload_client.py test/test_asset_upload_client.py`
+- `uv run ruff check --select F,I src/vibestorm/app/cli.py src/vibestorm/caps/asset_upload_client.py test/test_asset_upload_client.py`
+- `uv run pytest test/test_asset_upload_client.py test/test_inventory_caps_client.py -q`
+- `uv run pytest -q` -> 487 passed, 28 pygame_gui font warnings
+- Live OpenSim smoke with the ignored local `Vibestorm Tester` credential:
+  uploaded one byte, returned `new_asset=8a3bc672-4a0e-4542-80dc-0973d63fd5e2`,
+  returned `new_inventory_item=77798038-e03a-4dd5-8704-031203269a63`, and
+  confirmed that item via `FetchInventory2`.
+
+### Concrete Next Step
+
+Wire this path into the viewer inventory UI as a minimal "new text/notecard"
+action, then build richer save/edit flows on top.
 
 ## Update 2026-05-10: Asset Viewer — Read-Only Notecard / Script / Texture Display
 

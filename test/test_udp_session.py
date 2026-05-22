@@ -486,6 +486,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertIn("map.reply.no_match", kinds)
 
     def test_next_pending_object_texture_id_skips_cached_and_attempted(self) -> None:
+        from vibestorm.udp.messages import ExtraParamEntry
         from vibestorm.world.models import WorldObject
         from vibestorm.world.texture_entry import TextureEntry
 
@@ -493,6 +494,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         first = UUID("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")
         second = UUID("cccccccc-1111-2222-3333-dddddddddddd")
         face = UUID("eeeeeeee-1111-2222-3333-ffffffffffff")
+        sculpt = UUID("99999999-1111-2222-3333-aaaaaaaaaaaa")
         session.texture_fetch_attempted.add(first)
         session.texture_fetch_attempted.add(second)
         session.world_view.objects[UUID(int=1)] = WorldObject(
@@ -518,6 +520,26 @@ class LiveCircuitSessionTests(unittest.TestCase):
         )
 
         self.assertEqual(_next_pending_object_texture_id(session), face)
+        session.texture_fetch_attempted.add(face)
+        session.world_view.objects[UUID(int=3)] = WorldObject(
+            full_id=UUID(int=3), local_id=3, parent_id=0, pcode=9,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
+            update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
+            position=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=24,
+            extra_params_entries=(
+                ExtraParamEntry(
+                    param_type=0x30,
+                    param_in_use=True,
+                    param_data=sculpt.bytes + bytes([1]),
+                ),
+            ),
+            default_texture_id=None,
+        )
+
+        self.assertEqual(_next_pending_object_texture_id(session), sculpt)
 
     def test_build_chat_packet_emits_zerocoded_chat_from_viewer(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)

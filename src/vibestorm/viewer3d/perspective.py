@@ -18,7 +18,8 @@ Current limits:
 - Lighting is first-pass directional + ambient only. Primitive normals
   are approximated from local vertex position until the mesh format
   carries authored normals.
-- Per-face textures, mesh, sculpt geometry. Each is its own pipeline.
+- Mesh/sculpt fidelity is first-pass: high-LOD mesh Position/TriangleList
+  and RGB sculpt-map displacement render, but normals/UV/materials are coarse.
 - Avatar capsules / billboards. Avatars currently fall through to
   the cube fallback (no shape classification on PCODE_AVATAR).
 
@@ -36,6 +37,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
+
+from vibestorm.assets.sculpt import SculptDecodeError, sculpt_mesh_from_rgb
+from vibestorm.assets.sl_mesh import SLMeshDecodeError, decode_sl_mesh_asset
 
 if TYPE_CHECKING:
     import moderngl
@@ -62,11 +66,23 @@ _INITIAL_INSTANCE_CAPACITY = 1024
 _DEFAULT_SHAPE_KEY: str = "cube"
 
 # Aliases from PrimShape values to the underlying mesh used. Tube/ring
-# don't have purpose-built meshes yet — fall back to the closest match.
+# don't have purpose-built meshes yet. Mesh is a placeholder until
+# authored mesh asset fetch/decode lands, but it deliberately routes
+# through the same instanced mesh path instead of the cube fallback.
 _SHAPE_ALIASES: dict[str, str] = {
     "tube": "cube",
     "ring": "torus",
+    "mesh": "sphere",
+    "avatar": "avatar",
 }
+
+
+def _mesh_asset_shape_key(mesh_id: UUID) -> str:
+    return f"mesh:{mesh_id}"
+
+
+def _sculpt_asset_shape_key(sculpt_id: UUID, sculpt_type: int | None) -> str:
+    return f"sculpt:{sculpt_id}:{sculpt_type or 0}"
 
 DEFAULT_SUN_DIRECTION: tuple[float, float, float] = (0.35, -0.55, 0.76)
 AMBIENT_LIGHT: float = 0.78
@@ -360,6 +376,23 @@ def generated_texture_uv(
     return (max(0.0, min(1.0, u + 0.5)), max(0.0, min(1.0, v + 0.5)))
 
 
+def _load_sculpt_mesh_from_path(
+    path: Path, sculpt_type: int | None
+) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    import pygame
+
+    surface = pygame.image.load(str(path))
+    width, height = surface.get_size()
+    pixels = pygame.image.tobytes(surface, "RGB")
+    mesh = sculpt_mesh_from_rgb(
+        pixels,
+        width=width,
+        height=height,
+        sculpt_type=int(sculpt_type or 1),
+    )
+    return mesh.vertices, mesh.indices
+
+
 def model_matrix(
     position: tuple[float, float, float],
     scale: tuple[float, float, float],
@@ -499,6 +532,8 @@ class PerspectiveRenderer:
         self._instance_vbo = None  # type: moderngl.Buffer | None
         self._shape_meshes: dict[str, _ShapeMesh] = {}
         self._cube_face_meshes: dict[int, _ShapeMesh] = {}
+        self._mesh_asset_paths: dict[UUID, Path] = {}
+        self._sculpt_asset_paths: dict[tuple[UUID, int | None], Path] = {}
         self._instance_capacity = 0
         # Ground (region floor) — separate program because the cubes are
         # flat-tinted while the ground samples a texture.
@@ -575,6 +610,8 @@ class PerspectiveRenderer:
         sun_direction = lighting_direction(scene)
 
         self._upload_ground_texture(ctx, scene)
+        self._upload_scene_mesh_assets(ctx, scene)
+        self._upload_scene_sculpt_assets(ctx, scene)
         shape_groups = self._group_entities_by_shape(scene)
         cube_entities = shape_groups.pop("cube", [])
         groups = self._group_entities_for_draw(scene, shape_groups=shape_groups)
@@ -663,7 +700,13 @@ class PerspectiveRenderer:
             eye = camera.eye_position
 
         # Reconstruct camera frame
-        from vibestorm.viewer3d.camera import _sub, _cross, _normalize, DEFAULT_UP, DEFAULT_FOV_Y_RADIANS
+        from vibestorm.viewer3d.camera import (
+            DEFAULT_FOV_Y_RADIANS,
+            DEFAULT_UP,
+            _cross,
+            _normalize,
+            _sub,
+        )
         forward = _normalize(_sub(camera.target, eye))
         side = _normalize(_cross(forward, DEFAULT_UP))
         upward = _cross(side, forward)
@@ -745,6 +788,8 @@ class PerspectiveRenderer:
             mesh.ibo.release()
             mesh.vbo.release()
         self._shape_meshes.clear()
+        self._mesh_asset_paths.clear()
+        self._sculpt_asset_paths.clear()
         for mesh in self._cube_face_meshes.values():
             mesh.vao.release()
             mesh.ibo.release()
@@ -828,6 +873,7 @@ class PerspectiveRenderer:
             "cylinder": meshes.cylinder_mesh,
             "torus": meshes.torus_mesh,
             "prism": meshes.prism_mesh,
+            "avatar": meshes.avatar_placeholder_mesh,
         }
         for shape_key, author in shape_authors.items():
             verts, indices = author()
@@ -923,12 +969,101 @@ class PerspectiveRenderer:
             *scene.object_entities.values(),
             *scene.avatar_entities.values(),
         ):
-            raw = entity.shape
+            if (
+                entity.mesh_source_kind == "mesh"
+                and entity.mesh_asset_id is not None
+                and _mesh_asset_shape_key(entity.mesh_asset_id) in self._shape_meshes
+            ):
+                shape_key = _mesh_asset_shape_key(entity.mesh_asset_id)
+                groups.setdefault(shape_key, []).append(entity)
+                continue
+            if (
+                entity.mesh_source_kind == "sculpt"
+                and entity.mesh_asset_id is not None
+                and _sculpt_asset_shape_key(entity.mesh_asset_id, entity.sculpt_type) in self._shape_meshes
+            ):
+                shape_key = _sculpt_asset_shape_key(entity.mesh_asset_id, entity.sculpt_type)
+                groups.setdefault(shape_key, []).append(entity)
+                continue
+            raw = "avatar" if entity.kind == "avatar" else entity.shape
             shape_key = _SHAPE_ALIASES.get(raw, raw) if raw is not None else _DEFAULT_SHAPE_KEY
             if shape_key not in self._shape_meshes:
                 shape_key = _DEFAULT_SHAPE_KEY
             groups.setdefault(shape_key, []).append(entity)
         return groups
+
+    def _upload_scene_mesh_assets(self, ctx: moderngl.Context, scene: Scene) -> None:
+        for mesh_id, path in scene.mesh_paths.items():
+            shape_key = _mesh_asset_shape_key(mesh_id)
+            if self._mesh_asset_paths.get(mesh_id) == path and shape_key in self._shape_meshes:
+                continue
+            if shape_key in self._shape_meshes:
+                mesh = self._shape_meshes.pop(shape_key)
+                mesh.vao.release()
+                mesh.ibo.release()
+                mesh.vbo.release()
+            try:
+                decoded = decode_sl_mesh_asset(path.read_bytes())
+            except (OSError, SLMeshDecodeError):
+                continue
+            if not decoded.vertices or not decoded.indices:
+                continue
+            assert self._program is not None
+            assert self._instance_vbo is not None
+            vbo = ctx.buffer(struct.pack(f"{len(decoded.vertices)}f", *decoded.vertices))
+            ibo = ctx.buffer(struct.pack(f"{len(decoded.indices)}I", *decoded.indices))
+            vao = ctx.vertex_array(
+                self._program,
+                [
+                    (vbo, "3f", "in_pos"),
+                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                ],
+                index_buffer=ibo,
+                index_element_size=4,
+            )
+            self._shape_meshes[shape_key] = _ShapeMesh(
+                vbo=vbo, ibo=ibo, vao=vao, index_count=len(decoded.indices)
+            )
+            self._mesh_asset_paths[mesh_id] = path
+
+    def _upload_scene_sculpt_assets(self, ctx: moderngl.Context, scene: Scene) -> None:
+        for entity in (*scene.object_entities.values(), *scene.avatar_entities.values()):
+            if entity.mesh_source_kind != "sculpt" or entity.mesh_asset_id is None:
+                continue
+            sculpt_id = entity.mesh_asset_id
+            path = scene.texture_paths.get(sculpt_id)
+            if path is None:
+                continue
+            cache_key = (sculpt_id, entity.sculpt_type)
+            shape_key = _sculpt_asset_shape_key(sculpt_id, entity.sculpt_type)
+            if self._sculpt_asset_paths.get(cache_key) == path and shape_key in self._shape_meshes:
+                continue
+            if shape_key in self._shape_meshes:
+                mesh = self._shape_meshes.pop(shape_key)
+                mesh.vao.release()
+                mesh.ibo.release()
+                mesh.vbo.release()
+            try:
+                vertices, indices = _load_sculpt_mesh_from_path(path, entity.sculpt_type)
+            except (OSError, SculptDecodeError):
+                continue
+            assert self._program is not None
+            assert self._instance_vbo is not None
+            vbo = ctx.buffer(struct.pack(f"{len(vertices)}f", *vertices))
+            ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
+            vao = ctx.vertex_array(
+                self._program,
+                [
+                    (vbo, "3f", "in_pos"),
+                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                ],
+                index_buffer=ibo,
+                index_element_size=4,
+            )
+            self._shape_meshes[shape_key] = _ShapeMesh(
+                vbo=vbo, ibo=ibo, vao=vao, index_count=len(indices)
+            )
+            self._sculpt_asset_paths[cache_key] = path
 
     def _group_entities_for_draw(
         self,

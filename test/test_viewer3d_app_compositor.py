@@ -11,7 +11,10 @@ skip if no GL is available.
 """
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
+from uuid import UUID
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
@@ -66,6 +69,87 @@ class AllocateFrameSurfacesTests(unittest.TestCase):
         flags = world.get_flags()
 
         self.assertFalse(flags & self.pygame.SRCALPHA, f"world flags={flags:#x}")
+
+
+class AssetDataReadyHandlerTests(unittest.TestCase):
+    def test_uses_five_field_asset_map_entry(self) -> None:
+        from vibestorm.bus.events import AssetDataReady
+        from vibestorm.viewer3d.app import _make_asset_data_ready_handler
+
+        asset_id = UUID("11111111-1111-4111-8111-111111111111")
+
+        class FakeHud:
+            _inspector_item_asset_map = {
+                "Script [lsltext]": (
+                    asset_id,
+                    10,
+                    "Script",
+                    UUID("22222222-2222-4222-8222-222222222222"),
+                    UUID("33333333-3333-4333-8333-333333333333"),
+                )
+            }
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def show_asset_data(self, asset_id, asset_type, data, *, item_name=""):  # type: ignore[no-untyped-def]
+                self.calls.append((asset_id, asset_type, data, item_name))
+
+        hud = FakeHud()
+        handler = _make_asset_data_ready_handler(hud)
+
+        handler(
+            AssetDataReady(
+                region_handle=1,
+                asset_id=asset_id,
+                asset_type=10,
+                data=b"default {}",
+            )
+        )
+
+        self.assertEqual(hud.calls, [(asset_id, 10, b"default {}", "Script")])
+
+    def test_writes_pending_asset_saves(self) -> None:
+        from vibestorm.bus.events import AssetDataReady
+        from vibestorm.viewer3d.app import PendingAssetSave, _make_asset_data_ready_handler
+        from vibestorm.viewer3d.hud import ObjectAssetSelection
+
+        asset_id = UUID("11111111-1111-4111-8111-111111111111")
+
+        class FakeHud:
+            _inspector_item_asset_map = {}
+
+            def show_asset_data(self, asset_id, asset_type, data, *, item_name=""):  # type: ignore[no-untyped-def]
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "scripts" / "Main.lsl"
+            pending = {
+                asset_id: [
+                    PendingAssetSave(
+                        selection=ObjectAssetSelection(
+                            item_key="Main [lsltext]",
+                            asset_id=asset_id,
+                            asset_type=10,
+                            item_name="Main",
+                        ),
+                        target_path=target,
+                    )
+                ]
+            }
+            handler = _make_asset_data_ready_handler(FakeHud(), pending)
+
+            handler(
+                AssetDataReady(
+                    region_handle=1,
+                    asset_id=asset_id,
+                    asset_type=10,
+                    data=b"default { state_entry() {} }",
+                )
+            )
+
+            self.assertEqual(target.read_bytes(), b"default { state_entry() {} }")
+            self.assertEqual(pending, {})
 
 
 class CompositeFrameTests(unittest.TestCase):

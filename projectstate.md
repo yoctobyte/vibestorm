@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-05-09
+Last updated: 2026-05-17
 
 ## Current Summary
 
@@ -39,6 +39,9 @@ The repo already supports:
 - viewer3d starts in 3D mode by default, caps rendering at 20 FPS by default,
   and includes in-app Diagnostics / Sim Debug / Render Settings windows for
   terrain, water, object, and mesh-line debugging
+- viewer3d has explicit camera presets: `F1` sim-wide orbit, `F2`
+  third-person behind-avatar, and `F3` avatar eye view. The avatar presets
+  track the current avatar transform when updates arrive.
 - viewer3d has first-pass ambient + sun-direction lighting for primitives and
   filled terrain surfaces
 - viewer3d has first-pass texturing: cached region map tiles can be draped
@@ -51,11 +54,39 @@ The repo already supports:
 - cube primitives render parsed per-face texture UUID overrides; non-cube
   primitives still use the default-texture fallback until their face mapping is
   modeled
+- viewer3d now decodes sculpt/mesh identity from the sculpt `ExtraParams`
+  block (`type=0x30`, `UUID + sculpt_type`) into renderer-facing scene
+  metadata. Sculpt objects now fetch their sculpt texture through `GetTexture`,
+  reuse the existing texture PNG cache, build a first-pass RGB displacement
+  mesh with basic seam wrapping for sphere/torus/cylinder/plane sculpt types,
+  preserve/apply documented mirror and invert flags, and upload that geometry
+  into the existing instanced renderer. SL mesh
+  objects resolve their mesh asset UUID through the `GetMesh` CAP,
+  cache raw `.llmesh` assets under `local/mesh-cache/`, decode high-LOD
+  Position/TriangleList geometry, and upload that geometry into the existing
+  instanced mesh renderer. If fetch or decode fails, sculpt/mesh objects keep
+  using their primitive placeholders.
+- avatars render with a dedicated human-like placeholder mesh facing local
+  +X, so the existing ObjectUpdate quaternion visibly controls avatar facing
+  instead of stretching a cube.
 - first-pass object inventory asset viewing: `TransferRequest` implemented for
   retrieving object task-inventory assets; the latest fix matches OpenSim's
   `SimInventoryItem` params layout with the requested asset UUID at offset 80.
   When OpenSim intentionally withholds a task inventory asset UUID, the viewer
   now reports that instead of sending an impossible transfer request.
+- first user-inventory upload smoke path: `NewFileAgentInventory` capability
+  prelude plus one-shot raw-byte upload, exposed as `./run.sh upload-smoke`.
+  The command creates `local/upload-smoke/empty-space.txt` by writing an empty
+  file and appending one space, uploads it as a notecard/text item, then uses
+  `FetchInventory2` to confirm the returned `new_inventory_item` points at the
+  returned `new_asset`. Live OpenSim verification succeeded with a one-byte
+  upload returning asset `8a3bc672-4a0e-4542-80dc-0973d63fd5e2` and inventory
+  item `77798038-e03a-4dd5-8704-031203269a63`.
+- viewer3d Object Inspector now has first-pass file actions: save the selected
+  object asset to a chosen path, bulk-save all visible text/script object
+  assets to a chosen folder, and upload one `.lsl`, `.txt`, or `.nc` file or
+  all matching files from a chosen folder into the user's inventory root
+  through `NewFileAgentInventory`.
 
 
 ## What Is Stable
@@ -69,10 +100,16 @@ The repo already supports:
 - `./run.sh session`
 - `./run.sh session 180 --verbose`
 - `./run.sh viewer`
+- `./run.sh upload-smoke`
+- `./local.sh ...`, `./opengrid.sh ...`, and `./sl.sh ...` wrap
+  `run.sh` with separate default profiles and grid-safety modes.
 - `./run.sh unknowns`
 - `./run.sh fixtures`
 
 The local OpenSim target is the current source of truth for live protocol experimentation.
+Use `./local.sh` for local test accounts, `./opengrid.sh` for OSgrid/OpenGrid
+accounts, and `./sl.sh` for Second Life accounts so credentials and safety
+defaults do not get mixed accidentally.
 
 ## Current Technical Shape
 
@@ -122,12 +159,15 @@ Main gaps:
 - parcel name/status is still a placeholder until `ParcelOverlay` and parcel metadata
   are decoded
 - extended-region 32x32 terrain patches are not decompressed yet
-- inventory is currently read-only; user-inventory folders can be opened
+- inventory is no longer purely read-only, but write support is still narrow:
+  user-inventory folders can be opened
   lazily through `FetchInventoryDescendents2`, and object/task inventory can
   be listed through `RequestTaskInventory` + xfer; successful empty folder and
-  object replies are represented as loaded-empty, but asset open/save,
-  create/upload/store management, multi-save, and multi-upload-from-file are
-  not implemented yet beyond existing appearance/baked-texture upload support
+  object replies are represented as loaded-empty. First-pass object asset
+  viewing, save-to-disk, bulk text/script save, and user-inventory file upload
+  exist, but object-task-inventory upload/sync, create/store management,
+  deletes, conflict handling, and recursive folder sync are not implemented yet
+  beyond existing appearance/baked-texture upload support.
 
 ## Current Evidence Workflow
 
@@ -180,17 +220,20 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 
 ## Recommended Next Step
 
-Run the 3D viewer against the local OpenSim target and inspect first-pass
-texturing:
+Move next on object-local file sync for scripts and notecards:
 
 1. Start OpenSim: `./run.sh opensim`
-2. Run the viewer: `./run.sh viewer3d`
-3. Use View -> Render Settings to isolate terrain, mesh lines, water, and
-   objects while checking whether the map tile drapes correctly over terrain
-   and whether default prim textures appear as their assets arrive.
-4. Continue Task Inventory asset viewing work: test with an object/item whose
-   inventory xfer contains a non-zero `asset_id`, then finalize the text/script
-   viewer UI and add save-to-disk.
-5. Continue texturing with full `TextureEntry` per-face decode, authored mesh
-   UVs/normals, and simulator terrain material parameters instead of the
-   temporary region-map drape.
+2. Run the viewer with the local test profile: `./run.sh tester viewer3d`
+3. Select an object, load its task inventory, and use the current `Save Text`
+   path to populate `local/asset-downloads/<task-id>/`.
+4. Implement task-inventory update CAP support:
+   `UpdateScriptTask` / `UpdateScriptTaskInventory` for `.lsl` rows and
+   `UpdateNotecardTaskInventory` for `.txt` / `.nc` rows.
+5. Wire Object Inspector upload to sync exact-name local file matches back into
+   the selected object's existing task inventory items. Keep the current
+   `NewFileAgentInventory` upload into the user's inventory root as the
+   fallback when no selected object context exists.
+
+The first sync pass should update existing script/notecard rows only. Deleting
+object inventory, creating missing rows, conflict resolution, and recursive
+folder sync can follow after the update path is proven live.

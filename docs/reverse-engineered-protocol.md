@@ -346,11 +346,40 @@ Current limitations:
   parent IDs, name, description, asset type, inventory type, and raw fields.
   It does not yet fully model permissions, sale fields, creation date, script
   running state, or nested folder semantics.
-- Save/upload/edit is not implemented. Later write paths likely involve
-  `UpdateTaskInventory`, `RemoveTaskInventory`, `MoveTaskInventory`, and caps
-  such as `UpdateScriptTaskInventory` / `UpdateNotecardTaskInventory`.
-- The UI is read-only and displays object inventory under the selected object
-  in the Object Inspector.
+- First user-inventory upload smoke support exists through the
+  `NewFileAgentInventory` capability. The client posts an LLSD request with
+  `asset_type`, `inventory_type`, `folder_id`, `name`, `description`, and
+  permission masks. OpenSim returns `state=upload`, a one-shot `uploader` URL,
+  and optional `upload_price`; the client then posts raw bytes to the uploader
+  and receives `state=complete`, `new_asset`, `new_inventory_item`, and updated
+  permission masks. OpenSim source shows both GUIDs are generated server-side
+  for this new-file path.
+- First viewer file actions exist: selected task-inventory assets can be saved
+  to disk, all visible script/notecard rows can be bulk-saved, and local
+  `.lsl`, `.txt`, or `.nc` files can be uploaded into the user's inventory root.
+- Object-local script/notecard update remains the next write-path target.
+  Local OpenSim source registers:
+  - `UpdateScriptTask` and legacy `UpdateScriptTaskInventory`
+  - `UpdateNotecardTaskInventory`
+  - related agent-inventory update caps such as `UpdateNotecardAgentInventory`
+    and `UpdateScriptAgent`
+- `UpdateScriptTask` / `UpdateScriptTaskInventory` use a two-step CAP upload:
+  1. POST an LLSD map containing `item_id`, `task_id`, and
+     `is_script_running`
+  2. receive `state=upload` and a one-shot `uploader`
+  3. POST raw script bytes to the uploader
+  4. receive `state=complete`, `compiled`, `errors`, and `new_asset`
+     (`new_asset` is set to the inventory item ID in the OpenSim implementation
+     inspected here, not a freshly generated asset UUID)
+- OpenSim checks both object-inventory edit permission and per-script edit
+  permission before issuing the uploader URL. The returned task script uploader
+  also rejects uploads from a different remote IP and expires quickly.
+- `UpdateNotecardTaskInventory` is registered through the broader item-asset
+  update handler family. The exact request key set still needs to be verified
+  before implementing notecard sync.
+- Broader object inventory mutation is not implemented. Later write paths may
+  also involve UDP `UpdateTaskInventory`, `RemoveTaskInventory`, and
+  `MoveTaskInventory` for creating, deleting, or moving task inventory rows.
 
 ### `ObjectExtraParams`
 Current implementation status:
@@ -379,6 +408,62 @@ Current implementation status:
   - payload bytes that look like `UUID + 1-byte subtype`
 - this strongly suggests a sculpt-related extra-param block in local OpenSim traffic
 - Vibestorm currently decodes the rich blob into structured `extra_params_entries` on `ObjectUpdateEntry` when parsing succeeds
+- viewer3d now treats rich-object `ParamType=0x30` entries with at least 17
+  bytes as sculpt/mesh hints:
+  - first 16 bytes: sculpt texture or mesh asset UUID
+  - byte 17: sculpt type plus flags; low nibble is the base type
+  - observed/assumed sculpt type mapping used by the renderer:
+    `1=sphere`, `2=torus`, `3=plane`, `4=cylinder`, `5=mesh`
+  - documented sculpt flags now preserved into the scene layer:
+    `0x40=invert`, `0x80=mirror`
+  - `5=mesh` is routed to a mesh asset bucket and keeps the asset UUID on the
+    scene entity for the `GetMesh` fetch/decode path
+- Sculpt rendering now uses the referenced UUID as a `GetTexture` target when
+  the sculpt type is `1..4`. The fetched J2K is decoded through the existing
+  texture cache as a PNG and converted into first-pass render geometry:
+  - RGB components map to local vertex coordinates `[-0.5, 0.5]`
+  - type `1=sphere` and `4=cylinder` wrap horizontally
+  - type `2=torus` wraps horizontally and vertically
+  - type `3=plane` remains open
+  - sphere top/bottom rows are converged to simple pole averages
+  - mirror flips local X and invert reverses triangle winding
+  - maps are downsampled to a maximum 32x32 render grid for now
+- This sculpt path is approximate: no viewer-grade stitching, normals, UVs,
+  mirror/invert flags, or exact SL sculpt LOD behavior yet.
+
+### `GetMesh` / SL Mesh Assets
+
+Current implementation status:
+
+- Vibestorm now requests `GetMesh2` and `GetMesh` in the seed-cap prelude.
+  `GetMesh2` is preferred when both are present.
+- OpenSim registers these caps through the same asset-poll service family as
+  `GetTexture` when configured locally.
+- Mesh object discovery currently comes from `ObjectUpdate.ExtraParams`
+  `ParamType=0x30` with sculpt type `5`.
+- The mesh asset ID is fetched with:
+  - `GET <GetMesh-cap>?mesh_id=<uuid>`
+  - raw response bytes cached as `local/mesh-cache/<uuid>.llmesh`
+- The decoded mesh format follows the public SL mesh asset description:
+  - uncompressed binary LLSD header map
+  - LOD blocks such as `high_lod` contain `offset` and `size` from the end of
+    the header
+  - LOD payloads are compressed binary LLSD arrays of submesh maps
+  - each renderable submesh uses `Position` bytes (`U16 x/y/z`, 6 bytes per
+    vertex), optional `PositionDomain` `Min`/`Max`, and `TriangleList` bytes
+    (`U16` indices)
+- The first renderer implementation decodes only `high_lod`, combines all
+  renderable submeshes into one vertex/index buffer, and uploads it into the
+  existing instanced mesh renderer keyed by mesh asset UUID.
+
+Current limitations:
+
+- No normals, UVs, skinning, rigged mesh, physics blocks, material mapping, or
+  LOD switching yet.
+- If `GetMesh` fails or the mesh asset cannot be decoded, viewer3d keeps the
+  prior sphere placeholder for that mesh object.
+- Sculpt maps have a first-pass RGB displacement renderer, but still need
+  viewer-grade stitching and normals/UVs.
 - this area still needs more live captures for non-sculpt subtypes such as flexible/light/projector-style cases
 
 ### `TeleportLocationRequest`

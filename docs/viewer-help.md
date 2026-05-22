@@ -13,8 +13,13 @@
 
 ## Camera
 
+- F1: sim-wide orbit view
+- F2: third-person avatar view from behind
+- F3: avatar eye view
 - Mouse wheel: zoom in or out
-- Right mouse drag: pan the map
+- Right mouse drag: pan the map or rotate the 3D orbit camera
+- Shift + right mouse drag: pan the 3D orbit target
+- Shift + Page Up / Page Down: raise or lower the 3D orbit target
 - Debug -> Center: recenter on your avatar
 
 ## Chat

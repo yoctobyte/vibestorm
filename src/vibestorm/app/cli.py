@@ -10,11 +10,22 @@ from typing import Iterable
 
 from vibestorm import __version__
 from vibestorm.app.main import get_status
+from vibestorm.caps.asset_upload_client import (
+    AssetUploadClient,
+    AssetUploadError,
+    NewFileInventoryRequest,
+)
 from vibestorm.caps.client import CapabilityClient
+from vibestorm.caps.inventory_client import (
+    InventoryCapabilityClient,
+    InventoryCapabilityError,
+    InventoryItemRequest,
+    parse_inventory_items_payload,
+)
 from vibestorm.event_queue.client import EventQueueClient
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
-from vibestorm.login.client import LoginClient
-from vibestorm.login.models import LoginCredentials, LoginRequest
+from vibestorm.login.client import LoginClient, LoginError
+from vibestorm.login.models import LoginBootstrap, LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
     encode_complete_agent_movement,
@@ -96,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--camera-sweep", action="store_true")
     session_parser.add_argument("--spawn-cube", action="store_true")
     session_parser.add_argument(
+        "--no-auto-bake-upload",
+        action="store_true",
+        help="Do not automatically upload baked appearance textures during session setup.",
+    )
+    session_parser.add_argument(
         "--capture-dir",
         type=Path,
         help="Write selected inbound message fixtures under this directory.",
@@ -118,6 +134,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print live session events and transport diagnostics.",
     )
 
+    upload_parser = subparsers.add_parser(
+        "upload-empty-text-smoke",
+        help="Upload a one-space text/notecard asset through NewFileAgentInventory.",
+    )
+    upload_parser.add_argument("--login-uri", required=True)
+    upload_parser.add_argument("--first", required=True)
+    upload_parser.add_argument("--last", required=True)
+    upload_parser.add_argument("--password", required=True)
+    upload_parser.add_argument("--start", default="last")
+    upload_parser.add_argument(
+        "--name",
+        default="vibestorm-empty-space.txt",
+        help="Inventory item name to create.",
+    )
+    upload_parser.add_argument(
+        "--description",
+        default="Vibestorm upload smoke test: one-space text payload.",
+    )
+    upload_parser.add_argument(
+        "--local-path",
+        type=Path,
+        default=Path("local/upload-smoke/empty-space.txt"),
+        help="Local file to create before uploading.",
+    )
+
     console_parser = subparsers.add_parser(
         "console",
         help="Run an indefinite live session and stream world events to stdout.",
@@ -129,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
     console_parser.add_argument("--start", default="last")
     console_parser.add_argument("--agent-update-interval", type=float, default=1.0)
     console_parser.add_argument("--camera-sweep", action="store_true")
+    console_parser.add_argument(
+        "--no-auto-bake-upload",
+        action="store_true",
+        help="Do not automatically upload baked appearance textures during session setup.",
+    )
     console_parser.add_argument(
         "--snapshot-interval",
         type=float,
@@ -392,6 +438,91 @@ def print_lines(lines: Iterable[str]) -> None:
         print(line)
 
 
+async def upload_empty_text_smoke(
+    *,
+    bootstrap: LoginBootstrap,
+    name: str,
+    description: str,
+    local_path: Path,
+) -> list[str]:
+    """Create a one-space local text file, upload it, and verify the new item."""
+
+    if bootstrap.inventory_root_folder_id is None:
+        raise AssetUploadError("login response did not include an inventory root folder")
+
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(b"")
+    with local_path.open("ab") as handle:
+        handle.write(b" ")
+    data = local_path.read_bytes()
+
+    capability_client = CapabilityClient(timeout_seconds=10.0)
+    resolved = await capability_client.resolve_seed_caps(
+        bootstrap.seed_capability,
+        ["NewFileAgentInventory", "FetchInventory2"],
+        user_agent="Vibestorm",
+    )
+    upload_url = resolved.get("NewFileAgentInventory")
+    if not upload_url:
+        raise AssetUploadError("NewFileAgentInventory capability was not resolved")
+    fetch_inventory2_url = resolved.get("FetchInventory2")
+    if not fetch_inventory2_url:
+        raise AssetUploadError("FetchInventory2 capability was not resolved")
+
+    result = await AssetUploadClient(timeout_seconds=20.0).upload_new_file(
+        upload_url,
+        NewFileInventoryRequest(
+            folder_id=bootstrap.inventory_root_folder_id,
+            name=name,
+            description=description,
+            asset_type="notecard",
+            inventory_type="notecard",
+        ),
+        data,
+        user_agent="Vibestorm",
+    )
+    if result.state != "complete":
+        raise AssetUploadError(f"upload did not complete, state={result.state!r}")
+    if result.new_asset_id is None:
+        raise AssetUploadError("upload completed without a new_asset UUID")
+    if result.new_inventory_item_id is None:
+        raise AssetUploadError("upload completed without a new_inventory_item UUID")
+
+    try:
+        items_payload = await InventoryCapabilityClient(timeout_seconds=10.0).fetch_inventory_items(
+            fetch_inventory2_url,
+            [InventoryItemRequest(item_id=result.new_inventory_item_id)],
+            user_agent="Vibestorm",
+        )
+    except InventoryCapabilityError as exc:
+        raise AssetUploadError(f"FetchInventory2 confirmation failed: {exc}") from exc
+    fetched_items = parse_inventory_items_payload(items_payload)
+    fetched = next(
+        (item for item in fetched_items if item.item_id == result.new_inventory_item_id),
+        None,
+    )
+    if fetched is None:
+        raise AssetUploadError(
+            f"FetchInventory2 did not return item {result.new_inventory_item_id}"
+        )
+    if fetched.asset_id != result.new_asset_id:
+        raise AssetUploadError(
+            "FetchInventory2 asset mismatch: "
+            f"expected {result.new_asset_id}, got {fetched.asset_id}"
+        )
+
+    return [
+        "upload[file]=created_empty_then_appended_space",
+        f"upload[file_path]={local_path}",
+        f"upload[bytes]={len(data)}",
+        f"upload[state]={result.state}",
+        f"upload[new_asset]={result.new_asset_id}",
+        f"upload[new_inventory_item]={result.new_inventory_item_id}",
+        "upload[confirm]=fetched "
+        f"name={fetched.name!r} asset={fetched.asset_id} item={fetched.item_id}",
+    ]
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -574,6 +705,7 @@ def main() -> int:
             f"duration={args.duration:.1f}s "
             f"camera_sweep={args.camera_sweep} "
             f"spawn_cube={args.spawn_cube} "
+            f"auto_bake_upload={not args.no_auto_bake_upload} "
             f"capture={args.capture_dir if args.capture_dir else 'off'} "
             f"capture_mode={args.capture_mode} "
             f"unknowns_db={DEFAULT_UNKNOWNS_DB_PATH} "
@@ -589,6 +721,7 @@ def main() -> int:
                     agent_update_interval_seconds=args.agent_update_interval,
                     camera_sweep=args.camera_sweep,
                     spawn_test_cube=args.spawn_cube,
+                    auto_upload_bakes=not args.no_auto_bake_upload,
                     capture_dir=args.capture_dir,
                     capture_messages=tuple(args.capture_message),
                     capture_mode=args.capture_mode,
@@ -597,6 +730,31 @@ def main() -> int:
             ),
         )
         print_lines(format_session_report(report, verbose=args.verbose))
+        return 0
+
+    if args.command == "upload-empty-text-smoke":
+        request = LoginRequest(
+            login_uri=args.login_uri,
+            credentials=LoginCredentials(
+                first=args.first,
+                last=args.last,
+                password=args.password,
+            ),
+            start=args.start,
+            version=__version__,
+            platform=platform.system(),
+            platform_version=platform.platform(),
+        )
+        bootstrap = asyncio.run(LoginClient().login(request))
+        lines = asyncio.run(
+            upload_empty_text_smoke(
+                bootstrap=bootstrap,
+                name=args.name,
+                description=args.description,
+                local_path=args.local_path,
+            )
+        )
+        print_lines(lines)
         return 0
 
     if args.command == "console":
@@ -658,6 +816,7 @@ def main() -> int:
                     duration_seconds=86400.0,
                     agent_update_interval_seconds=args.agent_update_interval,
                     camera_sweep=args.camera_sweep,
+                    auto_upload_bakes=not args.no_auto_bake_upload,
                 ),
                 on_event=on_event,
                 world_view=world_view,
@@ -802,4 +961,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except LoginError as exc:
+        print(f"login_error={exc}")
+        raise SystemExit(10) from exc

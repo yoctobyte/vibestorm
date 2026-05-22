@@ -19,7 +19,7 @@ from vibestorm.bus.events import (
     RegionChanged,
     RegionMapTileReady,
 )
-from vibestorm.login.client import LoginClient
+from vibestorm.login.client import LoginClient, LoginError
 from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.session import SessionConfig, run_live_session
@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start", default="last")
     parser.add_argument("--agent-update-interval", type=float, default=1.0)
     parser.add_argument("--camera-sweep", action="store_true")
+    parser.add_argument(
+        "--no-auto-bake-upload",
+        action="store_true",
+        help="Do not automatically upload baked appearance textures during session setup.",
+    )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument(
@@ -141,6 +146,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 duration_seconds=86400.0,
                 agent_update_interval_seconds=args.agent_update_interval,
                 camera_sweep=args.camera_sweep,
+                auto_upload_bakes=not args.no_auto_bake_upload,
             ),
             stop_event=stop_event,
             world_client=client,
@@ -249,4 +255,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except LoginError as exc:
+        print(f"login_error={exc}")
+        raise SystemExit(10) from exc

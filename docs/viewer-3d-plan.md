@@ -86,7 +86,11 @@ What is **not** yet available and should be assumed-absent in v1:
   unsupported.
 - Per-face textures beyond `default_texture_id`. `TextureEntry` per-face
   decode is deferred per project state.
-- Mesh and sculpt geometry. Asset fetch + decode is unimplemented.
+- Full-fidelity mesh and sculpt geometry. Mesh extra-param hints now resolve
+  through `GetMesh` and can render decoded high-LOD Position/TriangleList
+  geometry. Sculpt maps now render as first-pass RGB displacement meshes.
+  Normals, UVs, materials, LOD switching, rigging, and viewer-grade sculpt
+  stitching are still unimplemented.
 - Full avatar appearance applied to a 3D body. Bake upload works at login,
   but no avatar mesh exists to texture.
 
@@ -97,9 +101,11 @@ and a 3D viewer ultimately projects onto that same 2D surface. So 2D, 2.5D,
 and 3D are rendering strategies over the same world snapshot, not separate
 products.
 
-For the first 3D pass, visual fidelity is secondary. Mesh and sculpt rendering
-are skipped. Approximate every entity from `position`, `scale`, `rotation`,
-`pcode`, and (when available) `path_curve`/`profile_curve`.
+For the first 3D pass, visual fidelity is secondary. Approximate every entity
+from `position`, `scale`, `rotation`, `pcode`, and (when available)
+`path_curve`/`profile_curve`. Sculpt and mesh objects are identified from
+`ExtraParams`; mesh objects now attempt a high-LOD asset decode, and sculpt
+objects attempt a cached texture-to-geometry decode.
 
 ## Coordinate Conventions
 

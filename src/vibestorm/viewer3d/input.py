@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from vibestorm.bus import Bus
 from vibestorm.bus.commands import AddControlFlags, RemoveControlFlags
 from vibestorm.udp.control_flags import AgentControlFlags
+from vibestorm.viewer3d.camera import CameraPreset
 
 if TYPE_CHECKING:
     import pygame
@@ -54,6 +55,7 @@ class ViewerIntent:
     quit_requested: bool = False
     request_center_on_avatar: bool = False
     chat_input_focus: bool = False
+    camera_preset: CameraPreset | None = None
 
 
 def handle_event(event: pygame.event.Event, camera: Camera, bus: Bus) -> ViewerIntent:
@@ -77,6 +79,15 @@ def handle_event(event: pygame.event.Event, camera: Camera, bus: Bus) -> ViewerI
                 return intent
         if event.key == pygame.K_c:
             intent.request_center_on_avatar = True
+            return intent
+        if event.key == pygame.K_F1:
+            intent.camera_preset = "sim"
+            return intent
+        if event.key == pygame.K_F2:
+            intent.camera_preset = "avatar_behind"
+            return intent
+        if event.key == pygame.K_F3:
+            intent.camera_preset = "avatar_eye"
             return intent
         if event.key == pygame.K_RETURN:
             intent.chat_input_focus = True

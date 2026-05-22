@@ -78,7 +78,7 @@ class PerspectiveRendererGLTests(_GLTestBase):
             # Step 7b ships the full primitive library — every shape
             # has its own VBO/IBO/VAO bound against the shared
             # instance buffer.
-            for key in ("cube", "sphere", "cylinder", "torus", "prism"):
+            for key in ("cube", "sphere", "cylinder", "torus", "prism", "avatar"):
                 mesh = renderer._shape_meshes.get(key)
                 self.assertIsNotNone(mesh, f"missing GL mesh for {key!r}")
                 self.assertGreater(mesh.index_count, 0)
@@ -899,20 +899,22 @@ class GroupEntitiesByShapeTests(unittest.TestCase):
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
 
         renderer = PerspectiveRenderer(Camera3D(), ctx=None)
-        for key in ("cube", "sphere", "cylinder", "torus", "prism"):
+        for key in ("cube", "sphere", "cylinder", "torus", "prism", "avatar"):
             renderer._shape_meshes[key] = object()  # sentinel — not touched
         return renderer
 
-    def test_aliases_ring_to_torus_and_tube_to_cube(self) -> None:
+    def test_aliases_ring_to_torus_tube_to_cube_and_mesh_to_sphere(self) -> None:
         renderer = self._grouper()
-        scene = self._make_scene_with(["ring", "tube"])
+        scene = self._make_scene_with(["ring", "tube", "mesh"])
 
         groups = renderer._group_entities_by_shape(scene)
 
         self.assertIn("torus", groups)
         self.assertIn("cube", groups)
+        self.assertIn("sphere", groups)
         self.assertEqual(len(groups["torus"]), 1)
         self.assertEqual(len(groups["cube"]), 1)
+        self.assertEqual(len(groups["sphere"]), 1)
 
     def test_none_shape_falls_back_to_cube(self) -> None:
         renderer = self._grouper()
@@ -931,9 +933,65 @@ class GroupEntitiesByShapeTests(unittest.TestCase):
 
         self.assertEqual(list(groups.keys()), ["cube"])
 
+    def test_loaded_mesh_asset_uses_asset_mesh_bucket(self) -> None:
+        renderer = self._grouper()
+        mesh_id = UUID("11111111-2222-3333-4444-555555555555")
+        scene = self._make_scene_with(["mesh"])
+        entity = scene.object_entities[0]
+        scene.object_entities[0] = entity.__class__(
+            local_id=entity.local_id,
+            pcode=entity.pcode,
+            kind=entity.kind,
+            position=entity.position,
+            scale=entity.scale,
+            rotation=entity.rotation,
+            rotation_z_radians=entity.rotation_z_radians,
+            name=entity.name,
+            default_texture_id=entity.default_texture_id,
+            texture_entry=entity.texture_entry,
+            shape=entity.shape,
+            mesh_source_kind="mesh",
+            mesh_asset_id=mesh_id,
+            sculpt_type=5,
+            tint=entity.tint,
+        )
+        renderer._shape_meshes[f"mesh:{mesh_id}"] = object()
+
+        groups = renderer._group_entities_by_shape(scene)
+
+        self.assertEqual(list(groups.keys()), [f"mesh:{mesh_id}"])
+
+    def test_loaded_sculpt_asset_uses_sculpt_mesh_bucket(self) -> None:
+        renderer = self._grouper()
+        sculpt_id = UUID("22222222-3333-4444-5555-666666666666")
+        scene = self._make_scene_with(["torus"])
+        entity = scene.object_entities[0]
+        scene.object_entities[0] = entity.__class__(
+            local_id=entity.local_id,
+            pcode=entity.pcode,
+            kind=entity.kind,
+            position=entity.position,
+            scale=entity.scale,
+            rotation=entity.rotation,
+            rotation_z_radians=entity.rotation_z_radians,
+            name=entity.name,
+            default_texture_id=entity.default_texture_id,
+            texture_entry=entity.texture_entry,
+            shape=entity.shape,
+            mesh_source_kind="sculpt",
+            mesh_asset_id=sculpt_id,
+            sculpt_type=2,
+            tint=entity.tint,
+        )
+        renderer._shape_meshes[f"sculpt:{sculpt_id}:2"] = object()
+
+        groups = renderer._group_entities_by_shape(scene)
+
+        self.assertEqual(list(groups.keys()), [f"sculpt:{sculpt_id}:2"])
+
     def test_avatars_join_object_groups(self) -> None:
-        # Avatars are stored in scene.avatar_entities but should
-        # bucket alongside object prims of the same shape.
+        # Avatars are stored in scene.avatar_entities and should use the
+        # dedicated humanoid placeholder mesh, not the cube fallback.
         from vibestorm.viewer3d.scene import SceneEntity
 
         renderer = self._grouper()
@@ -955,7 +1013,7 @@ class GroupEntitiesByShapeTests(unittest.TestCase):
         groups = renderer._group_entities_by_shape(scene)
 
         self.assertEqual(len(groups["sphere"]), 1)
-        self.assertEqual(len(groups["cube"]), 1)
+        self.assertEqual(len(groups["avatar"]), 1)
 
     def test_texture_id_for_entity_face_uses_texture_entry_override(self) -> None:
         from vibestorm.world.texture_entry import TextureEntry

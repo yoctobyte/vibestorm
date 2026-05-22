@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 
 from vibestorm.assets.j2k import J2KDecodeError, decode_j2k
 from vibestorm.caps.client import CapabilityClient, CapabilityError
+from vibestorm.caps.get_mesh_client import GetMeshClient, GetMeshError
 from vibestorm.caps.get_texture_client import GetTextureClient, GetTextureError
 from vibestorm.caps.inventory_client import (
     InventoryCapabilityClient,
@@ -127,6 +128,7 @@ class SessionConfig:
     capture_mode: str = "smart"
     unknowns_db_path: Path | None = DEFAULT_UNKNOWNS_DB_PATH
     caps_prelude: bool = True
+    auto_upload_bakes: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -244,6 +246,7 @@ class LiveCircuitSession:
     caps_udp_listen_port: int | None = None
     baked_appearance_override: BakedAppearanceOverride | None = None
     upload_baked_url: str | None = None
+    get_mesh_url: str | None = None
     get_texture_url: str | None = None
     map_block_request_sent: bool = False
     region_map_image_id: UUID | None = None
@@ -251,6 +254,8 @@ class LiveCircuitSession:
     region_map_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
     texture_fetch_attempted: set[UUID] = field(default_factory=set)
+    mesh_paths: dict[UUID, Path] = field(default_factory=dict)
+    mesh_fetch_attempted: set[UUID] = field(default_factory=set)
     # Most-recent LayerData blob per layer-type byte (0x4C 'L', 0x57 'W',
     # 0x37 '7', etc.). Patches arrive incrementally — the wire-side
     # session just keeps the latest blob; reassembly into a heightmap
@@ -1972,6 +1977,20 @@ async def run_live_session(
                     if cached is not None:
                         session.texture_paths[pending_texture_id] = cached
 
+            if session.get_mesh_url is not None:
+                pending_mesh_id = _next_pending_mesh_asset_id(session)
+                if pending_mesh_id is not None:
+                    session.mesh_fetch_attempted.add(pending_mesh_id)
+                    cached = await _fetch_and_cache_mesh_asset(
+                        session,
+                        session.get_mesh_url,
+                        pending_mesh_id,
+                        _MESH_CACHE_DIR,
+                        loop.time(),
+                    )
+                    if cached is not None:
+                        session.mesh_paths[pending_mesh_id] = cached
+
         for packet in session.build_shutdown_packets(loop.time()):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
@@ -2002,6 +2021,7 @@ _BAKED_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "baked
 _APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
 _MAP_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "map-cache"
 _TEXTURE_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "texture-cache"
+_MESH_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "mesh-cache"
 
 
 async def _fetch_and_cache_region_map(
@@ -2063,6 +2083,13 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
         texture_ids = [obj.default_texture_id]
         if obj.texture_entry is not None:
             texture_ids.extend(texture_id for _face, texture_id in obj.texture_entry.face_texture_ids)
+        for entry in obj.extra_params_entries:
+            if entry.param_type != 0x30 or not entry.param_in_use or len(entry.param_data) < 17:
+                continue
+            texture_id = UUID(bytes=entry.param_data[:16])
+            sculpt_type = entry.param_data[16] & 0x0F
+            if sculpt_type in (1, 2, 3, 4):
+                texture_ids.append(texture_id)
         for texture_id in texture_ids:
             if texture_id is None or texture_id.int == 0:
                 continue
@@ -2071,6 +2098,21 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
             if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
                 continue
             return texture_id
+    return None
+
+
+def _next_pending_mesh_asset_id(session: LiveCircuitSession) -> UUID | None:
+    for obj in session.world_view.objects.values():
+        for entry in obj.extra_params_entries:
+            if entry.param_type != 0x30 or not entry.param_in_use or len(entry.param_data) < 17:
+                continue
+            mesh_id = UUID(bytes=entry.param_data[:16])
+            sculpt_type = entry.param_data[16] & 0x0F
+            if sculpt_type != 5 or mesh_id.int == 0:
+                continue
+            if mesh_id in session.mesh_paths or mesh_id in session.mesh_fetch_attempted:
+                continue
+            return mesh_id
     return None
 
 
@@ -2119,6 +2161,41 @@ async def _fetch_and_cache_texture_asset(
         now,
         "texture.cache.ok",
         f"id={texture_id} path={output_path} size={decoded.width}x{decoded.height}",
+    )
+    return output_path
+
+
+async def _fetch_and_cache_mesh_asset(
+    session: LiveCircuitSession,
+    cap_url: str,
+    mesh_id: UUID,
+    cache_dir: Path,
+    now: float,
+) -> Path | None:
+    """Fetch an SL mesh asset via GetMesh and cache raw bytes."""
+    output_path = cache_dir / f"{mesh_id}.llmesh"
+    if output_path.exists():
+        session._record_event(now, "mesh.cache.ok", f"id={mesh_id} path={output_path}")
+        return output_path
+
+    client = GetMeshClient(timeout_seconds=10.0)
+    try:
+        fetched = await client.fetch(cap_url, mesh_id)
+    except GetMeshError as exc:
+        session._record_event(now, "mesh.fetch.error", f"id={mesh_id} error={exc}")
+        return None
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        await asyncio.to_thread(output_path.write_bytes, fetched.data)
+    except OSError as exc:
+        session._record_event(now, "mesh.cache.error", f"id={mesh_id} error={exc}")
+        return None
+
+    session._record_event(
+        now,
+        "mesh.cache.ok",
+        f"id={mesh_id} path={output_path} bytes={len(fetched.data)} content_type={fetched.content_type}",
     )
     return output_path
 
@@ -2299,6 +2376,8 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         "FetchInventory2",
         "UploadBakedTexture",
         "ViewerAsset",
+        "GetMesh",
+        "GetMesh2",
         "GetTexture",
     ]
 
@@ -2403,9 +2482,11 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
             session._record_event(now, "caps.inventory", _summarize_inventory_snapshot(session.latest_inventory_fetch))
 
     upload_baked_url = resolved.get("UploadBakedTexture")
-    if upload_baked_url:
+    if upload_baked_url and session.config.auto_upload_bakes:
         session.upload_baked_url = upload_baked_url
         session._record_event(now, "bake.url_ready", "upload deferred until post-AgentCachedTextureResponse")
+    elif upload_baked_url:
+        session._record_event(now, "bake.skip", "automatic baked-texture upload disabled")
     else:
         session._record_event(now, "bake.skip", "UploadBakedTexture CAP not resolved")
 
@@ -2415,6 +2496,13 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         session._record_event(now, "map.get_texture_url_ready", "tile fetch deferred until MapBlockReply")
     else:
         session._record_event(now, "map.skip", "GetTexture CAP not resolved")
+
+    get_mesh_url = resolved.get("GetMesh2") or resolved.get("GetMesh")
+    if get_mesh_url:
+        session.get_mesh_url = get_mesh_url
+        session._record_event(now, "mesh.get_mesh_url_ready", "mesh fetch deferred until mesh object seen")
+    else:
+        session._record_event(now, "mesh.skip", "GetMesh CAP not resolved")
 
 
 def _summarize_inventory_snapshot(snapshot: InventoryFetchSnapshot) -> str:

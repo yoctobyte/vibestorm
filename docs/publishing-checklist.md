@@ -6,10 +6,11 @@ Last checked: 2026-05-10
 
 - Do not commit `.env` files, local databases, packet captures, or scratch
   scripts.
-- `run.sh` intentionally requires `VIBESTORM_PASSWORD` for login commands and
-  does not contain a default password.
-- Local OpenSim docs use `VIBESTORM_PASSWORD` placeholders rather than recording
-  a reusable local test password.
+- `run.sh` may prompt for login details and store them in ignored
+  `local/vibestorm-login.env` with mode `600`; do not commit that file or a
+  reusable local test password.
+- Local OpenSim docs mention env/profile setup rather than recording a reusable
+  local test password.
 
 Useful checks:
 

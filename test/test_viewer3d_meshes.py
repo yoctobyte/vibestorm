@@ -140,5 +140,23 @@ class PrismMeshTests(unittest.TestCase):
             self.assertLessEqual(abs(y), 0.5 + 1e-9)
 
 
+class AvatarPlaceholderMeshTests(unittest.TestCase):
+    def test_avatar_placeholder_has_multiple_body_parts(self) -> None:
+        from vibestorm.viewer3d.meshes import avatar_placeholder_mesh
+
+        verts, indices = avatar_placeholder_mesh()
+
+        self.assertGreater(len(verts) // 3, 8)
+        self.assertGreater(len(indices), 36)
+
+    def test_avatar_placeholder_facing_marker_extends_positive_x(self) -> None:
+        from vibestorm.viewer3d.meshes import avatar_placeholder_mesh
+
+        verts, _ = avatar_placeholder_mesh()
+        xs = [x for x, _, _ in _xyz_iter(verts)]
+
+        self.assertGreater(max(xs), abs(min(xs)))
+
+
 if __name__ == "__main__":
     unittest.main()

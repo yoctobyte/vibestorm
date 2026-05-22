@@ -82,7 +82,7 @@ class Camera3DMapModeTests(unittest.TestCase):
         self.assertAlmostEqual(sy_after, 250.0, places=4)
 
     def test_fit_region_uses_smaller_screen_axis(self) -> None:
-        from vibestorm.viewer3d.camera import Camera3D, REGION_SIZE_METERS
+        from vibestorm.viewer3d.camera import REGION_SIZE_METERS, Camera3D
 
         camera = Camera3D(screen_size=(1024, 600))
 
@@ -207,6 +207,43 @@ class Camera3DOrbitControlTests(unittest.TestCase):
         camera.orbit_lift(3.0)
 
         self.assertEqual(camera.target, (9.0, 18.0, 8.0))
+
+
+class Camera3DPresetTests(unittest.TestCase):
+    def test_sim_overview_sets_region_orbit(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D()
+        camera.set_sim_overview()
+
+        self.assertEqual(camera.mode, "orbit")
+        self.assertEqual(camera.target, (128.0, 128.0, 24.0))
+        self.assertGreater(camera.distance, 100.0)
+
+    def test_avatar_behind_uses_rotation_forward(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D()
+        # 90-degree yaw around Z: local +X faces world +Y.
+        s = math.sin(math.pi / 4)
+        c = math.cos(math.pi / 4)
+        camera.set_avatar_behind((10.0, 20.0, 5.0), (0.0, 0.0, s, c), distance_m=10.0)
+
+        self.assertEqual(camera.mode, "free")
+        self.assertAlmostEqual(camera.eye_position[0], 10.0, places=5)
+        self.assertAlmostEqual(camera.eye_position[1], 10.0, places=5)
+        self.assertGreater(camera.eye_position[2], 5.0)
+        self.assertGreater(camera.target[1], 20.0)
+
+    def test_avatar_eye_looks_forward_from_head_height(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D()
+        camera.set_avatar_eye((10.0, 20.0, 5.0), None)
+
+        self.assertEqual(camera.mode, "eye")
+        self.assertEqual(camera.eye_position, (10.0, 20.0, 6.65))
+        self.assertGreater(camera.target[0], camera.eye_position[0])
 
 
 if __name__ == "__main__":

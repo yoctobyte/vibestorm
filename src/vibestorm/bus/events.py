@@ -129,6 +129,13 @@ class TextureAssetReady:
     cache_path: str  # absolute path to the cached PNG
 
 
+@dataclass(slots=True, frozen=True)
+class MeshAssetReady:
+    region_handle: int
+    mesh_id: UUID
+    cache_path: str  # absolute path to the cached raw .llmesh asset
+
+
 # ---- terrain --------------------------------------------------------------
 
 @dataclass(slots=True, frozen=True)
@@ -156,6 +163,7 @@ __all__ = [
     "InventorySnapshotReady",
     "LayerDataReceived",
     "LoginComplete",
+    "MeshAssetReady",
     "ObjectInventorySnapshotReady",
     "RegionChanged",
     "RegionMapTileReady",

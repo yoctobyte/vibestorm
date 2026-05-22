@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+export VIBESTORM_GRID_MODE="${VIBESTORM_GRID_MODE:-opengrid}"
+
+exec "$ROOT_DIR/run.sh" "${VIBESTORM_LOGIN_PROFILE_NAME:-osgrid}" "$@"

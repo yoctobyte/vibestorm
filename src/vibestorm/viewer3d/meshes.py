@@ -210,9 +210,51 @@ def prism_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
     return tuple(vertices), indices
 
 
+def avatar_placeholder_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Simple human-like avatar placeholder facing local +X.
+
+    Built from merged box parts in a unit-ish local frame. The renderer
+    applies the avatar ObjectUpdate scale/rotation, so this only needs a
+    recognizable silhouette and a clear facing direction.
+    """
+    vertices: list[float] = []
+    indices: list[int] = []
+
+    def add_box(
+        center: tuple[float, float, float],
+        size: tuple[float, float, float],
+    ) -> None:
+        base = len(vertices) // 3
+        cx, cy, cz = center
+        sx, sy, sz = (size[0] / 2.0, size[1] / 2.0, size[2] / 2.0)
+        for x, y, z in (
+            (-sx, -sy, -sz),
+            (sx, -sy, -sz),
+            (sx, sy, -sz),
+            (-sx, sy, -sz),
+            (-sx, -sy, sz),
+            (sx, -sy, sz),
+            (sx, sy, sz),
+            (-sx, sy, sz),
+        ):
+            vertices.extend((cx + x, cy + y, cz + z))
+        indices.extend(base + index for index in CUBE_INDICES)
+
+    # Body coordinates are normalized to roughly fit inside [-0.5, 0.5].
+    add_box((0.0, 0.0, 0.05), (0.34, 0.46, 0.56))      # torso
+    add_box((0.12, 0.0, 0.43), (0.30, 0.30, 0.26))     # head, slightly forward
+    add_box((0.0, -0.33, 0.02), (0.18, 0.16, 0.52))    # left arm
+    add_box((0.0, 0.33, 0.02), (0.18, 0.16, 0.52))     # right arm
+    add_box((0.0, -0.12, -0.42), (0.18, 0.17, 0.48))   # left leg
+    add_box((0.0, 0.12, -0.42), (0.18, 0.17, 0.48))    # right leg
+    add_box((0.31, 0.0, 0.44), (0.08, 0.12, 0.08))     # nose/facing marker
+    return tuple(vertices), tuple(indices)
+
+
 __all__ = [
     "CUBE_INDICES",
     "CUBE_VERTICES",
+    "avatar_placeholder_mesh",
     "cube_mesh",
     "cylinder_mesh",
     "prism_mesh",
