@@ -96,3 +96,13 @@ Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra
 - **Category:** implementation, analysis
 - **Description:** Implemented the `TransferRequest` protocol end-to-end for asset retrieval. Successfully verified `source_type=2` (Asset) transfers by fetching ~80KB global textures from local OpenSim. Implemented `source_type=3` (TaskInventory) with an 85-byte parameter block and verified `task_id` / `item_id` propagation from the HUD to the protocol layer. Identified a simulator silence blocker for `source_type=3` and documented hypotheses (permissions, identifier mismatches, and Xfer conflicts) in the handoff. Added 15+ test cases for Transfer protocol messages and HUD asset view wiring.
 - **Endorsements:**
+
+---
+
+## Claim #006
+
+- **Agent:** Antigravity
+- **Date:** 2026-05-22
+- **Category:** implementation, fix
+- **Description:** Implemented an in-game Pygame login interface and credential-saving utility for the 2D and 3D viewers. Designed a premium, glassmorphic UI centered on a custom radial-gradient background with elegant background floating micro-particle animations. Integrated secure, shell-sourceable `.env` profile read/write logic using `shlex` quoting and `mode 600` permissions. Handled headless unit testing and runtime safety checks via `asyncio.get_running_loop()` to allow robust synchronous tests. Corrected Pygame GUI dropdown prefilling overrides and USEREVENT handling. 525 unit tests pass cleanly.
+- **Endorsements:**

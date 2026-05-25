@@ -1,20 +1,23 @@
 # Current Handoff
 
-Last updated: 2026-05-17
+Last updated: 2026-05-25
 
 ## Where To Move Next
 
 Two coherent next tracks are open:
 
-1. Object-local script/notecard sync, as described below.
+1. Live-verify object sync: select a scripted object in `viewer3d`, download scripts
+   via Save Text, edit a `.lsl` locally, then "Upload File" — confirm the upload dialog
+   seeds `local/asset-downloads/<task-id>/`, syncs to the object, and the script
+   recompiles (check chat for "Sync: … compiled OK").
 2. Continue real mesh/sculpt rendering:
    - live-verify `GetMesh` against a local OpenSim mesh object
    - add normals/UVs and per-face/material grouping to decoded mesh assets
    - live-verify sculpt map fetch/deformation against local OpenSim sculpted prims
    - add viewer-grade sculpt stitching/normals/UVs
 
-The object sync track remains the next protocol write path. The sculpt/mesh
-track is the next rendering path.
+The object sync track is largely implemented (see 2026-05-25 update below); live
+verification is the concrete next step. The sculpt/mesh track is the next rendering path.
 
 ## Object Sync Track
 
@@ -58,6 +61,82 @@ Keep these scope limits for the first pass:
 - no creating missing object inventory items
 - no recursive folder sync
 - no automatic upload on every file change
+
+## Update 2026-05-25: Object Task Inventory Sync (Steps 2–4)
+
+### What Changed
+
+- **`src/vibestorm/caps/task_inventory_upload_client.py`** (new): two-step
+  `UpdateScriptTaskInventory` / `UpdateNotecardTaskInventory` CAP client.
+  `upload_task_script()` sends `{item_id, task_id, is_script_running}`, gets an
+  uploader URL, then POSTs raw LSL bytes. `upload_task_notecard()` is identical
+  except without `is_script_running`.
+
+- **`src/vibestorm/viewer3d/hud.py`**:
+  - New `on_upload_object_files` callback on `HUD.__init__`.
+  - New `_selected_object_task_context()` method — returns `(task_id, rows)` for
+    the currently selected object if its task inventory is loaded, `None` otherwise.
+  - "Upload File" and "Upload Dir" buttons now detect object context: when a task
+    context is present they open a sync dialog seeded at
+    `local/asset-downloads/<task-id>/` and fire `on_upload_object_files`; when no
+    object context they fall back to the existing user-inventory upload path.
+
+- **`src/vibestorm/viewer3d/app.py`**:
+  - New `_match_files_to_task_selections(upload_dir, asset_rows)` pure helper —
+    matches `.lsl`/`.txt`/`.nc` files by safe-filename stem to loaded inventory
+    rows (scripts asset_type=10, notecards asset_type=7); returns
+    `(matched, unmatched)`.
+  - New `sync_files_to_object_task_inventory` coroutine — resolves
+    `UpdateScriptTaskInventory` / `UpdateNotecardTaskInventory` caps, runs the
+    match planner, uploads matched files, reports each result and a summary in chat.
+  - `on_upload_object_files` wired into the HUD constructor.
+
+### What Was Verified
+
+- `uv run ruff check --select F,I src/vibestorm/viewer3d/hud.py src/vibestorm/viewer3d/app.py src/vibestorm/caps/task_inventory_upload_client.py`
+- `uv run --extra viewer pytest test/test_task_inventory_upload_client.py test/test_viewer3d_object_inspector.py test/test_viewer3d_app_compositor.py -q` — 29 passed
+- `./run.sh test` — 536 passed, 0 failed
+
+### Concrete Next Step
+
+Live-verify on local OpenSim with `./run.sh tester viewer3d`:
+1. Select a scripted object, open Object Inspector, Load Inventory.
+2. Save Text to `local/asset-downloads/<task-id>/`.
+3. Edit the `.lsl` file locally.
+4. Click "Upload File" — confirm dialog seeds `local/asset-downloads/<task-id>/`.
+5. Select the edited file; watch chat for `Sync: … compiled OK` or compile errors.
+6. Reload task inventory in viewer; confirm the script version changed.
+
+If caps are missing (`Sync: no task inventory caps available`), check that OpenSim
+has `UpdateScriptTaskInventory` and `UpdateNotecardTaskInventory` wired in BunchOfCaps.
+
+## Update 2026-05-22: Pygame In-Game Login & Credential Saving
+
+### What Changed
+
+- **Launcher Integration (`run.sh`)**: Bypassed terminal interactive prompting (`prompt_login`) and re-entry/retry prompts for the `viewer` and `viewer3d` commands. Exported active profile paths via environment variables `VIBESTORM_LOGIN_PROFILE` and `VIBESTORM_LOGIN_PROFILE_NAME`.
+- **Credentials Utility (`src/vibestorm/util/credentials.py`)**: Implemented a secure shell-compatible parser and writer for `.env` login profiles using `shlex` shell-safe quoting and strict file permissions (`mode 600`). It has robust fallback default credential resolution for the `tester` profile.
+- **Login Screen UI (`src/vibestorm/viewer/login_screen.py`)**: Built a highly aesthetic in-game Pygame login screen containing:
+  - Translucent glassmorphic center container with glowing highlights.
+  - Linear vertical gradient background with custom-rendered, elegantly drifting/glowing background micro-particles.
+  - Complete form inputs for Grid Preset Selection, Custom Grid URI, Avatar First/Last Name, Password (masked text entry), Start Location, and Remember Credentials.
+  - Grid preset prefilling logic that automatically populates standard grids (Local OpenSim, OSgrid, Second Life) on selector change.
+  - Asynchronous login via `LoginClient().login(...)` in the running event loop with a smooth "Connecting..." indicator, "Cancel" button, and descriptive inline error reporting.
+  - Protected `asyncio.get_running_loop()` check to support headless synchronous unit testing without event loop crashes.
+- **2D App Integration (`src/vibestorm/viewer/app.py`)**: Removed strict command-line argument requirements for credentials and wired the new `LoginScreen` loop to execute first if complete credentials are not supplied via CLI arguments.
+- **3D App Integration (`src/vibestorm/viewer3d/app.py`)**: Removed strict command-line argument requirements and updated 3D viewer bootstrap to open a Pygame/ModernGL screen first, drawing the software `LoginScreen` UI onto the composited `world_surface` background quad before transition.
+
+### What Was Verified
+
+- **Unit Tests**:
+  - `test/test_credentials.py` verified profile loading/saving, tester fallback defaults, and shlex unquoting/escaping.
+  - `test/test_login_screen.py` verified UI widget construction, preset dropdown selection/prefilling, quit request action, and event handler consumption.
+  - Full project pytest suite (525 tests) runs and successfully passes.
+- **Headless Pygame Execution**: Verified standard startup workflows run flawlessly under the `dummy` SDL video driver.
+
+### Concrete Next Step
+
+- Manual verification: Run `./run.sh viewer` or `./run.sh viewer3d` on a live display. Fill in or load credentials, toggle "Remember Credentials", verify the glassmorphic animations, and successfully connect.
 
 ## Update 2026-05-17: Sculpt/Mesh Render Placeholders
 

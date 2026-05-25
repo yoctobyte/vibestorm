@@ -310,5 +310,81 @@ class PerspectiveSkyBackgroundTests(unittest.TestCase):
             self.assertEqual((corner.r, corner.g, corner.b), SKY_COLOR)
 
 
+class MatchFilesToTaskSelectionsTests(unittest.TestCase):
+    def _make_selection(self, item_name: str, asset_type: int, item_id=None):
+        from vibestorm.viewer3d.hud import ObjectAssetSelection
+
+        return ObjectAssetSelection(
+            item_key=f"{item_name} [{asset_type}]",
+            asset_id=UUID("00000000-0000-4000-8000-000000000001"),
+            asset_type=asset_type,
+            item_name=item_name,
+            task_id=UUID("00000000-0000-4000-8000-000000000002"),
+            item_id=item_id or UUID("00000000-0000-4000-8000-000000000003"),
+        )
+
+    def test_matches_lsl_file_to_script_selection(self) -> None:
+        from vibestorm.viewer3d.app import _match_files_to_task_selections
+
+        sel = self._make_selection("Main Script", 10)
+        rows = {sel.item_key: sel}
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "Main Script.lsl").write_text("default {}")
+            matched, unmatched = _match_files_to_task_selections(d, rows)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0][1].item_name, "Main Script")
+        self.assertEqual(unmatched, [])
+
+    def test_matches_txt_file_to_notecard_selection(self) -> None:
+        from vibestorm.viewer3d.app import _match_files_to_task_selections
+
+        sel = self._make_selection("Config Note", 7)
+        rows = {sel.item_key: sel}
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "Config Note.txt").write_text("hello")
+            matched, unmatched = _match_files_to_task_selections(d, rows)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0][1].item_name, "Config Note")
+
+    def test_unmatched_file_lands_in_unmatched(self) -> None:
+        from vibestorm.viewer3d.app import _match_files_to_task_selections
+
+        sel = self._make_selection("Other Script", 10)
+        rows = {sel.item_key: sel}
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "Main Script.lsl").write_text("default {}")
+            matched, unmatched = _match_files_to_task_selections(d, rows)
+        self.assertEqual(matched, [])
+        self.assertEqual(len(unmatched), 1)
+        self.assertIn("Main Script.lsl", unmatched[0].name)
+
+    def test_non_text_asset_types_excluded_from_match_map(self) -> None:
+        from vibestorm.viewer3d.app import _match_files_to_task_selections
+
+        texture_sel = self._make_selection("My Texture", 0)
+        rows = {texture_sel.item_key: texture_sel}
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "My Texture.lsl").write_text("default {}")
+            matched, unmatched = _match_files_to_task_selections(d, rows)
+        self.assertEqual(matched, [])
+        self.assertEqual(len(unmatched), 1)
+
+    def test_non_uploadable_file_extensions_skipped(self) -> None:
+        from vibestorm.viewer3d.app import _match_files_to_task_selections
+
+        sel = self._make_selection("readme", 7)
+        rows = {sel.item_key: sel}
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "readme.md").write_text("# hi")
+            matched, unmatched = _match_files_to_task_selections(d, rows)
+        self.assertEqual(matched, [])
+        self.assertEqual(unmatched, [])
+
+
 if __name__ == "__main__":
     unittest.main()

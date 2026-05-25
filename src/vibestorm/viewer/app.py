@@ -33,10 +33,10 @@ from vibestorm.viewer.scene import Scene
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vibestorm-viewer")
-    parser.add_argument("--login-uri", required=True)
-    parser.add_argument("--first", required=True)
-    parser.add_argument("--last", required=True)
-    parser.add_argument("--password", required=True)
+    parser.add_argument("--login-uri")
+    parser.add_argument("--first")
+    parser.add_argument("--last")
+    parser.add_argument("--password")
     parser.add_argument("--start", default="last")
     parser.add_argument("--agent-update-interval", type=float, default=1.0)
     parser.add_argument("--camera-sweep", action="store_true")
@@ -58,16 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def run_viewer(args: argparse.Namespace) -> int:
     import pygame
-
-    request = LoginRequest(
-        login_uri=args.login_uri,
-        credentials=LoginCredentials(first=args.first, last=args.last, password=args.password),
-        start=args.start,
-        version=__version__,
-        platform=platform.system(),
-        platform_version=platform.platform(),
-    )
-    bootstrap = await LoginClient().login(request)
+    from vibestorm.viewer.login_screen import LoginScreen
 
     pygame.init()
     pygame.display.set_caption("Vibestorm 2D Viewer")
@@ -87,6 +78,35 @@ async def run_viewer(args: argparse.Namespace) -> int:
     )
     screen = pygame.display.set_mode(screen_size, pygame.RESIZABLE)
     clock = pygame.time.Clock()
+
+    login_screen = LoginScreen(screen_size, ui_scale=ui_scale, args=args)
+    login_clock = pygame.time.Clock()
+
+    bootstrap = None
+    while bootstrap is None:
+        dt = login_clock.tick(60) / 1000.0
+        for event in pygame.event.get():
+            login_screen.process_event(event)
+            if event.type == pygame.QUIT:
+                login_screen.quit_requested = True
+            elif event.type == pygame.VIDEORESIZE:
+                screen_size = (max(1, event.w), max(1, event.h))
+                screen = pygame.display.set_mode(screen_size, pygame.RESIZABLE)
+                login_screen.resize(screen_size)
+
+        if login_screen.quit_requested:
+            pygame.quit()
+            return 0
+
+        login_screen.update(dt)
+        login_screen.draw(screen)
+        pygame.display.flip()
+
+        if login_screen.bootstrap:
+            bootstrap = login_screen.bootstrap
+            break
+
+        await asyncio.sleep(0.005)
 
     client = WorldClient()
     scene = Scene()

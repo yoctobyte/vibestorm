@@ -34,6 +34,8 @@ else
   DEFAULT_LOGIN_PROFILE="$ROOT_DIR/local/vibestorm-login-$LOGIN_PROFILE_NAME.env"
 fi
 LOGIN_PROFILE="${VIBESTORM_LOGIN_PROFILE:-$DEFAULT_LOGIN_PROFILE}"
+export VIBESTORM_LOGIN_PROFILE_NAME="$LOGIN_PROFILE_NAME"
+export VIBESTORM_LOGIN_PROFILE="$LOGIN_PROFILE"
 
 ENV_LOGIN_URI="${VIBESTORM_LOGIN_URI:-}"
 ENV_FIRST_NAME="${VIBESTORM_FIRST_NAME:-}"
@@ -259,6 +261,9 @@ apply_login_preset() {
 
 prompt_login() {
   local force="${1:-0}"
+  if [[ "$command" == "viewer" || "$command" == "viewer3d" ]]; then
+    return
+  fi
   if [[ "$force" != "1" && -n "$FIRST_NAME" && -n "$LAST_NAME" && -n "$PASSWORD" && -n "$LOGIN_URI" && -n "$START_LOCATION" ]]; then
     return
   fi
@@ -393,6 +398,9 @@ run_login_command() {
     return "$status"
   fi
   if [[ "$status" != "10" ]]; then
+    return "$status"
+  fi
+  if [[ "$command" == "viewer" || "$command" == "viewer3d" ]]; then
     return "$status"
   fi
   printf '\nLogin command failed. Re-enter saved login details and retry once? [y/N]: ' >&2

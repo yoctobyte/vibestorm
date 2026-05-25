@@ -62,6 +62,10 @@ from vibestorm.caps.inventory_client import (
     parse_inventory_descendents_payload,
     snapshot_with_loaded_empty_folder,
 )
+from vibestorm.caps.task_inventory_upload_client import (
+    TaskInventoryUploadClient,
+    TaskInventoryUploadError,
+)
 from vibestorm.login.client import LoginClient, LoginError
 from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
@@ -173,10 +177,10 @@ def _camera_avatar_entity(scene: Scene):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vibestorm-viewer3d")
-    parser.add_argument("--login-uri", required=True)
-    parser.add_argument("--first", required=True)
-    parser.add_argument("--last", required=True)
-    parser.add_argument("--password", required=True)
+    parser.add_argument("--login-uri")
+    parser.add_argument("--first")
+    parser.add_argument("--last")
+    parser.add_argument("--password")
     parser.add_argument("--start", default="last")
     parser.add_argument("--agent-update-interval", type=float, default=1.0)
     parser.add_argument("--camera-sweep", action="store_true")
@@ -223,16 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
 async def run_viewer(args: argparse.Namespace) -> int:
     import moderngl
     import pygame
-
-    request = LoginRequest(
-        login_uri=args.login_uri,
-        credentials=LoginCredentials(first=args.first, last=args.last, password=args.password),
-        start=args.start,
-        version=__version__,
-        platform=platform.system(),
-        platform_version=platform.platform(),
-    )
-    bootstrap = await LoginClient().login(request)
+    from vibestorm.viewer.login_screen import LoginScreen
 
     pygame.init()
     pygame.display.set_caption("Vibestorm 3D Viewer")
@@ -255,6 +250,42 @@ async def run_viewer(args: argparse.Namespace) -> int:
     compositor = GLCompositor(ctx)
     world_surface, hud_surface = allocate_frame_surfaces(pygame, screen_size)
     clock = pygame.time.Clock()
+
+    login_screen = LoginScreen(screen_size, ui_scale=ui_scale, args=args)
+    login_clock = pygame.time.Clock()
+
+    bootstrap = None
+    while bootstrap is None:
+        dt = login_clock.tick(60) / 1000.0
+        for event in pygame.event.get():
+            login_screen.process_event(event)
+            if event.type == pygame.QUIT:
+                login_screen.quit_requested = True
+            elif event.type == pygame.VIDEORESIZE:
+                screen_size = (max(1, event.w), max(1, event.h))
+                pygame.display.set_mode(screen_size, display_flags)
+                ctx.viewport = (0, 0, *screen_size)
+                world_surface, hud_surface = allocate_frame_surfaces(pygame, screen_size)
+                login_screen.resize(screen_size)
+
+        if login_screen.quit_requested:
+            pygame.quit()
+            return 0
+
+        login_screen.update(dt)
+
+        world_surface.fill((0, 0, 0))
+        login_screen.draw(world_surface)
+
+        compositor.clear((0.0, 0.0, 0.0, 1.0))
+        composite_world(compositor, world_surface)
+        pygame.display.flip()
+
+        if login_screen.bootstrap:
+            bootstrap = login_screen.bootstrap
+            break
+
+        await asyncio.sleep(0.005)
 
     client = WorldClient()
     scene = Scene()
@@ -555,6 +586,141 @@ async def run_viewer(args: argparse.Namespace) -> int:
             ChatAlert(region_handle=handle, message=f"Uploaded {uploaded}/{len(files)} file(s).")
         )
 
+    def on_upload_object_files(
+        task_id: UUID,
+        asset_rows: dict[str, ObjectAssetSelection],
+        path: Path | None = None,
+    ) -> None:
+        asyncio.create_task(sync_files_to_object_task_inventory(task_id, asset_rows, path))
+
+    async def sync_files_to_object_task_inventory(
+        task_id: UUID,
+        asset_rows: dict[str, ObjectAssetSelection],
+        path: Path | None,
+    ) -> None:
+        session = client.current
+        handle = client.current_handle or 0
+        if session is None:
+            scene.apply_chat_alert(ChatAlert(region_handle=handle, message="Sync: not connected."))
+            return
+        try:
+            caps = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
+                session.bootstrap.seed_capability,
+                ["UpdateScriptTaskInventory", "UpdateNotecardTaskInventory"],
+                udp_listen_port=session.caps_udp_listen_port,
+                user_agent="Vibestorm",
+            )
+        except CapabilityError as exc:
+            scene.apply_chat_alert(ChatAlert(region_handle=handle, message=f"Sync caps: {exc}"))
+            return
+        script_cap = caps.get("UpdateScriptTaskInventory")
+        notecard_cap = caps.get("UpdateNotecardTaskInventory")
+        if not script_cap and not notecard_cap:
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=handle, message="Sync: no task inventory caps available.")
+            )
+            return
+        safe_task = _safe_filename(str(task_id))
+        if path is None:
+            upload_dir = _resolve_user_path(DEFAULT_ASSET_DOWNLOAD_DIR / safe_task)
+        elif path.is_dir():
+            upload_dir = _resolve_user_path(path)
+        else:
+            upload_dir = _resolve_user_path(path.parent)
+        if not upload_dir.is_dir():
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=handle, message=f"Sync: folder not found: {upload_dir}")
+            )
+            return
+        matched, unmatched = _match_files_to_task_selections(upload_dir, asset_rows)
+        if not matched:
+            scene.apply_chat_alert(
+                ChatAlert(
+                    region_handle=handle,
+                    message=f"Sync: no file names match inventory items in {upload_dir}",
+                )
+            )
+            return
+        for file_path in unmatched:
+            scene.apply_chat_alert(
+                ChatAlert(
+                    region_handle=handle,
+                    message=f"Sync: skipped {file_path.name} (no matching inventory item)",
+                )
+            )
+        uploader = TaskInventoryUploadClient(timeout_seconds=20.0)
+        uploaded = 0
+        failed = 0
+        for file_path, selection in matched:
+            if selection.item_id is None:
+                scene.apply_chat_alert(
+                    ChatAlert(
+                        region_handle=handle,
+                        message=f"Sync: skipped {file_path.name} (item_id unknown)",
+                    )
+                )
+                continue
+            try:
+                data = file_path.read_bytes()
+                if selection.asset_type == 10:
+                    if not script_cap:
+                        scene.apply_chat_alert(
+                            ChatAlert(
+                                region_handle=handle,
+                                message=f"Sync: skipped {file_path.name} (UpdateScriptTaskInventory not available)",
+                            )
+                        )
+                        continue
+                    result = await uploader.upload_task_script(
+                        script_cap,
+                        item_id=selection.item_id,
+                        task_id=task_id,
+                        script_bytes=data,
+                        udp_listen_port=session.caps_udp_listen_port,
+                    )
+                    if result.compiled:
+                        msg = f"Sync: {file_path.name} → compiled OK (asset={result.new_asset_id})"
+                    else:
+                        errs = "; ".join(str(e) for e in result.errors[:3])
+                        msg = f"Sync: {file_path.name} → compile errors: {errs}"
+                    scene.apply_chat_alert(ChatAlert(region_handle=handle, message=msg))
+                else:
+                    if not notecard_cap:
+                        scene.apply_chat_alert(
+                            ChatAlert(
+                                region_handle=handle,
+                                message=f"Sync: skipped {file_path.name} (UpdateNotecardTaskInventory not available)",
+                            )
+                        )
+                        continue
+                    result = await uploader.upload_task_notecard(
+                        notecard_cap,
+                        item_id=selection.item_id,
+                        task_id=task_id,
+                        notecard_bytes=data,
+                        udp_listen_port=session.caps_udp_listen_port,
+                    )
+                    scene.apply_chat_alert(
+                        ChatAlert(
+                            region_handle=handle,
+                            message=f"Sync: {file_path.name} → OK (asset={result.new_asset_id})",
+                        )
+                    )
+                uploaded += 1
+            except (TaskInventoryUploadError, OSError) as exc:
+                scene.apply_chat_alert(
+                    ChatAlert(
+                        region_handle=handle, message=f"Sync: {file_path.name} failed: {exc}"
+                    )
+                )
+                failed += 1
+        scene.apply_chat_alert(
+            ChatAlert(
+                region_handle=handle,
+                message=f"Sync complete: {uploaded} uploaded, {len(unmatched)} skipped, {failed} failed.",
+            )
+        )
+
     def on_render_mode_change(mode: str) -> None:
         nonlocal renderer
         if mode == "3d":
@@ -592,6 +758,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         on_save_asset=on_save_asset,
         on_save_object_text_assets=on_save_object_text_assets,
         on_upload_files=on_upload_files,
+        on_upload_object_files=on_upload_object_files,
         on_render_mode_change=on_render_mode_change,
         on_render_setting_change=on_render_setting_change,
         initial_render_mode=initial_mode,
@@ -879,6 +1046,40 @@ def _asset_file_suffix(asset_type: int) -> str:
     if asset_type == 0:
         return ".j2k"
     return ".bin"
+
+
+def _match_files_to_task_selections(
+    upload_dir: Path,
+    asset_rows: dict[str, ObjectAssetSelection],
+) -> tuple[list[tuple[Path, ObjectAssetSelection]], list[Path]]:
+    """Match uploadable files in upload_dir to task inventory asset rows by name stem.
+
+    Returns (matched, unmatched) where matched is list of (file_path, selection)
+    and unmatched is list of file_paths with no inventory match.
+    """
+    name_to_selection: dict[str, ObjectAssetSelection] = {}
+    for selection in asset_rows.values():
+        if selection.asset_type not in (7, 10):
+            continue
+        safe = _safe_filename(selection.item_name or "")
+        name_to_selection[safe.lower()] = selection
+
+    matched: list[tuple[Path, ObjectAssetSelection]] = []
+    unmatched: list[Path] = []
+    for file_path in sorted(upload_dir.iterdir()):
+        if not file_path.is_file():
+            continue
+        if _upload_kind_for_path(file_path) is None:
+            continue
+        stem = _safe_filename(file_path.stem).lower()
+        selection = name_to_selection.get(stem)
+        if selection is None:
+            selection = name_to_selection.get(file_path.stem.lower())
+        if selection is not None:
+            matched.append((file_path, selection))
+        else:
+            unmatched.append(file_path)
+    return matched, unmatched
 
 
 def _upload_kind_for_path(path: Path) -> tuple[str, str] | None:

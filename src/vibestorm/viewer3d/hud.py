@@ -76,6 +76,8 @@ class FileDialogAction:
     kind: str
     selection: ObjectAssetSelection | None = None
     selections: tuple[ObjectAssetSelection, ...] = ()
+    task_id: UUID | None = None
+    object_asset_rows: tuple[tuple[str, ObjectAssetSelection], ...] = ()
 
 
 class HUD:
@@ -102,6 +104,8 @@ class HUD:
         on_save_object_text_assets: Callable[[tuple[ObjectAssetSelection, ...], Path | None], None]
         | None = None,
         on_upload_files: Callable[[Path | None], None] | None = None,
+        on_upload_object_files: Callable[[UUID, dict[str, ObjectAssetSelection], Path | None], None]
+        | None = None,
         on_render_mode_change: Callable[[str], None] | None = None,
         on_render_setting_change: Callable[[str, object], None] | None = None,
         initial_render_mode: str = RENDER_MODE_2D,
@@ -127,6 +131,7 @@ class HUD:
         self.on_save_asset = on_save_asset
         self.on_save_object_text_assets = on_save_object_text_assets
         self.on_upload_files = on_upload_files
+        self.on_upload_object_files = on_upload_object_files
         self.on_render_mode_change = on_render_mode_change
         self.on_render_setting_change = on_render_setting_change
         self.render_mode: str = (
@@ -1665,6 +1670,27 @@ class HUD:
         )
 
     def _open_upload_file_dialog(self) -> None:
+        ctx = (
+            self._selected_object_task_context()
+            if self.on_upload_object_files is not None
+            else None
+        )
+        if ctx is not None:
+            task_id, rows = ctx
+            safe = _safe_task_label(task_id)
+            self._open_file_dialog(
+                FileDialogAction(
+                    kind="upload_object_path",
+                    task_id=task_id,
+                    object_asset_rows=tuple(rows.items()),
+                ),
+                title="Sync File to Object",
+                initial_path=Path(f"local/asset-downloads/{safe}"),
+                allowed_suffixes={".lsl", ".txt", ".nc"},
+                allow_existing_files_only=True,
+                allow_picking_directories=False,
+            )
+            return
         if self.on_upload_files is None:
             return
         self._open_file_dialog(
@@ -1677,6 +1703,26 @@ class HUD:
         )
 
     def _open_upload_folder_dialog(self) -> None:
+        ctx = (
+            self._selected_object_task_context()
+            if self.on_upload_object_files is not None
+            else None
+        )
+        if ctx is not None:
+            task_id, rows = ctx
+            safe = _safe_task_label(task_id)
+            self._open_file_dialog(
+                FileDialogAction(
+                    kind="upload_object_path",
+                    task_id=task_id,
+                    object_asset_rows=tuple(rows.items()),
+                ),
+                title="Sync Folder to Object",
+                initial_path=Path(f"local/asset-downloads/{safe}"),
+                allow_existing_files_only=True,
+                allow_picking_directories=True,
+            )
+            return
         if self.on_upload_files is None:
             return
         self._open_file_dialog(
@@ -1738,6 +1784,13 @@ class HUD:
             return
         if action.kind == "upload_path" and self.on_upload_files is not None:
             self.on_upload_files(path)
+            return
+        if (
+            action.kind == "upload_object_path"
+            and self.on_upload_object_files is not None
+            and action.task_id is not None
+        ):
+            self.on_upload_object_files(action.task_id, dict(action.object_asset_rows), path)
             return
 
 
@@ -1802,6 +1855,23 @@ class HUD:
         if self._selected_inspector_row is None:
             return None
         return self._inspector_local_ids_by_row_text.get(self._selected_inspector_row)
+
+    def _selected_object_task_context(
+        self,
+    ) -> tuple[UUID, dict[str, ObjectAssetSelection]] | None:
+        """Return (task_id, asset_rows) for the selected object if inventory is loaded."""
+        local_id = self._selected_local_id()
+        if local_id is None:
+            return None
+        rows = self._inspector_asset_rows_by_local_id.get(local_id)
+        if not rows:
+            return None
+        task_id = next(
+            (sel.task_id for sel in rows.values() if sel.task_id is not None), None
+        )
+        if task_id is None:
+            return None
+        return task_id, dict(rows)
 
     def _selected_object_asset_selection(self) -> ObjectAssetSelection | None:
         if self._selected_asset_item is None:
@@ -2053,6 +2123,10 @@ def _safe_filename(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in value.strip())
     cleaned = cleaned.strip(" .")
     return cleaned or "unnamed"
+
+
+def _safe_task_label(task_id: UUID) -> str:
+    return _safe_filename(str(task_id))
 
 
 

@@ -367,6 +367,153 @@ class ObjectInspectorTests(unittest.TestCase):
         self.assertEqual([selection.asset_id for selection in saved_all_selections], [asset_id])
         self.assertEqual(saved_all_path, Path("/tmp/object-scripts"))
 
+    def test_selected_object_task_context_returns_none_without_inventory(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        hud = HUD((640, 480), on_chat_submit=lambda text: None)
+        scene = Scene()
+        scene.object_entities[5] = SceneEntity(
+            local_id=5,
+            pcode=9,
+            kind="prim",
+            position=(10.0, 10.0, 20.0),
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            name="Empty Box",
+            shape="cube",
+        )
+        hud.inspector_window.show()
+        hud.update(0.016, scene, None)
+        row_text = next(r["text"] for r in hud.inspector_list.item_list if "Empty Box" in r["text"])
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": hud.inspector_list, "text": row_text},
+            )
+        )
+        self.assertIsNone(hud._selected_object_task_context())
+
+    def test_selected_object_task_context_returns_task_and_rows(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+        from vibestorm.world.object_inventory import parse_task_inventory_text
+
+        uploaded_args: list = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_upload_object_files=lambda tid, rows, path: uploaded_args.append((tid, rows, path)),
+        )
+        scene = Scene()
+        task_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        asset_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+        item_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        scene.object_entities[9] = SceneEntity(
+            local_id=9,
+            pcode=9,
+            kind="prim",
+            position=(10.0, 10.0, 20.0),
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            name="Script Box",
+            shape="cube",
+        )
+        scene.object_inventory_snapshots[9] = parse_task_inventory_text(
+            "inv_item 0\n{\n"
+            f" item_id {item_id}\n"
+            f" asset_id {asset_id}\n"
+            " type lsltext\n"
+            " inv_type lsl\n"
+            " name My Script|\n"
+            "}\n",
+            local_id=9,
+            task_id=task_id,
+            serial=1,
+            filename="task.inv",
+        )
+        hud.register_inventory_snapshot_for_view(scene.object_inventory_snapshots[9])
+        hud.inspector_window.show()
+        hud.update(0.016, scene, None)
+        row_text = next(r["text"] for r in hud.inspector_list.item_list if "Script Box" in r["text"])
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": hud.inspector_list, "text": row_text},
+            )
+        )
+        ctx = hud._selected_object_task_context()
+        self.assertIsNotNone(ctx)
+        ctx_task_id, ctx_rows = ctx
+        self.assertEqual(ctx_task_id, task_id)
+        self.assertTrue(any(sel.item_name == "My Script" for sel in ctx_rows.values()))
+
+    def test_upload_object_files_callback_triggered_when_task_context_present(self) -> None:
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+        from vibestorm.world.object_inventory import parse_task_inventory_text
+
+        uploaded_args: list = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_upload_object_files=lambda tid, rows, path: uploaded_args.append((tid, rows, path)),
+        )
+        scene = Scene()
+        task_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+        asset_id = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+        item_id = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
+        scene.object_entities[11] = SceneEntity(
+            local_id=11,
+            pcode=9,
+            kind="prim",
+            position=(5.0, 5.0, 10.0),
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            name="Synced Box",
+            shape="cube",
+        )
+        scene.object_inventory_snapshots[11] = parse_task_inventory_text(
+            "inv_item 0\n{\n"
+            f" item_id {item_id}\n"
+            f" asset_id {asset_id}\n"
+            " type lsltext\n"
+            " inv_type lsl\n"
+            " name Sync Script|\n"
+            "}\n",
+            local_id=11,
+            task_id=task_id,
+            serial=1,
+            filename="task.inv",
+        )
+        hud.register_inventory_snapshot_for_view(scene.object_inventory_snapshots[11])
+        hud.inspector_window.show()
+        hud.update(0.016, scene, None)
+        row_text = next(r["text"] for r in hud.inspector_list.item_list if "Synced Box" in r["text"])
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": hud.inspector_list, "text": row_text},
+            )
+        )
+        hud._open_upload_file_dialog()
+        self.assertIsNotNone(hud._file_dialog)
+        self.assertIsNotNone(hud._file_dialog_action)
+        self.assertEqual(hud._file_dialog_action.kind, "upload_object_path")
+        self.assertEqual(hud._file_dialog_action.task_id, task_id)
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_FILE_DIALOG_PATH_PICKED,
+                {"ui_element": hud._file_dialog, "text": "/tmp/sync-script.lsl"},
+            )
+        )
+        self.assertEqual(len(uploaded_args), 1)
+        called_task_id, called_rows, called_path = uploaded_args[0]
+        self.assertEqual(called_task_id, task_id)
+        self.assertEqual(called_path, Path("/tmp/sync-script.lsl"))
 
 
 if __name__ == "__main__":
