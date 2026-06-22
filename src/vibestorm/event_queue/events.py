@@ -15,6 +15,8 @@ EVENT_ENABLE_SIMULATOR = "EnableSimulator"
 EVENT_ESTABLISH_AGENT_COMMUNICATION = "EstablishAgentCommunication"
 EVENT_TELEPORT_FINISH = "TeleportFinish"
 EVENT_CROSSED_REGION = "CrossedRegion"
+EVENT_SCRIPT_RUNNING_REPLY = "ScriptRunningReply"
+EVENT_OBJECT_PHYSICS_PROPERTIES = "ObjectPhysicsProperties"
 
 
 class EventQueueDecodeError(ValueError):
@@ -63,6 +65,24 @@ class CrossedRegionEvent:
     sim_port: int
     region_size_x: int
     region_size_y: int
+
+
+@dataclass(slots=True, frozen=True)
+class ScriptRunningReplyEvent:
+    object_id: str
+    item_id: str
+    running: bool
+    mono: bool
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectPhysicsPropertiesEvent:
+    local_id: int
+    density: float
+    friction: float
+    gravity_multiplier: float
+    restitution: float
+    physics_shape_type: int
 
 
 @dataclass(slots=True, frozen=True)
@@ -157,6 +177,24 @@ def _decode_one(name: str, body: object) -> object:
             region_size_x=_as_int(region.get("RegionSizeX")),
             region_size_y=_as_int(region.get("RegionSizeY")),
         )
+    if name == EVENT_SCRIPT_RUNNING_REPLY:
+        script = _first_block(body, "Script")
+        return ScriptRunningReplyEvent(
+            object_id=str(script.get("ObjectID", "")),
+            item_id=str(script.get("ItemID", "")),
+            running=bool(script.get("Running", False)),
+            mono=bool(script.get("Mono", False)),
+        )
+    if name == EVENT_OBJECT_PHYSICS_PROPERTIES:
+        obj = _first_block(body, "ObjectData")
+        return ObjectPhysicsPropertiesEvent(
+            local_id=_as_int(obj.get("LocalID")),
+            density=_as_float(obj.get("Density")),
+            friction=_as_float(obj.get("Friction")),
+            gravity_multiplier=_as_float(obj.get("GravityMultiplier")),
+            restitution=_as_float(obj.get("Restitution")),
+            physics_shape_type=_as_int(obj.get("PhysicsShapeType")),
+        )
     return UnknownEvent(message=name, body=body)
 
 
@@ -190,6 +228,16 @@ def _as_int(value: object) -> int:
     raise EventQueueDecodeError(f"cannot coerce {type(value).__name__} to int")
 
 
+def _as_float(value: object) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if value is None:
+        return 0.0
+    raise EventQueueDecodeError(f"cannot coerce {type(value).__name__} to float")
+
+
 def _as_ip(value: object) -> str:
     """Render an IP value: 4 binary bytes -> dotted quad, or pass strings through."""
     if isinstance(value, (bytes, bytearray)):
@@ -215,11 +263,15 @@ __all__ = [
     "EVENT_CROSSED_REGION",
     "EVENT_ENABLE_SIMULATOR",
     "EVENT_ESTABLISH_AGENT_COMMUNICATION",
+    "EVENT_OBJECT_PHYSICS_PROPERTIES",
+    "EVENT_SCRIPT_RUNNING_REPLY",
     "EVENT_TELEPORT_FINISH",
     "EnableSimulatorEvent",
     "EstablishAgentCommunicationEvent",
     "EventQueueBatch",
     "EventQueueDecodeError",
+    "ObjectPhysicsPropertiesEvent",
+    "ScriptRunningReplyEvent",
     "TeleportFinishEvent",
     "UnknownEvent",
     "decode_event_queue_payload",

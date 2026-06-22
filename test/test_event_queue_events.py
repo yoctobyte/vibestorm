@@ -131,6 +131,71 @@ class EventQueueDecodeTests(unittest.TestCase):
         self.assertEqual(event.position, (128.0, 129.0, 25.0))
         self.assertEqual(event.region_handle, 0xFF00)
 
+    def test_decode_script_running_reply(self) -> None:
+        from vibestorm.event_queue.events import (
+            ScriptRunningReplyEvent,
+            decode_event_queue_payload,
+        )
+
+        payload = {
+            "events": [
+                {
+                    "message": "ScriptRunningReply",
+                    "body": {
+                        "Script": [
+                            {
+                                "ObjectID": "11111111-2222-3333-4444-555555555555",
+                                "ItemID": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+                                "Running": True,
+                                "Mono": True,
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+
+        event = decode_event_queue_payload(payload).events[0]
+
+        self.assertIsInstance(event, ScriptRunningReplyEvent)
+        self.assertEqual(event.object_id, "11111111-2222-3333-4444-555555555555")
+        self.assertTrue(event.running)
+        self.assertTrue(event.mono)
+
+    def test_decode_object_physics_properties(self) -> None:
+        from vibestorm.event_queue.events import (
+            ObjectPhysicsPropertiesEvent,
+            decode_event_queue_payload,
+        )
+
+        payload = {
+            "events": [
+                {
+                    "message": "ObjectPhysicsProperties",
+                    "body": {
+                        "ObjectData": [
+                            {
+                                "LocalID": 4242,
+                                "Density": 1000.0,
+                                "Friction": 0.6,
+                                "GravityMultiplier": 1.0,
+                                "Restitution": 0.5,
+                                "PhysicsShapeType": 1,
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+
+        event = decode_event_queue_payload(payload).events[0]
+
+        self.assertIsInstance(event, ObjectPhysicsPropertiesEvent)
+        self.assertEqual(event.local_id, 4242)
+        self.assertAlmostEqual(event.density, 1000.0)
+        self.assertAlmostEqual(event.friction, 0.6)
+        self.assertEqual(event.physics_shape_type, 1)
+
     def test_unknown_event_preserved(self) -> None:
         from vibestorm.event_queue.events import UnknownEvent, decode_event_queue_payload
 
