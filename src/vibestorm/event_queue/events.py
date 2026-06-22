@@ -17,6 +17,7 @@ EVENT_TELEPORT_FINISH = "TeleportFinish"
 EVENT_CROSSED_REGION = "CrossedRegion"
 EVENT_SCRIPT_RUNNING_REPLY = "ScriptRunningReply"
 EVENT_OBJECT_PHYSICS_PROPERTIES = "ObjectPhysicsProperties"
+EVENT_AGENT_GROUP_DATA_UPDATE = "AgentGroupDataUpdate"
 
 
 class EventQueueDecodeError(ValueError):
@@ -83,6 +84,23 @@ class ObjectPhysicsPropertiesEvent:
     gravity_multiplier: float
     restitution: float
     physics_shape_type: int
+
+
+@dataclass(slots=True, frozen=True)
+class GroupMembership:
+    group_id: str
+    group_powers: int
+    accept_notices: bool
+    group_insignia_id: str
+    contribution: int
+    group_name: str
+    list_in_profile: bool
+
+
+@dataclass(slots=True, frozen=True)
+class AgentGroupDataUpdateEvent:
+    agent_id: str
+    groups: tuple[GroupMembership, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -195,6 +213,34 @@ def _decode_one(name: str, body: object) -> object:
             restitution=_as_float(obj.get("Restitution")),
             physics_shape_type=_as_int(obj.get("PhysicsShapeType")),
         )
+    if name == EVENT_AGENT_GROUP_DATA_UPDATE:
+        b = _as_map(body)
+        agent = _first_block(body, "AgentData")
+        group_data = b.get("GroupData")
+        group_rows = group_data if isinstance(group_data, list) else []
+        new_data = b.get("NewGroupData")
+        new_rows = new_data if isinstance(new_data, list) else []
+        groups: list[GroupMembership] = []
+        for index, row in enumerate(group_rows):
+            row = _as_map(row)
+            list_in_profile = False
+            if index < len(new_rows) and isinstance(new_rows[index], dict):
+                list_in_profile = bool(new_rows[index].get("ListInProfile", False))
+            groups.append(
+                GroupMembership(
+                    group_id=str(row.get("GroupID", "")),
+                    group_powers=_as_int(row.get("GroupPowers")),
+                    accept_notices=bool(row.get("AcceptNotices", False)),
+                    group_insignia_id=str(row.get("GroupInsigniaID", "")),
+                    contribution=_as_int(row.get("Contribution")),
+                    group_name=str(row.get("GroupName", "")),
+                    list_in_profile=list_in_profile,
+                )
+            )
+        return AgentGroupDataUpdateEvent(
+            agent_id=str(agent.get("AgentID", "")),
+            groups=tuple(groups),
+        )
     return UnknownEvent(message=name, body=body)
 
 
@@ -259,7 +305,9 @@ def _as_vec3(value: object) -> tuple[float, float, float]:
 
 
 __all__ = [
+    "AgentGroupDataUpdateEvent",
     "CrossedRegionEvent",
+    "EVENT_AGENT_GROUP_DATA_UPDATE",
     "EVENT_CROSSED_REGION",
     "EVENT_ENABLE_SIMULATOR",
     "EVENT_ESTABLISH_AGENT_COMMUNICATION",
@@ -270,6 +318,7 @@ __all__ = [
     "EstablishAgentCommunicationEvent",
     "EventQueueBatch",
     "EventQueueDecodeError",
+    "GroupMembership",
     "ObjectPhysicsPropertiesEvent",
     "ScriptRunningReplyEvent",
     "TeleportFinishEvent",

@@ -196,6 +196,72 @@ class EventQueueDecodeTests(unittest.TestCase):
         self.assertAlmostEqual(event.friction, 0.6)
         self.assertEqual(event.physics_shape_type, 1)
 
+    def test_decode_agent_group_data_update(self) -> None:
+        from vibestorm.event_queue.events import (
+            AgentGroupDataUpdateEvent,
+            decode_event_queue_payload,
+        )
+
+        payload = {
+            "events": [
+                {
+                    "message": "AgentGroupDataUpdate",
+                    "body": {
+                        "AgentData": [
+                            {"AgentID": "11111111-2222-3333-4444-555555555555"}
+                        ],
+                        "GroupData": [
+                            {
+                                "GroupID": "aaaa1111-2222-3333-4444-555555555555",
+                                "GroupPowers": _be(0x12345678, 8),
+                                "AcceptNotices": True,
+                                "GroupInsigniaID": "bbbb1111-2222-3333-4444-555555555555",
+                                "Contribution": 5,
+                                "GroupName": "Builders",
+                            }
+                        ],
+                        "NewGroupData": [{"ListInProfile": True}],
+                    },
+                }
+            ]
+        }
+
+        event = decode_event_queue_payload(payload).events[0]
+
+        self.assertIsInstance(event, AgentGroupDataUpdateEvent)
+        self.assertEqual(event.agent_id, "11111111-2222-3333-4444-555555555555")
+        self.assertEqual(len(event.groups), 1)
+        group = event.groups[0]
+        self.assertEqual(group.group_name, "Builders")
+        self.assertEqual(group.group_powers, 0x12345678)
+        self.assertEqual(group.contribution, 5)
+        self.assertTrue(group.accept_notices)
+        self.assertTrue(group.list_in_profile)
+
+    def test_decode_agent_group_data_update_empty(self) -> None:
+        from vibestorm.event_queue.events import (
+            AgentGroupDataUpdateEvent,
+            decode_event_queue_payload,
+        )
+
+        payload = {
+            "events": [
+                {
+                    "message": "AgentGroupDataUpdate",
+                    "body": {
+                        "AgentData": [{"AgentID": "11111111-2222-3333-4444-555555555555"}],
+                        "GroupData": [],
+                        "NewGroupData": [],
+                    },
+                }
+            ]
+        }
+
+        event = decode_event_queue_payload(payload).events[0]
+
+        self.assertIsInstance(event, AgentGroupDataUpdateEvent)
+        self.assertEqual(event.groups, ())
+
     def test_unknown_event_preserved(self) -> None:
         from vibestorm.event_queue.events import UnknownEvent, decode_event_queue_payload
 
