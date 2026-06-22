@@ -39,6 +39,7 @@ from vibestorm.udp.messages import (
     parse_kill_object,
     parse_layer_data,
     parse_map_block_reply,
+    parse_object_animation,
     parse_object_extra_params,
     parse_object_properties_family,
     parse_object_update,
@@ -1034,6 +1035,29 @@ class SemanticMessageTests(unittest.TestCase):
 
         with self.assertRaises(MessageDecodeError):
             parse_avatar_animation(dispatched)
+
+    def test_parse_object_animation(self) -> None:
+        from vibestorm.udp.messages import ObjectAnimationMessage
+
+        sender = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        anim0 = UUID("11111111-1111-1111-1111-111111111111")
+        body = (
+            sender.bytes
+            + bytes([1])
+            + anim0.bytes
+            + (9).to_bytes(4, "little", signed=True)
+        )
+        # ObjectAnimation is High-frequency message #30 -> wire byte 0x1E.
+        dispatched = self.dispatcher.dispatch(bytes([0x1E]) + body)
+
+        parsed = parse_object_animation(dispatched)
+
+        self.assertIsInstance(parsed, ObjectAnimationMessage)
+        self.assertEqual(parsed.sender_id, sender)
+        self.assertEqual(len(parsed.animations), 1)
+        self.assertEqual(parsed.animations[0].anim_id, anim0)
+        self.assertEqual(parsed.animations[0].sequence_id, 9)
+        self.assertIsNone(parsed.animations[0].source_object_id)
 
     def test_parse_chat_from_simulator(self) -> None:
         source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

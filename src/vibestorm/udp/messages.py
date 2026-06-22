@@ -335,6 +335,19 @@ class AvatarAnimationMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class ObjectAnimationMessage:
+    """Decoded ObjectAnimation: which animations one object is running.
+
+    Same Sender + AnimationList shape as AvatarAnimation but without the
+    source/event lists. Entries reuse ``AvatarAnimationEntry`` with
+    ``source_object_id`` always ``None``.
+    """
+
+    sender_id: UUID
+    animations: tuple[AvatarAnimationEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
 class LayerDataMessage:
     """Decoded LayerData wire shape.
 
@@ -2056,6 +2069,32 @@ def parse_avatar_animation(message: MessageDispatch) -> AvatarAnimationMessage:
         for index, (anim_id, sequence_id) in enumerate(anims)
     )
     return AvatarAnimationMessage(sender_id=sender_id, animations=entries)
+
+
+def parse_object_animation(message: MessageDispatch) -> ObjectAnimationMessage:
+    """Decode an ObjectAnimation packet (Sender + AnimationList only)."""
+    if message.summary.name != "ObjectAnimation":
+        raise MessageDecodeError(f"expected ObjectAnimation, got {message.summary.name}")
+
+    body = message.body
+    if len(body) < 16 + 1:
+        raise MessageDecodeError("ObjectAnimation body is too short")
+
+    sender_id = UUID(bytes=body[0:16])
+    offset = 16
+    anim_count = body[offset]
+    offset += 1
+    entries: list[AvatarAnimationEntry] = []
+    for index in range(anim_count):
+        if len(body) < offset + 20:
+            raise MessageDecodeError(f"ObjectAnimation entry {index} is truncated")
+        anim_id = UUID(bytes=body[offset : offset + 16])
+        sequence_id = unpack_from("<i", body, offset + 16)[0]
+        offset += 20
+        entries.append(
+            AvatarAnimationEntry(anim_id=anim_id, sequence_id=sequence_id, source_object_id=None)
+        )
+    return ObjectAnimationMessage(sender_id=sender_id, animations=tuple(entries))
 
 
 def parse_layer_data(message: MessageDispatch) -> LayerDataMessage:
