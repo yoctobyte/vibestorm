@@ -18,6 +18,15 @@ from dataclasses import dataclass
 from uuid import UUID  # noqa: F401  - used by RegionMapTileReady etc.
 
 from vibestorm.caps.inventory_client import InventoryFetchSnapshot
+from vibestorm.udp.messages import (
+    AttachedSoundGainChangeMessage,
+    AttachedSoundMessage,
+    AvatarAnimationMessage,
+    ObjectAnimationMessage,
+    ParcelPropertiesMessage,
+    PreloadSoundMessage,
+    SoundTriggerMessage,
+)
 from vibestorm.world.object_inventory import ObjectInventorySnapshot
 
 # ---- session lifecycle ----------------------------------------------------
@@ -154,8 +163,69 @@ class LayerDataReceived:
     data: bytes
 
 
+# ---- parcel ---------------------------------------------------------------
+
+@dataclass(slots=True, frozen=True)
+class ParcelPropertiesReceived:
+    """Decoded ParcelProperties for the agent's current/selected parcel."""
+    region_handle: int
+    properties: ParcelPropertiesMessage
+
+
+@dataclass(slots=True, frozen=True)
+class ParcelOverlayReceived:
+    """One ParcelOverlay sequence piece. Reassembly/grid decode lives in
+    ``vibestorm.world.parcel_overlay``; this carries the raw piece."""
+    region_handle: int
+    sequence_id: int
+    data: bytes
+
+
+# ---- animation ------------------------------------------------------------
+
+@dataclass(slots=True, frozen=True)
+class AvatarAnimationReceived:
+    region_handle: int
+    animation: AvatarAnimationMessage
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectAnimationReceived:
+    region_handle: int
+    animation: ObjectAnimationMessage
+
+
+# ---- sound ----------------------------------------------------------------
+
+@dataclass(slots=True, frozen=True)
+class SoundTriggered:
+    region_handle: int
+    sound: SoundTriggerMessage
+
+
+@dataclass(slots=True, frozen=True)
+class AttachedSoundReceived:
+    region_handle: int
+    sound: AttachedSoundMessage
+
+
+@dataclass(slots=True, frozen=True)
+class AttachedSoundGainChanged:
+    region_handle: int
+    change: AttachedSoundGainChangeMessage
+
+
+@dataclass(slots=True, frozen=True)
+class PreloadSoundReceived:
+    region_handle: int
+    preload: PreloadSoundMessage
+
+
 __all__ = [
     "AssetDataReady",
+    "AttachedSoundGainChanged",
+    "AttachedSoundReceived",
+    "AvatarAnimationReceived",
     "ChatAlert",
     "ChatIM",
     "ChatLocal",
@@ -164,10 +234,15 @@ __all__ = [
     "LayerDataReceived",
     "LoginComplete",
     "MeshAssetReady",
+    "ObjectAnimationReceived",
     "ObjectInventorySnapshotReady",
+    "ParcelOverlayReceived",
+    "ParcelPropertiesReceived",
+    "PreloadSoundReceived",
     "RegionChanged",
     "RegionMapTileReady",
     "SessionClosed",
+    "SoundTriggered",
     "TextureAssetReady",
     "WorldStateChanged",
 ]

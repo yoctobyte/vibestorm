@@ -38,6 +38,9 @@ from vibestorm.bus.commands import (
 )
 from vibestorm.bus.events import (
     AssetDataReady,
+    AttachedSoundGainChanged,
+    AttachedSoundReceived,
+    AvatarAnimationReceived,
     ChatAlert,
     ChatIM,
     ChatLocal,
@@ -45,10 +48,15 @@ from vibestorm.bus.events import (
     InventorySnapshotReady,
     LayerDataReceived,
     MeshAssetReady,
+    ObjectAnimationReceived,
     ObjectInventorySnapshotReady,
+    ParcelOverlayReceived,
+    ParcelPropertiesReceived,
+    PreloadSoundReceived,
     RegionChanged,
     RegionMapTileReady,
     SessionClosed,
+    SoundTriggered,
     TextureAssetReady,
     WorldStateChanged,
 )
@@ -308,6 +316,68 @@ class WorldClient:
                     region_handle=handle,
                     layer_type=layer_type,
                     data=data,
+                )
+            )
+        elif kind == "parcel.properties" and session.latest_parcel_properties is not None:
+            self.bus.publish(
+                ParcelPropertiesReceived(
+                    region_handle=handle,
+                    properties=session.latest_parcel_properties,
+                )
+            )
+        elif kind == "parcel.overlay":
+            parts = _kv_split(event.detail)
+            try:
+                sequence_id = int(parts["seq"])
+            except (KeyError, ValueError):
+                return
+            data = session.parcel_overlay_packets.get(sequence_id)
+            if data is None:
+                return
+            self.bus.publish(
+                ParcelOverlayReceived(
+                    region_handle=handle,
+                    sequence_id=sequence_id,
+                    data=data,
+                )
+            )
+        elif kind == "avatar.animation" and session.latest_avatar_animation is not None:
+            self.bus.publish(
+                AvatarAnimationReceived(
+                    region_handle=handle,
+                    animation=session.latest_avatar_animation,
+                )
+            )
+        elif kind == "object.animation" and session.latest_object_animation is not None:
+            self.bus.publish(
+                ObjectAnimationReceived(
+                    region_handle=handle,
+                    animation=session.latest_object_animation,
+                )
+            )
+        elif kind == "sound.trigger" and session.latest_sound_trigger is not None:
+            self.bus.publish(
+                SoundTriggered(region_handle=handle, sound=session.latest_sound_trigger)
+            )
+        elif kind == "sound.attached" and session.latest_attached_sound is not None:
+            self.bus.publish(
+                AttachedSoundReceived(region_handle=handle, sound=session.latest_attached_sound)
+            )
+        elif (
+            kind == "sound.gain_change"
+            and session.latest_attached_sound_gain_change is not None
+        ):
+            self.bus.publish(
+                AttachedSoundGainChanged(
+                    region_handle=handle,
+                    change=session.latest_attached_sound_gain_change,
+                )
+            )
+        elif kind == "sound.preload" and session.latest_preload_sound is not None:
+            self.bus.publish(
+                PreloadSoundReceived(
+                    region_handle=handle,
+                    preload=session.latest_preload_sound,
                 )
             )
         elif kind == "caps.inventory" and session.latest_inventory_fetch is not None:

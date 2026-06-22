@@ -41,9 +41,15 @@ from vibestorm.udp.messages import (
     DEFAULT_AVATAR_VISUAL_PARAMS,
     AgentCachedTextureResponseMessage,
     AgentWearablesUpdateMessage,
+    AttachedSoundGainChangeMessage,
+    AttachedSoundMessage,
+    AvatarAnimationMessage,
     AvatarAppearanceMessage,
     MessageDecodeError,
+    ObjectAnimationMessage,
     ParcelPropertiesMessage,
+    PreloadSoundMessage,
+    SoundTriggerMessage,
     WearableCacheEntry,
     encode_agent_cached_texture,
     encode_agent_is_now_wearing,
@@ -276,6 +282,15 @@ class LiveCircuitSession:
     # ``vibestorm.world.parcel_overlay``.
     latest_parcel_properties: ParcelPropertiesMessage | None = None
     parcel_overlay_packets: dict[int, bytes] = field(default_factory=dict)
+    # Most-recent decoded animation/sound messages. on_event fires
+    # synchronously right after these are set, so a bus translator reading
+    # the "latest" slot sees the message that triggered the event.
+    latest_avatar_animation: AvatarAnimationMessage | None = None
+    latest_object_animation: ObjectAnimationMessage | None = None
+    latest_sound_trigger: SoundTriggerMessage | None = None
+    latest_attached_sound: AttachedSoundMessage | None = None
+    latest_attached_sound_gain_change: AttachedSoundGainChangeMessage | None = None
+    latest_preload_sound: PreloadSoundMessage | None = None
     resolved_capabilities: tuple[str, ...] = ()
     properties_requested: set[UUID] = field(default_factory=set)
     test_cube_spawned: bool = False
@@ -514,6 +529,7 @@ class LiveCircuitSession:
             except MessageDecodeError as exc:
                 self._record_event(now, "avatar.animation.decode_error", str(exc))
                 return self._flush_transport_packets(now)
+            self.latest_avatar_animation = anim
             self._record_event(
                 now,
                 "avatar.animation",
@@ -527,6 +543,7 @@ class LiveCircuitSession:
             except MessageDecodeError as exc:
                 self._record_event(now, "object.animation.decode_error", str(exc))
                 return self._flush_transport_packets(now)
+            self.latest_object_animation = anim
             self._record_event(
                 now,
                 "object.animation",
@@ -540,6 +557,7 @@ class LiveCircuitSession:
             except MessageDecodeError as exc:
                 self._record_event(now, "sound.trigger.decode_error", str(exc))
                 return self._flush_transport_packets(now)
+            self.latest_sound_trigger = sound
             self._record_event(
                 now,
                 "sound.trigger",
@@ -553,6 +571,7 @@ class LiveCircuitSession:
             except MessageDecodeError as exc:
                 self._record_event(now, "sound.attached.decode_error", str(exc))
                 return self._flush_transport_packets(now)
+            self.latest_attached_sound = sound
             self._record_event(
                 now,
                 "sound.attached",
@@ -567,6 +586,7 @@ class LiveCircuitSession:
             except MessageDecodeError as exc:
                 self._record_event(now, "sound.gain_change.decode_error", str(exc))
                 return self._flush_transport_packets(now)
+            self.latest_attached_sound_gain_change = change
             self._record_event(
                 now,
                 "sound.gain_change",
@@ -580,6 +600,7 @@ class LiveCircuitSession:
             except MessageDecodeError as exc:
                 self._record_event(now, "sound.preload.decode_error", str(exc))
                 return self._flush_transport_packets(now)
+            self.latest_preload_sound = preload
             self._record_event(
                 now,
                 "sound.preload",

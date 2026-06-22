@@ -214,6 +214,92 @@ class WorldClientBusBridgeTests(unittest.TestCase):
         self.assertFalse(received[0].is_agent_alert)
         self.assertTrue(received[1].is_agent_alert)
 
+    def test_parcel_properties_event_publishes_typed_event(self) -> None:
+        from uuid import UUID
+
+        from vibestorm.bus.events import ParcelPropertiesReceived
+        from vibestorm.udp.messages import ParcelPropertiesMessage
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[ParcelPropertiesReceived] = []
+        client.bus.subscribe(ParcelPropertiesReceived, received.append)
+
+        session.latest_parcel_properties = ParcelPropertiesMessage(
+            request_result=0, sequence_id=1, self_count=0, other_count=0,
+            public_count=0, local_id=7, owner_id=UUID(int=1), is_group_owned=False,
+            aabb_min=(0.0, 0.0, 0.0), aabb_max=(8.0, 8.0, 8.0), bitmap=b"",
+            area=512, status=0, max_prims=100, total_prims=10, parcel_flags=0,
+            sale_price=0, name="Sandbox", description="", music_url="",
+            media_url="", group_id=UUID(int=0),
+        )
+        session._record_event(10.0, "parcel.properties", "local_id=7 name='Sandbox' area=512 owner=...")
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].properties.name, "Sandbox")
+        self.assertEqual(received[0].region_handle, (256 << 32) | 512)
+
+    def test_parcel_overlay_event_publishes_typed_event(self) -> None:
+        from vibestorm.bus.events import ParcelOverlayReceived
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[ParcelOverlayReceived] = []
+        client.bus.subscribe(ParcelOverlayReceived, received.append)
+
+        session.parcel_overlay_packets[2] = bytes([1, 2, 3, 4])
+        session._record_event(10.0, "parcel.overlay", "seq=2 bytes=4")
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].sequence_id, 2)
+        self.assertEqual(received[0].data, bytes([1, 2, 3, 4]))
+
+    def test_sound_trigger_event_publishes_typed_event(self) -> None:
+        from uuid import UUID
+
+        from vibestorm.bus.events import SoundTriggered
+        from vibestorm.udp.messages import SoundTriggerMessage
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[SoundTriggered] = []
+        client.bus.subscribe(SoundTriggered, received.append)
+
+        session.latest_sound_trigger = SoundTriggerMessage(
+            sound_id=UUID(int=1), owner_id=UUID(int=2), object_id=UUID(int=3),
+            parent_id=UUID(int=0), region_handle=0xABCD, position=(1.0, 2.0, 3.0), gain=0.5,
+        )
+        session._record_event(10.0, "sound.trigger", "sound=... object=... gain=0.50")
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].sound.region_handle, 0xABCD)
+
+    def test_avatar_animation_event_publishes_typed_event(self) -> None:
+        from uuid import UUID
+
+        from vibestorm.bus.events import AvatarAnimationReceived
+        from vibestorm.udp.messages import AvatarAnimationEntry, AvatarAnimationMessage
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[AvatarAnimationReceived] = []
+        client.bus.subscribe(AvatarAnimationReceived, received.append)
+
+        session.latest_avatar_animation = AvatarAnimationMessage(
+            sender_id=UUID(int=7),
+            animations=(
+                AvatarAnimationEntry(anim_id=UUID(int=8), sequence_id=3, source_object_id=None),
+            ),
+        )
+        session._record_event(10.0, "avatar.animation", "sender=... anims=1")
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(len(received[0].animation.animations), 1)
+
     def test_world_kind_session_event_publishes_world_state_changed(self) -> None:
         from vibestorm.bus.events import WorldStateChanged
 
