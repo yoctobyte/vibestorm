@@ -45,6 +45,7 @@ from vibestorm.udp.messages import (
     parse_object_update_compressed,
     parse_object_update_summary,
     parse_packet_ack,
+    parse_parcel_properties,
     parse_region_handshake,
     parse_reply_task_inventory,
     parse_send_xfer_packet,
@@ -857,6 +858,128 @@ class SemanticMessageTests(unittest.TestCase):
         dispatched = self.dispatcher.dispatch(bytes([0x0B, 0x4C]))
         with self.assertRaises(MessageDecodeError):
             parse_layer_data(dispatched)
+
+    def _parcel_properties_body(
+        self,
+        *,
+        owner_id: UUID,
+        group_id: UUID,
+        bitmap: bytes,
+        name: bytes,
+        desc: bytes,
+        music_url: bytes = b"",
+        media_url: bytes = b"",
+    ) -> bytes:
+        def s32(value: int) -> bytes:
+            return value.to_bytes(4, "little", signed=True)
+
+        def u32(value: int) -> bytes:
+            return value.to_bytes(4, "little", signed=False)
+
+        def var1(value: bytes) -> bytes:
+            return bytes([len(value)]) + value
+
+        return (
+            s32(0)  # RequestResult
+            + s32(7)  # SequenceID
+            + bytes([1])  # SnapSelection
+            + s32(2)  # SelfCount
+            + s32(3)  # OtherCount
+            + s32(4)  # PublicCount
+            + s32(42)  # LocalID
+            + owner_id.bytes
+            + bytes([1])  # IsGroupOwned
+            + u32(0)  # AuctionID
+            + s32(0)  # ClaimDate
+            + s32(0)  # ClaimPrice
+            + s32(0)  # RentPrice
+            + pack("<fff", 1.0, 2.0, 3.0)  # AABBMin
+            + pack("<fff", 10.0, 20.0, 30.0)  # AABBMax
+            + len(bitmap).to_bytes(2, "little")
+            + bitmap
+            + s32(1024)  # Area
+            + bytes([1])  # Status
+            + s32(0)  # SimWideMaxPrims
+            + s32(0)  # SimWideTotalPrims
+            + s32(500)  # MaxPrims
+            + s32(250)  # TotalPrims
+            + s32(0)  # OwnerPrims
+            + s32(0)  # GroupPrims
+            + s32(0)  # OtherPrims
+            + s32(0)  # SelectedPrims
+            + pack("<f", 1.0)  # ParcelPrimBonus
+            + s32(0)  # OtherCleanTime
+            + u32(0x8000_0001)  # ParcelFlags
+            + s32(99)  # SalePrice
+            + var1(name)
+            + var1(desc)
+            + var1(music_url)
+            + var1(media_url)
+            + UUID(int=0).bytes  # MediaID
+            + bytes([0])  # MediaAutoScale
+            + group_id.bytes
+        )
+
+    def test_parse_parcel_properties(self) -> None:
+        from vibestorm.udp.messages import ParcelPropertiesMessage
+
+        owner_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        group_id = UUID("11111111-2222-3333-4444-555555555555")
+        bitmap = bytes([0xFF, 0x00, 0xAA])
+        body = self._parcel_properties_body(
+            owner_id=owner_id,
+            group_id=group_id,
+            bitmap=bitmap,
+            name=b"Sandbox",
+            desc=b"a test parcel",
+            music_url=b"http://music",
+        )
+        # ParcelProperties is High-frequency message #23 -> wire byte 0x17.
+        dispatched = self.dispatcher.dispatch(bytes([0x17]) + body)
+
+        parsed = parse_parcel_properties(dispatched)
+
+        self.assertIsInstance(parsed, ParcelPropertiesMessage)
+        self.assertEqual(parsed.local_id, 42)
+        self.assertEqual(parsed.owner_id, owner_id)
+        self.assertTrue(parsed.is_group_owned)
+        self.assertEqual(parsed.group_id, group_id)
+        self.assertEqual(parsed.bitmap, bitmap)
+        self.assertEqual(parsed.area, 1024)
+        self.assertEqual(parsed.status, 1)
+        self.assertEqual(parsed.max_prims, 500)
+        self.assertEqual(parsed.total_prims, 250)
+        self.assertEqual(parsed.parcel_flags, 0x8000_0001)
+        self.assertEqual(parsed.sale_price, 99)
+        self.assertEqual(parsed.name, "Sandbox")
+        self.assertEqual(parsed.description, "a test parcel")
+        self.assertEqual(parsed.music_url, "http://music")
+        self.assertEqual(parsed.media_url, "")
+        self.assertAlmostEqual(parsed.aabb_max[1], 20.0, places=4)
+
+    def test_parse_parcel_properties_trims_nul_name(self) -> None:
+        owner_id = UUID(int=0)
+        group_id = UUID(int=0)
+        body = self._parcel_properties_body(
+            owner_id=owner_id,
+            group_id=group_id,
+            bitmap=b"",
+            name=b"Plot\x00",
+            desc=b"",
+        )
+        dispatched = self.dispatcher.dispatch(bytes([0x17]) + body)
+
+        parsed = parse_parcel_properties(dispatched)
+
+        self.assertEqual(parsed.name, "Plot")
+        self.assertEqual(parsed.bitmap, b"")
+
+    def test_parse_parcel_properties_truncated_raises(self) -> None:
+        from vibestorm.udp.messages import MessageDecodeError
+
+        dispatched = self.dispatcher.dispatch(bytes([0x17]) + bytes(8))
+        with self.assertRaises(MessageDecodeError):
+            parse_parcel_properties(dispatched)
 
     def test_parse_chat_from_simulator(self) -> None:
         source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

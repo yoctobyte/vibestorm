@@ -278,6 +278,43 @@ class ChatFromSimulatorMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class ParcelPropertiesMessage:
+    """Decoded ParcelProperties ParcelData block.
+
+    Parses the ParcelData ``Single`` block of the (UDP-deprecated but still
+    OpenSim-supported) ParcelProperties message. Trailing single blocks
+    (age/access/environment) past GroupID are not decoded.
+
+    ``bitmap`` is the raw packed bit-field marking which 4 m LandUnit cells
+    belong to this parcel; see ``vibestorm.world.parcel_overlay`` for the
+    region-wide overlay grid.
+    """
+
+    request_result: int
+    sequence_id: int
+    self_count: int
+    other_count: int
+    public_count: int
+    local_id: int
+    owner_id: UUID
+    is_group_owned: bool
+    aabb_min: tuple[float, float, float]
+    aabb_max: tuple[float, float, float]
+    bitmap: bytes
+    area: int
+    status: int
+    max_prims: int
+    total_prims: int
+    parcel_flags: int
+    sale_price: int
+    name: str
+    description: str
+    music_url: str
+    media_url: str
+    group_id: UUID
+
+
+@dataclass(slots=True, frozen=True)
 class LayerDataMessage:
     """Decoded LayerData wire shape.
 
@@ -1845,6 +1882,108 @@ def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMess
         audible=audible,
         position=position,  # type: ignore[arg-type]
         message=chat_message,
+    )
+
+
+def parse_parcel_properties(message: MessageDispatch) -> ParcelPropertiesMessage:
+    """Decode a ParcelProperties packet's ParcelData block.
+
+    Wire shape per ``message_template.msg`` (ParcelData Single block). Fields
+    are read sequentially through GroupID; the remaining single blocks
+    (age/access/environment) are ignored.
+    """
+    if message.summary.name != "ParcelProperties":
+        raise MessageDecodeError(f"expected ParcelProperties, got {message.summary.name}")
+
+    body = message.body
+    cursor = 0
+
+    def take(size: int, what: str) -> bytes:
+        nonlocal cursor
+        end = cursor + size
+        if end > len(body):
+            raise MessageDecodeError(f"ParcelProperties {what} is truncated")
+        chunk = body[cursor:end]
+        cursor = end
+        return chunk
+
+    def s32(what: str) -> int:
+        return int.from_bytes(take(4, what), "little", signed=True)
+
+    def u32(what: str) -> int:
+        return int.from_bytes(take(4, what), "little", signed=False)
+
+    def vec3(what: str) -> tuple[float, float, float]:
+        return tuple(unpack_from("<fff", take(12, what), 0))  # type: ignore[return-value]
+
+    def var(prefix_size: int, what: str) -> bytes:
+        length = int.from_bytes(take(prefix_size, f"{what} length"), "little")
+        return take(length, what)
+
+    def text(what: str) -> str:
+        return var(1, what).decode("utf-8", errors="replace").rstrip("\x00")
+
+    request_result = s32("RequestResult")
+    sequence_id = s32("SequenceID")
+    take(1, "SnapSelection")
+    self_count = s32("SelfCount")
+    other_count = s32("OtherCount")
+    public_count = s32("PublicCount")
+    local_id = s32("LocalID")
+    owner_id = UUID(bytes=take(16, "OwnerID"))
+    is_group_owned = take(1, "IsGroupOwned")[0] != 0
+    take(4, "AuctionID")
+    take(4, "ClaimDate")
+    take(4, "ClaimPrice")
+    take(4, "RentPrice")
+    aabb_min = vec3("AABBMin")
+    aabb_max = vec3("AABBMax")
+    bitmap = bytes(var(2, "Bitmap"))
+    area = s32("Area")
+    status = take(1, "Status")[0]
+    take(4, "SimWideMaxPrims")
+    take(4, "SimWideTotalPrims")
+    max_prims = s32("MaxPrims")
+    total_prims = s32("TotalPrims")
+    take(4, "OwnerPrims")
+    take(4, "GroupPrims")
+    take(4, "OtherPrims")
+    take(4, "SelectedPrims")
+    take(4, "ParcelPrimBonus")
+    take(4, "OtherCleanTime")
+    parcel_flags = u32("ParcelFlags")
+    sale_price = s32("SalePrice")
+    name = text("Name")
+    description = text("Desc")
+    music_url = text("MusicURL")
+    media_url = text("MediaURL")
+    take(16, "MediaID")
+    take(1, "MediaAutoScale")
+    group_id = UUID(bytes=take(16, "GroupID"))
+
+    return ParcelPropertiesMessage(
+        request_result=request_result,
+        sequence_id=sequence_id,
+        self_count=self_count,
+        other_count=other_count,
+        public_count=public_count,
+        local_id=local_id,
+        owner_id=owner_id,
+        is_group_owned=is_group_owned,
+        aabb_min=aabb_min,
+        aabb_max=aabb_max,
+        bitmap=bitmap,
+        area=area,
+        status=status,
+        max_prims=max_prims,
+        total_prims=total_prims,
+        parcel_flags=parcel_flags,
+        sale_price=sale_price,
+        name=name,
+        description=description,
+        music_url=music_url,
+        media_url=media_url,
+        group_id=group_id,
     )
 
 
