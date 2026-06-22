@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import xml.etree.ElementTree as ET
 from uuid import UUID
 
@@ -95,9 +97,28 @@ def _parse_value(element: ET.Element) -> object:
         return element.text or ""
     if element.tag == "real":
         return float(element.text or "0")
+    if element.tag == "binary":
+        return _parse_binary(element)
+    if element.tag in {"uri", "date"}:
+        return element.text or ""
     if element.tag == "undef":
         return None
     raise LlsdError(f"unsupported LLSD value type: {element.tag}")
+
+
+def _parse_binary(element: ET.Element) -> bytes:
+    text = (element.text or "").strip()
+    if not text:
+        return b""
+    encoding = (element.get("encoding") or "base64").lower()
+    try:
+        if encoding == "base16":
+            return base64.b16decode(text, casefold=True)
+        if encoding == "base85":
+            return base64.b85decode(text)
+        return base64.b64decode(text)
+    except (ValueError, binascii.Error) as exc:
+        raise LlsdError(f"invalid LLSD binary ({encoding}): {exc}") from exc
 
 
 def _format_value(value: object) -> ET.Element:
