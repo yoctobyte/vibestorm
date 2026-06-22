@@ -348,6 +348,18 @@ class ObjectAnimationMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class ParcelOverlayMessage:
+    """Decoded ParcelOverlay packet: one sequence piece of the region grid.
+
+    Reassembly across sequences and grid decoding lives in
+    ``vibestorm.world.parcel_overlay``.
+    """
+
+    sequence_id: int
+    data: bytes
+
+
+@dataclass(slots=True, frozen=True)
 class SoundTriggerMessage:
     """Decoded SoundTrigger: a one-shot world sound."""
 
@@ -2141,6 +2153,26 @@ def parse_object_animation(message: MessageDispatch) -> ObjectAnimationMessage:
             AvatarAnimationEntry(anim_id=anim_id, sequence_id=sequence_id, source_object_id=None)
         )
     return ObjectAnimationMessage(sender_id=sender_id, animations=tuple(entries))
+
+
+def parse_parcel_overlay(message: MessageDispatch) -> ParcelOverlayMessage:
+    """Decode a ParcelOverlay packet: SequenceID (S32) + Data (Variable 2)."""
+    if message.summary.name != "ParcelOverlay":
+        raise MessageDecodeError(f"expected ParcelOverlay, got {message.summary.name}")
+
+    body = message.body
+    if len(body) < 4 + 2:
+        raise MessageDecodeError("ParcelOverlay body is too short")
+
+    sequence_id = int.from_bytes(body[0:4], "little", signed=True)
+    data_len = int.from_bytes(body[4:6], "little")
+    data_end = 6 + data_len
+    if len(body) < data_end:
+        raise MessageDecodeError(
+            f"ParcelOverlay payload truncated: declared {data_len} bytes, "
+            f"only {len(body) - 6} available"
+        )
+    return ParcelOverlayMessage(sequence_id=sequence_id, data=bytes(body[6:data_end]))
 
 
 def parse_sound_trigger(message: MessageDispatch) -> SoundTriggerMessage:

@@ -43,6 +43,7 @@ from vibestorm.udp.messages import (
     AgentWearablesUpdateMessage,
     AvatarAppearanceMessage,
     MessageDecodeError,
+    ParcelPropertiesMessage,
     WearableCacheEntry,
     encode_agent_cached_texture,
     encode_agent_is_now_wearing,
@@ -71,6 +72,9 @@ from vibestorm.udp.messages import (
     parse_agent_movement_complete,
     parse_agent_wearables_update,
     parse_alert_message,
+    parse_attached_sound,
+    parse_attached_sound_gain_change,
+    parse_avatar_animation,
     parse_avatar_appearance,
     parse_chat_from_simulator,
     parse_improved_instant_message,
@@ -78,12 +82,17 @@ from vibestorm.udp.messages import (
     parse_kill_object,
     parse_layer_data,
     parse_map_block_reply,
+    parse_object_animation,
     parse_object_update,
     parse_object_update_cached,
     parse_object_update_compressed,
     parse_object_update_summary,
     parse_packet_ack,
+    parse_parcel_overlay,
+    parse_parcel_properties,
+    parse_preload_sound,
     parse_region_handshake,
+    parse_sound_trigger,
     parse_reply_task_inventory,
     parse_send_xfer_packet,
     parse_start_ping_check,
@@ -262,6 +271,11 @@ class LiveCircuitSession:
     # happens in ``vibestorm.world.terrain`` when the bus consumer
     # decodes it.
     latest_layer_data: dict[int, bytes] = field(default_factory=dict)
+    # Most-recent ParcelProperties (parcel identity for the agent's parcel) and
+    # raw ParcelOverlay packets keyed by sequence id. Grid decode lives in
+    # ``vibestorm.world.parcel_overlay``.
+    latest_parcel_properties: ParcelPropertiesMessage | None = None
+    parcel_overlay_packets: dict[int, bytes] = field(default_factory=dict)
     resolved_capabilities: tuple[str, ...] = ()
     properties_requested: set[UUID] = field(default_factory=set)
     test_cube_spawned: bool = False
@@ -460,6 +474,116 @@ class LiveCircuitSession:
                 now,
                 "terrain.layer_data",
                 f"type={layer.layer_type:#04x} bytes={len(layer.data)}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "ParcelProperties":
+            try:
+                parcel = parse_parcel_properties(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "parcel.properties.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self.latest_parcel_properties = parcel
+            self._record_event(
+                now,
+                "parcel.properties",
+                (
+                    f"local_id={parcel.local_id} name={parcel.name!r} "
+                    f"area={parcel.area} owner={parcel.owner_id}"
+                ),
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "ParcelOverlay":
+            try:
+                overlay = parse_parcel_overlay(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "parcel.overlay.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self.parcel_overlay_packets[overlay.sequence_id] = overlay.data
+            self._record_event(
+                now,
+                "parcel.overlay",
+                f"seq={overlay.sequence_id} bytes={len(overlay.data)}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "AvatarAnimation":
+            try:
+                anim = parse_avatar_animation(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "avatar.animation.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "avatar.animation",
+                f"sender={anim.sender_id} anims={len(anim.animations)}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "ObjectAnimation":
+            try:
+                anim = parse_object_animation(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "object.animation.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "object.animation",
+                f"sender={anim.sender_id} anims={len(anim.animations)}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "SoundTrigger":
+            try:
+                sound = parse_sound_trigger(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "sound.trigger.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "sound.trigger",
+                f"sound={sound.sound_id} object={sound.object_id} gain={sound.gain:.2f}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "AttachedSound":
+            try:
+                sound = parse_attached_sound(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "sound.attached.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "sound.attached",
+                f"sound={sound.sound_id} object={sound.object_id} "
+                f"gain={sound.gain:.2f} flags={sound.flags:#04x}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "AttachedSoundGainChange":
+            try:
+                change = parse_attached_sound_gain_change(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "sound.gain_change.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "sound.gain_change",
+                f"object={change.object_id} gain={change.gain:.2f}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "PreloadSound":
+            try:
+                preload = parse_preload_sound(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "sound.preload.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self._record_event(
+                now,
+                "sound.preload",
+                f"entries={len(preload.entries)}",
             )
             return self._flush_transport_packets(now)
 

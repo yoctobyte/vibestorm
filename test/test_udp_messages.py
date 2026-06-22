@@ -43,6 +43,7 @@ from vibestorm.udp.messages import (
     parse_attached_sound_gain_change,
     parse_object_animation,
     parse_object_extra_params,
+    parse_parcel_overlay,
     parse_object_properties_family,
     parse_object_update,
     parse_object_update_cached,
@@ -986,6 +987,20 @@ class SemanticMessageTests(unittest.TestCase):
         dispatched = self.dispatcher.dispatch(bytes([0x17]) + bytes(8))
         with self.assertRaises(MessageDecodeError):
             parse_parcel_properties(dispatched)
+
+    def test_parse_parcel_overlay(self) -> None:
+        from vibestorm.udp.messages import ParcelOverlayMessage
+
+        data = bytes([0x01, 0x02, 0x03, 0x04])
+        body = (2).to_bytes(4, "little", signed=True) + len(data).to_bytes(2, "little") + data
+        # ParcelOverlay is Low-frequency message #196 -> 0xFF 0xFF 0x00 0xC4.
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0xC4]) + body)
+
+        parsed = parse_parcel_overlay(dispatched)
+
+        self.assertIsInstance(parsed, ParcelOverlayMessage)
+        self.assertEqual(parsed.sequence_id, 2)
+        self.assertEqual(parsed.data, data)
 
     def test_parse_avatar_animation(self) -> None:
         from vibestorm.udp.messages import AvatarAnimationMessage

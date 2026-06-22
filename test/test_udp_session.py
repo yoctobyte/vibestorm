@@ -1663,3 +1663,50 @@ class AgentControlFlagsTests(unittest.TestCase):
         head = tuple(round(v, 4) for v in unpack_from("<fff", message, 1 + 16 + 16 + 12))
         self.assertEqual(body, (0.1, 0.2, 0.3))
         self.assertEqual(head, (0.4, 0.5, 0.6))
+
+    def test_parcel_overlay_collected_and_recorded(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        data = bytes([0x01, 0x02, 0x03, 0x04])
+        body = (1).to_bytes(4, "little", signed=True) + len(data).to_bytes(2, "little") + data
+        inbound = build_packet(bytes([0xFF, 0xFF, 0x00, 0xC4]) + body, sequence=120)
+
+        session.handle_incoming(inbound, 12.0)
+
+        self.assertEqual(session.parcel_overlay_packets.get(1), data)
+        self.assertIn("parcel.overlay", [event.kind for event in session.events])
+
+    def test_sound_trigger_recorded(self) -> None:
+        from struct import pack
+
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        ids = b"".join(UUID(int=n).bytes for n in range(4))
+        body = ids + (0xABCD).to_bytes(8, "little") + pack("<fff", 1.0, 2.0, 3.0) + pack("<f", 0.5)
+        inbound = build_packet(bytes([0x1D]) + body, sequence=121)
+
+        session.handle_incoming(inbound, 12.0)
+
+        self.assertIn("sound.trigger", [event.kind for event in session.events])
+
+    def test_avatar_animation_recorded(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        sender = UUID(int=7)
+        anim = UUID(int=8)
+        body = (
+            sender.bytes
+            + bytes([1])
+            + anim.bytes
+            + (3).to_bytes(4, "little", signed=True)
+            + bytes([0])  # AnimationSourceList count
+            + bytes([0])  # PhysicalAvatarEventList count
+        )
+        inbound = build_packet(bytes([0x14]) + body, sequence=122)
+
+        session.handle_incoming(inbound, 12.0)
+
+        self.assertIn("avatar.animation", [event.kind for event in session.events])
