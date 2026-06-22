@@ -315,6 +315,26 @@ class ParcelPropertiesMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class AvatarAnimationEntry:
+    anim_id: UUID
+    sequence_id: int
+    source_object_id: UUID | None
+
+
+@dataclass(slots=True, frozen=True)
+class AvatarAnimationMessage:
+    """Decoded AvatarAnimation: which animations one avatar is running.
+
+    ``animations`` pairs each AnimID with its sequence id and, when present,
+    the AnimationSourceList ObjectID at the same index (the object that
+    triggered the anim).
+    """
+
+    sender_id: UUID
+    animations: tuple[AvatarAnimationEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
 class LayerDataMessage:
     """Decoded LayerData wire shape.
 
@@ -1985,6 +2005,57 @@ def parse_parcel_properties(message: MessageDispatch) -> ParcelPropertiesMessage
         media_url=media_url,
         group_id=group_id,
     )
+
+
+def parse_avatar_animation(message: MessageDispatch) -> AvatarAnimationMessage:
+    """Decode an AvatarAnimation packet.
+
+    Wire shape: Sender(ID) + three Variable blocks (each a 1-byte count):
+    AnimationList {AnimID, AnimSequenceID}, AnimationSourceList {ObjectID},
+    PhysicalAvatarEventList {TypeData Variable 1}. The source list runs
+    parallel to the animation list.
+    """
+    if message.summary.name != "AvatarAnimation":
+        raise MessageDecodeError(f"expected AvatarAnimation, got {message.summary.name}")
+
+    body = message.body
+    if len(body) < 16 + 1:
+        raise MessageDecodeError("AvatarAnimation body is too short")
+
+    sender_id = UUID(bytes=body[0:16])
+    offset = 16
+
+    anim_count = body[offset]
+    offset += 1
+    anims: list[tuple[UUID, int]] = []
+    for index in range(anim_count):
+        if len(body) < offset + 20:
+            raise MessageDecodeError(f"AvatarAnimation entry {index} is truncated")
+        anim_id = UUID(bytes=body[offset : offset + 16])
+        sequence_id = unpack_from("<i", body, offset + 16)[0]
+        offset += 20
+        anims.append((anim_id, sequence_id))
+
+    if len(body) < offset + 1:
+        raise MessageDecodeError("AvatarAnimation AnimationSourceList count is truncated")
+    source_count = body[offset]
+    offset += 1
+    sources: list[UUID] = []
+    for index in range(source_count):
+        if len(body) < offset + 16:
+            raise MessageDecodeError(f"AvatarAnimation source {index} is truncated")
+        sources.append(UUID(bytes=body[offset : offset + 16]))
+        offset += 16
+
+    entries = tuple(
+        AvatarAnimationEntry(
+            anim_id=anim_id,
+            sequence_id=sequence_id,
+            source_object_id=sources[index] if index < len(sources) else None,
+        )
+        for index, (anim_id, sequence_id) in enumerate(anims)
+    )
+    return AvatarAnimationMessage(sender_id=sender_id, animations=entries)
 
 
 def parse_layer_data(message: MessageDispatch) -> LayerDataMessage:

@@ -29,6 +29,7 @@ from vibestorm.udp.messages import (
     parse_agent_movement_complete,
     parse_agent_wearables_update,
     parse_alert_message,
+    parse_avatar_animation,
     parse_avatar_appearance,
     parse_chat_from_simulator,
     parse_coarse_location_update,
@@ -980,6 +981,59 @@ class SemanticMessageTests(unittest.TestCase):
         dispatched = self.dispatcher.dispatch(bytes([0x17]) + bytes(8))
         with self.assertRaises(MessageDecodeError):
             parse_parcel_properties(dispatched)
+
+    def test_parse_avatar_animation(self) -> None:
+        from vibestorm.udp.messages import AvatarAnimationMessage
+
+        sender = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        anim0 = UUID("11111111-1111-1111-1111-111111111111")
+        anim1 = UUID("22222222-2222-2222-2222-222222222222")
+        source0 = UUID("33333333-3333-3333-3333-333333333333")
+        body = (
+            sender.bytes
+            + bytes([2])  # AnimationList count
+            + anim0.bytes
+            + (7).to_bytes(4, "little", signed=True)
+            + anim1.bytes
+            + (8).to_bytes(4, "little", signed=True)
+            + bytes([1])  # AnimationSourceList count
+            + source0.bytes
+            + bytes([0])  # PhysicalAvatarEventList count
+        )
+        # AvatarAnimation is High-frequency message #20 -> wire byte 0x14.
+        dispatched = self.dispatcher.dispatch(bytes([0x14]) + body)
+
+        parsed = parse_avatar_animation(dispatched)
+
+        self.assertIsInstance(parsed, AvatarAnimationMessage)
+        self.assertEqual(parsed.sender_id, sender)
+        self.assertEqual(len(parsed.animations), 2)
+        self.assertEqual(parsed.animations[0].anim_id, anim0)
+        self.assertEqual(parsed.animations[0].sequence_id, 7)
+        self.assertEqual(parsed.animations[0].source_object_id, source0)
+        # Second anim has no parallel source entry.
+        self.assertEqual(parsed.animations[1].anim_id, anim1)
+        self.assertIsNone(parsed.animations[1].source_object_id)
+
+    def test_parse_avatar_animation_empty_lists(self) -> None:
+        sender = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        body = sender.bytes + bytes([0, 0, 0])
+        dispatched = self.dispatcher.dispatch(bytes([0x14]) + body)
+
+        parsed = parse_avatar_animation(dispatched)
+
+        self.assertEqual(parsed.animations, ())
+
+    def test_parse_avatar_animation_truncated_raises(self) -> None:
+        from vibestorm.udp.messages import MessageDecodeError
+
+        sender = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        # Declares 1 anim entry but supplies no bytes for it.
+        body = sender.bytes + bytes([1])
+        dispatched = self.dispatcher.dispatch(bytes([0x14]) + body)
+
+        with self.assertRaises(MessageDecodeError):
+            parse_avatar_animation(dispatched)
 
     def test_parse_chat_from_simulator(self) -> None:
         source_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
