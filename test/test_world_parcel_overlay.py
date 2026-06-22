@@ -107,5 +107,60 @@ class ParcelOverlayDecodeTests(unittest.TestCase):
         self.assertEqual(ownership_name(0), "public")
 
 
+class ParcelBitmapDecodeTests(unittest.TestCase):
+    def _decode(self, bitmap, region_size_meters=32):
+        from vibestorm.world.parcel_overlay import decode_parcel_bitmap
+
+        return decode_parcel_bitmap(bitmap, region_size_meters=region_size_meters)
+
+    def test_decode_sets_expected_cells(self) -> None:
+        # 32 m region -> 8x8 cells -> 8 bytes. Bit index = y*8 + x, LSB-first.
+        # byte0 = cells (0,0) and (1,0); byte1 = cell (0,1).
+        bitmap = bytes([0b0000_0011, 0b0000_0001, 0, 0, 0, 0, 0, 0])
+        decoded = self._decode(bitmap)
+
+        self.assertEqual(decoded.cells_per_edge, 8)
+        self.assertTrue(decoded.contains(0, 0))
+        self.assertTrue(decoded.contains(1, 0))
+        self.assertTrue(decoded.contains(0, 1))
+        self.assertFalse(decoded.contains(1, 1))
+        self.assertEqual(decoded.cell_count(), 3)
+
+    def test_contains_meters_maps_to_units(self) -> None:
+        bitmap = bytes([0, 0, 0, 0, 0, 0, 0, 0b1000_0000])
+        # Last byte bit 7 -> linear index 63 -> cell (7,7).
+        decoded = self._decode(bitmap)
+
+        self.assertTrue(decoded.contains(7, 7))
+        self.assertTrue(decoded.contains_meters(30.0, 30.0))
+        self.assertFalse(decoded.contains_meters(0.0, 0.0))
+
+    def test_bounds_units(self) -> None:
+        bitmap = bytes([0b0000_0010, 0, 0b0000_0100, 0, 0, 0, 0, 0])
+        # cell (1,0) and cell (2,2).
+        decoded = self._decode(bitmap)
+
+        self.assertEqual(decoded.bounds_units(), (1, 0, 2, 2))
+
+    def test_empty_bitmap_is_all_false(self) -> None:
+        decoded = self._decode(b"")
+
+        self.assertEqual(decoded.cell_count(), 0)
+        self.assertIsNone(decoded.bounds_units())
+        self.assertFalse(decoded.contains(0, 0))
+
+    def test_wrong_length_raises(self) -> None:
+        from vibestorm.world.parcel_overlay import ParcelOverlayDecodeError
+
+        with self.assertRaises(ParcelOverlayDecodeError):
+            self._decode(bytes(3))
+
+    def test_full_256m_bitmap_is_512_bytes(self) -> None:
+        decoded = self._decode(bytes(512), region_size_meters=256)
+
+        self.assertEqual(decoded.cells_per_edge, 64)
+        self.assertEqual(len(decoded.cells), 4096)
+
+
 if __name__ == "__main__":
     unittest.main()

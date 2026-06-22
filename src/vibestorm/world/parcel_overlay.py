@@ -98,6 +98,77 @@ class ParcelOverlay:
         return tuple(segments)
 
 
+@dataclass(slots=True, frozen=True)
+class ParcelBitmap:
+    """Membership mask for one parcel over the region's LandUnit grid.
+
+    Decoded from the ParcelProperties ``Bitmap`` field. Bit ordering mirrors
+    OpenSim ``LandObject.ConvertBytesToLandBitmap``: linear index ``y*edge + x``,
+    LSB-first within each byte.
+    """
+
+    cells: tuple[bool, ...]
+    cells_per_edge: int
+
+    def contains(self, x_units: int, y_units: int) -> bool:
+        """Return whether the LandUnit cell belongs to this parcel."""
+        if not (0 <= x_units < self.cells_per_edge and 0 <= y_units < self.cells_per_edge):
+            return False
+        return self.cells[y_units * self.cells_per_edge + x_units]
+
+    def contains_meters(self, x_meters: float, y_meters: float) -> bool:
+        """Return membership for a region-relative world position."""
+        return self.contains(
+            int(x_meters) // LAND_UNIT_METERS,
+            int(y_meters) // LAND_UNIT_METERS,
+        )
+
+    def bounds_units(self) -> tuple[int, int, int, int] | None:
+        """Return ``(min_x, min_y, max_x, max_y)`` in LandUnits, or None if empty."""
+        xs_min = ys_min = self.cells_per_edge
+        xs_max = ys_max = -1
+        for y in range(self.cells_per_edge):
+            for x in range(self.cells_per_edge):
+                if self.cells[y * self.cells_per_edge + x]:
+                    xs_min = min(xs_min, x)
+                    ys_min = min(ys_min, y)
+                    xs_max = max(xs_max, x)
+                    ys_max = max(ys_max, y)
+        if xs_max < 0:
+            return None
+        return (xs_min, ys_min, xs_max, ys_max)
+
+    def cell_count(self) -> int:
+        """Return the number of LandUnit cells owned by this parcel."""
+        return sum(self.cells)
+
+
+def decode_parcel_bitmap(
+    bitmap: bytes,
+    *,
+    region_size_meters: int = DEFAULT_REGION_SIZE_METERS,
+) -> ParcelBitmap:
+    """Decode a ParcelProperties ``Bitmap`` into per-cell membership.
+
+    An empty bitmap yields an all-false grid of the expected size.
+    """
+    cells_per_edge = region_size_meters // LAND_UNIT_METERS
+    total = cells_per_edge * cells_per_edge
+    expected_bytes = total // 8
+    if bitmap and len(bitmap) != expected_bytes:
+        raise ParcelOverlayDecodeError(
+            f"parcel bitmap has {len(bitmap)} bytes, expected {expected_bytes} "
+            f"for a {region_size_meters} m region"
+        )
+
+    cells = [False] * total
+    for index in range(min(len(bitmap) * 8, total)):
+        if bitmap[index // 8] & (1 << (index % 8)):
+            cells[index] = True
+
+    return ParcelBitmap(cells=tuple(cells), cells_per_edge=cells_per_edge)
+
+
 def decode_parcel_overlay(
     packets: list[tuple[int, bytes]],
     *,
@@ -152,8 +223,10 @@ __all__ = [
     "OWNERSHIP_OWNED_BY_OTHER",
     "OWNERSHIP_OWNED_BY_SELF",
     "OWNERSHIP_PUBLIC",
+    "ParcelBitmap",
     "ParcelOverlay",
     "ParcelOverlayDecodeError",
+    "decode_parcel_bitmap",
     "decode_parcel_overlay",
     "ownership_name",
 ]
