@@ -372,6 +372,28 @@ class AttachedSoundMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class AttachedSoundGainChangeMessage:
+    """Decoded AttachedSoundGainChange: volume update for an object's sound."""
+
+    object_id: UUID
+    gain: float
+
+
+@dataclass(slots=True, frozen=True)
+class PreloadSoundEntry:
+    object_id: UUID
+    owner_id: UUID
+    sound_id: UUID
+
+
+@dataclass(slots=True, frozen=True)
+class PreloadSoundMessage:
+    """Decoded PreloadSound: sounds to preload for objects."""
+
+    entries: tuple[PreloadSoundEntry, ...]
+
+
+@dataclass(slots=True, frozen=True)
 class LayerDataMessage:
     """Decoded LayerData wire shape.
 
@@ -2169,6 +2191,48 @@ def parse_attached_sound(message: MessageDispatch) -> AttachedSoundMessage:
         gain=gain,
         flags=flags,
     )
+
+
+def parse_attached_sound_gain_change(message: MessageDispatch) -> AttachedSoundGainChangeMessage:
+    """Decode an AttachedSoundGainChange packet (ObjectID + Gain)."""
+    if message.summary.name != "AttachedSoundGainChange":
+        raise MessageDecodeError(
+            f"expected AttachedSoundGainChange, got {message.summary.name}"
+        )
+
+    body = message.body
+    if len(body) < 16 + 4:
+        raise MessageDecodeError("AttachedSoundGainChange body is too short")
+
+    object_id = UUID(bytes=body[0:16])
+    gain = unpack_from("<f", body, 16)[0]
+    return AttachedSoundGainChangeMessage(object_id=object_id, gain=gain)
+
+
+def parse_preload_sound(message: MessageDispatch) -> PreloadSoundMessage:
+    """Decode a PreloadSound packet (Variable DataBlock of 48-byte entries)."""
+    if message.summary.name != "PreloadSound":
+        raise MessageDecodeError(f"expected PreloadSound, got {message.summary.name}")
+
+    body = message.body
+    if not body:
+        raise MessageDecodeError("PreloadSound body is too short")
+
+    count = body[0]
+    offset = 1
+    entries: list[PreloadSoundEntry] = []
+    for index in range(count):
+        if len(body) < offset + 48:
+            raise MessageDecodeError(f"PreloadSound entry {index} is truncated")
+        entries.append(
+            PreloadSoundEntry(
+                object_id=UUID(bytes=body[offset : offset + 16]),
+                owner_id=UUID(bytes=body[offset + 16 : offset + 32]),
+                sound_id=UUID(bytes=body[offset + 32 : offset + 48]),
+            )
+        )
+        offset += 48
+    return PreloadSoundMessage(entries=tuple(entries))
 
 
 def parse_layer_data(message: MessageDispatch) -> LayerDataMessage:

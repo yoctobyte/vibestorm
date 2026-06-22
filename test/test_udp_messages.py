@@ -40,6 +40,7 @@ from vibestorm.udp.messages import (
     parse_layer_data,
     parse_map_block_reply,
     parse_attached_sound,
+    parse_attached_sound_gain_change,
     parse_object_animation,
     parse_object_extra_params,
     parse_object_properties_family,
@@ -52,6 +53,7 @@ from vibestorm.udp.messages import (
     parse_region_handshake,
     parse_reply_task_inventory,
     parse_send_xfer_packet,
+    parse_preload_sound,
     parse_shape_extra_params,
     parse_sim_stats,
     parse_sound_trigger,
@@ -1084,6 +1086,38 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.owner_id, owner)
         self.assertAlmostEqual(parsed.gain, 1.0, places=5)
         self.assertEqual(parsed.flags, 0x02)
+
+    def test_parse_attached_sound_gain_change(self) -> None:
+        from vibestorm.udp.messages import AttachedSoundGainChangeMessage
+
+        obj = UUID("33333333-3333-3333-3333-333333333333")
+        body = obj.bytes + pack("<f", 0.25)
+        # AttachedSoundGainChange is Medium-frequency message #14 -> 0xFF 0x0E.
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0x0E]) + body)
+
+        parsed = parse_attached_sound_gain_change(dispatched)
+
+        self.assertIsInstance(parsed, AttachedSoundGainChangeMessage)
+        self.assertEqual(parsed.object_id, obj)
+        self.assertAlmostEqual(parsed.gain, 0.25, places=5)
+
+    def test_parse_preload_sound(self) -> None:
+        from vibestorm.udp.messages import PreloadSoundMessage
+
+        obj = UUID("33333333-3333-3333-3333-333333333333")
+        owner = UUID("22222222-2222-2222-2222-222222222222")
+        sound = UUID("11111111-1111-1111-1111-111111111111")
+        body = bytes([1]) + obj.bytes + owner.bytes + sound.bytes
+        # PreloadSound is Medium-frequency message #15 -> 0xFF 0x0F.
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0x0F]) + body)
+
+        parsed = parse_preload_sound(dispatched)
+
+        self.assertIsInstance(parsed, PreloadSoundMessage)
+        self.assertEqual(len(parsed.entries), 1)
+        self.assertEqual(parsed.entries[0].object_id, obj)
+        self.assertEqual(parsed.entries[0].owner_id, owner)
+        self.assertEqual(parsed.entries[0].sound_id, sound)
 
     def test_parse_sound_trigger_truncated_raises(self) -> None:
         from vibestorm.udp.messages import MessageDecodeError
