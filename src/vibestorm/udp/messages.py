@@ -348,6 +348,30 @@ class ObjectAnimationMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class SoundTriggerMessage:
+    """Decoded SoundTrigger: a one-shot world sound."""
+
+    sound_id: UUID
+    owner_id: UUID
+    object_id: UUID
+    parent_id: UUID
+    region_handle: int
+    position: tuple[float, float, float]
+    gain: float
+
+
+@dataclass(slots=True, frozen=True)
+class AttachedSoundMessage:
+    """Decoded AttachedSound: a looping/triggered sound bound to an object."""
+
+    sound_id: UUID
+    object_id: UUID
+    owner_id: UUID
+    gain: float
+    flags: int
+
+
+@dataclass(slots=True, frozen=True)
 class LayerDataMessage:
     """Decoded LayerData wire shape.
 
@@ -2095,6 +2119,56 @@ def parse_object_animation(message: MessageDispatch) -> ObjectAnimationMessage:
             AvatarAnimationEntry(anim_id=anim_id, sequence_id=sequence_id, source_object_id=None)
         )
     return ObjectAnimationMessage(sender_id=sender_id, animations=tuple(entries))
+
+
+def parse_sound_trigger(message: MessageDispatch) -> SoundTriggerMessage:
+    """Decode a SoundTrigger packet (88-byte SoundData block)."""
+    if message.summary.name != "SoundTrigger":
+        raise MessageDecodeError(f"expected SoundTrigger, got {message.summary.name}")
+
+    body = message.body
+    if len(body) < 64 + 8 + 12 + 4:
+        raise MessageDecodeError("SoundTrigger body is too short")
+
+    sound_id = UUID(bytes=body[0:16])
+    owner_id = UUID(bytes=body[16:32])
+    object_id = UUID(bytes=body[32:48])
+    parent_id = UUID(bytes=body[48:64])
+    region_handle = unpack_from("<Q", body, 64)[0]
+    position = tuple(unpack_from("<fff", body, 72))
+    gain = unpack_from("<f", body, 84)[0]
+    return SoundTriggerMessage(
+        sound_id=sound_id,
+        owner_id=owner_id,
+        object_id=object_id,
+        parent_id=parent_id,
+        region_handle=region_handle,
+        position=position,  # type: ignore[arg-type]
+        gain=gain,
+    )
+
+
+def parse_attached_sound(message: MessageDispatch) -> AttachedSoundMessage:
+    """Decode an AttachedSound packet (53-byte DataBlock)."""
+    if message.summary.name != "AttachedSound":
+        raise MessageDecodeError(f"expected AttachedSound, got {message.summary.name}")
+
+    body = message.body
+    if len(body) < 48 + 4 + 1:
+        raise MessageDecodeError("AttachedSound body is too short")
+
+    sound_id = UUID(bytes=body[0:16])
+    object_id = UUID(bytes=body[16:32])
+    owner_id = UUID(bytes=body[32:48])
+    gain = unpack_from("<f", body, 48)[0]
+    flags = body[52]
+    return AttachedSoundMessage(
+        sound_id=sound_id,
+        object_id=object_id,
+        owner_id=owner_id,
+        gain=gain,
+        flags=flags,
+    )
 
 
 def parse_layer_data(message: MessageDispatch) -> LayerDataMessage:

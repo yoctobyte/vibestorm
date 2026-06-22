@@ -39,6 +39,7 @@ from vibestorm.udp.messages import (
     parse_kill_object,
     parse_layer_data,
     parse_map_block_reply,
+    parse_attached_sound,
     parse_object_animation,
     parse_object_extra_params,
     parse_object_properties_family,
@@ -53,6 +54,7 @@ from vibestorm.udp.messages import (
     parse_send_xfer_packet,
     parse_shape_extra_params,
     parse_sim_stats,
+    parse_sound_trigger,
     parse_simulator_viewer_time,
     parse_start_ping_check,
     parse_use_circuit_code,
@@ -1035,6 +1037,60 @@ class SemanticMessageTests(unittest.TestCase):
 
         with self.assertRaises(MessageDecodeError):
             parse_avatar_animation(dispatched)
+
+    def test_parse_sound_trigger(self) -> None:
+        from vibestorm.udp.messages import SoundTriggerMessage
+
+        sound = UUID("11111111-1111-1111-1111-111111111111")
+        owner = UUID("22222222-2222-2222-2222-222222222222")
+        obj = UUID("33333333-3333-3333-3333-333333333333")
+        parent = UUID("44444444-4444-4444-4444-444444444444")
+        body = (
+            sound.bytes
+            + owner.bytes
+            + obj.bytes
+            + parent.bytes
+            + (0xABCD).to_bytes(8, "little")
+            + pack("<fff", 128.0, 129.0, 25.0)
+            + pack("<f", 0.75)
+        )
+        # SoundTrigger is High-frequency message #29 -> wire byte 0x1D.
+        dispatched = self.dispatcher.dispatch(bytes([0x1D]) + body)
+
+        parsed = parse_sound_trigger(dispatched)
+
+        self.assertIsInstance(parsed, SoundTriggerMessage)
+        self.assertEqual(parsed.sound_id, sound)
+        self.assertEqual(parsed.parent_id, parent)
+        self.assertEqual(parsed.region_handle, 0xABCD)
+        self.assertAlmostEqual(parsed.position[2], 25.0, places=4)
+        self.assertAlmostEqual(parsed.gain, 0.75, places=5)
+
+    def test_parse_attached_sound(self) -> None:
+        from vibestorm.udp.messages import AttachedSoundMessage
+
+        sound = UUID("11111111-1111-1111-1111-111111111111")
+        obj = UUID("33333333-3333-3333-3333-333333333333")
+        owner = UUID("22222222-2222-2222-2222-222222222222")
+        body = sound.bytes + obj.bytes + owner.bytes + pack("<f", 1.0) + bytes([0x02])
+        # AttachedSound is Medium-frequency message #13 -> header 0xFF 0x0D.
+        dispatched = self.dispatcher.dispatch(bytes([0xFF, 0x0D]) + body)
+
+        parsed = parse_attached_sound(dispatched)
+
+        self.assertIsInstance(parsed, AttachedSoundMessage)
+        self.assertEqual(parsed.sound_id, sound)
+        self.assertEqual(parsed.object_id, obj)
+        self.assertEqual(parsed.owner_id, owner)
+        self.assertAlmostEqual(parsed.gain, 1.0, places=5)
+        self.assertEqual(parsed.flags, 0x02)
+
+    def test_parse_sound_trigger_truncated_raises(self) -> None:
+        from vibestorm.udp.messages import MessageDecodeError
+
+        dispatched = self.dispatcher.dispatch(bytes([0x1D]) + bytes(40))
+        with self.assertRaises(MessageDecodeError):
+            parse_sound_trigger(dispatched)
 
     def test_parse_object_animation(self) -> None:
         from vibestorm.udp.messages import ObjectAnimationMessage
