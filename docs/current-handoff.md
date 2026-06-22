@@ -1111,6 +1111,34 @@ Expected v1 behavior:
 
 These are independent and can land in any order.
 
+## Update 2026-06-22: Mesh Normals / UVs / Material Groups
+
+`src/vibestorm/assets/sl_mesh.py` now decodes more than positions+indices per
+submesh:
+
+- `DecodedSLMesh.normals` — per-vertex normals. Decoded from the submesh
+  `Normal` u16 array (domain fixed at -1..1); when absent, computed as smooth
+  per-vertex normals from the triangle geometry.
+- `DecodedSLMesh.uvs` — per-vertex `TexCoord0` (u16, domain from
+  `TexCoord0Domain`, default 0..1); zero-filled when absent.
+- `DecodedSLMesh.material_groups` — one `MeshMaterialGroup(face_index,
+  index_start, index_count)` per submesh. SL submeshes map 1:1 to prim faces,
+  so `face_index` is the `TextureEntry` slot for per-face material/texture
+  assignment. Indices are rebased onto the combined vertex buffer.
+
+These fields are additive; existing `.vertices`/`.indices`/`.submesh_count`
+consumers are unchanged.
+
+### Next (live, visual) step
+
+The shared shape shader in `viewer3d/perspective.py` fakes normals via
+`local_normal = normalize(in_pos)` (no `in_normal` attribute) and uploads the
+mesh VBO as positions-only (`(vbo, "3f", "in_pos")`). To actually light meshes
+correctly: add an optional `in_normal` attribute + a uniform flag to the shape
+program, interleave `decoded.normals` into the mesh VBO, and bind per-face
+texture groups using `material_groups`. This needs the GL viewer for visual
+verification, so it was not bundled with the decoder change.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
