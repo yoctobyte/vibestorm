@@ -19,31 +19,65 @@ from __future__ import annotations
 import math
 
 # ---- cube --------------------------------------------------------------------
+#
+# Boxes are authored *flat shaded*: each face carries its own four vertices so
+# it can carry its own normal. Sharing eight corner vertices is cheaper, but
+# then the only normal a vertex can have is the average of three faces, and the
+# renderer's fallback (normalize(position)) turns that into a radial gradient.
+# On a single cube that merely looks soft; on the avatar placeholder, whose
+# boxes sit *away* from the origin, it smears every part into one plank.
+#
+# Face order is (-Z, +Z, +Y, -Y, +X, -X) — the slot order ``cube_face_indices``
+# maps onto SL's numbering. Corner order within each face is counter-clockwise
+# seen from outside, so winding matches the outward normal.
 
-CUBE_VERTICES: tuple[float, ...] = (
-    -0.5, -0.5, -0.5,  # 0
-     0.5, -0.5, -0.5,  # 1
-     0.5,  0.5, -0.5,  # 2
-    -0.5,  0.5, -0.5,  # 3
-    -0.5, -0.5,  0.5,  # 4
-     0.5, -0.5,  0.5,  # 5
-     0.5,  0.5,  0.5,  # 6
-    -0.5,  0.5,  0.5,  # 7
+_BOX_FACES: tuple[tuple[tuple[float, float, float], tuple[tuple[int, int, int], ...]], ...] = (
+    ((0.0, 0.0, -1.0), ((-1, -1, -1), (-1, 1, -1), (1, 1, -1), (1, -1, -1))),
+    ((0.0, 0.0, 1.0), ((-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1))),
+    ((0.0, 1.0, 0.0), ((-1, 1, -1), (-1, 1, 1), (1, 1, 1), (1, 1, -1))),
+    ((0.0, -1.0, 0.0), ((-1, -1, -1), (1, -1, -1), (1, -1, 1), (-1, -1, 1))),
+    ((1.0, 0.0, 0.0), ((1, -1, -1), (1, 1, -1), (1, 1, 1), (1, -1, 1))),
+    ((-1.0, 0.0, 0.0), ((-1, -1, -1), (-1, -1, 1), (-1, 1, 1), (-1, 1, -1))),
 )
 
-CUBE_INDICES: tuple[int, ...] = (
-    0, 2, 1,  0, 3, 2,
-    4, 5, 6,  4, 6, 7,
-    3, 7, 6,  3, 6, 2,
-    0, 1, 5,  0, 5, 4,
-    1, 2, 6,  1, 6, 5,
-    0, 4, 7,  0, 7, 3,
-)
+
+def box_geometry(
+    center: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    size: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    base_index: int = 0,
+) -> tuple[list[float], list[float], list[int]]:
+    """Flat-shaded box: ``(vertices, normals, indices)``, 24 verts / 12 tris.
+
+    ``base_index`` offsets the emitted indices so several boxes can be merged
+    into one mesh.
+    """
+    cx, cy, cz = center
+    hx, hy, hz = size[0] / 2.0, size[1] / 2.0, size[2] / 2.0
+    vertices: list[float] = []
+    normals: list[float] = []
+    indices: list[int] = []
+    for normal, corners in _BOX_FACES:
+        first = base_index + len(vertices) // 3
+        for sx, sy, sz in corners:
+            vertices.extend((cx + sx * hx, cy + sy * hy, cz + sz * hz))
+            normals.extend(normal)
+        indices.extend((first, first + 1, first + 2, first, first + 2, first + 3))
+    return vertices, normals, indices
+
+
+_CUBE_VERTS, _CUBE_NORMALS, _CUBE_INDICES = box_geometry()
+CUBE_VERTICES: tuple[float, ...] = tuple(_CUBE_VERTS)
+CUBE_NORMALS: tuple[float, ...] = tuple(_CUBE_NORMALS)
+CUBE_INDICES: tuple[int, ...] = tuple(_CUBE_INDICES)
 
 
 def cube_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
     """Unit cube centred at origin, side length 1."""
     return CUBE_VERTICES, CUBE_INDICES
+
+
+def cube_normals() -> tuple[float, ...]:
+    return CUBE_NORMALS
 
 
 # ---- sphere ------------------------------------------------------------------
@@ -93,6 +127,25 @@ def sphere_mesh(stacks: int = 8, slices: int = 12) -> tuple[tuple[float, ...], t
     return tuple(vertices), tuple(indices)
 
 
+def sphere_normals(stacks: int = 8, slices: int = 12) -> tuple[float, ...]:
+    """A sphere centred on the origin is the one shape whose surface normal
+    *is* its normalized position, so this is exact rather than approximate."""
+    verts, _ = sphere_mesh(stacks, slices)
+    return _normalized(verts)
+
+
+def _normalized(vertices: tuple[float, ...] | list[float]) -> tuple[float, ...]:
+    out: list[float] = []
+    for i in range(0, len(vertices), 3):
+        x, y, z = vertices[i], vertices[i + 1], vertices[i + 2]
+        length = math.sqrt(x * x + y * y + z * z)
+        if length <= 1e-8:
+            out.extend((0.0, 0.0, 1.0))
+        else:
+            out.extend((x / length, y / length, z / length))
+    return tuple(out)
+
+
 # ---- cylinder ----------------------------------------------------------------
 
 
@@ -101,35 +154,55 @@ def cylinder_mesh(slices: int = 12) -> tuple[tuple[float, ...], tuple[int, ...]]
     if slices < 3:
         raise ValueError(f"slices={slices} too small (need >=3)")
 
-    vertices: list[float] = [
-        0.0, 0.0, -0.5,  # 0: bottom centre
-        0.0, 0.0,  0.5,  # 1: top centre
-    ]
-    bottom_ring = 2
-    for j in range(slices):
-        theta = 2.0 * math.pi * j / slices
-        vertices.extend((0.5 * math.cos(theta), 0.5 * math.sin(theta), -0.5))
-    top_ring = 2 + slices
-    for j in range(slices):
-        theta = 2.0 * math.pi * j / slices
-        vertices.extend((0.5 * math.cos(theta), 0.5 * math.sin(theta), 0.5))
+    verts, _normals, indices = _cylinder_geometry(slices)
+    return verts, indices
+
+
+def cylinder_normals(slices: int = 12) -> tuple[float, ...]:
+    return _cylinder_geometry(slices)[1]
+
+
+def _cylinder_geometry(
+    slices: int,
+) -> tuple[tuple[float, ...], tuple[float, ...], tuple[int, ...]]:
+    """Cylinder with the cap rings split from the side rings.
+
+    A ring vertex cannot be both flat-capped (normal +/-Z) and round-sided
+    (normal radial), so each ring is emitted twice. Index emission order per
+    slice is unchanged — bottom triangle, top triangle, then the side quad —
+    because ``cylinder_face_indices`` walks a 12-index stride over it.
+    """
+    vertices: list[float] = [0.0, 0.0, -0.5, 0.0, 0.0, 0.5]
+    normals: list[float] = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0]
+
+    def ring(z: float, normal_mode: str) -> int:
+        start = len(vertices) // 3
+        for j in range(slices):
+            theta = 2.0 * math.pi * j / slices
+            cx, cy = math.cos(theta), math.sin(theta)
+            vertices.extend((0.5 * cx, 0.5 * cy, z))
+            if normal_mode == "cap":
+                normals.extend((0.0, 0.0, 1.0 if z > 0 else -1.0))
+            else:
+                normals.extend((cx, cy, 0.0))
+        return start
+
+    bottom_cap = ring(-0.5, "cap")
+    top_cap = ring(0.5, "cap")
+    side_bottom = ring(-0.5, "side")
+    side_top = ring(0.5, "side")
 
     indices: list[int] = []
     for j in range(slices):
         j1 = (j + 1) % slices
-        # Bottom cap (CCW viewed from below = wind 0,j1,j)
-        indices.extend((0, bottom_ring + j1, bottom_ring + j))
-        # Top cap (CCW viewed from above)
-        indices.extend((1, top_ring + j, top_ring + j1))
-        # Side quad
-        b = bottom_ring + j
-        b1 = bottom_ring + j1
-        t = top_ring + j
-        t1 = top_ring + j1
+        indices.extend((0, bottom_cap + j1, bottom_cap + j))
+        indices.extend((1, top_cap + j, top_cap + j1))
+        b, b1 = side_bottom + j, side_bottom + j1
+        t, t1 = side_top + j, side_top + j1
         indices.extend((b, b1, t1))
         indices.extend((b, t1, t))
 
-    return tuple(vertices), tuple(indices)
+    return tuple(vertices), tuple(normals), tuple(indices)
 
 
 # ---- torus -------------------------------------------------------------------
@@ -150,31 +223,19 @@ def torus_mesh(
     if rings < 3 or sides < 3:
         raise ValueError(f"rings={rings}, sides={sides} too small (need >=3)")
 
-    vertices: list[float] = []
-    for i in range(rings):
-        phi = 2.0 * math.pi * i / rings
-        cphi, sphi = math.cos(phi), math.sin(phi)
-        for j in range(sides):
-            theta = 2.0 * math.pi * j / sides
-            ctheta, stheta = math.cos(theta), math.sin(theta)
-            x = (ring_radius + tube_radius * ctheta) * cphi
-            y = (ring_radius + tube_radius * ctheta) * sphi
-            z = tube_radius * stheta
-            vertices.extend((x, y, z))
+    profile = _regular_polygon_profile(sides, tube_radius, 0.0)
+    verts, _normals, indices = _swept_ring_geometry(rings, profile, ring_radius)
+    return verts, indices
 
-    indices: list[int] = []
-    for i in range(rings):
-        i1 = (i + 1) % rings
-        for j in range(sides):
-            j1 = (j + 1) % sides
-            a = i * sides + j
-            b = i * sides + j1
-            c = i1 * sides + j
-            d = i1 * sides + j1
-            indices.extend((a, c, d))
-            indices.extend((a, d, b))
 
-    return tuple(vertices), tuple(indices)
+def torus_normals(
+    rings: int = 16,
+    sides: int = 8,
+    ring_radius: float = 0.4,
+    tube_radius: float = 0.1,
+) -> tuple[float, ...]:
+    profile = _regular_polygon_profile(sides, tube_radius, 0.0)
+    return _swept_ring_geometry(rings, profile, ring_radius)[1]
 
 
 def _swept_ring_mesh(
@@ -189,17 +250,42 @@ def _swept_ring_mesh(
     ``ring_radius + radial_offset`` from the origin. This is the shared body
     behind torus, tube and ring, which differ only in that cross-section.
     """
+    verts, _normals, indices = _swept_ring_geometry(rings, profile_points, ring_radius)
+    return verts, indices
+
+
+def _swept_ring_geometry(
+    rings: int,
+    profile_points: tuple[tuple[float, float], ...],
+    ring_radius: float,
+) -> tuple[tuple[float, ...], tuple[float, ...], tuple[int, ...]]:
+    """Sweep body shared by torus, tube and ring, with analytic normals.
+
+    The surface normal at a swept vertex points away from the *centre of the
+    tube* — the nearest point on the ring circle — not away from the world
+    origin. Using the origin (the renderer's position fallback) lights the
+    inside wall of the hole as though it faced outward, which is the single
+    most visible normal error in the primitive set.
+    """
     if rings < 3 or len(profile_points) < 3:
         raise ValueError(f"rings={rings}, profile={len(profile_points)} too small (need >=3)")
 
     sides = len(profile_points)
     vertices: list[float] = []
+    normals: list[float] = []
     for i in range(rings):
         phi = 2.0 * math.pi * i / rings
         cphi, sphi = math.cos(phi), math.sin(phi)
         for radial, z in profile_points:
             radius = ring_radius + radial
             vertices.extend((radius * cphi, radius * sphi, z))
+            # Offset from the ring-circle point at this phi, in world space.
+            length = math.sqrt(radial * radial + z * z)
+            if length <= 1e-8:
+                normals.extend((cphi, sphi, 0.0))
+            else:
+                nr, nz = radial / length, z / length
+                normals.extend((nr * cphi, nr * sphi, nz))
 
     indices: list[int] = []
     for i in range(rings):
@@ -212,7 +298,7 @@ def _swept_ring_mesh(
             d = i1 * sides + j1
             indices.extend((a, c, d))
             indices.extend((a, d, b))
-    return tuple(vertices), tuple(indices)
+    return tuple(vertices), tuple(normals), tuple(indices)
 
 
 def _regular_polygon_profile(
@@ -246,6 +332,15 @@ def tube_mesh(
     return _swept_ring_mesh(rings, profile, ring_radius)
 
 
+def tube_normals(
+    rings: int = 16,
+    ring_radius: float = 0.4,
+    half_width: float = 0.1,
+) -> tuple[float, ...]:
+    profile = _regular_polygon_profile(4, half_width * math.sqrt(2.0), math.pi / 4.0)
+    return _swept_ring_geometry(rings, profile, ring_radius)[1]
+
+
 # ---- ring --------------------------------------------------------------------
 
 
@@ -263,6 +358,15 @@ def ring_mesh(
     return _swept_ring_mesh(rings, profile, ring_radius)
 
 
+def ring_normals(
+    rings: int = 16,
+    ring_radius: float = 0.4,
+    profile_radius: float = 0.1,
+) -> tuple[float, ...]:
+    profile = _regular_polygon_profile(3, profile_radius, 0.0)
+    return _swept_ring_geometry(rings, profile, ring_radius)[1]
+
+
 # ---- prism -------------------------------------------------------------------
 
 
@@ -273,27 +377,54 @@ def prism_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
     The cross-section sits in the XY plane at z=±0.5 with one vertex
     pointing toward +Y.
     """
+    verts, _normals, indices = _prism_geometry()
+    return verts, indices
+
+
+def prism_normals() -> tuple[float, ...]:
+    return _prism_geometry()[1]
+
+
+def _prism_geometry() -> tuple[tuple[float, ...], tuple[float, ...], tuple[int, ...]]:
+    """Flat-shaded prism.
+
+    Emitted per face rather than per corner so each face carries its own
+    normal, and in the same order the face map slices: bottom triangle, top
+    triangle, then the three side quads walking the profile.
+    """
     r = 0.5
     angles = [math.pi / 2.0 + 2.0 * math.pi * i / 3.0 for i in range(3)]
+    corners = [(r * math.cos(a), r * math.sin(a)) for a in angles]
 
     vertices: list[float] = []
-    for ang in angles:
-        vertices.extend((r * math.cos(ang), r * math.sin(ang), -0.5))
-    for ang in angles:
-        vertices.extend((r * math.cos(ang), r * math.sin(ang), 0.5))
+    normals: list[float] = []
+    indices: list[int] = []
 
-    # Bottom face (CCW from below): 0,2,1
-    # Top face (CCW from above): 3,4,5
-    # Three side quads.
-    indices: tuple[int, ...] = (
-        0, 2, 1,
-        3, 4, 5,
-        0, 1, 4,  0, 4, 3,
-        1, 2, 5,  1, 5, 4,
-        2, 0, 3,  2, 3, 5,
-    )
+    def emit(points: list[tuple[float, float, float]], normal: tuple[float, float, float]) -> None:
+        first = len(vertices) // 3
+        for x, y, z in points:
+            vertices.extend((x, y, z))
+            normals.extend(normal)
+        # Fan the polygon: triangles (0,1,2), (0,2,3), ...
+        for k in range(1, len(points) - 1):
+            indices.extend((first, first + k, first + k + 1))
 
-    return tuple(vertices), indices
+    # Bottom (CCW seen from below) then top (CCW seen from above).
+    emit([(x, y, -0.5) for x, y in (corners[0], corners[2], corners[1])], (0.0, 0.0, -1.0))
+    emit([(x, y, 0.5) for x, y in corners], (0.0, 0.0, 1.0))
+
+    for i in range(3):
+        (ax, ay), (bx, by) = corners[i], corners[(i + 1) % 3]
+        edge_x, edge_y = bx - ax, by - ay
+        # Outward normal of a CCW profile edge is the edge rotated -90 degrees.
+        nx, ny = edge_y, -edge_x
+        length = math.sqrt(nx * nx + ny * ny) or 1.0
+        emit(
+            [(ax, ay, -0.5), (bx, by, -0.5), (bx, by, 0.5), (ax, ay, 0.5)],
+            (nx / length, ny / length, 0.0),
+        )
+
+    return tuple(vertices), tuple(normals), tuple(indices)
 
 
 # ---- SL prim face maps -------------------------------------------------------
@@ -396,47 +527,94 @@ def avatar_placeholder_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
     applies the avatar ObjectUpdate scale/rotation, so this only needs a
     recognizable silhouette and a clear facing direction.
     """
+    verts, _normals, indices = _avatar_geometry()
+    return verts, indices
+
+
+def avatar_placeholder_normals() -> tuple[float, ...]:
+    return _avatar_geometry()[1]
+
+
+#: Body coordinates normalized to roughly fit inside [-0.5, 0.5]; the renderer
+#: multiplies by the avatar's ObjectUpdate scale, typically ~0.45 x 0.6 x 1.9 m.
+_AVATAR_PARTS: tuple[tuple[tuple[float, float, float], tuple[float, float, float]], ...] = (
+    ((0.0, 0.0, 0.05), (0.34, 0.46, 0.56)),      # torso
+    ((0.12, 0.0, 0.43), (0.30, 0.30, 0.26)),     # head, slightly forward
+    ((0.0, -0.33, 0.02), (0.18, 0.16, 0.52)),    # left arm
+    ((0.0, 0.33, 0.02), (0.18, 0.16, 0.52)),     # right arm
+    ((0.0, -0.12, -0.42), (0.18, 0.17, 0.48)),   # left leg
+    ((0.0, 0.12, -0.42), (0.18, 0.17, 0.48)),    # right leg
+    ((0.31, 0.0, 0.44), (0.08, 0.12, 0.08)),     # nose/facing marker
+)
+
+
+def _avatar_geometry() -> tuple[tuple[float, ...], tuple[float, ...], tuple[int, ...]]:
+    """Merged flat-shaded boxes.
+
+    This is the mesh that made the normals bug obvious: its parts sit *away*
+    from the origin, so a position-derived normal points away from the
+    avatar's centre rather than out of each box face, and every part shades
+    into one smooth plank.
+    """
     vertices: list[float] = []
+    normals: list[float] = []
     indices: list[int] = []
+    for center, size in _AVATAR_PARTS:
+        part_verts, part_normals, part_indices = box_geometry(
+            center, size, base_index=len(vertices) // 3
+        )
+        vertices.extend(part_verts)
+        normals.extend(part_normals)
+        indices.extend(part_indices)
+    return tuple(vertices), tuple(normals), tuple(indices)
 
-    def add_box(
-        center: tuple[float, float, float],
-        size: tuple[float, float, float],
-    ) -> None:
-        base = len(vertices) // 3
-        cx, cy, cz = center
-        sx, sy, sz = (size[0] / 2.0, size[1] / 2.0, size[2] / 2.0)
-        for x, y, z in (
-            (-sx, -sy, -sz),
-            (sx, -sy, -sz),
-            (sx, sy, -sz),
-            (-sx, sy, -sz),
-            (-sx, -sy, sz),
-            (sx, -sy, sz),
-            (sx, sy, sz),
-            (-sx, sy, sz),
-        ):
-            vertices.extend((cx + x, cy + y, cz + z))
-        indices.extend(base + index for index in CUBE_INDICES)
 
-    # Body coordinates are normalized to roughly fit inside [-0.5, 0.5].
-    add_box((0.0, 0.0, 0.05), (0.34, 0.46, 0.56))      # torso
-    add_box((0.12, 0.0, 0.43), (0.30, 0.30, 0.26))     # head, slightly forward
-    add_box((0.0, -0.33, 0.02), (0.18, 0.16, 0.52))    # left arm
-    add_box((0.0, 0.33, 0.02), (0.18, 0.16, 0.52))     # right arm
-    add_box((0.0, -0.12, -0.42), (0.18, 0.17, 0.48))   # left leg
-    add_box((0.0, 0.12, -0.42), (0.18, 0.17, 0.48))    # right leg
-    add_box((0.31, 0.0, 0.44), (0.08, 0.12, 0.08))     # nose/facing marker
-    return tuple(vertices), tuple(indices)
+def shape_normals(shape_key: str) -> tuple[float, ...] | None:
+    """Authored normals for a built-in primitive, or ``None`` if unknown.
+
+    Without these the renderer falls back to ``normalize(position)``, which is
+    exact only for a sphere centred on the origin and wrong for everything
+    else.
+    """
+    authors = {
+        "cube": cube_normals,
+        "sphere": sphere_normals,
+        "cylinder": cylinder_normals,
+        "torus": torus_normals,
+        "tube": tube_normals,
+        "ring": ring_normals,
+        "prism": prism_normals,
+        "avatar": avatar_placeholder_normals,
+    }
+    author = authors.get(shape_key)
+    return author() if author is not None else None
 
 
 __all__ = [
     "CUBE_INDICES",
+    "CUBE_NORMALS",
     "CUBE_VERTICES",
+    "SL_FACE_COUNTS",
     "avatar_placeholder_mesh",
+    "avatar_placeholder_normals",
+    "box_geometry",
+    "cube_face_indices",
     "cube_mesh",
+    "cube_normals",
+    "cylinder_face_indices",
     "cylinder_mesh",
+    "cylinder_normals",
+    "prism_face_indices",
     "prism_mesh",
+    "prism_normals",
+    "ring_mesh",
+    "ring_normals",
+    "shape_face_indices",
+    "shape_normals",
     "sphere_mesh",
+    "sphere_normals",
     "torus_mesh",
+    "torus_normals",
+    "tube_mesh",
+    "tube_normals",
 ]

@@ -1093,7 +1093,7 @@ class PerspectiveRenderer:
         }
         for shape_key, author in shape_authors.items():
             verts, indices = author()
-            packed = _interleave_vertex_attributes(verts)
+            packed = _interleave_vertex_attributes(verts, meshes.shape_normals(shape_key))
             vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
             vao = ctx.vertex_array(
@@ -1116,7 +1116,9 @@ class PerspectiveRenderer:
             if face_map is None:
                 continue
             shape_vertices, _ = author()
-            packed_shape = _interleave_vertex_attributes(shape_vertices)
+            packed_shape = _interleave_vertex_attributes(
+                shape_vertices, meshes.shape_normals(shape_key)
+            )
             face_meshes: dict[int, _ShapeMesh] = {}
             for face_index, face_indices in face_map.items():
                 vbo = ctx.buffer(struct.pack(f"{len(packed_shape)}f", *packed_shape))

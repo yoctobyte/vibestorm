@@ -16,12 +16,15 @@ def _xyz_iter(verts: tuple[float, ...]):
 
 
 class CubeMeshTests(unittest.TestCase):
-    def test_cube_has_8_vertices_and_36_indices(self) -> None:
+    def test_cube_is_flat_shaded_with_24_vertices(self) -> None:
+        # Four vertices per face rather than eight shared corners: a shared
+        # corner can only carry one normal, which forces smooth shading and
+        # (via the renderer's normalize(position) fallback) a radial gradient.
         from vibestorm.viewer3d.meshes import cube_mesh
 
         verts, indices = cube_mesh()
 
-        self.assertEqual(len(verts), 8 * 3)
+        self.assertEqual(len(verts), 24 * 3)
         self.assertEqual(len(indices), 36)
 
     def test_cube_vertices_within_unit_cube(self) -> None:
@@ -73,14 +76,16 @@ class SphereMeshTests(unittest.TestCase):
 
 
 class CylinderMeshTests(unittest.TestCase):
-    def test_default_count_matches_capped_cylinder(self) -> None:
+    def test_cap_and_side_rings_are_separate(self) -> None:
         from vibestorm.viewer3d.meshes import cylinder_mesh
 
         slices = 12
         verts, indices = cylinder_mesh(slices=slices)
 
-        # 2 cap centres + 2 rings of ``slices`` verts.
-        self.assertEqual(len(verts) // 3, 2 + 2 * slices)
+        # 2 cap centres + 4 rings: a ring vertex cannot be both flat-capped
+        # (normal +/-Z) and round-sided (normal radial), so each ring is
+        # emitted once for the cap and once for the side.
+        self.assertEqual(len(verts) // 3, 2 + 4 * slices)
         # bottom cap + top cap (slices triangles each) + side (2*slices).
         self.assertEqual(len(indices), 3 * (slices + slices + 2 * slices))
 
@@ -115,11 +120,13 @@ class TorusMeshTests(unittest.TestCase):
 
 
 class PrismMeshTests(unittest.TestCase):
-    def test_six_vertices_eight_triangles(self) -> None:
+    def test_flat_shaded_faces_and_eight_triangles(self) -> None:
         from vibestorm.viewer3d.meshes import prism_mesh
 
         verts, indices = prism_mesh()
-        self.assertEqual(len(verts) // 3, 6)
+        # Emitted per face so each carries its own normal: two triangles
+        # (3 verts each) plus three side quads (4 verts each).
+        self.assertEqual(len(verts) // 3, 3 + 3 + 4 * 3)
         # 1 bottom + 1 top + 3 side quads -> 1+1+6 = 8 triangles.
         self.assertEqual(len(indices), 8 * 3)
 
@@ -232,6 +239,123 @@ class TubeAndRingMeshTests(unittest.TestCase):
             tube_mesh(rings=2)
         with self.assertRaises(ValueError):
             ring_mesh(rings=2)
+
+
+class ShapeNormalTests(unittest.TestCase):
+    """Authored normals, and what they replaced.
+
+    Until 2026-08-14 every built-in primitive fell back to the renderer's
+    ``normalize(position)``. That is exact for a sphere centred on the origin
+    and wrong for everything else: a torus's inner hole wall was lit as though
+    it faced outward, and the avatar placeholder — whose boxes sit away from
+    the origin — shaded into one smooth plank.
+    """
+
+    def _normals_of(self, shape_key):
+        from vibestorm.viewer3d.meshes import shape_normals
+
+        normals = shape_normals(shape_key)
+        self.assertIsNotNone(normals, f"{shape_key} has no authored normals")
+        return normals
+
+    def _pairs(self, shape_key, author):
+        verts, _ = author()
+        normals = self._normals_of(shape_key)
+        self.assertEqual(len(normals), len(verts))
+        return [
+            (verts[i : i + 3], normals[i : i + 3]) for i in range(0, len(verts), 3)
+        ]
+
+    def test_every_builtin_shape_authors_normals(self) -> None:
+        from vibestorm.viewer3d.meshes import SL_FACE_COUNTS, shape_normals
+
+        for shape_key in (*SL_FACE_COUNTS, "avatar"):
+            self.assertIsNotNone(shape_normals(shape_key), shape_key)
+
+    def test_unknown_shape_has_none(self) -> None:
+        from vibestorm.viewer3d.meshes import shape_normals
+
+        self.assertIsNone(shape_normals("not-a-shape"))
+
+    def test_all_normals_are_unit_length(self) -> None:
+        from vibestorm.viewer3d.meshes import SL_FACE_COUNTS, shape_normals
+
+        for shape_key in (*SL_FACE_COUNTS, "avatar"):
+            normals = shape_normals(shape_key)
+            for i in range(0, len(normals), 3):
+                nx, ny, nz = normals[i : i + 3]
+                self.assertAlmostEqual(
+                    (nx * nx + ny * ny + nz * nz) ** 0.5, 1.0, places=5, msg=shape_key
+                )
+
+    def test_cube_faces_are_axis_aligned_and_flat(self) -> None:
+        from vibestorm.viewer3d.meshes import cube_mesh
+
+        for position, normal in self._pairs("cube", cube_mesh):
+            nonzero = [c for c in normal if abs(c) > 1e-6]
+            self.assertEqual(len(nonzero), 1, f"{normal} is not a face normal")
+            # The normal must point the same way as the face it belongs to.
+            axis = max(range(3), key=lambda k: abs(normal[k]))
+            self.assertGreater(position[axis] * normal[axis], 0.0)
+
+    def test_cylinder_side_normals_are_horizontal_and_caps_vertical(self) -> None:
+        from vibestorm.viewer3d.meshes import cylinder_normals
+
+        normals = cylinder_normals()
+        horizontal = [n for i in range(0, len(normals), 3)
+                      if abs((n := normals[i : i + 3])[2]) < 1e-6]
+        vertical = [n for i in range(0, len(normals), 3)
+                    if abs((n := normals[i : i + 3])[2]) > 1.0 - 1e-6]
+
+        self.assertTrue(horizontal, "cylinder has no radial side normals")
+        self.assertTrue(vertical, "cylinder has no flat cap normals")
+
+    def test_torus_normals_point_away_from_the_tube_not_the_origin(self) -> None:
+        # The bug this replaced: with position-derived normals, a vertex on the
+        # inner wall of the hole gets a normal pointing *outward* from the
+        # world origin, so the hole lights up backwards.
+        from vibestorm.viewer3d.meshes import torus_mesh
+
+        inward_facing = 0
+        for position, normal in self._pairs("torus", torus_mesh):
+            x, y, _z = position
+            radial = (x * x + y * y) ** 0.5
+            # Dot the normal with the outward direction in the XY plane.
+            if radial > 1e-8:
+                outward = (x / radial, y / radial)
+                if normal[0] * outward[0] + normal[1] * outward[1] < -0.5:
+                    inward_facing += 1
+
+        self.assertGreater(
+            inward_facing, 0, "no torus vertex faces the hole; normals are radial"
+        )
+
+    def test_avatar_parts_do_not_share_one_radial_gradient(self) -> None:
+        # Position-derived normals on the avatar all point away from its
+        # centre. Authored ones are the six box-face directions and nothing
+        # else, whatever part they belong to.
+        from vibestorm.viewer3d.meshes import avatar_placeholder_normals
+
+        normals = avatar_placeholder_normals()
+        distinct = {
+            tuple(round(c, 6) for c in normals[i : i + 3])
+            for i in range(0, len(normals), 3)
+        }
+
+        self.assertEqual(len(distinct), 6)
+        for normal in distinct:
+            self.assertEqual(len([c for c in normal if abs(c) > 1e-6]), 1)
+
+    def test_prism_side_normals_point_out_of_their_faces(self) -> None:
+        from vibestorm.viewer3d.meshes import prism_mesh
+
+        for position, normal in self._pairs("prism", prism_mesh):
+            if abs(normal[2]) > 1e-6:
+                continue  # a cap
+            x, y, _z = position
+            self.assertGreater(
+                x * normal[0] + y * normal[1], 0.0, "prism side normal points inward"
+            )
 
 
 class SLFaceMapTests(unittest.TestCase):

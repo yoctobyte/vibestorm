@@ -1649,6 +1649,121 @@ class AvatarNameTagGLTests(_GLTestBase):
         self.assertGreater(self._whitish(self._render(scene)), 0)
 
 
+class AuthoredNormalGLTests(_GLTestBase):
+    """The renderer must upload authored normals, not fall back to position.
+
+    This is the leg the pure-mesh normal tests cannot cover: they prove
+    meshes.shape_normals() is right, not that render_gl passes it through.
+    Removing the pass-through left every mesh test green.
+
+    A cube face lit by a fixed sun is the discriminator. With authored
+    normals the whole face shares one normal and shades uniformly; with
+    normalize(position) each of its four corners gets a different diagonal
+    normal, so the face renders as a visible gradient.
+    """
+
+    FBO_SIZE = (128, 128)
+
+    def _render_cube_face_on(self):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=(0.0, 0.0, 0.0),
+            scale=(4.0, 4.0, 4.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape="cube",
+            tint=(220, 220, 220),
+        )
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), eye_position=(6.0, 0.0, 0.0))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = self.fbo.read(components=3)
+            width, height = self.FBO_SIZE
+            samples = []
+            for y in (height // 3, height // 2, 2 * height // 3):
+                for x in (width // 3, width // 2, 2 * width // 3):
+                    offset = (y * width + x) * 3
+                    samples.append(data[offset])
+            return samples
+        finally:
+            renderer.clear_caches()
+
+    def _render_avatar_face_on(self, samples_at):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.avatar_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=47,
+            kind="avatar",
+            position=(0.0, 0.0, 0.0),
+            scale=(4.0, 4.0, 4.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=None,
+            tint=(220, 220, 220),
+        )
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), eye_position=(8.0, 0.0, 0.0))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = self.fbo.read(components=3)
+            width, _height = self.FBO_SIZE
+            return [data[(y * width + x) * 3] for x, y in samples_at]
+        finally:
+            renderer.clear_caches()
+
+    def test_avatar_torso_face_shades_uniformly(self) -> None:
+        # The avatar renders through _shape_meshes rather than the per-face
+        # buffers, so it covers the other upload site. Its boxes sit away from
+        # the origin, which makes the position fallback especially wrong.
+        width, height = self.FBO_SIZE
+        band = [(x, height // 2 + 8) for x in range(width // 2 - 6, width // 2 + 7, 3)]
+
+        samples = self._render_avatar_face_on(band)
+
+        self.assertTrue(all(value > 0 for value in samples), f"torso not drawn: {samples}")
+        self.assertLessEqual(
+            max(samples) - min(samples),
+            2,
+            f"avatar torso is a gradient, so authored normals were not used: {samples}",
+        )
+
+    def test_a_cube_face_shades_uniformly(self) -> None:
+        samples = self._render_cube_face_on()
+
+        self.assertTrue(all(value > 0 for value in samples), f"face not drawn: {samples}")
+        self.assertLessEqual(
+            max(samples) - min(samples),
+            2,
+            f"cube face is a gradient, so authored normals were not used: {samples}",
+        )
+
+
 class MeshMaterialGroupGLTests(_GLTestBase):
     """Each mesh submesh must draw with its own face texture.
 
