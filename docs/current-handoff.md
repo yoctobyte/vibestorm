@@ -1580,6 +1580,36 @@ sim, so the 32x32 path is exercised only by synthetic bitstreams built with
 errors) to confirm the generalization did not regress it. Standing up a
 varregion would confirm the rest.
 
+## Update 2026-08-14: Object-Sync Dry Run (Read-Only)
+
+The object script/notecard sync path has been implemented since 2026-05-25 and
+never confirmed against a running sim, because confirming it means uploading
+into in-world objects. A dry run verifies everything up to that point without
+writing anything, and all of it works:
+
+1. **`RequestTaskInventory` + xfer assembly** — 22 objects queried, every one
+   returned a snapshot with a real `task_id`. Two carry a script:
+   `'New Script'`, `asset_type='lsltext'`, with concrete `item_id`s
+   (`8b2c2787-…` on task `43c98748-…`, `eb8743e4-…` on task `1ae29d6b-…`).
+2. **Asset-type mapping** — task inventory reports `asset_type` as a *template
+   string* (`'lsltext'`), not the integer the matcher and upload caps expect.
+   `_asset_type_string_to_int` bridges it, mapping `'lsltext'` → 10. Anything
+   consuming task inventory outside the HUD has to do the same conversion.
+3. **Update capabilities** — `UpdateScriptTaskInventory`,
+   `UpdateNotecardTaskInventory` and `UpdateScriptTask` all resolve against
+   local OpenSim, so the upload half has somewhere to POST.
+4. **The file matcher** — `_match_files_to_task_selections` pairs
+   `New Script.lsl` with the live inventory row, reports `Unrelated.lsl` as
+   skipped, and correctly ignores a non-uploadable `notes.png` rather than
+   listing it as unmatched.
+
+So the untested surface is now narrow: the two-step CAP POST itself
+(`_request_uploader_sync` → upload bytes) and whether the sim recompiles the
+script afterwards. Everything that feeds it is confirmed against live data.
+
+Whoever runs the real verify: object local_id `234346577` or `234346578` each
+hold one script, and their `task_id`s are above.
+
 ### Remaining
 
 Nothing enumerated is now blocked on decoding. What is left is verification
