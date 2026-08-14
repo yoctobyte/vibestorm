@@ -243,3 +243,34 @@ class PositionKeyTests(unittest.TestCase):
         # and 8-19 joints. Consistent enough to be structural rather than an
         # accident of one file.
         self.assertEqual(self.animation.trailing, b"\x00\x00\x00\x00")
+
+
+class SessionSummaryTests(unittest.TestCase):
+    """The decoder's production caller: the session's asset-fetch log line."""
+
+    def test_an_animation_is_summarised(self) -> None:
+        if not _POSITION_FIXTURE.exists():
+            self.skipTest("position-key animation fixture not present")
+        from vibestorm.udp.session import _summarize_fetched_asset
+
+        summary = _summarize_fetched_asset(20, _POSITION_FIXTURE.read_bytes())
+
+        self.assertIn("joints=19", summary)
+        self.assertIn("length=2.33", summary)
+
+    def test_other_asset_types_are_left_alone(self) -> None:
+        # Not "decoded and found empty" — this module has nothing to say about
+        # a notecard, and pretending otherwise would put a misleading note on
+        # every text asset the session fetches.
+        from vibestorm.udp.session import _summarize_fetched_asset
+
+        self.assertEqual(_summarize_fetched_asset(7, b"Hello notecard"), "")
+
+    def test_undecodable_bytes_do_not_fail_a_good_fetch(self) -> None:
+        # The fetch itself succeeded; a decoder that cannot read the bytes
+        # must report that, not turn a delivered asset into an error.
+        from vibestorm.udp.session import _summarize_fetched_asset
+
+        summary = _summarize_fetched_asset(20, b"not an animation")
+
+        self.assertIn("undecodable", summary)

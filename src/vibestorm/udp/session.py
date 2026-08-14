@@ -132,6 +132,8 @@ from vibestorm.world.object_inventory import (
     ObjectInventorySnapshot,
     parse_task_inventory_text,
 )
+from vibestorm.assets.animation import AnimationDecodeError, decode_animation
+from vibestorm.caps.inventory_types import INVENTORY_ANIMATION
 from vibestorm.caps.object_cost_client import ObjectCost, ObjectCostClient, ObjectCostError
 from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhysicsError
 from vibestorm.caps.viewer_asset_client import (
@@ -2750,13 +2752,30 @@ async def _fetch_asset_over_http(
         )
         return False
     session.fetched_assets[asset_id] = fetched.data
-    session._record_event(
-        now,
-        "asset.http.ok",
+    detail = (
         f"asset={asset_id} type={asset_type} size={len(fetched.data)} "
-        f"content_type={fetched.content_type}",
+        f"content_type={fetched.content_type}"
     )
+    summary = _summarize_fetched_asset(asset_type, fetched.data)
+    if summary:
+        detail = f"{detail} {summary}"
+    session._record_event(now, "asset.http.ok", detail)
     return True
+
+
+def _summarize_fetched_asset(asset_type: int, data: bytes) -> str:
+    """A one-line description of an asset whose format this client decodes.
+
+    Best-effort by design: the fetch succeeded either way, so a decoder that
+    cannot read these particular bytes must degrade to a note rather than turn
+    a good fetch into a failure.
+    """
+    if asset_type != INVENTORY_ANIMATION:
+        return ""
+    try:
+        return decode_animation(data).describe()
+    except AnimationDecodeError as exc:
+        return f"undecodable animation: {exc}"
 
 
 async def _fetch_and_cache_mesh_asset(

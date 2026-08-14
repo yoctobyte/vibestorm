@@ -223,10 +223,18 @@ but the *data* needs no edit at all: `./run.sh census --physics` pulls it for
 every prim through `GetObjectPhysicsData`. What remains unverified is the UDP
 message, not the physics.
 
-*Blocked on sources* (libomv tables absent from `opensim-source/`, and guessing
-them is worse than leaving them raw): `PrimFlags` for `update_flags`, the
-particle system block, `ChatSourceType` / `ChatAudibleLevel`, and the region
-flag bits LSL does not expose.
+*Blocked on sources* (absent from `opensim-source/`, and guessing is worse
+than leaving them raw): `PrimFlags` for `update_flags`, the particle system
+block, `ChatSourceType` / `ChatAudibleLevel`, and the region flag bits LSL does
+not expose — all libomv tables. Also the **gesture asset format**: OpenSim
+stores gestures as opaque bytes and never parses them, so nothing in the tree
+describes the layout. A real gesture asset is kept at
+`test/fixtures/library/gesture-can_we_move_along.bin` for whenever a source
+turns up.
+
+Animation assets were on this list and are not any more: OpenSim *does* read
+them, in `BinBVHAnimation.cs`, so `assets/animation.py` is fully sourced and
+verified against all twelve library animations.
 
 *Genuinely unimplemented, not blocked*: the region-crossing transport half
 (`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child,
