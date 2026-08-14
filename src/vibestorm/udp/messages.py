@@ -8,6 +8,7 @@ from struct import pack, unpack_from
 from uuid import UUID
 
 from vibestorm.udp.template import MessageDispatch
+from vibestorm.world.texture_anim import TextureAnimation, decode_texture_animation
 from vibestorm.world.texture_entry import TextureEntry, parse_texture_entry
 
 
@@ -565,6 +566,7 @@ class ObjectUpdateEntry:
     sound_gain: float = 0.0
     sound_flags: int = 0
     sound_radius: float = 0.0
+    texture_animation: TextureAnimation | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -1492,6 +1494,11 @@ _COMPRESSED_FLAGS_MEDIA_URL     = 0x0200
 _COMPRESSED_FLAGS_PARTICLES_OLD = 0x0008
 _COMPRESSED_FLAGS_HAS_SOUND     = 0x0010
 _COMPRESSED_FLAGS_HAS_NV        = 0x0100
+# 0x0040 sits in the gap between HAS_PARENT (0x0020) and HAS_ANG_VEL (0x0080).
+# OpenSim writes the TextureAnim block last, after the TextureEntry, so a wrong
+# guess here costs the animation and nothing else — no later field depends on
+# this cursor.
+_COMPRESSED_FLAGS_TEXTURE_ANIM  = 0x0040
 
 
 def decode_compressed_object_data(
@@ -1551,6 +1558,8 @@ def decode_compressed_object_data(
     sound_gain = 0.0
     sound_flags = 0
     sound_radius = 0.0
+    texture_animation: TextureAnimation | None = None
+    texture_entry_start: int | None = None
 
     try:
         if compressed_flags & _COMPRESSED_FLAGS_HAS_ANG_VEL:
@@ -1610,7 +1619,17 @@ def decode_compressed_object_data(
         if len(data) >= pos + 4:
             te_len = unpack_from("<H", data, pos)[0]  # lower 16 bits
             texture_entry_size = te_len
+            # Remember where it started. Back-computing this from the final
+            # cursor breaks the moment anything else is parsed afterwards,
+            # which is exactly what happened when TextureAnim was added.
+            texture_entry_start = pos + 4
             pos += 4 + te_len
+        # TextureAnim follows the TextureEntry with the same 4-byte prefix.
+        if compressed_flags & _COMPRESSED_FLAGS_TEXTURE_ANIM and len(data) >= pos + 4:
+            ta_len = unpack_from("<H", data, pos)[0]
+            texture_anim_size = ta_len
+            texture_animation = decode_texture_animation(data[pos + 4 : pos + 4 + ta_len])
+            pos += 4 + ta_len
     except (ValueError, IndexError):
         pass  # truncated data — return what we have
 
@@ -1622,10 +1641,9 @@ def decode_compressed_object_data(
 
     default_texture_id: UUID | None = None
     parsed_texture_entry: TextureEntry | None = None
-    if texture_entry_size >= 16:
-        # The texture entry payload starts after the 4-byte length prefix; we already
-        # advanced past it, so re-read from pos - texture_entry_size
-        te_start = pos - texture_entry_size
+    if texture_entry_size >= 16 and texture_entry_start is not None:
+        te_start = texture_entry_start
+        pos = te_start + texture_entry_size
         try:
             parsed_texture_entry = parse_texture_entry(data[te_start:pos])
         except ValueError:
@@ -1671,6 +1689,7 @@ def decode_compressed_object_data(
         sound_gain=sound_gain,
         sound_flags=sound_flags,
         sound_radius=sound_radius,
+        texture_animation=texture_animation,
     )
 
 
@@ -2614,6 +2633,7 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
         sound_gain=sound_gain,
         sound_flags=sound_flags,
         sound_radius=sound_radius,
+        texture_animation=decode_texture_animation(texture_anim_payload),
         hover_text=_decode_object_string(text_payload),
         hover_text_color=_decode_text_color(text_color_payload),
         media_url=_decode_object_string(media_url_payload),

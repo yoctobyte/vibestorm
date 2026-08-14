@@ -18,6 +18,7 @@ from vibestorm.udp.messages import (
     SimStatsMessage,
     SimulatorViewerTimeMessage,
 )
+from vibestorm.world.texture_anim import TextureAnimation
 from vibestorm.world.texture_entry import TextureEntry, parse_texture_entry
 
 
@@ -108,6 +109,7 @@ class WorldObject:
     sound_gain: float = 0.0
     sound_flags: int = 0
     sound_radius: float = 0.0
+    texture_animation: TextureAnimation | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -281,6 +283,7 @@ class WorldView:
                 sound_gain=obj.sound_gain,
                 sound_flags=obj.sound_flags,
                 sound_radius=obj.sound_radius,
+                texture_animation=obj.texture_animation,
                 properties_family=(
                     self.objects.get(obj.full_id).properties_family
                     if obj.full_id in self.objects
@@ -353,6 +356,7 @@ class WorldView:
                 sound_gain=obj.sound_gain,
                 sound_flags=obj.sound_flags,
                 sound_radius=obj.sound_radius,
+                texture_animation=obj.texture_animation,
                 properties_family=obj.properties_family,
             )
 
@@ -405,6 +409,7 @@ class WorldView:
             sound_gain=existing.sound_gain,
             sound_flags=existing.sound_flags,
             sound_radius=existing.sound_radius,
+            texture_animation=existing.texture_animation,
             properties_family=message,
         )
 

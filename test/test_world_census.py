@@ -50,6 +50,7 @@ class _Object:
         self.hover_text = None
         self.media_url = None
         self.sound_id = None
+        self.texture_animation = None
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -155,8 +156,13 @@ class CensusFeatureTests(unittest.TestCase):
         def entry(param_type, data):
             return ExtraParamEntry(param_type=param_type, param_in_use=True, param_data=data)
 
+        from vibestorm.world.texture_anim import decode_texture_animation
+
         everything = _Object(
             1,
+            texture_animation=decode_texture_animation(
+                bytes([0x01, 0xFF, 4, 2]) + struct.pack("<fff", 0.0, 8.0, 1.0)
+            ),
             hover_text="hi",
             media_url="http://example.invalid/",
             sound_id=SOUND_ID,

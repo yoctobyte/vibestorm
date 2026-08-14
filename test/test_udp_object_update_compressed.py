@@ -52,6 +52,7 @@ def _shape_block(
 
 COMPRESSED_HAS_TEXT = 0x0004
 COMPRESSED_HAS_SOUND = 0x0010
+COMPRESSED_TEXTURE_ANIM = 0x0040
 COMPRESSED_MEDIA_URL = 0x0200
 
 
@@ -63,6 +64,7 @@ def _compressed_blob(
     compressed_flags: int = 0,
     optional: bytes = b"",
     after_extra_params: bytes = b"",
+    texture_anim: bytes = b"",
 ) -> bytes:
     """A minimal compressed entry.
 
@@ -91,6 +93,8 @@ def _compressed_blob(
         blob += struct.pack("<HH", len(texture_entry), 0) + texture_entry
     else:
         blob += bytes(4)
+    if texture_anim:
+        blob += struct.pack("<HH", len(texture_anim), 0) + texture_anim
     return blob
 
 
@@ -322,6 +326,60 @@ class CompressedSoundBlockTests(unittest.TestCase):
 
         self.assertIsNone(entry.sound_id)
         self.assertEqual(entry.sound_gain, 0.0)
+
+
+class CompressedTextureAnimTests(unittest.TestCase):
+    """TextureAnim rides after the TextureEntry with the same 4-byte prefix."""
+
+    def _anim_block(self, flags=0x01, face=-1):
+        return (
+            bytes([flags])
+            + struct.pack("<b", face)
+            + bytes([4, 2])
+            + struct.pack("<fff", 0.0, 8.0, 1.5)
+        )
+
+    def test_texture_animation_is_decoded(self) -> None:
+        entry = decode_compressed_object_data(
+            _compressed_blob(
+                _shape_block(),
+                compressed_flags=COMPRESSED_TEXTURE_ANIM,
+                texture_anim=self._anim_block(flags=0x03),
+            ),
+            region_handle=1,
+            time_dilation=0,
+            update_flags=0,
+        )
+
+        self.assertIsNotNone(entry.texture_animation)
+        self.assertEqual(entry.texture_animation.mode_names(), ("on", "loop"))
+        self.assertTrue(entry.texture_animation.applies_to_all_faces)
+        self.assertEqual(entry.texture_anim_size, 16)
+
+    def test_no_flag_means_no_animation(self) -> None:
+        entry = decode_compressed_object_data(
+            _compressed_blob(_shape_block()), region_handle=1, time_dilation=0, update_flags=0
+        )
+
+        self.assertIsNone(entry.texture_animation)
+        self.assertEqual(entry.texture_anim_size, 0)
+
+    def test_the_animation_does_not_disturb_the_texture_entry(self) -> None:
+        texture_id = UUID("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+        entry = decode_compressed_object_data(
+            _compressed_blob(
+                _shape_block(),
+                compressed_flags=COMPRESSED_TEXTURE_ANIM,
+                texture_entry=texture_id.bytes + bytes(9),
+                texture_anim=self._anim_block(),
+            ),
+            region_handle=1,
+            time_dilation=0,
+            update_flags=0,
+        )
+
+        self.assertEqual(entry.default_texture_id, texture_id)
+        self.assertIsNotNone(entry.texture_animation)
 
 
 if __name__ == "__main__":

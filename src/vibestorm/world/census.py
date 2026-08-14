@@ -80,6 +80,7 @@ TRACKED_FEATURES: tuple[str, ...] = (
     # exact silent-zero this report exists to prevent.
     "sculpt",
     "mesh asset",
+    "texture animation",
 )
 
 PCODE_AVATAR = 47
@@ -136,6 +137,8 @@ def _features_of(world_object: object) -> list[str]:
         found.append("media url")
     if getattr(world_object, "sound_id", None):
         found.append("attached sound")
+    if getattr(world_object, "texture_animation", None) is not None:
+        found.append("texture animation")
 
     entry = getattr(world_object, "texture_entry", None)
     if entry is not None and getattr(entry, "face_texture_ids", ()):

@@ -2569,6 +2569,9 @@ def _inspector_detail_html(e: object, w: object | None, scene: object | None = N
     media_url = getattr(w, "media_url", None) if w else None
     if media_url:
         lines.append(f"Media URL: {_html_escape(media_url)}")
+    animation = getattr(w, "texture_animation", None) if w else None
+    if animation is not None:
+        lines.append(f"Texture Anim: {_html_escape(animation.describe())}")
     sound_id = getattr(w, "sound_id", None) if w else None
     if sound_id is not None:
         lines.append(
