@@ -133,7 +133,8 @@ from vibestorm.world.object_inventory import (
     parse_task_inventory_text,
 )
 from vibestorm.assets.animation import AnimationDecodeError, decode_animation
-from vibestorm.caps.inventory_types import INVENTORY_ANIMATION
+from vibestorm.assets.notecard import NotecardDecodeError, decode_notecard
+from vibestorm.caps.inventory_types import INVENTORY_ANIMATION, INVENTORY_NOTECARD
 from vibestorm.caps.object_cost_client import ObjectCost, ObjectCostClient, ObjectCostError
 from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhysicsError
 from vibestorm.caps.viewer_asset_client import (
@@ -2770,12 +2771,17 @@ def _summarize_fetched_asset(asset_type: int, data: bytes) -> str:
     cannot read these particular bytes must degrade to a note rather than turn
     a good fetch into a failure.
     """
-    if asset_type != INVENTORY_ANIMATION:
-        return ""
-    try:
-        return decode_animation(data).describe()
-    except AnimationDecodeError as exc:
-        return f"undecodable animation: {exc}"
+    if asset_type == INVENTORY_ANIMATION:
+        try:
+            return decode_animation(data).describe()
+        except AnimationDecodeError as exc:
+            return f"undecodable animation: {exc}"
+    if asset_type == INVENTORY_NOTECARD:
+        try:
+            return decode_notecard(data).describe()
+        except NotecardDecodeError as exc:
+            return f"undecodable notecard: {exc}"
+    return ""
 
 
 async def _fetch_and_cache_mesh_asset(

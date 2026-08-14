@@ -258,13 +258,17 @@ class SessionSummaryTests(unittest.TestCase):
         self.assertIn("joints=19", summary)
         self.assertIn("length=2.33", summary)
 
-    def test_other_asset_types_are_left_alone(self) -> None:
-        # Not "decoded and found empty" — this module has nothing to say about
-        # a notecard, and pretending otherwise would put a misleading note on
-        # every text asset the session fetches.
+    def test_a_type_with_no_decoder_is_left_alone(self) -> None:
+        # Not "decoded and found empty" — nothing here has anything to say
+        # about LSL source, and a note implying it looked would be noise on
+        # every script fetch.
+        #
+        # This test named notecards until the notecard decoder landed, at
+        # which point it failed for the right reason: the claim it encoded had
+        # stopped being true.
         from vibestorm.udp.session import _summarize_fetched_asset
 
-        self.assertEqual(_summarize_fetched_asset(7, b"Hello notecard"), "")
+        self.assertEqual(_summarize_fetched_asset(10, b"default\n{\n}\n"), "")
 
     def test_undecodable_bytes_do_not_fail_a_good_fetch(self) -> None:
         # The fetch itself succeeded; a decoder that cannot read the bytes
