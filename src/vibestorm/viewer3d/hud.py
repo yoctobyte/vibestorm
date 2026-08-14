@@ -2559,6 +2559,16 @@ def _live_activity_lines(world_object: object | None, scene: object | None) -> l
     sound = (getattr(scene, "attached_sounds", {}) or {}).get(full_id)
     if sound is not None:
         rows.append(f"Attached Sound (live): {sound.sound_id} gain {sound.gain:.2f}")
+
+    # Physics is keyed by local id: ObjectPhysicsProperties addresses prims
+    # that way, unlike the sound and animation messages above.
+    local_id = getattr(world_object, "local_id", None)
+    physics = (getattr(scene, "object_physics", {}) or {}).get(local_id)
+    if physics is not None:
+        rows.append(f"Physics: {physics.describe()}")
+        if not physics.is_collidable:
+            # Worth calling out separately: this prim is walked through.
+            rows.append("Physics: no collision shape")
     return rows
 
 

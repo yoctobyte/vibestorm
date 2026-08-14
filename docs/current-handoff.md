@@ -2147,6 +2147,40 @@ test region has no second avatar to produce them.
 
 `sourcetype` and `audible` stay raw ints; see the sourcing-boundary note above.
 
+## 2026-08-14 — physics properties: decoded, now consumed, still unverifiable
+
+`ObjectPhysicsProperties` was fully decoded by `event_queue/events.py` into
+`ObjectPhysicsPropertiesEvent` — and nothing anywhere consumed it. Same shape
+as the SimStats gap: correct decode, no destination.
+
+`src/vibestorm/world/physics_shape.py` names the shape type from OpenSim's
+`PhysShapeType` (`Framework/ExtraPhysicsData.cs`: prim 0, none 1, convex 2,
+invalid 255). `Scene.object_physics` records it per prim and the inspector
+shows it. Two deliberate choices:
+
+- Material values equal to OpenSim's defaults (density 1000, friction 0.6,
+  restitution 0.5, gravity 1.0 — `SceneObjectPart` field initialisers, checked
+  against source) are **not** printed. Every prim carries these numbers;
+  echoing them back implies someone chose them.
+- `shape=none` also prints "no collision shape" on its own row. It is the one
+  value with a visible in-world consequence: the prim is walked through.
+- Keyed by **local id**, unlike the sound and animation rows beside it, which
+  key by full UUID. `ObjectPhysicsProperties` addresses prims by local id. A
+  test pins this, since getting it wrong would attach another prim's physics.
+
+### Why this cannot be live-verified right now
+
+`SceneGraph` calls `SendPartPhysicsProprieties` only from `UpdateExtraPhysics`
+and `PrimMaterial` — that is, **only as an echo of an edit the viewer itself
+just made**. The sim never sends it unprompted. A 25-second passive session
+confirms this from the other side: the event queue delivered **no events at
+all**, of any kind.
+
+So reaching this code live requires modifying a prim in the region, which is
+the same consent gate as the object-sync verify. Unit-tested and mutation-
+checked, live-unverified, and it will stay that way until someone authorises
+an in-world edit.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

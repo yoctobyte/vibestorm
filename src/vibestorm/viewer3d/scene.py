@@ -31,6 +31,7 @@ from vibestorm.world.chat_types import (
     chat_type_name,
     is_typing_notification,
 )
+from vibestorm.world.physics_shape import PhysicsProperties, physics_properties_from_event
 from vibestorm.world.sim_stats import summarize_sim_stats
 
 if TYPE_CHECKING:
@@ -340,6 +341,9 @@ class Scene:
     avatar_animations: dict[UUID, tuple[UUID, ...]] = field(default_factory=dict)
     object_animations: dict[UUID, tuple[UUID, ...]] = field(default_factory=dict)
     attached_sounds: dict[UUID, "AttachedSoundState"] = field(default_factory=dict)
+    # Physics material per object local_id. Keyed by local_id rather than UUID
+    # because ObjectPhysicsProperties identifies the prim that way.
+    object_physics: dict[int, PhysicsProperties] = field(default_factory=dict)
     # One-shot sounds have no lasting state, so these are a bounded tail.
     recent_sound_triggers: deque = field(
         default_factory=lambda: deque(maxlen=SOUND_TRIGGER_HISTORY)
@@ -483,11 +487,17 @@ class Scene:
         consumers through the bus but are not chat-worthy.
         """
         from vibestorm.event_queue.events import (
+            ObjectPhysicsPropertiesEvent,
             ScriptRunningReplyEvent,
             TeleportFinishEvent,
         )
 
         payload = event.event
+        # Not chat-worthy: this is per-object detail for the inspector, and it
+        # arrives unprompted whenever a prim's physics change.
+        if isinstance(payload, ObjectPhysicsPropertiesEvent):
+            self.object_physics[payload.local_id] = physics_properties_from_event(payload)
+            return
         if isinstance(payload, TeleportFinishEvent):
             self.chat_lines.append(
                 ChatLine(

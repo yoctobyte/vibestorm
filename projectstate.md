@@ -212,6 +212,10 @@ Main gaps:
   OpenSim's `ChatTypeEnum`; start/stop-typing are recognised as notifications
   rather than appended to the log as blank lines. `sourcetype` and `audible`
   stay raw — those two are libomv enums, absent from `opensim-source/`
+- a prim's physics material and shape type (`ObjectPhysicsProperties`) reach
+  the inspector, named from OpenSim's `PhysShapeType`. Not live-verified: the
+  sim only sends this as an echo of an edit the viewer itself made, so it needs
+  the same in-world-edit consent as the object-sync verify
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for

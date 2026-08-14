@@ -164,8 +164,9 @@ class SoundTriggerHistoryTests(unittest.TestCase):
 
 class InspectorLiveActivityTests(unittest.TestCase):
     class _WorldObject:
-        def __init__(self, full_id):
+        def __init__(self, full_id, local_id=0):
             self.full_id = full_id
+            self.local_id = local_id
 
     def test_playing_animations_and_live_sound_appear(self) -> None:
         from vibestorm.viewer3d.hud import _live_activity_lines
@@ -189,6 +190,51 @@ class InspectorLiveActivityTests(unittest.TestCase):
 
         self.assertEqual(_live_activity_lines(None, Scene()), [])
         self.assertEqual(_live_activity_lines(self._WorldObject(OBJECT_A), None), [])
+
+    def test_physics_material_reaches_the_inspector(self) -> None:
+        from vibestorm.viewer3d.hud import _live_activity_lines
+        from vibestorm.world.physics_shape import PhysicsProperties
+
+        scene = Scene()
+        scene.object_physics[77] = PhysicsProperties(
+            shape_type=2, density=42.0, friction=0.6, restitution=0.5,
+            gravity_multiplier=1.0,
+        )
+
+        rows = _live_activity_lines(self._WorldObject(OBJECT_A, local_id=77), scene)
+
+        self.assertIn("Physics: shape=convex density=42", rows)
+
+    def test_a_walk_through_prim_says_so_explicitly(self) -> None:
+        # shape=none is the one value with a visible consequence in-world.
+        from vibestorm.viewer3d.hud import _live_activity_lines
+        from vibestorm.world.physics_shape import PhysicsProperties
+
+        scene = Scene()
+        scene.object_physics[77] = PhysicsProperties(
+            shape_type=1, density=1000.0, friction=0.6, restitution=0.5,
+            gravity_multiplier=1.0,
+        )
+
+        rows = _live_activity_lines(self._WorldObject(OBJECT_A, local_id=77), scene)
+
+        self.assertIn("Physics: no collision shape", rows)
+
+    def test_physics_is_matched_by_local_id_not_uuid(self) -> None:
+        # The sound and animation rows key on full_id; this one must not, or it
+        # would silently attach another prim's physics to this one.
+        from vibestorm.viewer3d.hud import _live_activity_lines
+        from vibestorm.world.physics_shape import PhysicsProperties
+
+        scene = Scene()
+        scene.object_physics[77] = PhysicsProperties(
+            shape_type=2, density=1000.0, friction=0.6, restitution=0.5,
+            gravity_multiplier=1.0,
+        )
+
+        rows = _live_activity_lines(self._WorldObject(OBJECT_A, local_id=78), scene)
+
+        self.assertEqual(rows, [])
 
 
 if __name__ == "__main__":

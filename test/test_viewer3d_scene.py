@@ -975,6 +975,49 @@ class SceneChatTypeTests(unittest.TestCase):
         self.assertIsNone(scene.chat_lines[0].delivery())
 
 
+class SceneObjectPhysicsTests(unittest.TestCase):
+    """ObjectPhysicsProperties is per-object detail, not a chat line."""
+
+    def _event(self, local_id: int, shape_type: int = 0, **overrides: float) -> object:
+        from vibestorm.bus.events import EventQueueEventReceived
+        from vibestorm.event_queue.events import ObjectPhysicsPropertiesEvent
+
+        values: dict = dict(
+            density=1000.0, friction=0.6, gravity_multiplier=1.0, restitution=0.5
+        )
+        values.update(overrides)
+        return EventQueueEventReceived(
+            region_handle=0,
+            event=ObjectPhysicsPropertiesEvent(
+                local_id=local_id, physics_shape_type=shape_type, **values
+            ),
+        )
+
+    def test_physics_is_recorded_without_polluting_the_chat_log(self) -> None:
+        scene = Scene()
+        scene.apply_event_queue_event(self._event(42, shape_type=2))
+
+        self.assertEqual(list(scene.chat_lines), [])
+        self.assertEqual(scene.object_physics[42].shape_name, "convex")
+
+    def test_later_updates_replace_earlier_ones(self) -> None:
+        # A script can change a prim's physics at runtime and the sim resends.
+        scene = Scene()
+        scene.apply_event_queue_event(self._event(42, shape_type=0))
+        scene.apply_event_queue_event(self._event(42, shape_type=1))
+
+        self.assertEqual(scene.object_physics[42].shape_name, "none")
+        self.assertFalse(scene.object_physics[42].is_collidable)
+
+    def test_objects_are_tracked_separately(self) -> None:
+        scene = Scene()
+        scene.apply_event_queue_event(self._event(1, shape_type=0))
+        scene.apply_event_queue_event(self._event(2, shape_type=2))
+
+        self.assertEqual(scene.object_physics[1].shape_name, "prim")
+        self.assertEqual(scene.object_physics[2].shape_name, "convex")
+
+
 class SceneSimHealthTests(unittest.TestCase):
     """The HUD's fps is the client's; sim health is the region's.
 
