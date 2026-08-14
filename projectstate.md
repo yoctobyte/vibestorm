@@ -220,11 +220,14 @@ Main gaps:
   `opensim-source/` and guessing it is worse than leaving it
 - typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
   `TeleportFinish` and `ScriptRunningReply` in chat. The region-management ones
-  (`EnableSimulator`, `CrossedRegion`) are on the bus but have no consumer
+  (`EnableSimulator`, `CrossedRegion`) remain the only bus events with no
+  consumer — they need a region crossing to be worth wiring
 - `udp.messages.parse_parcel_properties` is unreachable against OpenSim, which
   sends `ParcelProperties` only over the event queue. Kept for other servers.
-- `ObjectAnimation` and the four sound messages are still synthetic-test-only;
-  a quiet single-avatar test region produces none of them
+- `ObjectAnimation` and the four sound messages now have consumers: the Scene
+  tracks current animations and attached sounds per object and the inspector
+  shows them. Still synthetic-test-only — a quiet single-avatar test region
+  produces none of them
 - the 32x32 LandExtended terrain path and the light/projector/reflection-probe
   `ExtraParams` decoders exist but have never seen live data — the test region
   is a standard 256 m sim with none of that content

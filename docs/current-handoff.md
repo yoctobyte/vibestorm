@@ -1915,6 +1915,37 @@ Both are content problems, now visible rather than inferred. Re-uploading that
 sculpt map would light up the sculpt path; a rezzed mesh object would light up
 GetMesh and, with per-face materials, the `material_groups` path too.
 
+## 2026-08-14 — the sound/animation events finally have a consumer
+
+Six bus events (`AvatarAnimationReceived`, `ObjectAnimationReceived`,
+`SoundTriggered`, `AttachedSoundReceived`, `AttachedSoundGainChanged`,
+`PreloadSoundReceived`) were published from the session and subscribed by
+nothing. The Scene now tracks them and the Object Inspector shows what an
+object is doing *now* next to how it was *built* — the `ObjectUpdate` sound
+block and the live AttachedSound can legitimately disagree, since a script can
+swap either at runtime.
+
+The modelling decision worth keeping: these are **current state, not a log**. A
+new `AvatarAnimation` or `AttachedSound` replaces what was there, because that
+is exactly how a sim stops an animation or swaps a sound. A trailing log would
+show a stopped animation forever. Two consequences, both tested:
+
+- a null sound id **clears** the entry rather than storing a zero UUID —
+  otherwise "silent" and "playing asset 0" are indistinguishable
+- an `AttachedSoundGainChange` for an object with no known sound is **ignored**,
+  since inventing an entry from it would claim a sound id never seen
+
+`SoundTrigger` is the exception. One-shot sounds have no lasting state, so they
+go to a bounded tail (`SOUND_TRIGGER_HISTORY`) rather than a dict that grows
+without limit in a busy region.
+
+State is keyed by full UUID, which is how these messages address objects; a
+local id only exists inside one region session.
+
+Nothing in the test region emits any of them, so unit tests are the only
+coverage until a sound emitter or animated object is rezzed — and `./run.sh
+census` reports `attached sound` in its `absent=` list, so that stays visible.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
