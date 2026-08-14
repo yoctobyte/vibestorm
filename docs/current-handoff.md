@@ -1799,6 +1799,43 @@ Also confirmed live and no longer a gap: **prim names**. 32 of 33 objects
 carry an `ObjectPropertiesFamily` name; the one that does not is the avatar,
 which now resolves from NameValues.
 
+## 2026-08-14 — `./run.sh census`
+
+The question "does this region contain a prim with X?" drives almost every
+verification decision in this project: a decoder is only live-verified if the
+sim produces content that reaches it. It got answered by a throwaway script
+five separate times in one session, with results that could not be compared
+between runs. It is now a command.
+
+    ./run.sh census [--duration 30]
+
+Reports object/avatar counts, the shape histogram, named vs unnamed, each
+tracked feature with example `local_id`s, and every permission mask grouped by
+what it grants. The load-bearing line is **`census absent=`** — a feature with
+no example is named explicitly rather than left as a silent zero, because a
+silent zero reads as "fine" and is how a decoder stays unverified for months.
+
+Shape classification deliberately follows the *renderer's* precedence: a
+sculpt/mesh hint beats the path/profile curves. So the histogram reports what
+would actually be drawn, not what the curves alone imply. That is why the
+census says 8 spheres where a curves-only script says 5 spheres and 3 tori —
+those three are sculpts, and the renderer draws them via the sculpt path.
+
+Current reading of the test region:
+
+    census objects=32 avatars=1
+    census shape[cube]=22 sphere=8 tube=1 unclassified=1
+    census feature[hover text]=1
+    census feature[flexi]=2
+    census feature[sculpt or mesh]=3
+    census absent=media url, attached sound, per-face texture, light,
+                  projector, reflection probe, render materials, mesh flags
+    census perms_unknown=none
+
+That `absent=` list is the standing answer to "what content would let us
+verify the rest", and it should be re-run rather than reasoned about after
+anyone changes the region.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

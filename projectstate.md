@@ -189,7 +189,9 @@ The next meaningful work is not transport stabilization. It is coverage and inte
 
 Main gaps:
 
-- better census of all visible scene objects
+- `./run.sh census` now reports region content: shapes, names, per-feature
+  counts with example local_ids, permission masks, and — the useful part — an
+  explicit `absent=` list of features the region cannot exercise
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - prim shape now survives `ObjectUpdateCompressed` (it was skipped, leaving
   nearly every prim in a populated region rendering as the fallback cube).
