@@ -1621,6 +1621,71 @@ against world content this test region does not contain:
 - an object with a multi-submesh mesh and per-face materials would exercise the
   `material_groups` path against real assets rather than synthetic ones
 
+## 2026-08-14 — SL prim face numbering, and the shape block compressed updates dropped
+
+Two findings, the second much larger than the first and found only because the
+first prompted a live census.
+
+### TextureEntry faces did not match SL's face numbering
+
+Per-face texturing existed only for cubes, and it split `CUBE_INDICES` by the
+order `meshes.cube_mesh` happens to author faces in (-Z, +Z, +Y, -Y, +X, -X).
+SL numbers box faces 0=+X, 1=+Y, 2=-X, 3=-Y, 4=top, 5=bottom. Every per-face
+texture on a box therefore landed on the wrong side — a silent failure, since
+the prim still rendered.
+
+`meshes.shape_face_indices()` now returns the SL face → triangle index map for
+the multi-face built-in prims, derived from SL's rule of walking the profile's
+side segments first and appending the caps last (top before bottom). The
+renderer's `_render_cube_faces` generalised into `_render_prim_faces` over
+`_prim_face_meshes`, so cylinders (0=side, 1=top, 2=bottom) and prisms get
+per-face textures too. Single-face prims — sphere, torus, sculpt — now read the
+face 0 override rather than `TextureEntry`'s default; `texture_for_face` falls
+back to the default anyway, so that only ever adds information.
+
+The prism side-quad order is **derived, not observed**. The caps are confident;
+which of the three side quads is SL's face 0 has never been checked against a
+textured in-world prism, and a wrong guess rotates the three side textures
+among themselves. `prism_face_indices` says so in its docstring.
+
+Verified by offscreen GL readback aiming the camera at each face in turn, and
+mutation-checked both ways (cube map reverted to slot order, cylinder map
+rotated) to confirm the tests discriminate. One trap worth remembering: a
+camera placed *directly* above its target has a view direction parallel to the
+`(0, 0, 1)` up vector, which degenerates the view matrix and renders solid
+black. The cap tests use `(1.5, 0, ±6)`.
+
+### 30 of 32 live prims had no shape data at all
+
+The census run to check whether the region contained any non-cube prims with
+face overrides answered a different question instead: 30 of 32 prims reported
+`shape=None`, so nearly every prim in the region was rendering as the fallback
+cube regardless of its actual profile.
+
+Cause: `decode_compressed_object_data` walked past the 23-byte path/profile
+block with a bare `pos += 23` and never parsed it. `ObjectUpdateCompressed`
+carries the bulk of object traffic in a populated region, so "compressed" meant
+"shapeless".
+
+The subtlety that makes this worth a separate parser: **the compressed block
+does not use the message template's field order.** `ObjectUpdate` puts
+ProfileCurve second, right after PathCurve; `LLClientView.CreateCompressedUpdateBlockZC`
+writes the entire path group first and the profile group last. Reusing
+`_parse_prim_shape_block` here raises nothing — it silently reports a profile
+curve read out of the middle of `PathBegin`. Hence
+`_parse_compressed_prim_shape_block`, plus a test whose fixture is authored so
+the two readings disagree.
+
+Live before: 30 unclassified, 2 cubes. Live after: 22 cubes, 5 spheres, 3 tori,
+1 tube, 1 unclassified. The spheres and tori were always there.
+
+### Still unobserved
+
+The test region contains **zero** prims carrying per-face `TextureEntry`
+overrides, so the face-map work is unit- and pixel-verified but not live-
+verified. A prim with different textures on two faces would close that — and a
+textured prism would settle the side-quad order.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

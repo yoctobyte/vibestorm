@@ -54,7 +54,7 @@ parser in `udp/messages.py`, a handler branch in `udp/session.py` or
 | --- | --- | --- | --- | --- |
 | `ObjectUpdate` | object state/update path | P1 | verified | full semantic decode including the rich tail; observed every session |
 | `ObjectUpdateCached` | cached object updates | P2 | verified | handled, with full-update requests issued for cache misses |
-| `ObjectUpdateCompressed` | compressed object updates | P1 | verified | semantic decode; the bulk of object traffic in a populated region |
+| `ObjectUpdateCompressed` | compressed object updates | P1 | verified | semantic decode including the 23-byte shape block, whose field order differs from the message template's; the bulk of object traffic in a populated region |
 | `ImprovedTerseObjectUpdate` | compact frequent updates | P1 | verified | structural parse with terse `local_id` promotion; observed every session |
 | `KillObject` | remove object from world cache | P1 | handled | parsed and applied to `WorldView`; needs an object delete to observe |
 | `ObjectPropertiesFamily` | object name/owner metadata | P1 | verified | drives inspector names; the highest-count inbound message in a populated region |

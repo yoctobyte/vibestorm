@@ -191,10 +191,16 @@ Main gaps:
 
 - better census of all visible scene objects
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
+- prim shape now survives `ObjectUpdateCompressed` (it was skipped, leaving
+  nearly every prim in a populated region rendering as the fallback cube).
+  Other compressed-only fields — text, media URL, particles, sound — are still
+  stepped over rather than decoded
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
-- renderer use of per-face `TextureEntry` overrides beyond cube primitives (the
-  decode side is complete; other prim shapes still fall back to the default
-  texture until their face mapping is modeled)
+- per-face `TextureEntry` overrides now follow SL's face numbering for box,
+  cylinder and prism, and single-face prims (sphere, torus, sculpt) read the
+  face 0 override. The test region has no prim with different textures on two
+  faces, so this is pixel-verified offscreen but not live-verified; the prism
+  side-quad order in particular is derived rather than observed
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
 - typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
