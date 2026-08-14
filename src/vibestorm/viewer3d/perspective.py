@@ -375,6 +375,9 @@ HOVER_TEXT_SCREEN_HEIGHT: float = 0.045
 HOVER_TEXT_OFFSET_M: float = 0.25
 HOVER_TEXT_FONT_SIZE: int = 28
 HOVER_TEXT_MAX_LINES: int = 8
+#: Cap on cached label textures. Keyed by the text itself, so this bounds
+#: prims whose hover text changes over time rather than the prim count.
+HOVER_TEXT_CACHE_MAX: int = 64
 # Avatar name tags share the hover-text billboard but carry no colour of
 # their own; SL draws them in plain white.
 AVATAR_NAME_COLOR: tuple[int, int, int, int] = (255, 255, 255, 235)
@@ -1201,6 +1204,22 @@ class PerspectiveRenderer:
             index_element_size=4,
         )
 
+    def _evict_hover_text_textures(self) -> None:
+        """Drop least-recently-used label textures once over the cap.
+
+        The cache is keyed by the text itself, so a prim whose hover text
+        changes — a clock, a visitor counter, a vendor price — mints a new GL
+        texture per distinct string. Without eviction those accumulate for the
+        life of the session; text updating once a second leaks a texture a
+        second. The cap bounds it to the labels actually on screen.
+        """
+        while len(self._hover_text_textures) > HOVER_TEXT_CACHE_MAX:
+            _oldest_text, (texture, _width, _height) = next(
+                iter(self._hover_text_textures.items())
+            )
+            del self._hover_text_textures[_oldest_text]
+            texture.release()
+
     def _hover_text_texture(
         self, ctx: moderngl.Context, text: str
     ) -> tuple[object, int, int] | None:
@@ -1212,6 +1231,10 @@ class PerspectiveRenderer:
         """
         cached = self._hover_text_textures.get(text)
         if cached is not None:
+            # Mark as most recently used: dicts preserve insertion order, so
+            # re-inserting moves this entry to the end of the eviction queue.
+            del self._hover_text_textures[text]
+            self._hover_text_textures[text] = cached
             return cached
 
         import pygame
@@ -1242,6 +1265,7 @@ class PerspectiveRenderer:
         texture.repeat_y = False
         entry = (texture, width, height)
         self._hover_text_textures[text] = entry
+        self._evict_hover_text_textures()
         return entry
 
     @staticmethod

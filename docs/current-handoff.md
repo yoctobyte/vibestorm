@@ -2354,6 +2354,34 @@ a partial fix.
 object, ask what its scope is and who resets it. Four of these eight fields
 were added this session without that question being asked.
 
+## 2026-08-14 — a GL texture leak in the label cache
+
+The same "what is this scoped to, and who frees it?" question, asked of the
+renderer's caches this time. `PerspectiveRenderer._hover_text_textures` is
+keyed by **the text itself**, and had no eviction — only a teardown release.
+
+So the cache is bounded by *distinct labels seen over the session*, not by the
+prim count. A static "For Sale" sign is one texture forever, which is why this
+never showed up in testing. But hover text is what scripts use for clocks,
+visitor counters, vendor prices and status boards: a prim rewriting its text
+once a second mints one GL texture per second and frees none until the
+renderer is torn down.
+
+Now an LRU capped at `HOVER_TEXT_CACHE_MAX = 64`, releasing on eviction.
+
+The test uses a stub context rather than real GL, so the eviction policy is
+covered without needing a GL machine. Three mutations, three distinct
+failures:
+
+- no eviction at all → 4 failures
+- evicts but never calls `release()` → 2 failures
+- no LRU touch on a cache hit → 1 failure
+
+The middle one matters most: dropping the reference without `release()` looks
+completely correct from Python — the dict shrinks, memory usage in the process
+looks fine — while the texture stays allocated on the GPU. Only an explicit
+assertion that evicted textures were *released* catches it.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
