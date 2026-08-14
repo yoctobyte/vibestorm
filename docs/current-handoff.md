@@ -1986,8 +1986,30 @@ and `_shape_meshes` (the avatar's torso face) — each asserting the face shades
 uniformly rather than as a gradient. Both were mutation-checked.
 
 Worth remembering that the first mutation check *appeared* to pass because it
-patched the wrong upload site. There are two, and a cube goes through the
-per-face one; only sphere/torus/tube/ring/avatar go through the other.
+patched the wrong upload site. There are **three**, and each needed its own
+test:
+
+| site | shapes | normals from |
+| --- | --- | --- |
+| `_prim_face_meshes` | cube, cylinder, prism | `meshes.shape_normals()` |
+| `_shape_meshes` (built-ins) | sphere, torus, tube, ring, avatar | `meshes.shape_normals()` |
+| `_shape_meshes` (sculpt) | decoded sculpt maps | `smooth_vertex_normals()` |
+
+(A fourth, `_mesh_face_meshes` for authored SL mesh assets, was already passing
+`decoded.normals` correctly.)
+
+Sculpts kept the position fallback a commit longer than the rest. A sculpt map
+carries only positions, and only the *sphere* sculpt type is a surface centred
+on the origin — torus, plane and cylinder sculpts were all lit wrongly. The
+mesh decoder already computed smooth per-vertex normals for a submesh with no
+`Normal` array, so that is now extracted as
+`sl_mesh.smooth_vertex_normals(positions, indices)` and shared, rather than
+having two implementations drift apart.
+
+One detail there that looks like an oversight and is not: the triangle cross
+product is accumulated **unnormalized**, so each face contributes in proportion
+to its area. A sliver should not sway a shared vertex as much as a large
+neighbouring face. There is a test pinning that.
 
 ## Notes For The Next Agent
 

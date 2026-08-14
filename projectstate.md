@@ -206,7 +206,8 @@ Main gaps:
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for
-  swept surfaces) instead of falling back to normalize(position)
+  swept surfaces) instead of falling back to normalize(position); sculpts derive
+  theirs from the decoded geometry via `sl_mesh.smooth_vertex_normals`
 - tube and ring have purpose-built swept meshes rather than aliasing to cube
   and torus; flexible prims (path curve 0x80) classify by their profile instead
   of falling through to the unclassified fallback
