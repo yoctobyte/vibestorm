@@ -568,6 +568,9 @@ class PerspectiveRenderer:
         self._instance_vbo = None  # type: moderngl.Buffer | None
         self._shape_meshes: dict[str, _ShapeMesh] = {}
         self._cube_face_meshes: dict[int, _ShapeMesh] = {}
+        # Per-material-group index buffers for decoded mesh assets, keyed by
+        # shape key then prim face index. They share the parent mesh's VBO.
+        self._mesh_face_meshes: dict[str, dict[int, _ShapeMesh]] = {}
         self._mesh_asset_paths: dict[UUID, Path] = {}
         self._sculpt_asset_paths: dict[tuple[UUID, int | None], Path] = {}
         self._instance_capacity = 0
@@ -697,6 +700,9 @@ class PerspectiveRenderer:
                 if cube_entities:
                     self._render_cube_faces(ctx, scene, cube_entities)
                 for (shape_key, texture_id), entities in groups.items():
+                    if shape_key in self._mesh_face_meshes:
+                        self._render_mesh_faces(ctx, scene, shape_key, entities)
+                        continue
                     mesh = self._shape_meshes[shape_key]
                     texture = (
                         self._upload_object_texture(ctx, scene, texture_id)
@@ -839,6 +845,8 @@ class PerspectiveRenderer:
             mesh.ibo.release()
             mesh.vbo.release()
         self._cube_face_meshes.clear()
+        for shape_key in list(self._mesh_face_meshes):
+            self._release_mesh_face_meshes(shape_key)
         for texture in self._object_textures.values():
             texture.release()
         self._object_textures.clear()
@@ -870,6 +878,7 @@ class PerspectiveRenderer:
         self._instance_vbo = None
         self._program = None
         self._cube_face_meshes = {}
+        self._mesh_face_meshes = {}
         self._instance_capacity = 0
         self._ground_vao = None
         self._ground_ibo = None
@@ -1049,6 +1058,7 @@ class PerspectiveRenderer:
                 mesh.vao.release()
                 mesh.ibo.release()
                 mesh.vbo.release()
+            self._release_mesh_face_meshes(shape_key)
             try:
                 decoded = decode_sl_mesh_asset(path.read_bytes())
             except (OSError, SLMeshDecodeError):
@@ -1074,6 +1084,7 @@ class PerspectiveRenderer:
             self._shape_meshes[shape_key] = _ShapeMesh(
                 vbo=vbo, ibo=ibo, vao=vao, index_count=len(decoded.indices)
             )
+            self._build_mesh_face_meshes(ctx, shape_key, vbo, decoded)
             self._mesh_asset_paths[mesh_id] = path
 
     def _upload_scene_sculpt_assets(self, ctx: moderngl.Context, scene: Scene) -> None:
@@ -1139,6 +1150,81 @@ class PerspectiveRenderer:
         if texture_id is not None and texture_id not in scene.texture_paths:
             return None
         return texture_id
+
+    def _build_mesh_face_meshes(
+        self,
+        ctx: moderngl.Context,
+        shape_key: str,
+        vbo: moderngl.Buffer,
+        decoded: object,
+    ) -> None:
+        """Split a decoded mesh's index buffer by ``material_groups``.
+
+        SL submeshes map 1:1 to prim faces, so each group's index slice can be
+        drawn with that face's ``TextureEntry`` override — the same per-face
+        treatment cubes already get. The groups share the parent mesh's VBO;
+        only index buffers and VAOs are per face.
+
+        Meshes with a single group gain nothing from the split, so they keep
+        the one-draw-call path.
+        """
+        groups = getattr(decoded, "material_groups", None) or ()
+        if len(groups) < 2 or self._program is None or self._instance_vbo is None:
+            return
+        indices = decoded.indices
+        face_meshes: dict[int, _ShapeMesh] = {}
+        for group in groups:
+            slice_ = indices[group.index_start : group.index_start + group.index_count]
+            if not slice_:
+                continue
+            ibo = ctx.buffer(struct.pack(f"{len(slice_)}I", *slice_))
+            vao = ctx.vertex_array(
+                self._program,
+                [
+                    (vbo, "3f 3f", "in_pos", "in_normal"),
+                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                ],
+                index_buffer=ibo,
+                index_element_size=4,
+            )
+            face_meshes[group.face_index] = _ShapeMesh(
+                vbo=vbo, ibo=ibo, vao=vao, index_count=len(slice_)
+            )
+        if face_meshes:
+            self._mesh_face_meshes[shape_key] = face_meshes
+
+    def _release_mesh_face_meshes(self, shape_key: str) -> None:
+        """Release a mesh's per-face VAOs/IBOs. The VBO belongs to the parent."""
+        for mesh in self._mesh_face_meshes.pop(shape_key, {}).values():
+            mesh.vao.release()
+            mesh.ibo.release()
+
+    def _render_mesh_faces(
+        self,
+        ctx: moderngl.Context,
+        scene: Scene,
+        shape_key: str,
+        entities: list[SceneEntity],
+    ) -> None:
+        """Draw one mesh per material group, each with its own face texture."""
+        for face_index, mesh in self._mesh_face_meshes[shape_key].items():
+            face_groups: dict[UUID | None, list[SceneEntity]] = {}
+            for entity in entities:
+                texture_id = self._texture_id_for_entity_face(scene, entity, face_index)
+                face_groups.setdefault(texture_id, []).append(entity)
+            for texture_id, face_entities in face_groups.items():
+                texture = (
+                    self._upload_object_texture(ctx, scene, texture_id)
+                    if texture_id is not None
+                    else None
+                )
+                if texture is not None:
+                    self._program["u_use_texture"].value = True
+                    texture.use(location=0)
+                else:
+                    self._program["u_use_texture"].value = False
+                self._upload_instances_for(ctx, face_entities)
+                mesh.vao.render(instances=len(face_entities))
 
     def _render_cube_faces(
         self,
@@ -1519,6 +1605,19 @@ class PerspectiveRenderer:
                 index_element_size=4,
             )
             self._cube_face_meshes[face_index] = mesh
+        for face_meshes in self._mesh_face_meshes.values():
+            for face_index, mesh in face_meshes.items():
+                mesh.vao.release()
+                mesh.vao = ctx.vertex_array(
+                    self._program,
+                    [
+                        (mesh.vbo, "3f 3f", "in_pos", "in_normal"),
+                        (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                    ],
+                    index_buffer=mesh.ibo,
+                    index_element_size=4,
+                )
+                face_meshes[face_index] = mesh
         self._instance_capacity = new_capacity
 
 __all__ = [

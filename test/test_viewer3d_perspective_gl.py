@@ -1246,5 +1246,154 @@ class InterleaveNormalsTests(unittest.TestCase):
         self.assertEqual(packed, [0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
 
+class MeshMaterialGroupGLTests(_GLTestBase):
+    """Each mesh submesh must draw with its own face texture.
+
+    ``decode_sl_mesh_asset`` maps submeshes 1:1 to prim faces via
+    ``material_groups``. The renderer splits the index buffer along those
+    groups so a two-submesh mesh with different per-face TextureEntry
+    overrides paints two different colours, the same way cube faces do.
+    """
+
+    def _two_submesh_asset(self) -> bytes:
+        import struct
+
+        from test_sl_mesh import _llsd_binary, _llsd_map, _mesh_asset, _vec3
+
+        def submesh(y_lo: float, y_hi: float) -> dict:
+            positions = struct.pack("<HHHHHHHHH", 0, 0, 0, 65535, 0, 0, 0, 65535, 0)
+            return {
+                "Position": _llsd_binary(positions),
+                "PositionDomain": _llsd_map(
+                    {"Min": _vec3(-0.5, y_lo, 0.0), "Max": _vec3(0.5, y_hi, 0.0)}
+                ),
+                "TriangleList": _llsd_binary(struct.pack("<HHH", 0, 1, 2)),
+            }
+
+        # Two disjoint triangles: one in the southern half, one in the northern.
+        return _mesh_asset([submesh(-0.5, 0.0), submesh(0.0, 0.5)])
+
+    def _solid_texture(self, tmpdir: str, name: str, rgb: tuple) -> Path:
+        import pygame
+
+        path = Path(tmpdir) / name
+        surface = pygame.Surface((8, 8))
+        surface.fill(rgb)
+        pygame.image.save(surface, str(path))
+        return path
+
+    def test_material_groups_bind_per_face_textures(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+        from vibestorm.world.texture_entry import TextureEntry
+
+        mesh_id = UUID(int=11)
+        red_id = UUID(int=21)
+        blue_id = UUID(int=22)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mesh_path = Path(tmpdir) / "two_faces.llmesh"
+            mesh_path.write_bytes(self._two_submesh_asset())
+
+            camera = Camera3D(target=(0.0, 0.0, 0.0), distance=4.0, yaw=0.0, pitch=1.4)
+            camera.set_mode("orbit")
+            camera.screen_size = self.FBO_SIZE
+
+            scene = Scene()
+            scene.render_terrain = False
+            scene.render_water = False
+            scene.mesh_paths[mesh_id] = mesh_path
+            scene.texture_paths[red_id] = self._solid_texture(
+                tmpdir, "red.png", (255, 0, 0)
+            )
+            scene.texture_paths[blue_id] = self._solid_texture(
+                tmpdir, "blue.png", (0, 0, 255)
+            )
+            scene.object_entities[1] = SceneEntity(
+                local_id=1,
+                pcode=9,
+                kind="prim",
+                position=(0.0, 0.0, 0.0),
+                scale=(3.0, 3.0, 3.0),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape="mesh",
+                mesh_source_kind="mesh",
+                mesh_asset_id=mesh_id,
+                default_texture_id=red_id,
+                texture_entry=TextureEntry(
+                    default_texture_id=red_id,
+                    face_texture_ids=((0, red_id), (1, blue_id)),
+                ),
+            )
+
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                shape_key = f"mesh:{mesh_id}"
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+
+                self.assertIn(
+                    shape_key,
+                    renderer._mesh_face_meshes,
+                    "material groups did not produce per-face index buffers",
+                )
+                self.assertEqual(
+                    sorted(renderer._mesh_face_meshes[shape_key]), [0, 1]
+                )
+
+                data = self.fbo.read(components=3)
+                pixels = [
+                    tuple(data[i : i + 3]) for i in range(0, len(data), 3)
+                ]
+                reddish = [p for p in pixels if p[0] > 80 and p[0] > p[2] + 40]
+                bluish = [p for p in pixels if p[2] > 80 and p[2] > p[0] + 40]
+                self.assertTrue(reddish, "face 0 did not paint with its texture")
+                self.assertTrue(bluish, "face 1 did not paint with its texture")
+            finally:
+                renderer.clear_caches()
+
+    def test_single_group_mesh_keeps_one_draw_call(self) -> None:
+        # A one-submesh mesh gains nothing from splitting, so it must not
+        # allocate per-face buffers.
+        from test_sl_mesh import _mesh_asset, _triangle_submesh
+
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        mesh_id = UUID(int=12)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mesh_path = Path(tmpdir) / "one_face.llmesh"
+            mesh_path.write_bytes(_mesh_asset([_triangle_submesh()]))
+
+            camera = Camera3D(target=(0.0, 0.0, 0.0), distance=3.0, yaw=0.0, pitch=1.2)
+            camera.set_mode("orbit")
+            scene = Scene()
+            scene.render_terrain = False
+            scene.render_water = False
+            scene.mesh_paths[mesh_id] = mesh_path
+            scene.object_entities[1] = SceneEntity(
+                local_id=1,
+                pcode=9,
+                kind="prim",
+                position=(0.0, 0.0, 0.0),
+                scale=(2.0, 2.0, 2.0),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape="mesh",
+                mesh_source_kind="mesh",
+                mesh_asset_id=mesh_id,
+            )
+
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                renderer.render_gl(scene, aspect=1.0)
+                self.assertNotIn(f"mesh:{mesh_id}", renderer._mesh_face_meshes)
+            finally:
+                renderer.clear_caches()
+
+
 if __name__ == "__main__":
     unittest.main()
