@@ -1860,6 +1860,28 @@ The general lesson: a diagnostic that reports a *category* of ignorance
 ("unclassified", "unknown", "absent") should always carry the raw value that
 produced it. The bucket says something is wrong; only the value says what.
 
+### And then the `tube=1` bucket
+
+The same report showed one tube. `_SHAPE_ALIASES` mapped tube to the *cube*
+mesh and ring to the *torus*, so a square-section tube drew as a box and a
+triangle-section ring as a round donut.
+
+Both are swept cross-sections around a circular path, differing from the torus
+only in the shape of that cross-section, so `meshes._swept_ring_mesh` is now
+the shared body behind all three. One detail worth not re-discovering: the
+tube's 4-gon profile is **phased 45 degrees**. A bare 4-side sweep puts profile
+vertices at 0/90/180/270 and produces a diamond section, which reads as a lumpy
+torus rather than a tube; a test pins the square section so the phase cannot
+regress silently.
+
+Tube and ring are single-face prims in SL, so they joined sphere, torus and
+sculpts in reading the face 0 `TextureEntry` override rather than the entry
+default. `_SHAPE_ALIASES` is now down to one entry: `mesh` still stands in as a
+sphere until authored mesh assets are fetched and decoded.
+
+Live-verified by rendering the region offscreen aimed at local_id 234346573 —
+it draws as a hollow square-section ring.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

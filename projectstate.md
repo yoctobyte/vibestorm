@@ -199,6 +199,9 @@ Main gaps:
   both update paths and reach the inspector; hover text also renders as a 3D
   billboard. The particle system blocks are still stepped over
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
+- tube and ring have purpose-built swept meshes rather than aliasing to cube
+  and torus; flexible prims (path curve 0x80) classify by their profile instead
+  of falling through to the unclassified fallback
 - per-face `TextureEntry` overrides now follow SL's face numbering for box,
   cylinder and prism, and single-face prims (sphere, torus, sculpt) read the
   face 0 override. The test region has no prim with different textures on two
