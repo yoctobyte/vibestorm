@@ -375,13 +375,6 @@ HOVER_TEXT_SCREEN_HEIGHT: float = 0.045
 HOVER_TEXT_OFFSET_M: float = 0.25
 HOVER_TEXT_FONT_SIZE: int = 28
 HOVER_TEXT_MAX_LINES: int = 8
-#: Cap on cached label textures. Keyed by the text itself, so this bounds
-#: prims whose hover text changes over time rather than the prim count.
-HOVER_TEXT_CACHE_MAX: int = 64
-#: Cap on uploaded object textures. Higher than the label cap because these
-#: are shared across every prim using the same asset, but bounded because each
-#: one is real VRAM rather than a small glyph bitmap.
-OBJECT_TEXTURE_CACHE_MAX: int = 256
 # Avatar name tags share the hover-text billboard but carry no colour of
 # their own; SL draws them in plain white.
 AVATAR_NAME_COLOR: tuple[int, int, int, int] = (255, 255, 255, 235)
@@ -792,6 +785,8 @@ class PerspectiveRenderer:
         proj_data = struct.pack("16f", *proj)
         sun_direction = lighting_direction(scene)
 
+        self._prune_object_textures(scene)
+        self._prune_mesh_assets(scene)
         self._upload_ground_texture(ctx, scene)
         self._upload_scene_mesh_assets(ctx, scene)
         self._upload_scene_sculpt_assets(ctx, scene)
@@ -1208,43 +1203,59 @@ class PerspectiveRenderer:
             index_element_size=4,
         )
 
-    def _evict_object_textures(self) -> None:
-        """Drop least-recently-used object textures once over the cap.
+    def _prune_object_textures(self, scene: Scene) -> None:
+        """Release uploaded textures the current region no longer references.
 
-        Unlike the label cache this one is deliberately *not* cleared on a
-        region change: texture files persist on disk, so revisiting a region
-        reuses what is already uploaded. The cost of that choice is that the
-        cache otherwise grows for the whole session, and these are real
-        textures — a 1024x1024 RGBA is 4 MB of VRAM, so a long tour across
-        many regions can exhaust it where the label cache never would.
+        Pruning by *reference* rather than by a count cap, deliberately. These
+        uploads happen inside the per-frame draw loop, so a least-recently-used
+        cap would evict textures that are still on screen the moment a region
+        holds more of them than the cap — re-decoding a PNG and re-uploading it
+        every frame, which is far worse than the memory it saves. Nothing
+        visible can be evicted here, because `scene.texture_paths` is exactly
+        the set the draw loop is able to ask for.
 
-        Eviction happens on upload, which is the only point at which the cache
-        grows; a texture bound earlier in the same frame has already had its
-        draw call issued by then.
+        `scene.texture_paths` is cleared on a region change, so this is what
+        frees the previous region's textures.
         """
-        while len(self._object_textures) > OBJECT_TEXTURE_CACHE_MAX:
-            oldest_id, texture = next(iter(self._object_textures.items()))
-            del self._object_textures[oldest_id]
-            # Kept in lockstep: a path with no texture would re-upload anyway,
-            # but the dict would grow without bound.
-            self._object_texture_paths.pop(oldest_id, None)
+        live = getattr(scene, "texture_paths", {})
+        for texture_id in [tid for tid in self._object_textures if tid not in live]:
+            self._object_textures.pop(texture_id).release()
+            self._object_texture_paths.pop(texture_id, None)
+
+    def _prune_label_textures(self, active_texts: set[str]) -> None:
+        """Release label textures not drawn this frame.
+
+        Keyed by the text itself, so a prim whose hover text changes — a clock,
+        a visitor counter, a vendor price — mints a new texture per distinct
+        string, and without pruning those accumulate for the whole session.
+
+        The live set is the labels this frame actually drew, so as with the
+        textures above nothing currently visible is ever released. A label that
+        scrolls out of view and back is re-rasterised, which is cheap.
+        """
+        for text in [t for t in self._hover_text_textures if t not in active_texts]:
+            texture, _width, _height = self._hover_text_textures.pop(text)
             texture.release()
 
-    def _evict_hover_text_textures(self) -> None:
-        """Drop least-recently-used label textures once over the cap.
+    def _prune_mesh_assets(self, scene: Scene) -> None:
+        """Release mesh-asset geometry the current region no longer references.
 
-        The cache is keyed by the text itself, so a prim whose hover text
-        changes — a clock, a visitor counter, a vendor price — mints a new GL
-        texture per distinct string. Without eviction those accumulate for the
-        life of the session; text updating once a second leaks a texture a
-        second. The cap bounds it to the labels actually on screen.
+        Keyed by asset UUID, so this grows per distinct mesh ever seen, and a
+        decoded mesh's vertex and index buffers are larger than a texture.
+        Only asset-derived shape keys are considered — the built-in prim meshes
+        live in the same dict and must never be released.
         """
-        while len(self._hover_text_textures) > HOVER_TEXT_CACHE_MAX:
-            _oldest_text, (texture, _width, _height) = next(
-                iter(self._hover_text_textures.items())
-            )
-            del self._hover_text_textures[_oldest_text]
-            texture.release()
+        live = getattr(scene, "mesh_paths", {})
+        for mesh_id in [mid for mid in self._mesh_asset_paths if mid not in live]:
+            shape_key = _mesh_asset_shape_key(mesh_id)
+            mesh = self._shape_meshes.pop(shape_key, None)
+            if mesh is not None:
+                mesh.vao.release()
+                mesh.ibo.release()
+                mesh.vbo.release()
+            self._release_mesh_face_meshes(shape_key)
+            self._mesh_uv_shape_keys.discard(shape_key)
+            self._mesh_asset_paths.pop(mesh_id, None)
 
     def _hover_text_texture(
         self, ctx: moderngl.Context, text: str
@@ -1257,10 +1268,6 @@ class PerspectiveRenderer:
         """
         cached = self._hover_text_textures.get(text)
         if cached is not None:
-            # Mark as most recently used: dicts preserve insertion order, so
-            # re-inserting moves this entry to the end of the eviction queue.
-            del self._hover_text_textures[text]
-            self._hover_text_textures[text] = cached
             return cached
 
         import pygame
@@ -1291,7 +1298,6 @@ class PerspectiveRenderer:
         texture.repeat_y = False
         entry = (texture, width, height)
         self._hover_text_textures[text] = entry
-        self._evict_hover_text_textures()
         return entry
 
     @staticmethod
@@ -1332,6 +1338,9 @@ class PerspectiveRenderer:
         if self._label_program is None or self._label_vao is None:
             return
         labelled = self._collect_labels(scene)
+        # Prune before the early return: a frame with no labels at all is
+        # precisely when every cached label texture has become garbage.
+        self._prune_label_textures({text for _entity, text, _color in labelled})
         if not labelled:
             return
 
@@ -1720,9 +1729,6 @@ class PerspectiveRenderer:
             return None
         cached = self._object_textures.get(texture_id)
         if cached is not None and self._object_texture_paths.get(texture_id) == path:
-            # Touch for LRU: re-inserting moves it off the eviction front.
-            del self._object_textures[texture_id]
-            self._object_textures[texture_id] = cached
             return cached
 
         import pygame
@@ -1742,7 +1748,6 @@ class PerspectiveRenderer:
         texture.repeat_y = True
         self._object_textures[texture_id] = texture
         self._object_texture_paths[texture_id] = path
-        self._evict_object_textures()
         return texture
 
     def _upload_terrain_mesh(self, ctx: moderngl.Context, scene: Scene) -> None:

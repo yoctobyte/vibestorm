@@ -1,22 +1,26 @@
-"""Tests for the hover-text label texture cache.
+"""Tests for the renderer's GL caches.
 
-The cache is keyed by the text string, so it is bounded by the number of
-*distinct labels seen over time*, not by the number of prims. A prim whose
-text changes — a clock, a visitor counter, a vendor price — mints a new GL
-texture per update. Without eviction that is a texture leak that grows for
-the whole session and never shows up in a short test run.
+Three caches hold GPU memory keyed by something that grows over a session:
+label textures by the text itself, object textures by asset UUID, and decoded
+mesh geometry by asset UUID. All three release by **reference** — anything the
+current region (or, for labels, the current frame) still refers to is kept, and
+everything else is freed.
 
-These use a stub context so the eviction policy can be tested without a GL
-context; the rendering itself is covered by the GL tests elsewhere.
+That choice is the point of these tests. A least-recently-used cap looks like
+the obvious design and is wrong here: uploads happen inside the per-frame draw
+loop, so the moment a region holds more textures than the cap, the cap evicts
+things that are still on screen and they are re-decoded and re-uploaded every
+single frame. Reference pruning cannot do that, because the live set is exactly
+what the draw loop is able to ask for.
+
+A stub context stands in for GL so the policy is testable without a GPU; the
+rendering itself is covered by the GL tests elsewhere.
 """
 
 import unittest
+from uuid import UUID
 
-from vibestorm.viewer3d.perspective import (
-    HOVER_TEXT_CACHE_MAX,
-    OBJECT_TEXTURE_CACHE_MAX,
-    PerspectiveRenderer,
-)
+from vibestorm.viewer3d.perspective import PerspectiveRenderer
 
 
 class _StubTexture:
@@ -31,7 +35,7 @@ class _StubTexture:
 
 
 class _StubContext:
-    """Just enough moderngl surface for the label rasteriser."""
+    """Just enough moderngl surface for the rasteriser and uploader."""
 
     LINEAR = "linear"
 
@@ -45,18 +49,22 @@ class _StubContext:
         return texture
 
 
-class LabelCacheTests(unittest.TestCase):
+class _RendererTestCase(unittest.TestCase):
     def setUp(self) -> None:
         try:
             import pygame  # noqa: F401
         except ImportError:  # pragma: no cover
             self.skipTest("pygame not available")
         from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.scene import Scene
 
         # ctx=None skips _setup_gl, leaving the caches empty and inert.
         self.renderer = PerspectiveRenderer(Camera3D(), ctx=None)
         self.ctx = _StubContext()
+        self.scene = Scene()
 
+
+class LabelCacheTests(_RendererTestCase):
     def _texture_for(self, text: str):
         return self.renderer._hover_text_texture(self.ctx, text)
 
@@ -73,75 +81,57 @@ class LabelCacheTests(unittest.TestCase):
 
         self.assertEqual(len(self.ctx.textures), 2)
 
-    def test_cache_is_bounded(self) -> None:
-        for index in range(HOVER_TEXT_CACHE_MAX + 20):
-            self._texture_for(f"tick {index}")
+    def test_text_no_longer_shown_is_released(self) -> None:
+        # The changing-text case: a clock prim leaves one dead texture behind
+        # per tick, and only pruning frees them.
+        for tick in range(20):
+            self._texture_for(f"12:{tick:02d}")
+        self.renderer._prune_label_textures({"12:19"})
 
-        self.assertLessEqual(
-            len(self.renderer._hover_text_textures), HOVER_TEXT_CACHE_MAX
-        )
+        self.assertEqual(len(self.renderer._hover_text_textures), 1)
+        self.assertEqual(len([t for t in self.ctx.textures if t.released]), 19)
 
-    def test_evicted_textures_are_released_not_merely_dropped(self) -> None:
-        # Dropping the reference without release() leaks on the GPU, which no
-        # amount of Python-side bookkeeping would reveal.
-        for index in range(HOVER_TEXT_CACHE_MAX + 5):
-            self._texture_for(f"tick {index}")
+    def test_visible_text_is_never_released(self) -> None:
+        self._texture_for("kept")
+        self._texture_for("dropped")
 
-        released = [t for t in self.ctx.textures if t.released]
-        self.assertEqual(len(released), 5)
+        self.renderer._prune_label_textures({"kept"})
 
-    def test_eviction_is_least_recently_used(self) -> None:
-        for index in range(HOVER_TEXT_CACHE_MAX):
-            self._texture_for(f"label {index}")
+        self.assertIn("kept", self.renderer._hover_text_textures)
+        self.assertNotIn("dropped", self.renderer._hover_text_textures)
 
-        # Touch the oldest so it is no longer the eviction candidate.
-        self._texture_for("label 0")
-        self._texture_for("newcomer")
+    def test_many_simultaneous_labels_all_survive(self) -> None:
+        # The case a count cap would break: more labels on screen at once than
+        # any fixed cap, each of which must stay uploaded.
+        texts = {f"label {index}" for index in range(500)}
+        for text in texts:
+            self._texture_for(text)
 
-        self.assertIn("label 0", self.renderer._hover_text_textures)
-        self.assertNotIn("label 1", self.renderer._hover_text_textures)
+        self.renderer._prune_label_textures(texts)
 
-    def test_a_repeated_label_never_evicts_itself(self) -> None:
-        # The realistic steady state: one prim with static text, in view for a
-        # long session, must not be re-rasterised because of churn elsewhere.
-        self._texture_for("stable")
-        for index in range(HOVER_TEXT_CACHE_MAX * 2):
-            self._texture_for(f"changing {index}")
-            self._texture_for("stable")
+        self.assertEqual(len(self.renderer._hover_text_textures), 500)
+        self.assertEqual([t for t in self.ctx.textures if t.released], [])
 
-        self.assertIn("stable", self.renderer._hover_text_textures)
-        stable_textures = [
-            t for t in self.ctx.textures if not t.released
-        ]
-        self.assertLessEqual(len(stable_textures), HOVER_TEXT_CACHE_MAX)
+    def test_pruning_to_nothing_releases_everything(self) -> None:
+        self._texture_for("gone")
+
+        self.renderer._prune_label_textures(set())
+
+        self.assertEqual(self.renderer._hover_text_textures, {})
+        self.assertTrue(self.ctx.textures[0].released)
 
 
-class ObjectTextureCacheTests(unittest.TestCase):
-    """The object texture cache holds real VRAM, and survives region changes.
-
-    It is kept across regions on purpose — texture files persist on disk, so a
-    revisited region reuses them — which is exactly why it needs a bound: it
-    is the one GL cache nothing ever clears mid-session.
-    """
+class ObjectTextureCacheTests(_RendererTestCase):
+    """Object textures are keyed by asset UUID and pruned to the region."""
 
     def setUp(self) -> None:
-        try:
-            import pygame  # noqa: F401
-        except ImportError:  # pragma: no cover
-            self.skipTest("pygame not available")
+        super().setUp()
         import tempfile
         from pathlib import Path
 
         import pygame
 
-        from vibestorm.viewer3d.camera import Camera3D
-        from vibestorm.viewer3d.scene import Scene
-
-        self.renderer = PerspectiveRenderer(Camera3D(), ctx=None)
-        self.ctx = _StubContext()
-        self._scene = Scene()
-
-        # One real 2x2 PNG on disk, reused for every id: the cache keys on the
+        # One real PNG on disk, reused for every id: the cache keys on the
         # texture UUID, so distinct ids are what matters, not distinct pixels.
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -153,65 +143,126 @@ class ObjectTextureCacheTests(unittest.TestCase):
     def _upload(self, index: int) -> None:
         """Upload through the real code path, not by poking the dict.
 
-        Going through ``_upload_object_texture`` is the point: an earlier version
-        of this test called the evictor directly, so removing the evictor's
-        call site from the upload path still passed.
+        Going through ``_upload_object_texture`` is the point: an earlier
+        version of this test called the evictor directly, so removing its call
+        site from the upload path still passed.
         """
-        from uuid import UUID
-
         texture_id = UUID(int=index)
-        self._scene.texture_paths[texture_id] = self._png_path
-        self.renderer._upload_object_texture(self.ctx, self._scene, texture_id)
-
-    def test_cache_is_bounded(self) -> None:
-        for index in range(OBJECT_TEXTURE_CACHE_MAX + 30):
-            self._upload(index)
-
-        self.assertLessEqual(
-            len(self.renderer._object_textures), OBJECT_TEXTURE_CACHE_MAX
-        )
-
-    def test_evicted_textures_are_released(self) -> None:
-        for index in range(OBJECT_TEXTURE_CACHE_MAX + 7):
-            self._upload(index)
-
-        released = [t for t in self.ctx.textures if t.released]
-        self.assertEqual(len(released), 7)
+        self.scene.texture_paths[texture_id] = self._png_path
+        self.renderer._upload_object_texture(self.ctx, self.scene, texture_id)
 
     def test_the_same_id_is_uploaded_once(self) -> None:
-        # The bound must not turn the cache into a re-upload loop.
         self._upload(1)
         self._upload(1)
         self._upload(1)
 
         self.assertEqual(len(self.ctx.textures), 1)
 
-    def test_a_reused_texture_survives_churn(self) -> None:
-        from uuid import UUID
-
-        churn = OBJECT_TEXTURE_CACHE_MAX * 2
-        self._upload(9999)
-        for index in range(churn):
+    def test_a_large_region_keeps_every_visible_texture(self) -> None:
+        # A count cap would evict these mid-frame and re-upload them on the
+        # next one, forever. Reference pruning must leave all of them alone.
+        for index in range(400):
             self._upload(index)
-            self._upload(9999)
 
-        self.assertIn(UUID(int=9999), self.renderer._object_textures)
-        # Presence alone proves nothing: without an LRU touch the reused
-        # texture is evicted and then re-uploaded on the very next request, so
-        # it is still present at the end. The upload count is what shows it was
-        # actually kept — one upload for it, one per distinct churn id.
-        self.assertEqual(len(self.ctx.textures), churn + 1)
+        self.renderer._prune_object_textures(self.scene)
+
+        self.assertEqual(len(self.renderer._object_textures), 400)
+        self.assertEqual([t for t in self.ctx.textures if t.released], [])
+
+    def test_leaving_a_region_frees_its_textures(self) -> None:
+        for index in range(5):
+            self._upload(index)
+        # What apply_region_changed does to the scene.
+        self.scene.texture_paths.clear()
+
+        self.renderer._prune_object_textures(self.scene)
+
+        self.assertEqual(self.renderer._object_textures, {})
+        self.assertEqual(len([t for t in self.ctx.textures if t.released]), 5)
 
     def test_path_bookkeeping_stays_in_lockstep(self) -> None:
         # A path entry outliving its texture would leave this dict growing
-        # without bound even though the texture cache is capped.
-        for index in range(OBJECT_TEXTURE_CACHE_MAX + 7):
+        # even though the texture cache is pruned.
+        for index in range(5):
             self._upload(index)
+        self.scene.texture_paths.clear()
 
-        self.assertEqual(
-            len(self.renderer._object_texture_paths),
-            len(self.renderer._object_textures),
+        self.renderer._prune_object_textures(self.scene)
+
+        self.assertEqual(self.renderer._object_texture_paths, {})
+
+    def test_a_texture_still_referenced_is_kept(self) -> None:
+        self._upload(1)
+        self._upload(2)
+        del self.scene.texture_paths[UUID(int=2)]
+
+        self.renderer._prune_object_textures(self.scene)
+
+        self.assertIn(UUID(int=1), self.renderer._object_textures)
+        self.assertNotIn(UUID(int=2), self.renderer._object_textures)
+
+
+class _StubBuffer:
+    def __init__(self) -> None:
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class MeshAssetCacheTests(_RendererTestCase):
+    """Decoded mesh geometry is keyed by asset UUID and pruned to the region."""
+
+    def _install_mesh(self, index: int):
+        from vibestorm.viewer3d.perspective import _mesh_asset_shape_key, _ShapeMesh
+
+        mesh_id = UUID(int=index)
+        shape_key = _mesh_asset_shape_key(mesh_id)
+        mesh = _ShapeMesh(
+            vbo=_StubBuffer(), ibo=_StubBuffer(), vao=_StubBuffer(), index_count=3
         )
+        self.renderer._shape_meshes[shape_key] = mesh
+        self.renderer._mesh_asset_paths[mesh_id] = f"/tmp/{index}.llmesh"
+        self.renderer._mesh_uv_shape_keys.add(shape_key)
+        self.scene.mesh_paths[mesh_id] = f"/tmp/{index}.llmesh"
+        return mesh, shape_key
+
+    def test_leaving_a_region_releases_mesh_buffers(self) -> None:
+        mesh, shape_key = self._install_mesh(1)
+        self.scene.mesh_paths.clear()
+
+        self.renderer._prune_mesh_assets(self.scene)
+
+        self.assertNotIn(shape_key, self.renderer._shape_meshes)
+        self.assertTrue(mesh.vbo.released)
+        self.assertTrue(mesh.ibo.released)
+        self.assertTrue(mesh.vao.released)
+        self.assertEqual(self.renderer._mesh_asset_paths, {})
+        self.assertNotIn(shape_key, self.renderer._mesh_uv_shape_keys)
+
+    def test_a_referenced_mesh_is_kept(self) -> None:
+        _mesh, shape_key = self._install_mesh(1)
+
+        self.renderer._prune_mesh_assets(self.scene)
+
+        self.assertIn(shape_key, self.renderer._shape_meshes)
+
+    def test_builtin_shape_meshes_are_never_touched(self) -> None:
+        # The built-in prim meshes share _shape_meshes with mesh assets, and
+        # releasing one would break every prim of that shape.
+        from vibestorm.viewer3d.perspective import _ShapeMesh
+
+        builtin = _ShapeMesh(
+            vbo=_StubBuffer(), ibo=_StubBuffer(), vao=_StubBuffer(), index_count=36
+        )
+        self.renderer._shape_meshes["cube"] = builtin
+        self._install_mesh(1)
+        self.scene.mesh_paths.clear()
+
+        self.renderer._prune_mesh_assets(self.scene)
+
+        self.assertIn("cube", self.renderer._shape_meshes)
+        self.assertFalse(builtin.vbo.released)
 
 
 if __name__ == "__main__":

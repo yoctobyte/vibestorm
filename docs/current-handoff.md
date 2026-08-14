@@ -2421,6 +2421,47 @@ Final mutation matrix, all four failing distinctly:
 | paths dict not evicted in lockstep | 1 failure |
 | no LRU touch on cache hit | 1 failure |
 
+## 2026-08-14 — the LRU caps were the wrong fix; reference pruning replaces them
+
+**This supersedes the two cache entries above.** The leaks they describe were
+real, but the fix — a least-recently-used count cap — was wrong, and would have
+been much worse than the problem.
+
+Both `_upload_object_texture` and `_hover_text_texture` are called **inside the
+per-frame draw loop**, once per visible textured face group and once per label.
+Neither the number of visible textures nor the number of visible labels is
+capped anywhere. So the moment a region holds more than the cap, an LRU evicts
+textures that are *still on screen*, and they are re-decoded from PNG and
+re-uploaded to GL **every frame, forever**. Trading a slow memory leak for a
+permanent per-frame stall is a bad trade, and 256 visible textures is an
+ordinary region, not an extreme one.
+
+All three caches now prune by **reference** instead:
+
+- `_prune_object_textures(scene)` — keeps whatever is in `scene.texture_paths`
+- `_prune_label_textures(active_texts)` — keeps the labels drawn this frame
+- `_prune_mesh_assets(scene)` — keeps whatever is in `scene.mesh_paths`
+
+Nothing in use can be released, by construction: the live set *is* what the
+draw loop is able to ask for. The first two run once per frame; the freeing
+happens naturally when `apply_region_changed` clears those scene dicts.
+
+`_prune_mesh_assets` is new ground — I had claimed in the previous entry that
+the mesh caches "don't warrant the same treatment" because they are keyed by
+shape key. That was wrong: a mesh asset's shape key embeds its asset UUID, so
+they accumulate per distinct mesh exactly like textures do, and a decoded
+mesh's vertex and index buffers are bigger than a texture. It only takes care
+of asset-derived keys — the built-in prim meshes share `_shape_meshes` and
+releasing one would break every prim of that shape, which a test now pins.
+
+Five mutations, five distinct failures: no release on texture prune, paths dict
+not pruned in lockstep, no release on label prune, mesh face buffers not freed,
+and pruning against an empty live set.
+
+**The lesson worth keeping:** when a cache is filled from inside a render loop,
+a capacity bound is not a safety measure — it is a thrash generator. Bound
+those caches by what is live, never by how many.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
