@@ -621,5 +621,66 @@ class RunLiveSessionWorldClientWireupTests(unittest.TestCase):
         self.assertEqual(client.current_handle, (256 << 32) | 512)
 
 
+class AssetFetchRoutingTests(unittest.TestCase):
+    """RequestAssetData must prefer ViewerAsset and still be able to fall back.
+
+    Testing `queue_http_asset_fetch` alone would pass even if the command
+    handler stopped calling it, so these go through the handler.
+    """
+
+    def setUp(self) -> None:
+        self.dispatcher = MessageDispatcher.from_repo_root(Path.cwd())
+
+    def _client(self, *, viewer_asset: bool) -> tuple[WorldClient, LiveCircuitSession]:
+        client = WorldClient()
+        session = LiveCircuitSession(
+            _make_bootstrap(region_x=256, region_y=512, sim_port=9000), self.dispatcher
+        )
+        client.add_circuit(session, make_current=True)
+        if viewer_asset:
+            session.viewer_asset_url = "http://sim/caps/asset"
+        return client, session
+
+    def test_the_http_path_is_taken_and_no_udp_packet_is_queued(self) -> None:
+        from vibestorm.bus.commands import RequestAssetData
+
+        client, session = self._client(viewer_asset=True)
+        asset_id = UUID(int=5)
+
+        client._handle_request_asset_data(
+            RequestAssetData(asset_id=asset_id, asset_type=7)
+        )
+
+        self.assertIn(asset_id, session.pending_http_assets)
+        self.assertEqual(client.drain_outbound_packets(), ())
+
+    def test_without_the_capability_the_udp_request_still_goes_out(self) -> None:
+        from vibestorm.bus.commands import RequestAssetData
+
+        client, session = self._client(viewer_asset=False)
+
+        client._handle_request_asset_data(
+            RequestAssetData(asset_id=UUID(int=5), asset_type=7)
+        )
+
+        self.assertEqual(session.pending_http_assets, {})
+        queued = client.drain_outbound_packets()
+        self.assertEqual(len(queued), 1)
+
+    def test_an_unmappable_type_still_goes_out_over_udp(self) -> None:
+        # Mesh: a real type whose number this client cannot map to a query
+        # key. Routing it to HTTP would turn a working fetch into a 404.
+        from vibestorm.bus.commands import RequestAssetData
+
+        client, session = self._client(viewer_asset=True)
+
+        client._handle_request_asset_data(
+            RequestAssetData(asset_id=UUID(int=5), asset_type=49)
+        )
+
+        self.assertEqual(session.pending_http_assets, {})
+        self.assertEqual(len(client.drain_outbound_packets()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

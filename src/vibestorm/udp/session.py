@@ -132,6 +132,11 @@ from vibestorm.world.object_inventory import (
     ObjectInventorySnapshot,
     parse_task_inventory_text,
 )
+from vibestorm.caps.viewer_asset_client import (
+    ViewerAssetClient,
+    ViewerAssetError,
+    asset_type_query_key,
+)
 from vibestorm.world.teleport_flags import decode_teleport_flags
 from vibestorm.world.updater import WorldUpdater
 
@@ -181,6 +186,14 @@ class SessionEvent:
     at_seconds: float
     kind: str
     detail: str
+
+
+@dataclass(slots=True, frozen=True)
+class PendingHttpAsset:
+    asset_type: int
+    task_id: UUID | None = None
+    item_id: UUID | None = None
+    owner_id: UUID | None = None
 
 
 @dataclass(slots=True)
@@ -293,6 +306,13 @@ class LiveCircuitSession:
     upload_baked_url: str | None = None
     get_mesh_url: str | None = None
     get_texture_url: str | None = None
+    viewer_asset_url: str | None = None
+    #: Asset fetches waiting for the session loop to try over HTTP. The full
+    #: request context is kept, not just the type, because a failed HTTP fetch
+    #: falls back to a TransferRequest and a task-inventory transfer needs the
+    #: task, item and owner ids to be built at all.
+    pending_http_assets: dict[UUID, "PendingHttpAsset"] = field(default_factory=dict)
+    http_asset_attempted: set[UUID] = field(default_factory=set)
     map_block_request_sent: bool = False
     parcel_properties_request_sent: bool = False
     event_queue_url: str | None = None
@@ -1100,6 +1120,39 @@ class LiveCircuitSession:
             f"type={chat_type} channel={channel} message={message!r}",
         )
         return packet
+
+    def queue_http_asset_fetch(
+        self,
+        asset_id: UUID,
+        asset_type: int,
+        *,
+        task_id: UUID | None = None,
+        item_id: UUID | None = None,
+        owner_id: UUID | None = None,
+    ) -> bool:
+        """Try to route an asset fetch over ViewerAsset instead of UDP.
+
+        Returns False when it cannot — no capability, or an asset type whose
+        number this client cannot map to a query key — and the caller should
+        send a ``TransferRequest``. A failed HTTP fetch re-queues the UDP path
+        from the session loop, so returning True is not a promise that UDP will
+        not be used, only that HTTP goes first.
+        """
+        if self.viewer_asset_url is None:
+            return False
+        if asset_id in self.fetched_assets or asset_id in self.http_asset_attempted:
+            return False
+        try:
+            asset_type_query_key(asset_type)
+        except ViewerAssetError:
+            return False
+        self.pending_http_assets[asset_id] = PendingHttpAsset(
+            asset_type=int(asset_type),
+            task_id=task_id,
+            item_id=item_id,
+            owner_id=owner_id,
+        )
+        return True
 
     def build_instant_message_packet(
         self,
@@ -2329,6 +2382,34 @@ async def run_live_session(
                     if cached is not None:
                         session.texture_paths[pending_texture_id] = cached
 
+            # HTTP asset fetch. One per tick, same shape as the texture and
+            # mesh drains above. On failure the UDP TransferRequest is sent
+            # instead, so a sim that cannot serve an asset over HTTP is no
+            # worse off than before this path existed.
+            if session.viewer_asset_url is not None and session.pending_http_assets:
+                asset_id, pending = next(iter(session.pending_http_assets.items()))
+                del session.pending_http_assets[asset_id]
+                session.http_asset_attempted.add(asset_id)
+                served = await _fetch_asset_over_http(
+                    session,
+                    session.viewer_asset_url,
+                    asset_id,
+                    pending.asset_type,
+                    loop.time(),
+                )
+                if not served:
+                    packet = session.build_transfer_request_packet(
+                        asset_id,
+                        pending.asset_type,
+                        task_id=pending.task_id,
+                        item_id=pending.item_id,
+                        owner_id=pending.owner_id,
+                        now=loop.time(),
+                    )
+                    await loop.sock_sendto(
+                        sock, packet, (bootstrap.sim_ip, bootstrap.sim_port)
+                    )
+
             if session.get_mesh_url is not None:
                 pending_mesh_id = _next_pending_mesh_asset_id(session)
                 if pending_mesh_id is not None:
@@ -2520,6 +2601,38 @@ async def _fetch_and_cache_texture_asset(
         f"id={texture_id} path={output_path} size={decoded.width}x{decoded.height}",
     )
     return output_path
+
+
+async def _fetch_asset_over_http(
+    session: LiveCircuitSession,
+    cap_url: str,
+    asset_id: UUID,
+    asset_type: int,
+    now: float,
+) -> bool:
+    """Fetch one asset through ViewerAsset into ``session.fetched_assets``.
+
+    Returns whether the caller can stop — False means fall back to UDP. The
+    bytes land in the same dict the Transfer path fills, so nothing downstream
+    needs to know which channel served them.
+    """
+    try:
+        fetched = await ViewerAssetClient(timeout_seconds=10.0).fetch(
+            cap_url, asset_id, asset_type
+        )
+    except ViewerAssetError as exc:
+        session._record_event(
+            now, "asset.http.error", f"asset={asset_id} type={asset_type} {exc}"
+        )
+        return False
+    session.fetched_assets[asset_id] = fetched.data
+    session._record_event(
+        now,
+        "asset.http.ok",
+        f"asset={asset_id} type={asset_type} size={len(fetched.data)} "
+        f"content_type={fetched.content_type}",
+    )
+    return True
 
 
 async def _fetch_and_cache_mesh_asset(
@@ -2914,6 +3027,17 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         session._record_event(now, "map.get_texture_url_ready", "tile fetch deferred until MapBlockReply")
     else:
         session._record_event(now, "map.skip", "GetTexture CAP not resolved")
+
+    viewer_asset_url = resolved.get("ViewerAsset")
+    if viewer_asset_url:
+        session.viewer_asset_url = viewer_asset_url
+        session._record_event(
+            now, "asset.viewer_asset_url_ready", "HTTP asset fetch available"
+        )
+    else:
+        session._record_event(
+            now, "asset.skip", "ViewerAsset CAP not resolved; asset fetch is UDP only"
+        )
 
     get_mesh_url = resolved.get("GetMesh2") or resolved.get("GetMesh")
     if get_mesh_url:

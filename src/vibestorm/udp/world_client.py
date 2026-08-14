@@ -538,6 +538,19 @@ class WorldClient:
             if obj and obj.properties_family:
                 owner_id = obj.properties_family.owner_id
 
+        # Prefer the HTTP capability. It is faster than the UDP Transfer
+        # handshake and does not share its task-inventory flakiness; the
+        # session loop falls back to a TransferRequest if the fetch fails, so
+        # this can only add a path, never remove one.
+        if current.queue_http_asset_fetch(
+            cmd.asset_id,
+            cmd.asset_type,
+            task_id=cmd.task_id,
+            item_id=cmd.item_id,
+            owner_id=owner_id,
+        ):
+            return
+
         packet = current.build_transfer_request_packet(
             cmd.asset_id,
             cmd.asset_type,

@@ -720,6 +720,68 @@ class LiveCircuitSessionTests(unittest.TestCase):
         detail = next(e.detail for e in session.events if e.kind == "teleport.failed")
         self.assertIn("not found", detail)
 
+    def test_http_asset_fetch_is_declined_without_the_capability(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        self.assertIsNone(session.viewer_asset_url)
+        self.assertFalse(session.queue_http_asset_fetch(UUID(int=5), 7))
+        self.assertEqual(session.pending_http_assets, {})
+
+    def test_http_asset_fetch_is_declined_for_an_unmappable_type(self) -> None:
+        # Mesh is a real asset type whose *number* is libomv's and therefore
+        # unsourced, so the ViewerAsset client has no key for it. Queueing it
+        # anyway would replace a working GetMesh fetch with a 404.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.viewer_asset_url = "http://sim/caps/asset"
+
+        self.assertFalse(session.queue_http_asset_fetch(UUID(int=5), 49))
+        self.assertEqual(session.pending_http_assets, {})
+
+    def test_http_asset_fetch_keeps_the_task_context_for_the_fallback(self) -> None:
+        # A task-inventory TransferRequest cannot be built without the task,
+        # item and owner ids, so dropping them here would make the UDP
+        # fallback impossible rather than merely slower.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.viewer_asset_url = "http://sim/caps/asset"
+        asset_id, task_id, item_id, owner_id = (UUID(int=n) for n in (5, 6, 7, 8))
+
+        queued = session.queue_http_asset_fetch(
+            asset_id, 10, task_id=task_id, item_id=item_id, owner_id=owner_id
+        )
+
+        self.assertTrue(queued)
+        pending = session.pending_http_assets[asset_id]
+        self.assertEqual(pending.asset_type, 10)
+        self.assertEqual(pending.task_id, task_id)
+        self.assertEqual(pending.item_id, item_id)
+        self.assertEqual(pending.owner_id, owner_id)
+
+    def test_an_asset_is_not_fetched_over_http_twice(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.viewer_asset_url = "http://sim/caps/asset"
+        asset_id = UUID(int=5)
+
+        self.assertTrue(session.queue_http_asset_fetch(asset_id, 7))
+        session.pending_http_assets.clear()
+        session.http_asset_attempted.add(asset_id)
+
+        # A second request after a failed attempt must not re-queue HTTP, or a
+        # sim that 404s an asset would loop between the two channels forever.
+        self.assertFalse(session.queue_http_asset_fetch(asset_id, 7))
+
+    def test_an_already_fetched_asset_is_not_refetched(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.viewer_asset_url = "http://sim/caps/asset"
+        asset_id = UUID(int=5)
+        session.fetched_assets[asset_id] = b"already here"
+
+        self.assertFalse(session.queue_http_asset_fetch(asset_id, 7))
+
     def test_shutdown_sends_logout_request(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)
