@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         ChatIM,
         ChatLocal,
         ChatOutbound,
+        EventQueueEventReceived,
         InventorySnapshotReady,
         LayerDataReceived,
         MeshAssetReady,
@@ -368,6 +369,47 @@ class Scene:
 
     def apply_chat_outbound(self, event: ChatOutbound) -> None:
         self.chat_lines.append(ChatLine(kind="outbound", sender="me", message=event.message))
+
+    def apply_event_queue_event(self, event: EventQueueEventReceived) -> None:
+        """Surface the event-queue messages a user can act on as chat lines.
+
+        Only the ones that mean something to a person are reported.
+        ``TeleportFinish`` confirms a teleport the user asked for, and
+        ``ScriptRunningReply`` is the sim confirming a script's state after an
+        object-inventory upload — the feedback the object-sync flow needs.
+        Region-management events (``EnableSimulator``, ``CrossedRegion``) reach
+        consumers through the bus but are not chat-worthy.
+        """
+        from vibestorm.event_queue.events import (
+            ScriptRunningReplyEvent,
+            TeleportFinishEvent,
+        )
+
+        payload = event.event
+        if isinstance(payload, TeleportFinishEvent):
+            self.chat_lines.append(
+                ChatLine(
+                    kind="alert",
+                    sender="*system*",
+                    message=(
+                        f"Teleport complete: region {payload.region_handle:#x} "
+                        f"at {payload.sim_ip}:{payload.sim_port}"
+                    ),
+                )
+            )
+        elif isinstance(payload, ScriptRunningReplyEvent):
+            state = "running" if payload.running else "stopped"
+            engine = "Mono" if payload.mono else "LSL"
+            self.chat_lines.append(
+                ChatLine(
+                    kind="alert",
+                    sender="*system*",
+                    message=(
+                        f"Script {payload.item_id} on object {payload.object_id}: "
+                        f"{state} ({engine})"
+                    ),
+                )
+            )
 
     def apply_inventory_snapshot_ready(self, event: InventorySnapshotReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:

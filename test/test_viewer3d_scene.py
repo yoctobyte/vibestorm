@@ -8,6 +8,7 @@ from vibestorm.bus.events import (
     ChatIM,
     ChatLocal,
     ChatOutbound,
+    EventQueueEventReceived,
     LayerDataReceived,
     ParcelOverlayReceived,
     ParcelPropertiesReceived,
@@ -249,6 +250,67 @@ class SceneEventApplicationTests(unittest.TestCase):
         self.assertIsNone(scene.parcel_overlay)
         self.assertEqual(scene.parcel_borders, ())
         self.assertEqual(scene.parcel_overlay_packets, {})
+
+    def test_teleport_finish_reports_to_chat(self) -> None:
+        from vibestorm.event_queue.events import TeleportFinishEvent
+
+        scene = Scene()
+
+        scene.apply_event_queue_event(
+            EventQueueEventReceived(
+                region_handle=0xAA,
+                event=TeleportFinishEvent(
+                    agent_id="a",
+                    location_id=4,
+                    sim_ip="127.0.0.1",
+                    sim_port=9000,
+                    region_handle=0x1234,
+                    seed_capability="http://x/",
+                    sim_access=13,
+                    teleport_flags=0,
+                    region_size_x=256,
+                    region_size_y=256,
+                ),
+            )
+        )
+
+        self.assertEqual(len(scene.chat_lines), 1)
+        self.assertEqual(scene.chat_lines[-1].kind, "alert")
+        self.assertIn("Teleport complete", scene.chat_lines[-1].message)
+        self.assertIn("127.0.0.1:9000", scene.chat_lines[-1].message)
+
+    def test_script_running_reply_reports_to_chat(self) -> None:
+        from vibestorm.event_queue.events import ScriptRunningReplyEvent
+
+        scene = Scene()
+
+        scene.apply_event_queue_event(
+            EventQueueEventReceived(
+                region_handle=0xAA,
+                event=ScriptRunningReplyEvent(
+                    object_id="obj-1", item_id="item-1", running=True, mono=True
+                ),
+            )
+        )
+
+        self.assertEqual(len(scene.chat_lines), 1)
+        self.assertIn("running (Mono)", scene.chat_lines[-1].message)
+
+    def test_region_management_events_are_not_chat_worthy(self) -> None:
+        from vibestorm.event_queue.events import EnableSimulatorEvent
+
+        scene = Scene()
+
+        scene.apply_event_queue_event(
+            EventQueueEventReceived(
+                region_handle=0xAA,
+                event=EnableSimulatorEvent(
+                    handle=1, ip="127.0.0.1", port=9000, region_size_x=256, region_size_y=256
+                ),
+            )
+        )
+
+        self.assertEqual(len(scene.chat_lines), 0)
 
     def test_apply_chat_local_appends_chat_line(self) -> None:
         scene = Scene()

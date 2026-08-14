@@ -19,14 +19,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import platform
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from vibestorm import __version__
 from vibestorm.bus import BusDeliveryError, BusError
 from vibestorm.bus.commands import (
     RequestAssetData,
@@ -40,6 +38,7 @@ from vibestorm.bus.events import (
     ChatIM,
     ChatLocal,
     ChatOutbound,
+    EventQueueEventReceived,
     InventorySnapshotReady,
     LayerDataReceived,
     MeshAssetReady,
@@ -68,8 +67,7 @@ from vibestorm.caps.task_inventory_upload_client import (
     TaskInventoryUploadClient,
     TaskInventoryUploadError,
 )
-from vibestorm.login.client import LoginClient, LoginError
-from vibestorm.login.models import LoginCredentials, LoginRequest
+from vibestorm.login.client import LoginError
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient
@@ -229,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
 async def run_viewer(args: argparse.Namespace) -> int:
     import moderngl
     import pygame
+
     from vibestorm.viewer.login_screen import LoginScreen
 
     pygame.init()
@@ -976,6 +975,7 @@ def _wire_scene(client: WorldClient, scene: Scene) -> None:
     client.bus.subscribe(LayerDataReceived, scene.apply_layer_data_received)
     client.bus.subscribe(ParcelPropertiesReceived, scene.apply_parcel_properties)
     client.bus.subscribe(ParcelOverlayReceived, scene.apply_parcel_overlay)
+    client.bus.subscribe(EventQueueEventReceived, scene.apply_event_queue_event)
 
 
 def _make_asset_data_ready_handler(

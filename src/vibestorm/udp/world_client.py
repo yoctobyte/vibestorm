@@ -45,6 +45,7 @@ from vibestorm.bus.events import (
     ChatIM,
     ChatLocal,
     ChatOutbound,
+    EventQueueEventReceived,
     InventorySnapshotReady,
     LayerDataReceived,
     MeshAssetReady,
@@ -316,6 +317,15 @@ class WorldClient:
                     region_handle=handle,
                     layer_type=layer_type,
                     data=data,
+                )
+            )
+        elif kind in ("eventqueue.event", "eventqueue.unknown") and (
+            session.latest_event_queue_event is not None
+        ):
+            self.bus.publish(
+                EventQueueEventReceived(
+                    region_handle=handle,
+                    event=session.latest_event_queue_event,
                 )
             )
         elif kind == "parcel.properties" and session.latest_parcel_properties is not None:

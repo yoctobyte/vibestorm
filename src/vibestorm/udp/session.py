@@ -293,6 +293,10 @@ class LiveCircuitSession:
     event_queue_ack: int = 0
     event_queue_polls: int = 0
     event_queue_events: int = 0
+    # Most-recent typed EQG event. Set immediately before the session event
+    # fires, so the WorldClient bridge reads the one that triggered it — the
+    # same "session is source of truth" pattern as terrain.layer_data.
+    latest_event_queue_event: object | None = None
     region_map_image_id: UUID | None = None
     region_map_fetched: bool = False
     region_map_path: Path | None = None
@@ -2087,8 +2091,10 @@ class LiveCircuitSession:
                     ),
                 )
             elif isinstance(event, UnknownEvent):
+                self.latest_event_queue_event = event
                 self._record_event(now, "eventqueue.unknown", event.message)
             else:
+                self.latest_event_queue_event = event
                 self._record_event(
                     now, "eventqueue.event", type(event).__name__
                 )

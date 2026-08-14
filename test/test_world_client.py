@@ -240,6 +240,46 @@ class WorldClientBusBridgeTests(unittest.TestCase):
         self.assertEqual(received[0].properties.name, "Sandbox")
         self.assertEqual(received[0].region_handle, (256 << 32) | 512)
 
+    def test_event_queue_event_publishes_typed_event(self) -> None:
+        from vibestorm.bus.events import EventQueueEventReceived
+        from vibestorm.event_queue.events import TeleportFinishEvent
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[EventQueueEventReceived] = []
+        client.bus.subscribe(EventQueueEventReceived, received.append)
+
+        payload = TeleportFinishEvent(
+            agent_id="a", location_id=4, sim_ip="127.0.0.1", sim_port=9000,
+            region_handle=0x1234, seed_capability="http://x/", sim_access=13,
+            teleport_flags=0, region_size_x=256, region_size_y=256,
+        )
+        session.latest_event_queue_event = payload
+        session._record_event(10.0, "eventqueue.event", "TeleportFinishEvent")
+
+        self.assertEqual(len(received), 1)
+        self.assertIs(received[0].event, payload)
+        self.assertEqual(received[0].region_handle, (256 << 32) | 512)
+
+    def test_unknown_event_queue_event_also_publishes(self) -> None:
+        # UnknownEvent must reach the bus too, so a consumer can log or handle
+        # a message this client does not decode yet.
+        from vibestorm.bus.events import EventQueueEventReceived
+        from vibestorm.event_queue.events import UnknownEvent
+
+        client = WorldClient()
+        session = self._make_session()
+        client.add_circuit(session)
+        received: list[EventQueueEventReceived] = []
+        client.bus.subscribe(EventQueueEventReceived, received.append)
+
+        session.latest_event_queue_event = UnknownEvent(message="SomethingNew", body={})
+        session._record_event(10.0, "eventqueue.unknown", "SomethingNew")
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].event.message, "SomethingNew")
+
     def test_parcel_overlay_event_publishes_typed_event(self) -> None:
         from vibestorm.bus.events import ParcelOverlayReceived
 

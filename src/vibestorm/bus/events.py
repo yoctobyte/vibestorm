@@ -52,6 +52,21 @@ class SessionClosed:
     reason: str
 
 
+@dataclass(slots=True, frozen=True)
+class EventQueueEventReceived:
+    """One typed EventQueueGet event, as decoded by ``event_queue.events``.
+
+    Deliberately a single carrier rather than one bus event per EQG message:
+    the queue's vocabulary is open-ended (``UnknownEvent`` exists for exactly
+    that reason) and consumers match on the payload type. ``ParcelProperties``
+    is the exception — it has its own ``ParcelPropertiesReceived`` because it
+    reaches consumers identically whether it arrived over UDP or the queue.
+    """
+
+    region_handle: int
+    event: object
+
+
 # ---- chat / IM / alert ----------------------------------------------------
 
 @dataclass(slots=True, frozen=True)
@@ -227,6 +242,7 @@ __all__ = [
     "AttachedSoundReceived",
     "AvatarAnimationReceived",
     "ChatAlert",
+    "EventQueueEventReceived",
     "ChatIM",
     "ChatLocal",
     "ChatOutbound",
