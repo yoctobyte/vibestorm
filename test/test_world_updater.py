@@ -370,6 +370,36 @@ class WorldUpdaterTests(unittest.TestCase):
         self.assertEqual(event.detail, "local_ids=7,99")
         self.assertNotIn(object_id, world.objects)
         self.assertNotIn(7, world.local_id_to_full_id)
+        # Terse state is a separate dict keyed by local_id, and a terse-only
+        # object is the case where it is the *only* record of the object —
+        # leaving it behind would keep a dead prim moving in the viewer.
+        self.assertNotIn(7, world.terse_objects)
+        self.assertNotIn(99, world.terse_objects)
+
+    def test_kill_object_removes_a_terse_only_object(self) -> None:
+        # An object seen only through ImprovedTerseObjectUpdate never enters
+        # world.objects at all, so the kill path has to reach terse_objects on
+        # its own rather than as a side effect of dropping the full record.
+        from vibestorm.udp.messages import KillObjectMessage
+        from vibestorm.world.models import TerseWorldObject
+
+        world = WorldView()
+        world.terse_objects[7] = TerseWorldObject(
+            local_id=7,
+            state=0,
+            is_avatar=False,
+            region_handle=0,
+            time_dilation=0,
+            position=(1.0, 2.0, 3.0),
+            velocity=(0.0, 0.0, 0.0),
+            acceleration=(0.0, 0.0, 0.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            angular_velocity=(0.0, 0.0, 0.0),
+        )
+
+        world.apply_kill_object(KillObjectMessage(local_ids=(7,)))
+
+        self.assertEqual(world.terse_objects, {})
 
     def test_full_object_update_promotes_terse_only_object(self) -> None:
         world = WorldView()

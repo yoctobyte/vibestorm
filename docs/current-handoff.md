@@ -2590,6 +2590,34 @@ plural one was an empty leftover and had been sitting there unexplained.
 implement a feature that already existed. Worth re-reading the gap list
 occasionally and checking the entries still describe reality.
 
+## 2026-08-14 — local ids are never reused, so don't "fix" the kill-side leak
+
+Chasing the within-region version of this morning's cross-region bug: a killed
+object leaves entries behind in the scene's `local_id`-keyed dicts
+(`object_physics`, `object_inventory_snapshots`), and if the sim reused that
+local id, a newly rezzed prim would inherit a dead one's physics.
+
+It does not. `SceneBase.AllocateLocalId` is:
+
+    return (uint)Interlocked.Increment(ref m_lastAllocatedLocalId);
+
+A monotonic counter with no free list — within a region session's lifetime, a
+local id is never handed out twice. So those leftovers are a **bounded leak,
+not a correctness bug**, and the leak is bounded by objects derezzed during
+one session.
+
+Deliberately no code. Pruning them would have to run somewhere, and the
+obvious place — pruning per frame against the WorldView — risks dropping state
+for an object that is momentarily absent, and `ObjectPhysicsProperties` is
+never re-sent unprompted. A real risk in exchange for no real gain. Recorded
+here so the next person weighing it can skip the investigation.
+
+What the look *did* find was a coverage gap: `apply_kill_object` removes
+`terse_objects` entries, and no test asserted it. That matters for a
+terse-only object, where the terse record is the *only* record — leaving it
+behind keeps a dead prim moving in the viewer. Now covered both ways, and the
+mutation (dropping the `terse_objects.pop`) fails.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
