@@ -307,5 +307,52 @@ class CensusFormatTests(unittest.TestCase):
         self.assertEqual(row.count(","), 1)
 
 
+class CensusPrimAttributeTests(unittest.TestCase):
+    """Material and click action are on every prim, so they are counted."""
+
+    def test_materials_are_named_and_counted(self) -> None:
+        census = _census(
+            _View(
+                _Object(1, material=3, click_action=0),
+                _Object(2, material=3, click_action=0),
+                _Object(3, material=0, click_action=0),
+            ),
+        )
+
+        self.assertEqual(census.materials["wood"], 2)
+        self.assertEqual(census.materials["stone"], 1)
+
+    def test_click_actions_are_named_and_counted(self) -> None:
+        census = _census(
+            _View(
+                _Object(1, material=3, click_action=0),
+                _Object(2, material=3, click_action=1),
+            ),
+        )
+
+        self.assertEqual(census.click_actions["touch"], 1)
+        self.assertEqual(census.click_actions["sit"], 1)
+
+    def test_avatars_are_left_out_of_both_counts(self) -> None:
+        # These bytes describe prims; an avatar's would be meaningless here.
+        census = _census(
+            _View(
+                _Object(1, material=3, click_action=0),
+                _Object(2, pcode=47, material=3, click_action=0),
+            ),
+        )
+
+        self.assertEqual(sum(census.materials.values()), 1)
+        self.assertEqual(sum(census.click_actions.values()), 1)
+
+    def test_report_lists_both(self) -> None:
+        lines = format_census(
+            _census(_View(_Object(1, material=1, click_action=2))),
+        )
+
+        self.assertIn("census material[metal]=1", lines)
+        self.assertIn("census click_action[buy]=1", lines)
+
+
 if __name__ == "__main__":
     unittest.main()

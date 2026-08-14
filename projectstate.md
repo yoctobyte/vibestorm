@@ -216,6 +216,10 @@ Main gaps:
   the inspector, named from OpenSim's `PhysShapeType`. Not live-verified: the
   sim only sends this as an echo of an edit the viewer itself made, so it needs
   the same in-world-edit consent as the object-sync verify
+- prim material and click action are named from OpenSim's LSL constants and
+  counted by the census. Live run resolves every value with no unknowns, but
+  all 32 prims are wood/touch — the defaults — so the non-default names are
+  unexercised until the region holds a prim that uses one
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for

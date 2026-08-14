@@ -2181,6 +2181,42 @@ the same consent gate as the object-sync verify. Unit-tested and mutation-
 checked, live-unverified, and it will stay that way until someone authorises
 an in-world edit.
 
+## 2026-08-14 — material and click action were integers on every prim
+
+Both bytes arrive in every `ObjectUpdate` on every object, and both reached
+the inspector raw: "Material: 3", "Click Action: 0". `world/prim_attributes.py`
+names them from `LSL_Constants.cs` (`PRIM_MATERIAL_*`, `CLICK_ACTION_*`) — the
+same source as the texture-animation modes.
+
+The name is shown *with* the number (`metal (1)`), not instead of it. This is a
+protocol client; a reader comparing the inspector against a packet dump needs
+the byte.
+
+`CLICK_ACTION_NONE` and `CLICK_ACTION_TOUCH` are **both 0**. Zero is named
+"touch", because touch is what an unconfigured prim does — "none" would suggest
+clicking does nothing.
+
+The census now counts both, which is what makes the live check meaningful.
+
+### What the live run actually proved, and what it did not
+
+    census material[wood]=32
+    census click_action[touch]=32
+
+Every prim resolved, no unknown values — but every prim is also the *default*
+(`SceneObjectPart.m_material` initialises to Wood; touch is the default click
+action). So the tables are live-verified for exactly one value each. stone,
+metal, glass, flesh, plastic, rubber, light, and sit/buy/pay/open/play/zoom are
+unexercised, and will stay so until the region contains a prim that uses them.
+That is a content gap, added to the standing list.
+
+### A test caught a regression I introduced
+
+Replacing the panel's defensive `getattr(w, "material", ...)` with direct
+attribute access broke the TextureAnim inspector test, whose `_World` stub is
+deliberately partial. The panel's contract is that it walks whatever it is
+handed — every field in it uses `getattr` for that reason. Restored.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

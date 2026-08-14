@@ -72,5 +72,37 @@ class InspectorHoverTextTests(unittest.TestCase):
         self.assertIn("rgba(255, 0, 255, 255)", html)
 
 
+class InspectorPrimAttributeTests(unittest.TestCase):
+    """Material and click action were shown as bare integers."""
+
+    class _World:
+        def __init__(self, material=3, click_action=0):
+            self.material = material
+            self.click_action = click_action
+            self.full_id = UUID(int=7)
+            self.local_id = 1
+            self.properties_family = None
+
+    def test_material_and_click_action_are_named(self) -> None:
+        html = _inspector_detail_html(_Entity(), self._World(material=1, click_action=1))
+
+        self.assertIn("Material: metal (1)", html)
+        self.assertIn("Click Action: sit (1)", html)
+
+    def test_raw_value_is_kept_alongside_the_name(self) -> None:
+        # The number stays visible: this is a protocol client, and a reader
+        # comparing against a packet dump needs the byte, not only the label.
+        html = _inspector_detail_html(_Entity(), self._World(material=7, click_action=6))
+
+        self.assertIn("light (7)", html)
+        self.assertIn("open media (6)", html)
+
+    def test_no_world_object_still_renders(self) -> None:
+        html = _inspector_detail_html(_Entity(), None)
+
+        self.assertIn("Material: unknown", html)
+        self.assertIn("Click Action: unknown", html)
+
+
 if __name__ == "__main__":
     unittest.main()

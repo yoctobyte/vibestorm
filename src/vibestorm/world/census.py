@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from vibestorm.world.extra_params import decode_extra_params
 from vibestorm.world.permissions import decode_permissions
+from vibestorm.world.prim_attributes import click_action_name, prim_material_name
 
 # Feature name -> a predicate over one WorldObject. Ordered so the report
 # reads from "most prims have this" to "this region has none".
@@ -51,6 +52,10 @@ class WorldCensus:
     # capabilities — GetTexture for a sculpt map, GetMesh for a mesh asset —
     # so "sculpt or mesh=3" does not say which pipeline is being exercised.
     sculpt_assets: list[tuple[int, str, str]] = field(default_factory=list)
+    # Material and click action are on every prim. Counted rather than listed:
+    # the useful question is whether a region uses anything but the defaults.
+    materials: Counter[str] = field(default_factory=Counter)
+    click_actions: Counter[str] = field(default_factory=Counter)
 
     def missing_features(self, expected: tuple[str, ...]) -> tuple[str, ...]:
         """Features with no example in this region.
@@ -174,6 +179,10 @@ def census_world(world_view: object) -> WorldCensus:
             census.avatar_count += 1
         else:
             census.object_count += 1
+            census.materials[prim_material_name(getattr(world_object, "material", 0))] += 1
+            census.click_actions[
+                click_action_name(getattr(world_object, "click_action", 0))
+            ] += 1
             shape = _shape_name(world_object)
             census.shapes[shape] += 1
             if shape == "unclassified":
@@ -229,6 +238,11 @@ def format_census(census: WorldCensus, *, examples: int = 3) -> list[str]:
             f"census unclassified[path={path_curve:#04x} "
             f"profile={profile_curve:#04x}]={count}"
         )
+
+    for material, count in sorted(census.materials.items(), key=lambda i: (-i[1], i[0])):
+        lines.append(f"census material[{material}]={count}")
+    for action, count in sorted(census.click_actions.items(), key=lambda i: (-i[1], i[0])):
+        lines.append(f"census click_action[{action}]={count}")
 
     for local_id, kind, asset_id in census.sculpt_assets:
         lines.append(f"census sculpt[{kind}] local_id={local_id} asset={asset_id}")

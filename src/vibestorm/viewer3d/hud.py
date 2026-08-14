@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from vibestorm.world.prim_attributes import click_action_name, prim_material_name
+
 if TYPE_CHECKING:
     import pygame
 
@@ -2624,8 +2626,20 @@ def _inspector_detail_html(e: object, w: object | None, scene: object | None = N
     lines.append(f"PCode: {getattr(e, 'pcode', 'unknown')} / Kind: {getattr(e, 'kind', 'unknown')}")
     lines.append(f"Shape: {getattr(e, 'shape', None) or 'unknown'}")
 
-    material = getattr(w, "material", "unknown") if w else "unknown"
-    click_action = getattr(w, "click_action", "unknown") if w else "unknown"
+    # getattr rather than attribute access: this panel walks whatever the
+    # caller hands it, which is not always a complete WorldObject.
+    material_value = getattr(w, "material", None) if w else None
+    click_value = getattr(w, "click_action", None) if w else None
+    material = (
+        f"{prim_material_name(material_value)} ({material_value})"
+        if material_value is not None
+        else "unknown"
+    )
+    click_action = (
+        f"{click_action_name(click_value)} ({click_value})"
+        if click_value is not None
+        else "unknown"
+    )
     lines.append(f"Material: {material}")
     lines.append(f"Click Action: {click_action}")
 
