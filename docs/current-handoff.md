@@ -1719,6 +1719,33 @@ decode would have reported as invisible. The same frame shows spheres and a
 cylinder rendering as spheres and a cylinder, which is the compressed shape
 fix visible in the same shot.
 
+## 2026-08-14 — avatar names were in the data all along
+
+`ObjectUpdate` NameValue pairs have been parsed into `WorldObject.name_values`
+since early on, and nothing ever read them. Avatars never receive an
+`ObjectPropertiesFamily`, so those pairs are the *only* place an avatar's name
+arrives — which meant every avatar was anonymous in the inspector and
+unlabelled in the 3D view while the data sat one attribute away.
+
+A live census confirmed the shape before building on it:
+`{'FirstName': 'Vibestorm', 'LastName': 'Tester', 'Title': ''}`.
+
+`scene.avatar_display_name()` joins first and last, drops a `Resident` last
+name (SL's placeholder for a single-name account, which viewers hide), and
+puts a non-empty group `Title` on the line above. The empty-string `Title`
+OpenSim sends for an untitled avatar must not become a blank first row on the
+tag — that one has a test.
+
+The hover-text billboard generalised into `_render_labels`, which walks both
+sources: prim hover text brings its own colour, avatar tags get
+`AVATAR_NAME_COLOR`. `render_hover_text` and `render_avatar_names` stay
+independently switchable, and a test asserts turning one off does not silence
+the other.
+
+Live: rendered the region offscreen — "Vibestorm Tester" draws above the
+avatar, the magenta hover-text prim draws beside it, and the spheres visible
+in the same frame are the compressed-shape fix.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

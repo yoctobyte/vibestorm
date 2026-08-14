@@ -202,7 +202,9 @@ Main gaps:
   face 0 override. The test region has no prim with different textures on two
   faces, so this is pixel-verified offscreen but not live-verified; the prism
   side-quad order in particular is derived rather than observed
-- reliable extraction of ordinary prim names
+- reliable extraction of ordinary prim names (avatar names now resolve from
+  ObjectUpdate NameValues and render as name tags; prim names still depend on
+  ObjectPropertiesFamily arriving)
 - clearer mapping of raw flag fields like `update_flags`
 - typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
   `TeleportFinish` and `ScriptRunningReply` in chat. The region-management ones
