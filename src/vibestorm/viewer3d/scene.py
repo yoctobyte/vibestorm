@@ -264,6 +264,7 @@ class Scene:
     parcel_overlay: ParcelOverlay | None = None
     parcel_borders: tuple[tuple[float, float, float, float], ...] = ()
     render_parcel_borders: bool = True
+    render_hover_text: bool = True
     map_tile_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
     mesh_paths: dict[UUID, Path] = field(default_factory=dict)

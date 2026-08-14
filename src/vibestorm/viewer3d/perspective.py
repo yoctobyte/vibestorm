@@ -364,6 +364,73 @@ PARCEL_BORDER_RGBA: tuple[float, float, float, float] = (0.45, 0.85, 0.55, 0.9)
 PARCEL_BORDER_HEIGHT_OFFSET_M: float = 0.35
 GROUND_FALLBACK_RGBA: bytes = bytes((80, 120, 70, 255))
 
+# Hover text ("floating text") drawn above a prim. SL keeps it at a constant
+# apparent size, so the billboard grows with distance rather than staying a
+# fixed number of metres tall; HOVER_TEXT_SCREEN_HEIGHT is that apparent
+# height as a fraction of the eye-space distance, tuned by eye.
+HOVER_TEXT_SCREEN_HEIGHT: float = 0.045
+HOVER_TEXT_OFFSET_M: float = 0.25
+HOVER_TEXT_FONT_SIZE: int = 28
+HOVER_TEXT_MAX_LINES: int = 8
+
+_LABEL_VERTEX_SHADER = """
+#version 330
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+uniform vec3 u_world_pos;
+uniform vec2 u_half_size;
+
+in vec2 in_corner;
+in vec2 in_uv;
+
+out vec2 v_uv;
+
+void main() {
+    // Camera right/up in world space are the first two rows of the view
+    // matrix's rotation block, so the quad always faces the eye.
+    vec3 right = vec3(u_view[0][0], u_view[1][0], u_view[2][0]);
+    vec3 up    = vec3(u_view[0][1], u_view[1][1], u_view[2][1]);
+    vec4 eye_center = u_view * vec4(u_world_pos, 1.0);
+    float dist = max(length(eye_center.xyz), 0.001);
+    vec2 size = u_half_size * dist;
+    vec3 world = u_world_pos
+        + right * (in_corner.x * size.x)
+        + up * (in_corner.y * size.y);
+    v_uv = in_uv;
+    gl_Position = u_proj * u_view * vec4(world, 1.0);
+}
+"""
+
+_LABEL_FRAGMENT_SHADER = """
+#version 330
+
+uniform sampler2D u_texture;
+uniform vec4 u_color;
+
+in vec2 v_uv;
+out vec4 frag_color;
+
+void main() {
+    vec4 texel = texture(u_texture, v_uv);
+    if (texel.a < 0.02) {
+        discard;
+    }
+    frag_color = vec4(texel.rgb * u_color.rgb, texel.a * u_color.a);
+}
+"""
+
+# Corner offsets in [-0.5, 0.5] paired with UVs. V is flipped because pygame
+# surfaces are top-down and GL textures are bottom-up.
+_LABEL_QUAD: tuple[float, ...] = (
+    -0.5, -0.5, 0.0, 1.0,
+     0.5, -0.5, 1.0, 1.0,
+     0.5,  0.5, 1.0, 0.0,
+    -0.5,  0.5, 0.0, 0.0,
+)
+_LABEL_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
+
+
 _WATER_VERTEX_SHADER = """
 #version 330
 
@@ -655,6 +722,13 @@ class PerspectiveRenderer:
         self._terrain_height_range: tuple[float, float] = (0.0, 1.0)
         # Water plane at SL's default sea level. Solid translucent fill
         # for v1; lighting/sun reflections move with step 8.
+        self._label_program = None  # type: moderngl.Program | None
+        self._label_vbo = None  # type: moderngl.Buffer | None
+        self._label_ibo = None  # type: moderngl.Buffer | None
+        self._label_vao = None  # type: moderngl.VertexArray | None
+        # Rendered text textures keyed by the exact string. Colour is applied
+        # as a shader tint, so two prims with the same words share one upload.
+        self._hover_text_textures: dict[str, tuple[object, int, int]] = {}
         self._water_program = None  # type: moderngl.Program | None
         self._water_vbo = None  # type: moderngl.Buffer | None
         self._water_ibo = None  # type: moderngl.Buffer | None
@@ -798,6 +872,11 @@ class PerspectiveRenderer:
                     self._water_vao.render()
                 finally:
                     ctx.disable(ctx.BLEND)
+
+            # Last, so labels blend over finished geometry rather than being
+            # blended into by the water pass behind them.
+            if getattr(scene, "render_hover_text", True):
+                self._render_hover_text(ctx, scene, view_data, proj_data)
         finally:
             # Leave the depth state predictable for the HUD overlay
             # quad and the next frame's compositor draws.
@@ -905,6 +984,9 @@ class PerspectiveRenderer:
         self._shape_meshes.clear()
         self._mesh_asset_paths.clear()
         self._sculpt_asset_paths.clear()
+        for texture, _width, _height in self._hover_text_textures.values():
+            texture.release()
+        self._hover_text_textures.clear()
         for face_meshes in self._prim_face_meshes.values():
             for mesh in face_meshes.values():
                 mesh.vao.release()
@@ -939,6 +1021,10 @@ class PerspectiveRenderer:
             self._water_ibo,
             self._water_vbo,
             self._water_program,
+            self._label_vao,
+            self._label_ibo,
+            self._label_vbo,
+            self._label_program,
         ):
             if resource is not None:
                 resource.release()
@@ -946,6 +1032,11 @@ class PerspectiveRenderer:
         self._program = None
         self._prim_face_meshes = {}
         self._mesh_face_meshes = {}
+        self._hover_text_textures = {}
+        self._label_program = None
+        self._label_vao = None
+        self._label_vbo = None
+        self._label_ibo = None
         self._mesh_uv_shape_keys = set()
         self._instance_capacity = 0
         self._ground_vao = None
@@ -1085,6 +1176,130 @@ class PerspectiveRenderer:
             index_element_size=4,
         )
         self._water_height = WATER_LEVEL_M
+
+        self._label_program = ctx.program(
+            vertex_shader=_LABEL_VERTEX_SHADER,
+            fragment_shader=_LABEL_FRAGMENT_SHADER,
+        )
+        self._label_vbo = ctx.buffer(struct.pack(f"{len(_LABEL_QUAD)}f", *_LABEL_QUAD))
+        self._label_ibo = ctx.buffer(
+            struct.pack(f"{len(_LABEL_INDICES)}I", *_LABEL_INDICES)
+        )
+        self._label_vao = ctx.vertex_array(
+            self._label_program,
+            [(self._label_vbo, "2f 2f", "in_corner", "in_uv")],
+            index_buffer=self._label_ibo,
+            index_element_size=4,
+        )
+
+    def _hover_text_texture(
+        self, ctx: moderngl.Context, text: str
+    ) -> tuple[object, int, int] | None:
+        """Rasterise ``text`` to a cached white-on-transparent GL texture.
+
+        White so the shader can tint it with the prim's own hover colour;
+        rendering the colour into the bitmap would need one upload per
+        (text, colour) pair for no gain.
+        """
+        cached = self._hover_text_textures.get(text)
+        if cached is not None:
+            return cached
+
+        import pygame
+
+        if not pygame.font.get_init():
+            pygame.font.init()
+        font = pygame.font.Font(None, HOVER_TEXT_FONT_SIZE)
+        lines = text.split("\n")[:HOVER_TEXT_MAX_LINES]
+        rendered = [font.render(line, True, (255, 255, 255)) for line in lines]
+        width = max((surface.get_width() for surface in rendered), default=0)
+        line_height = font.get_linesize()
+        height = line_height * len(rendered)
+        if width <= 0 or height <= 0:
+            return None
+
+        canvas = pygame.Surface((width, height), pygame.SRCALPHA)
+        canvas.fill((0, 0, 0, 0))
+        for index, surface in enumerate(rendered):
+            canvas.blit(surface, ((width - surface.get_width()) // 2, index * line_height))
+
+        texture = ctx.texture(
+            (width, height), components=4, data=pygame.image.tobytes(canvas, "RGBA")
+        )
+        texture.filter = (ctx.LINEAR, ctx.LINEAR)
+        # Clamp: the quad samples the full [0,1] range, and repeating would
+        # smear the first column of glyphs onto the last at the seam.
+        texture.repeat_x = False
+        texture.repeat_y = False
+        entry = (texture, width, height)
+        self._hover_text_textures[text] = entry
+        return entry
+
+    def _render_hover_text(
+        self,
+        ctx: moderngl.Context,
+        scene: Scene,
+        view_data: bytes,
+        proj_data: bytes,
+    ) -> None:
+        """Draw each prim's floating text as a camera-facing billboard.
+
+        Depth testing stays on, so text behind a wall is hidden rather than
+        floating through it; depth *writes* are off so two labels that overlap
+        blend instead of punching holes in each other.
+        """
+        if self._label_program is None or self._label_vao is None:
+            return
+        labelled = [
+            entity
+            for entity in scene.object_entities.values()
+            if getattr(entity, "hover_text", None)
+        ]
+        if not labelled:
+            return
+
+        self._label_program["u_view"].write(view_data)
+        self._label_program["u_proj"].write(proj_data)
+        if "u_texture" in self._label_program:
+            self._label_program["u_texture"].value = 0
+        ctx.enable(ctx.BLEND)
+        ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
+        # Depth mask lives on the bound framebuffer, not the context, in
+        # moderngl 5; ctx.fbo is whatever the caller is drawing into.
+        framebuffer = ctx.fbo
+        depth_mask = framebuffer.depth_mask if framebuffer is not None else True
+        if framebuffer is not None:
+            framebuffer.depth_mask = False
+        try:
+            for entity in labelled:
+                entry = self._hover_text_texture(ctx, entity.hover_text)
+                if entry is None:
+                    continue
+                texture, width, height = entry
+                x, y, z = entity.position
+                top = z + abs(entity.scale[2]) * 0.5 + HOVER_TEXT_OFFSET_M
+                color = getattr(entity, "hover_text_color", None) or (255, 255, 255, 255)
+                r, g, b, a = color
+                if a <= 0:
+                    continue
+                half_h = HOVER_TEXT_SCREEN_HEIGHT * 0.5
+                self._label_program["u_world_pos"].value = (x, y, top)
+                self._label_program["u_half_size"].value = (
+                    half_h * (width / height),
+                    half_h,
+                )
+                self._label_program["u_color"].value = (
+                    r / 255.0,
+                    g / 255.0,
+                    b / 255.0,
+                    a / 255.0,
+                )
+                texture.use(location=0)
+                self._label_vao.render()
+        finally:
+            if framebuffer is not None:
+                framebuffer.depth_mask = depth_mask
+            ctx.disable(ctx.BLEND)
 
     def _group_entities_by_shape(
         self, scene: Scene

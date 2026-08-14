@@ -1431,6 +1431,143 @@ class PrimFaceMapGLTests(_GLTestBase):
                 )
 
 
+class HoverTextGLTests(_GLTestBase):
+    """Prim floating text must actually reach the framebuffer.
+
+    The billboard is camera-facing and scaled by eye distance so it keeps a
+    constant apparent size, which means "did it draw" cannot be answered by
+    checking one fixed pixel — these count tinted pixels over the whole frame.
+
+    They also need a bigger framebuffer than the rest of the file. Constant
+    apparent size means moving the camera closer does not make the text
+    bigger; at the shared 64x64 target a label is ~2 px tall and every glyph
+    pixel is partial coverage.
+    """
+
+    FBO_SIZE = (256, 256)
+
+    def _scene(self, *, text, color=(255, 0, 255, 255), position=(0.0, 0.0, 0.0)):
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=position,
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape="cube",
+            hover_text=text,
+            hover_text_color=color,
+            tint=(20, 20, 20),
+        )
+        return scene
+
+    def _render(self, scene, eye=(6.0, 0.0, 1.2)):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 1.2), eye_position=eye)
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = self.fbo.read(components=3)
+            pixels = [tuple(data[i : i + 3]) for i in range(0, len(data), 3)]
+            return renderer, pixels
+        finally:
+            renderer.clear_caches()
+
+    @staticmethod
+    def _magenta_count(pixels) -> int:
+        return sum(1 for r, g, b in pixels if r > 120 and b > 120 and g < 90)
+
+    def test_hover_text_paints_in_its_own_colour(self) -> None:
+        _, pixels = self._render(self._scene(text="HELLO"))
+
+        self.assertGreater(
+            self._magenta_count(pixels), 0, "hover text billboard did not draw"
+        )
+
+    def test_a_prim_without_hover_text_paints_nothing(self) -> None:
+        # Guards against the billboard drawing for every prim regardless.
+        _, pixels = self._render(self._scene(text=None))
+
+        self.assertEqual(self._magenta_count(pixels), 0)
+
+    def test_scene_flag_hides_hover_text(self) -> None:
+        scene = self._scene(text="HELLO")
+        scene.render_hover_text = False
+
+        _, pixels = self._render(scene)
+
+        self.assertEqual(self._magenta_count(pixels), 0)
+
+    def test_fully_transparent_text_is_skipped(self) -> None:
+        _, pixels = self._render(self._scene(text="HELLO", color=(255, 0, 255, 0)))
+
+        self.assertEqual(self._magenta_count(pixels), 0)
+
+    def test_more_text_covers_more_pixels(self) -> None:
+        # A weak but honest check that the glyphs are rasterised rather than a
+        # blank quad of fixed size being tinted.
+        _, few = self._render(self._scene(text="I"))
+        _, many = self._render(self._scene(text="WWWWWWWWWW"))
+
+        self.assertGreater(self._magenta_count(many), self._magenta_count(few))
+
+    def test_identical_strings_share_one_texture_upload(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import SceneEntity
+
+        scene = self._scene(text="SHARED")
+        scene.object_entities[2] = SceneEntity(
+            local_id=2,
+            pcode=9,
+            kind="prim",
+            position=(3.0, 0.0, 0.0),
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape="cube",
+            hover_text="SHARED",
+            hover_text_color=(0, 255, 0, 255),
+        )
+
+        camera = Camera3D(target=(0.0, 0.0, 1.2), eye_position=(9.0, 0.0, 1.2))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            renderer.render_gl(scene, aspect=1.0)
+            self.assertEqual(list(renderer._hover_text_textures), ["SHARED"])
+        finally:
+            renderer.clear_caches()
+
+    def test_clear_caches_releases_text_textures(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 1.2), eye_position=(6.0, 0.0, 1.2))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        renderer.render_gl(self._scene(text="HELLO"), aspect=1.0)
+        self.assertTrue(renderer._hover_text_textures)
+
+        renderer.clear_caches()
+
+        self.assertEqual(renderer._hover_text_textures, {})
+
+
 class MeshMaterialGroupGLTests(_GLTestBase):
     """Each mesh submesh must draw with its own face texture.
 
