@@ -193,19 +193,21 @@ Main gaps:
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - prim shape now survives `ObjectUpdateCompressed` (it was skipped, leaving
   nearly every prim in a populated region rendering as the fallback cube).
-  Hover text, its colour and the media URL decode in both update paths and
-  reach the inspector; hover text also renders as a 3D billboard. Particles
-  and the sound block are still stepped over rather than decoded
+  Hover text, its colour, the media URL and the attached-sound block decode in
+  both update paths and reach the inspector; hover text also renders as a 3D
+  billboard. The particle system blocks are still stepped over
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - per-face `TextureEntry` overrides now follow SL's face numbering for box,
   cylinder and prism, and single-face prims (sphere, torus, sculpt) read the
   face 0 override. The test region has no prim with different textures on two
   faces, so this is pixel-verified offscreen but not live-verified; the prism
   side-quad order in particular is derived rather than observed
-- reliable extraction of ordinary prim names (avatar names now resolve from
-  ObjectUpdate NameValues and render as name tags; prim names still depend on
-  ObjectPropertiesFamily arriving)
-- clearer mapping of raw flag fields like `update_flags`
+- prim and avatar names both resolve: 32 of 33 live objects carry an
+  ObjectPropertiesFamily name, and the one that does not is the avatar, whose
+  name comes from ObjectUpdate NameValues and renders as a name tag
+- permission masks now decode into named rights from OpenSim's PermissionMask;
+  `update_flags` is still raw hex, because libomv's `PrimFlags` table is not in
+  `opensim-source/` and guessing it is worse than leaving it
 - typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
   `TeleportFinish` and `ScriptRunningReply` in chat. The region-management ones
   (`EnableSimulator`, `CrossedRegion`) are on the bus but have no consumer

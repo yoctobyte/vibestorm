@@ -1746,6 +1746,59 @@ Live: rendered the region offscreen — "Vibestorm Tester" draws above the
 avatar, the magenta hover-text prim draws beside it, and the spheres visible
 in the same frame are the compressed-shape fix.
 
+## 2026-08-14 — the sweep for content-gated code, and what it found
+
+Chasing "is there any prim in the region with a per-face texture?" turned up
+something better: **the Object Inspector crashed on exactly that prim.**
+`TextureEntry.face_texture_ids` is a tuple of `(face, uuid)` pairs and the
+inspector called `.items()` on it. Selecting any prim with a face override
+would have raised `AttributeError` and taken the detail panel down. It never
+fired because no prim in the region has one — the same absence that leaves the
+new SL face maps live-unverified.
+
+That is a *class* of bug, not one bug: branches that only execute when world
+content the sim lacks comes into view. `test/test_rare_content_paths.py` now
+covers the combination — one synthetic prim carrying per-face overrides,
+flexi, light, projector, reflection probe, GLTF render materials, mesh flags,
+hover text and a media URL, walked from the compressed wire blob through
+`WorldView`, `Scene`, the inspector, and a real GL render.
+
+Building that fixture pinned down a layout fact worth keeping: **the
+compressed block's ExtraParams header is 6 bytes** (type u16, size u32) with
+no in-use byte. The 7-byte in-use form is the `ObjectUpdate` /
+`ObjectExtraParams` variant. `parse_shape_extra_params` tries both, so it
+tolerates either, but `decode_compressed_object_data`'s own cursor walk
+assumes 6 — the fixture assumed 7 and silently misaligned everything after it,
+dropping the shape block.
+
+Two decoding gaps closed alongside:
+
+- **Attached sound.** Both paths stepped over the 25-byte sound group. Note
+  they do not share a layout: the compressed block writes UUID/gain/flags/
+  radius contiguously, while the full `ObjectUpdate` tail puts OwnerID
+  *between* the sound UUID and its gain. A null sound UUID reports as `None`,
+  since that is how a sim clears a looping sound. No prim in the region has
+  one, so this is synthetic-only for now.
+- **Permission masks.** The inspector printed five masks as raw hex. Bit
+  values come from OpenSim's `PermissionMask` (`Framework/Util.cs`), not from
+  memory: Transfer `1<<13`, Modify `1<<14`, Copy `1<<15`, Export `1<<16`, Move
+  `1<<19`, and `All` deliberately excludes Export. Folded permissions (low
+  nibble) are a *different* encoding of the same rights and stay separate —
+  folding them in would claim a copy right the object does not have.
+  Unrecognised bits survive as `unknown_bits`. Live across 32 objects x 5
+  masks: every bit resolved, none unknown.
+
+**Deliberately not done:** decoding `update_flags` into named prim flags.
+`PrimFlags` lives in libomv, not in `opensim-source/`, and everything else
+this session came from reading `LLClientView.cs` or `PrimitiveBaseShape.cs`
+directly. Reconstructing a 32-bit flag table from memory would have produced
+something plausible and unverifiable. It stays open until a libomv source is
+available.
+
+Also confirmed live and no longer a gap: **prim names**. 32 of 33 objects
+carry an `ObjectPropertiesFamily` name; the one that does not is the avatar,
+which now resolves from NameValues.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
