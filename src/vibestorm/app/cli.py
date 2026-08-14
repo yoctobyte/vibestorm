@@ -121,6 +121,15 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--camera-sweep", action="store_true")
     session_parser.add_argument("--spawn-cube", action="store_true")
     session_parser.add_argument(
+        "--fetch-wearables",
+        action="store_true",
+        help=(
+            "Fetch the assets behind AgentWearablesUpdate and decode them, so "
+            "the session reports what the avatar is wearing rather than only "
+            "how many items. Read-only."
+        ),
+    )
+    session_parser.add_argument(
         "--no-auto-bake-upload",
         action="store_true",
         help="Do not automatically upload baked appearance textures during session setup.",
@@ -828,6 +837,7 @@ def main() -> int:
                     agent_update_interval_seconds=args.agent_update_interval,
                     camera_sweep=args.camera_sweep,
                     spawn_test_cube=args.spawn_cube,
+                    fetch_worn_wearables=args.fetch_wearables,
                     auto_upload_bakes=not args.no_auto_bake_upload,
                     capture_dir=args.capture_dir,
                     capture_messages=tuple(args.capture_message),

@@ -148,6 +148,7 @@ from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhys
 from vibestorm.caps.viewer_asset_client import (
     ViewerAssetClient,
     ViewerAssetError,
+    asset_type_from_content_type,
     asset_type_query_key,
 )
 from vibestorm.world.physics_shape import PhysicsProperties
@@ -175,6 +176,9 @@ class SessionConfig:
     camera_sweep_height_offset: float = 3.0
     spawn_test_cube: bool = False
     fetch_object_physics: bool = False
+    #: Fetch the assets behind `AgentWearablesUpdate` so the session can say
+    #: what the avatar is actually wearing rather than only how many items.
+    fetch_worn_wearables: bool = False
     spawn_delay_seconds: float = 2.0
     region_handshake_reply_flags: int = 0
     max_logged_events: int = 64
@@ -926,6 +930,8 @@ class LiveCircuitSession:
                 "appearance.wearables_update",
                 f"serial={wearables_update.serial_num} count={len(wearables_update.wearables)}",
             )
+            if self.config.fetch_worn_wearables:
+                self._queue_worn_wearable_fetches(wearables_update, now)
         elif dispatched.summary.name == "AgentCachedTextureResponse":
             cached = parse_agent_cached_texture_response(dispatched)
             self.latest_cached_texture_response = cached
@@ -1176,6 +1182,40 @@ class LiveCircuitSession:
             owner_id=owner_id,
         )
         return True
+
+    def _queue_worn_wearable_fetches(
+        self, update: AgentWearablesUpdateMessage, now: float
+    ) -> None:
+        """Fetch the assets behind what this avatar is wearing.
+
+        ``AgentWearablesUpdate`` identifies each item by libomv's *wearable*
+        type — shirt, hair, eyes — and this client cannot turn that into an
+        asset type: nothing in ``opensim-source/`` maps the two, and
+        reconstructing libomv's table from memory is exactly the kind of guess
+        that produces a decoder reading the wrong bytes with confidence.
+
+        It does not need to. A ViewerAsset fetch only requires a *recognised*
+        query key, not a correct one — the library's clothing asset came back
+        intact under the gesture key, verified live on 2026-08-14 — and the
+        response's content type names the asset's real type. So this asks with
+        the clothing key and lets the server settle what it actually got.
+
+        Zero asset ids are skipped: an empty wearable slot is written as one,
+        and asking for it would produce a 404 per empty slot per session.
+        """
+        queued = 0
+        for entry in update.wearables:
+            if entry.asset_id.int == 0:
+                continue
+            if self.queue_http_asset_fetch(
+                entry.asset_id, INVENTORY_CLOTHING, item_id=entry.item_id
+            ):
+                queued += 1
+        self._record_event(
+            now,
+            "appearance.wearables_fetch",
+            f"queued={queued} of={len(update.wearables)}",
+        )
 
     def build_instant_message_packet(
         self,
@@ -2765,7 +2805,17 @@ async def _fetch_asset_over_http(
         f"asset={asset_id} type={asset_type} size={len(fetched.data)} "
         f"content_type={fetched.content_type}"
     )
-    summary = _summarize_fetched_asset(asset_type, fetched.data)
+    # The type we asked with is the type we *believed*. OpenSim ignores it —
+    # a wrong key still returns the asset (verified live on 2026-08-14) — and
+    # answers with the stored asset's real content type, so prefer that when
+    # picking a decoder. It matters for worn wearables, where the client knows
+    # only libomv's wearable type and cannot map it to an asset type.
+    served_type = asset_type_from_content_type(fetched.content_type)
+    if served_type is not None and served_type != asset_type:
+        detail = f"{detail} served_type={served_type}"
+    summary = _summarize_fetched_asset(
+        served_type if served_type is not None else asset_type, fetched.data
+    )
     if summary:
         detail = f"{detail} {summary}"
     session._record_event(now, "asset.http.ok", detail)

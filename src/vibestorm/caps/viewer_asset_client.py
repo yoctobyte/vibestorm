@@ -19,6 +19,23 @@ that warning is commented out in the source. So a wrong key still yields the
 right asset, and a client cannot use a successful fetch as evidence that its
 idea of the type was right. :func:`asset_type_query_key` is offered so callers
 name the type deliberately rather than reaching for whichever key is nearest.
+
+Confirmed live on 2026-08-14, and it goes further than the source reading
+suggested: the library's ``Shirt`` (clothing) was fetched under ``clothing_id``,
+``bodypart_id`` *and* ``gesture_id``, and all three returned the same 563 bytes
+with ``Content-Type: application/vnd.ll.clothing``. The key therefore only has
+to be *recognised*; it neither selects nor constrains what comes back, and the
+response's content type reports the asset's real type regardless of what was
+asked for. That is what :func:`asset_type_from_content_type` is for — it lets a
+caller fetch an asset whose type it cannot determine in advance and then learn
+the type from the server rather than assert it.
+
+The concrete case that needs this: ``AgentWearablesUpdate`` identifies each
+worn item by libomv's *wearable* type (shirt, hair, ...), not by asset type,
+and nothing in ``opensim-source/`` maps one to the other — ``WearableType`` is
+used there but defined in libomv. Rather than reconstruct that table from
+memory, this client fetches with any valid wearable key and reads the answer
+off the response.
 """
 
 from __future__ import annotations
@@ -85,6 +102,47 @@ def asset_type_query_key(asset_type: int) -> str:
             f"no ViewerAsset query key for asset type {asset_type!r}; "
             f"known types: {sorted(ASSET_TYPE_QUERY_KEYS)}"
         ) from None
+
+
+#: The content type OpenSim serves for each asset type number, from the
+#: ``TypeMapping`` table in ``Framework/SLUtil.cs``.
+#:
+#: Restricted to the same LSL-pinned numbers as `ASSET_TYPE_QUERY_KEYS`, and for
+#: the same reason: `SLUtil.cs` writes the types as ``AssetType.Clothing``, and
+#: turning those names into numbers needs libomv's enum. Where the table lists
+#: several content types for one asset type, this holds the first — the one
+#: OpenSim serves — not the legacy ``application/x-metaverse-*`` aliases it also
+#: accepts.
+#:
+#: Texture and Material are absent on purpose rather than missing: `SLUtil.cs`
+#: maps ``image/x-j2c`` to Texture from *two* rows and ``application/llsd+xml``
+#: to Material, and that last one is shared with other LLSD payloads, so a
+#: reverse lookup on it would be a guess.
+CONTENT_TYPE_ASSET_TYPES: dict[str, int] = {
+    "audio/ogg": 1,  # Sound
+    "application/vnd.ll.landmark": 3,  # Landmark
+    "application/vnd.ll.clothing": 5,  # Clothing
+    "application/vnd.ll.primitive": 6,  # Object
+    "application/vnd.ll.notecard": 7,  # Notecard
+    "application/vnd.ll.lsltext": 10,  # LSLText
+    "application/vnd.ll.bodypart": 13,  # Bodypart
+    "application/vnd.ll.animation": 20,  # Animation
+    "application/vnd.ll.gesture": 21,  # Gesture
+}
+
+
+def asset_type_from_content_type(content_type: str) -> int | None:
+    """The asset type OpenSim's response claims, or None if unrecognised.
+
+    None rather than a raise or a default: this answers "what did the server
+    say this is", and "it said something this client does not know" is a real
+    answer. A caller that already knows the type from inventory should keep
+    its own value; this is for the case where it does not.
+
+    Parameters after a ``;`` are ignored, so ``application/vnd.ll.gesture;
+    charset=utf-8`` resolves like the bare type.
+    """
+    return CONTENT_TYPE_ASSET_TYPES.get(content_type.split(";")[0].strip().lower())
 
 
 @dataclass(slots=True, frozen=True)
@@ -177,8 +235,10 @@ class ViewerAssetClient:
 
 __all__ = [
     "ASSET_TYPE_QUERY_KEYS",
+    "CONTENT_TYPE_ASSET_TYPES",
     "FetchedAsset",
     "ViewerAssetClient",
     "ViewerAssetError",
+    "asset_type_from_content_type",
     "asset_type_query_key",
 ]

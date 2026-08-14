@@ -254,6 +254,25 @@ not for what it is called.** A parser can live inside a feature that only
 incidentally needs to read it. Both decoders are now written, sourced and
 verified against real library assets.
 
+The wearable decoder has a live consumer: `./run.sh session --fetch-wearables`
+fetches the assets behind `AgentWearablesUpdate` and reports what the avatar is
+actually wearing. Verified 2026-08-14 — all six worn items decoded (body, skin,
+hair, eyes, shirt, pants; the shape carries 142 visual parameters), and the
+`type` read out of each *asset* matched the wearable types the *UDP message*
+reported, which is two independent paths agreeing.
+
+That consumer needed one thing this tree cannot supply — libomv's wearable-type
+to asset-type map — and did not have to guess it. A ViewerAsset fetch only
+needs a *recognised* query key, not a correct one: the library's clothing asset
+came back intact under `bodypart_id` and `gesture_id` alike, and the **response
+content type** names the asset's true type. So the session asks with one fixed
+key and lets the server settle the type (`asset_type_from_content_type`, its
+table sourced from `SLUtil.cs`). Four of the six live fetches were asked for as
+clothing and served as body parts.
+
+**A capability that ignores an input is an input you do not have to know.**
+Worth probing for before building a table from memory.
+
 *Genuinely unimplemented, not blocked*: the region-crossing transport half
 (`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child,
 `TeleportFinish` over the event queue), and the inventory *write* surface

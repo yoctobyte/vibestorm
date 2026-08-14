@@ -18,12 +18,30 @@ from uuid import UUID
 from vibestorm.caps.inventory_types import ASSET_TYPE_NAMES
 from vibestorm.caps.viewer_asset_client import (
     ASSET_TYPE_QUERY_KEYS,
+    CONTENT_TYPE_ASSET_TYPES,
     ViewerAssetClient,
     ViewerAssetError,
+    asset_type_from_content_type,
     asset_type_query_key,
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
+_SLUTIL = _ROOT / "opensim-source" / "OpenSim" / "Framework" / "SLUtil.cs"
+
+#: How `SLUtil.cs` spells each asset type this client pins a content type for.
+#: Written out because the source uses libomv's names, not the numbers.
+_ASSET_TYPE_SOURCE_NAMES = {
+    1: "Sound",
+    3: "Landmark",
+    5: "Clothing",
+    6: "Object",
+    7: "Notecard",
+    10: "LSLText",
+    13: "Bodypart",
+    20: "Animation",
+    21: "Gesture",
+}
+
 _HANDLER = (
     _ROOT / "opensim-source" / "OpenSim" / "Capabilities" / "Handlers"
     / "GetAssets" / "GetAssetsHandler.cs"
@@ -143,6 +161,62 @@ class LiveCoverageTests(unittest.TestCase):
             {ASSET_TYPE_QUERY_KEYS[t] for t in unverified},
             {"sound_id", "landmark_id", "object_id", "material_id"},
         )
+
+
+class ContentTypeTests(unittest.TestCase):
+    """The response tells you the type; the request key does not.
+
+    Probed live on 2026-08-14: the library's `Shirt` (clothing, 563 bytes) was
+    fetched under `clothing_id`, `bodypart_id` and `gesture_id`, and all three
+    returned identical bytes with `Content-Type: application/vnd.ll.clothing`.
+    `Hair` (body part) behaved the same way under all three. So the key only
+    has to be recognised, and the content type is the authoritative answer.
+    """
+
+    def test_the_table_matches_slutil(self) -> None:
+        if not _SLUTIL.exists():
+            self.skipTest("opensim-source not present")
+        text = _SLUTIL.read_text(encoding="utf-8", errors="replace")
+
+        # Each entry must appear against the right AssetType name in the
+        # source's own TypeMapping table, so a transcription slip fails here
+        # rather than sending fetches off to the wrong decoder.
+        for content_type, asset_type in CONTENT_TYPE_ASSET_TYPES.items():
+            name = _ASSET_TYPE_SOURCE_NAMES[asset_type]
+            self.assertRegex(
+                text,
+                rf"TypeMapping\(AssetType\.{name},[^)]*\"{re.escape(content_type)}\"",
+                f"{content_type} -> {name}",
+            )
+
+    def test_the_numbers_agree_with_the_query_key_table(self) -> None:
+        # Both tables are the same LSL-pinned subset seen from opposite ends,
+        # so a number present in one and absent from the other is a mistake in
+        # whichever was edited last.
+        self.assertTrue(
+            set(CONTENT_TYPE_ASSET_TYPES.values()) <= set(ASSET_TYPE_QUERY_KEYS)
+        )
+
+    def test_a_live_observed_content_type_resolves(self) -> None:
+        self.assertEqual(asset_type_from_content_type("application/vnd.ll.clothing"), 5)
+        self.assertEqual(asset_type_from_content_type("application/vnd.ll.bodypart"), 13)
+
+    def test_charset_parameters_are_ignored(self) -> None:
+        self.assertEqual(
+            asset_type_from_content_type("application/vnd.ll.gesture; charset=utf-8"), 21
+        )
+
+    def test_an_unknown_content_type_is_none_not_a_default(self) -> None:
+        # A default would silently route unknown bytes to some decoder.
+        self.assertIsNone(asset_type_from_content_type("application/octet-stream"))
+        self.assertIsNone(asset_type_from_content_type(""))
+
+    def test_ambiguous_content_types_are_left_out(self) -> None:
+        # image/x-j2c maps to Texture from two TypeMapping rows and
+        # application/llsd+xml is shared with other LLSD payloads, so neither
+        # reverses cleanly. Absent on purpose, and this says so.
+        self.assertIsNone(asset_type_from_content_type("image/x-j2c"))
+        self.assertIsNone(asset_type_from_content_type("application/llsd+xml"))
 
 
 class QueryKeyTests(unittest.TestCase):

@@ -739,6 +739,127 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertFalse(session.queue_http_asset_fetch(UUID(int=5), 49))
         self.assertEqual(session.pending_http_assets, {})
 
+    def test_the_served_content_type_picks_the_decoder_not_the_asked_type(self) -> None:
+        """The correction that makes fetching wearables blind-to-type work.
+
+        Live on 2026-08-14 four of six worn items were asked for as clothing
+        (5) and served as body parts (13). Summarising by the asked type would
+        run the clothing branch on body-part bytes — which happens to be the
+        same decoder here, so the check uses two types with *different*
+        decoders to make the routing observable.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from vibestorm.caps.viewer_asset_client import FetchedAsset
+        from vibestorm.udp.session import _fetch_asset_over_http
+
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        asset_id = UUID(int=42)
+        served = FetchedAsset(
+            asset_id=asset_id,
+            asset_type=5,
+            query_key="clothing_id",
+            content_type="application/vnd.ll.gesture",
+            data=b"2\n255\n0\n/bored\n\n0\n",
+        )
+
+        async def _fetch(self_, url, aid, atype, **kwargs):
+            return served
+
+        with patch(
+            "vibestorm.udp.session.ViewerAssetClient.fetch", new=_fetch
+        ):
+            ok = asyncio.run(
+                _fetch_asset_over_http(session, "http://sim/caps/asset", asset_id, 5, 11.0)
+            )
+
+        self.assertTrue(ok)
+        detail = next(e.detail for e in session.events if e.kind == "asset.http.ok")
+        self.assertIn("served_type=21", detail)
+        # The gesture decoder ran, not the clothing one.
+        self.assertIn("trigger=/bored", detail)
+        self.assertNotIn("undecodable", detail)
+
+    def test_a_matching_content_type_adds_no_served_type_noise(self) -> None:
+        # The correction must be invisible in the normal case, or every log
+        # line grows a field that says nothing.
+        import asyncio
+        from unittest.mock import patch
+
+        from vibestorm.caps.viewer_asset_client import FetchedAsset
+        from vibestorm.udp.session import _fetch_asset_over_http
+
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        asset_id = UUID(int=43)
+        served = FetchedAsset(
+            asset_id=asset_id,
+            asset_type=21,
+            query_key="gesture_id",
+            content_type="application/vnd.ll.gesture",
+            data=b"2\n255\n0\n/bored\n\n0\n",
+        )
+
+        async def _fetch(self_, url, aid, atype, **kwargs):
+            return served
+
+        with patch("vibestorm.udp.session.ViewerAssetClient.fetch", new=_fetch):
+            asyncio.run(
+                _fetch_asset_over_http(session, "http://sim/caps/asset", asset_id, 21, 11.0)
+            )
+
+        detail = next(e.detail for e in session.events if e.kind == "asset.http.ok")
+        self.assertNotIn("served_type", detail)
+
+    def test_worn_wearables_are_not_fetched_unless_asked(self) -> None:
+        # Six extra HTTP fetches on every login is not a default.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.viewer_asset_url = "http://sim/caps/asset"
+
+        session._queue_worn_wearable_fetches(_wearables_update(3), 11.0)
+        self.assertEqual(len(session.pending_http_assets), 3)
+        self.assertFalse(session.config.fetch_worn_wearables)
+
+    def test_empty_wearable_slots_are_skipped(self) -> None:
+        # An unworn slot is written as a zero asset id. Fetching it would cost
+        # a 404 per empty slot per session and report nothing.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.viewer_asset_url = "http://sim/caps/asset"
+        update = _wearables_update(2, include_empty=True)
+
+        session._queue_worn_wearable_fetches(update, 11.0)
+
+        self.assertEqual(len(update.wearables), 3)
+        self.assertEqual(len(session.pending_http_assets), 2)
+        self.assertNotIn(UUID(int=0), session.pending_http_assets)
+        detail = next(
+            e.detail for e in session.events if e.kind == "appearance.wearables_fetch"
+        )
+        self.assertEqual(detail, "queued=2 of=3")
+
+    def test_wearables_are_fetched_with_a_recognised_key_not_a_correct_one(self) -> None:
+        """Why every wearable is asked for as clothing.
+
+        AgentWearablesUpdate carries libomv's *wearable* type, which nothing in
+        opensim-source maps to an asset type. A ViewerAsset fetch only needs a
+        recognised key — verified live 2026-08-14, where all six worn items
+        were asked for as clothing and four came back as body parts — so the
+        key is deliberately fixed rather than guessed per item.
+        """
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.viewer_asset_url = "http://sim/caps/asset"
+
+        session._queue_worn_wearable_fetches(_wearables_update(2), 11.0)
+
+        self.assertEqual(
+            {p.asset_type for p in session.pending_http_assets.values()}, {5}
+        )
+
     def test_http_asset_fetch_keeps_the_task_context_for_the_fallback(self) -> None:
         # A task-inventory TransferRequest cannot be built without the task,
         # item and owner ids, so dropping them here would make the UDP
@@ -1930,3 +2051,27 @@ class AgentControlFlagsTests(unittest.TestCase):
         session.handle_incoming(inbound, 12.0)
 
         self.assertIn("avatar.animation", [event.kind for event in session.events])
+
+
+def _wearables_update(count: int, *, include_empty: bool = False):
+    """An AgentWearablesUpdate carrying `count` worn items."""
+    from vibestorm.udp.messages import AgentWearableEntry, AgentWearablesUpdateMessage
+
+    entries = [
+        AgentWearableEntry(
+            item_id=UUID(int=100 + n), asset_id=UUID(int=200 + n), wearable_type=n
+        )
+        for n in range(count)
+    ]
+    if include_empty:
+        entries.append(
+            AgentWearableEntry(
+                item_id=UUID(int=999), asset_id=UUID(int=0), wearable_type=9
+            )
+        )
+    return AgentWearablesUpdateMessage(
+        agent_id=UUID(int=1),
+        session_id=UUID(int=2),
+        serial_num=0,
+        wearables=tuple(entries),
+    )
