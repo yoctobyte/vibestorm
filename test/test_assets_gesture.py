@@ -30,6 +30,7 @@ _GATHERER = (
 )
 
 _ANIM_ID = UUID("b906c4ba-703b-1940-32a3-0c7f7d791510")
+_NO_TRIGGER = _ROOT / "test" / "fixtures" / "library" / "gesture-dance2.bin"
 
 
 def _gesture(*, steps: str, trigger: str = "/hi", count: int | None = None) -> bytes:
@@ -123,6 +124,83 @@ class RealAssetTests(unittest.TestCase):
 
         self.assertIn("trigger=/bored", description)
         self.assertIn("animation:Bored", description)
+
+
+class LiveCoverageTests(unittest.TestCase):
+    """What real assets actually exercise, and what only synthetic ones do.
+
+    All sixteen gestures in the OpenSim library were fetched and decoded on
+    2026-08-14: zero failures, and **every one is a single animation step**.
+    So three of the four step types — sound, chat, wait — have never been read
+    from bytes OpenSim wrote, and the tests below that cover them build their
+    own input. That is a weaker kind of evidence and saying so here keeps
+    "the gesture decoder is verified" from standing unqualified.
+
+    Nothing in reach fixes it: gestures cannot be authored without a viewer,
+    and the library is the only source of them this client can read.
+    """
+
+    #: The one step type a real asset has ever produced.
+    LIVE_VERIFIED_STEP_TYPES = frozenset({STEP_ANIMATION})
+
+    def test_the_unverified_step_types_are_the_other_three(self) -> None:
+        all_types = {STEP_ANIMATION, STEP_SOUND, STEP_CHAT, STEP_WAIT}
+
+        self.assertEqual(
+            all_types - self.LIVE_VERIFIED_STEP_TYPES,
+            {STEP_SOUND, STEP_CHAT, STEP_WAIT},
+        )
+
+    def test_the_fixture_is_one_of_the_verified_kind(self) -> None:
+        if not _FIXTURE.exists():
+            self.skipTest("library gesture fixture not present")
+        gesture = decode_gesture(_FIXTURE.read_bytes())
+
+        self.assertTrue(
+            {step.step_type for step in gesture.steps}
+            <= self.LIVE_VERIFIED_STEP_TYPES
+        )
+
+    def test_every_library_gesture_ends_the_same_way(self) -> None:
+        # All sixteen end with b"\n\x00\n" after the last step. The decoder
+        # never reads it — it stops at the declared count — and this records
+        # that the trailing bytes are structural rather than one file's quirk.
+        if not _FIXTURE.exists():
+            self.skipTest("library gesture fixture not present")
+
+        self.assertTrue(_FIXTURE.read_bytes().endswith(b"\n\x00\n"))
+
+
+class EmptyTriggerTests(unittest.TestCase):
+    """`dance2` is the library's one gesture with no trigger text at all.
+
+    Both line 4 (trigger) and line 5 (replace) are empty, so the header is two
+    blank lines in a row immediately before the step count. A decoder that
+    skipped blank lines rather than counting them would read the count as the
+    trigger and every step would land a line early — and it would still return
+    something that looked like a gesture.
+    """
+
+    def setUp(self) -> None:
+        if not _NO_TRIGGER.exists():
+            self.skipTest("empty-trigger gesture fixture not present")
+        self.gesture = decode_gesture(_NO_TRIGGER.read_bytes())
+
+    def test_the_empty_trigger_is_read_as_empty_not_skipped(self) -> None:
+        self.assertEqual(self.gesture.trigger, "")
+        self.assertEqual(self.gesture.replace_with, "")
+
+    def test_the_step_after_two_blank_lines_still_lines_up(self) -> None:
+        (step,) = self.gesture.steps
+
+        self.assertEqual(step.step_type, STEP_ANIMATION)
+        self.assertEqual(step.name, "Dance 2")
+        self.assertEqual(
+            step.asset_id, UUID("928cae18-e31d-76fd-9cc9-2f55160ff818")
+        )
+
+    def test_a_missing_trigger_is_said_rather_than_shown_blank(self) -> None:
+        self.assertIn("trigger=(none)", self.gesture.describe())
 
 
 class StepTypeTests(unittest.TestCase):
