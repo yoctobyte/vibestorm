@@ -204,8 +204,9 @@ The grid library is a second source of content, and it is not empty: `./run.sh
 inventory-walk --library` reads 19 folders and 123 items on a stock OpenSim —
 64 textures, 17 scripts, 16 gestures, 12 animations, 7 settings, 4 body parts,
 2 clothing, 1 notecard. Real assets of eight types have been fetched from it
-through `ViewerAsset`. It holds no sounds and no objects, so those two remain
-genuinely blocked on someone building something.
+through `ViewerAsset` and kept in `test/fixtures/library/`; five of the eight
+now have decoders driven by those bytes. It holds no sounds and no objects, so
+those two remain genuinely blocked on someone building something.
 
 Two entries left this list by turning out not to be blocked at all. Chat did
 not need an in-world speaker — the client can say something and read the
@@ -226,15 +227,32 @@ message, not the physics.
 *Blocked on sources* (absent from `opensim-source/`, and guessing is worse
 than leaving them raw): `PrimFlags` for `update_flags`, the particle system
 block, `ChatSourceType` / `ChatAudibleLevel`, and the region flag bits LSL does
-not expose — all libomv tables. Also the **gesture asset format**: OpenSim
-stores gestures as opaque bytes and never parses them, so nothing in the tree
-describes the layout. A real gesture asset is kept at
-`test/fixtures/library/gesture-can_we_move_along.bin` for whenever a source
-turns up.
+not expose — all libomv tables. Also **visual parameter ids**: a wearable file
+carries them (`781 .78`), and `AvatarAppearance.VPElement` is *not* their
+table — it is a 0-based index into the `AgentSetAppearance` array, generated
+from libomv's list. `assets/wearable.py` therefore reports parameters as raw
+`{id: value}`.
 
-Animation assets were on this list and are not any more: OpenSim *does* read
-them, in `BinBVHAnimation.cs`, so `assets/animation.py` is fully sourced and
-verified against all twelve library animations.
+Three formats have left this list, and the third is the reason to distrust the
+list itself:
+
+- **Animation assets.** OpenSim reads them in `BinBVHAnimation.cs`, so
+  `assets/animation.py` is fully sourced and verified against all twelve
+  library animations.
+- **Gesture assets**, and **wearable assets** (clothing and body parts). Both
+  were listed here as "OpenSim stores them as opaque bytes and never parses
+  them". That was wrong, and it was wrong because of *how it was checked*: a
+  grep for the format's own name (`LLWearable`) and for the asset type found
+  nothing, and absence of a parser named after the format was read as absence
+  of a parser. Both are in fact walked, line by line and with every field
+  commented, by `UuidGatherer.RecordGestureAssetUuids` and
+  `RecordWearableAssetUuids` — code whose *purpose* is collecting referenced
+  asset ids, so it is named after neither format.
+
+**When a format looks unsourced, search for what the tree would do with it,
+not for what it is called.** A parser can live inside a feature that only
+incidentally needs to read it. Both decoders are now written, sourced and
+verified against real library assets.
 
 *Genuinely unimplemented, not blocked*: the region-crossing transport half
 (`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child,

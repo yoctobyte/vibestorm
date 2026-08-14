@@ -133,8 +133,16 @@ from vibestorm.world.object_inventory import (
     parse_task_inventory_text,
 )
 from vibestorm.assets.animation import AnimationDecodeError, decode_animation
+from vibestorm.assets.gesture import GestureDecodeError, decode_gesture
 from vibestorm.assets.notecard import NotecardDecodeError, decode_notecard
-from vibestorm.caps.inventory_types import INVENTORY_ANIMATION, INVENTORY_NOTECARD
+from vibestorm.assets.wearable import WearableDecodeError, decode_wearable
+from vibestorm.caps.inventory_types import (
+    INVENTORY_ANIMATION,
+    INVENTORY_BODYPART,
+    INVENTORY_CLOTHING,
+    INVENTORY_GESTURE,
+    INVENTORY_NOTECARD,
+)
 from vibestorm.caps.object_cost_client import ObjectCost, ObjectCostClient, ObjectCostError
 from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhysicsError
 from vibestorm.caps.viewer_asset_client import (
@@ -2781,6 +2789,16 @@ def _summarize_fetched_asset(asset_type: int, data: bytes) -> str:
             return decode_notecard(data).describe()
         except NotecardDecodeError as exc:
             return f"undecodable notecard: {exc}"
+    if asset_type in (INVENTORY_CLOTHING, INVENTORY_BODYPART):
+        try:
+            return decode_wearable(data).describe()
+        except WearableDecodeError as exc:
+            return f"undecodable wearable: {exc}"
+    if asset_type == INVENTORY_GESTURE:
+        try:
+            return decode_gesture(data).describe()
+        except GestureDecodeError as exc:
+            return f"undecodable gesture: {exc}"
     return ""
 
 

@@ -201,7 +201,7 @@ animations, 7 settings, 4 body parts, 2 clothing, 1 notecard.
 
 That is a second content source for a client whose gap list is mostly "the
 region has none of these". One asset of each of the eight types was fetched
-through `ViewerAsset`, every one returning the matching
+through `ViewerAsset` and kept in `test/fixtures/library/`, every one returning the matching
 `application/vnd.ll.*` content type — so eight of the twelve query keys are
 live-verified rather than merely sourced. The remaining four (`sound_id`,
 `landmark_id`, `object_id`, `material_id`) are untried, not suspect: the
