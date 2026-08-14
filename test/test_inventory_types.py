@@ -129,6 +129,59 @@ class GapClosingTests(unittest.TestCase):
         self.assertIn("sound", absent)
         self.assertIn("object", absent)
 
+class NewFileInventoryTypeTests(unittest.TestCase):
+    """NewFileAgentInventory silently mistypes what it does not recognise.
+
+    OpenSim's BunchOfCaps initialises both type fields to 0 and only assigns
+    them inside per-inventory_type branches, so an unrecognised type yields
+    asset type 0 (texture) and inventory type 0 — with the upload reporting
+    success. Observed live: a notecard uploaded by this client reads back as
+    type=0 inv_type=0.
+    """
+
+    def test_supported_types_produce_no_warning(self) -> None:
+        from vibestorm.caps.asset_upload_client import new_file_inventory_type_warning
+
+        for inventory_type in ("sound", "snapshot", "animation", "animset",
+                               "wearable", "object"):
+            self.assertIsNone(
+                new_file_inventory_type_warning(inventory_type), inventory_type
+            )
+
+    def test_notecard_is_warned_about(self) -> None:
+        from vibestorm.caps.asset_upload_client import new_file_inventory_type_warning
+
+        warning = new_file_inventory_type_warning("notecard")
+
+        self.assertIsNotNone(warning)
+        self.assertIn("asset type 0", warning)
+
+    def test_script_is_warned_about_too(self) -> None:
+        from vibestorm.caps.asset_upload_client import new_file_inventory_type_warning
+
+        self.assertIsNotNone(new_file_inventory_type_warning("lsltext"))
+
+    def test_the_supported_set_matches_opensim(self) -> None:
+        if not (
+            _LSL_CONSTANTS.parent.parent.parent.parent.parent.parent
+        ).exists():
+            self.skipTest("opensim-source not present")
+        import re
+
+        from vibestorm.caps.asset_upload_client import NEW_FILE_INVENTORY_TYPES
+
+        caps = (
+            _LSL_CONSTANTS.parents[6]
+            / "OpenSim" / "Region" / "ClientStack" / "Linden" / "Caps"
+            / "BunchOfCaps" / "BunchOfCaps.cs"
+        )
+        if not caps.exists():
+            self.skipTest("BunchOfCaps.cs not present")
+        text = caps.read_text(encoding="utf-8", errors="replace")
+        branches = set(re.findall(r'inventoryType == "(\w+)"', text))
+
+        self.assertEqual(branches, set(NEW_FILE_INVENTORY_TYPES))
+
 
 if __name__ == "__main__":
     unittest.main()

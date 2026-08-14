@@ -14,6 +14,7 @@ from vibestorm.caps.asset_upload_client import (
     AssetUploadClient,
     AssetUploadError,
     NewFileInventoryRequest,
+    new_file_inventory_type_warning,
 )
 from vibestorm.caps.client import CapabilityClient
 from vibestorm.caps.inventory_client import (
@@ -589,7 +590,7 @@ async def upload_empty_text_smoke(
             f"expected {result.new_asset_id}, got {fetched.asset_id}"
         )
 
-    return [
+    lines = [
         "upload[file]=created_empty_then_appended_space",
         f"upload[file_path]={local_path}",
         f"upload[bytes]={len(data)}",
@@ -598,7 +599,14 @@ async def upload_empty_text_smoke(
         f"upload[new_inventory_item]={result.new_inventory_item_id}",
         "upload[confirm]=fetched "
         f"name={fetched.name!r} asset={fetched.asset_id} item={fetched.item_id}",
+        # The item exists and the asset matches, but that is not the same as
+        # the item being usable — report the stored types too.
+        f"upload[stored_types]=type:{fetched.type} inv_type:{fetched.inv_type}",
     ]
+    warning = new_file_inventory_type_warning("notecard")
+    if warning is not None:
+        lines.append(f"upload[warning]={warning}")
+    return lines
 
 
 def main() -> int:

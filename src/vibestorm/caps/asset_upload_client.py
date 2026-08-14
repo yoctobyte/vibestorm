@@ -16,6 +16,40 @@ class AssetUploadError(RuntimeError):
     """Raised when an inventory asset upload fails."""
 
 
+#: The only ``inventory_type`` values ``NewFileAgentInventory`` understands.
+#:
+#: OpenSim's ``BunchOfCaps.UploadCompleteHandler`` starts with
+#: ``sbyte assType = 0; sbyte inType = 0;`` and then branches on exactly these
+#: strings. Anything else falls through every branch and the item is created
+#: with **both types left at 0** — asset type 0 is *texture*. The upload
+#: reports success and the resulting item is mistyped, which is how a notecard
+#: uploaded by this client reads back as a texture.
+#:
+#: Notecards and scripts are not uploaded through this capability at all: a
+#: viewer creates them with ``CreateInventoryItem`` and then fills them in
+#: through ``UpdateNotecardAgentInventory`` / ``UpdateScriptAgent``.
+NEW_FILE_INVENTORY_TYPES: frozenset[str] = frozenset(
+    {"sound", "snapshot", "animation", "animset", "wearable", "object"}
+)
+
+
+def new_file_inventory_type_warning(inventory_type: str) -> str | None:
+    """Warn when ``NewFileAgentInventory`` will silently mistype the item.
+
+    Returns None for a supported type. This does not raise: the upload really
+    does create an item, so refusing would be wrong — but reporting success
+    without saying the item is mistyped would be worse.
+    """
+    if inventory_type in NEW_FILE_INVENTORY_TYPES:
+        return None
+    supported = ", ".join(sorted(NEW_FILE_INVENTORY_TYPES))
+    return (
+        f"NewFileAgentInventory does not handle inventory_type={inventory_type!r}; "
+        f"OpenSim will store the item with asset type 0 (texture) and inventory "
+        f"type 0. Supported: {supported}."
+    )
+
+
 @dataclass(slots=True, frozen=True)
 class NewFileInventoryRequest:
     folder_id: UUID

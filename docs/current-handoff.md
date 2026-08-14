@@ -2687,17 +2687,39 @@ So the standing region-content gaps **cannot be closed from this account's
 existing inventory** — there is nothing to rez or play. That is a concrete
 answer to a question that had been open all session.
 
-### An unrelated finding worth someone's attention
+### The upload smoke test creates a mistyped item — diagnosed from source
 
 The notecard left by `upload-empty-text-smoke` reads back as
-`type=0 inv_type=0` — asset type 0 is *texture*; a notecard should be 7 for
-both. `NewFileAgentInventory` is sent the correct `"notecard"` strings, and
-every other item in the account parses its type correctly, so this is not a
-decode problem on our side.
+`type=0 inv_type=0`. Asset type 0 is *texture*; a notecard should be 7.
 
-Deliberately not "fixed": diagnosing it means uploading again, which writes to
-the user's inventory, and changing what we send without being able to verify
-the result would be guessing. Flagged for whoever picks up the upload path.
+I first filed this as needing another upload to investigate. It did not —
+OpenSim's source answers it outright. `BunchOfCaps.UploadCompleteHandler`
+opens with:
+
+    sbyte assType = 0;
+    sbyte inType = 0;
+
+and then assigns them only inside `if (inventoryType == ...)` branches. The
+complete set of branches is **sound, snapshot, animation, animset, wearable,
+object**. There is no `notecard` branch, and no `else`. An unrecognised type
+falls through and the item is created with both fields still 0 — while the
+upload reports success and `FetchInventory2` confirms the asset matches, which
+is exactly why the smoke test has always passed.
+
+Notecards and scripts are not uploaded through this capability at all: a
+viewer creates them with `CreateInventoryItem` and fills them in through
+`UpdateNotecardAgentInventory` / `UpdateScriptAgent`.
+
+`NEW_FILE_INVENTORY_TYPES` now records the supported set, with a test that
+re-parses the branch list out of `BunchOfCaps.cs` so it cannot drift. The
+smoke command prints the stored types and a warning rather than reporting a
+clean success. Still no fix to the upload path itself — the correct flow is a
+different pair of capabilities and building it means writing to the user's
+inventory, which is theirs to authorise.
+
+**The generalisable bit:** "I would have to perform a side effect to find out"
+was wrong. The server's own source said what it does with the request. Reading
+beats poking, and it needed no permission.
 
 ## Notes For The Next Agent
 
