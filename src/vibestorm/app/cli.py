@@ -47,7 +47,7 @@ from vibestorm.udp.session import SessionConfig, SessionEvent, SessionReport, ru
 from vibestorm.udp.socket_client import UdpSocketClient
 from vibestorm.udp.world_client import WorldClient
 from vibestorm.udp.zerocode import decode_zerocode
-from vibestorm.world.census import census_world, format_census
+from vibestorm.world.census import census_world, format_census, format_object_physics
 from vibestorm.world.chat_types import chat_type_name
 from vibestorm.world.land_flags import decode_region_flags
 from vibestorm.world.models import WorldView
@@ -222,6 +222,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="How many example local_ids to show per feature.",
+    )
+    census_parser.add_argument(
+        "--physics",
+        action="store_true",
+        help=(
+            "Also pull each prim's physics through GetObjectPhysicsData. "
+            "Read-only, and unlike the UDP ObjectPhysicsProperties message it "
+            "needs no in-world edit. One request per prim, so it is slow in a "
+            "populated region."
+        ),
     )
 
     inventory_walk_parser = subparsers.add_parser(
@@ -855,6 +865,7 @@ def main() -> int:
                 config=SessionConfig(
                     duration_seconds=args.duration,
                     auto_upload_bakes=False,
+                    fetch_object_physics=args.physics,
                 ),
                 world_client=client,
             ),
@@ -864,6 +875,8 @@ def main() -> int:
             print("census=no world view; the session never reached a region")
             return 1
         print_lines(format_census(census_world(world_view), examples=args.examples))
+        if args.physics:
+            print_lines(format_object_physics(client.current))
         return 0
 
     if args.command == "inventory-walk":

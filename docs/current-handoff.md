@@ -213,6 +213,36 @@ One trap: the owner id must be the **library** owner
 `FetchLibDescHandler` compares it and answers a mismatch with an empty tree
 rather than an error, so the obvious guess looks like an empty library.
 
+### Reading prim physics without touching the region
+
+`ObjectPhysicsProperties` was on the "blocked on consent" list because OpenSim
+sends that message only as an echo of an edit the viewer itself made — so
+seeing physics data meant editing someone's region first.
+
+It does not. `GetObjectPhysicsData` returns the same five values for any prim,
+changes nothing, and needs no permission. `caps/object_physics_client.py`
+implements it and `./run.sh census --physics` uses it: 32 of 33 objects
+answered, all shape `prim` at OpenSim defaults. The one that did not is our own
+avatar, which sits in the same object collection but is not a
+`SceneObjectPart`; the sim omits it silently rather than erroring.
+
+**One id per request, and this is not negotiable.** OpenSim's handler closes
+the outer LLSD map *inside* its loop:
+
+    for (int i = 0 ; i < object_ids.Count ; i++)
+    {
+        if (obj != null) { AddMap(uuid); ...; AddEndMap(); }
+    AddEndMap(lsl);            // <-- inside the for, once per id
+    }
+
+so N ids emit N closing tags for a map opened once. Confirmed live: one id
+parses, two ids fail with `mismatched tag`. `fetch_many` loops rather than
+batching, and a test pins the asymmetry (one `AddMap`, two `AddEndMap` in the
+loop body) so that if OpenSim ever fixes it, we find out.
+
+What remains unverified is the UDP *message*, not the physics. That
+distinction is now in `projectstate.md` in place of the old blocker.
+
 ### A testing note worth keeping
 
 Mutation-checking with `cp` to restore a file can lie. A restored file the same

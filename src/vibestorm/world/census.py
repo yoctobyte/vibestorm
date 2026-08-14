@@ -275,4 +275,49 @@ def format_census(census: WorldCensus, *, examples: int = 3) -> list[str]:
     return lines
 
 
-__all__ = ["TRACKED_FEATURES", "WorldCensus", "census_world", "format_census"]
+def format_object_physics(session: object) -> list[str]:
+    """Render the per-prim physics a session pulled over HTTP.
+
+    Reported separately from the census because it comes from a capability
+    rather than from object updates, and because "asked and got nothing" is a
+    different statement from "the region has none". A prim the sim omits is
+    counted, not silently dropped: for the region's own avatar that is
+    expected, and for anything else it is the interesting result.
+    """
+    physics = dict(getattr(session, "object_physics", {}) or {})
+    attempted = set(getattr(session, "object_physics_attempted", set()) or set())
+    if not attempted:
+        return ["physics=not fetched"]
+
+    absent = len(attempted) - len(physics)
+    lines = [f"physics prims={len(physics)} no_data={absent}"]
+
+    shapes: Counter[str] = Counter()
+    non_default: list[str] = []
+    for object_id, properties in physics.items():
+        shapes[properties.shape_name] += 1
+        differences = properties.non_default_fields()
+        if differences:
+            non_default.append(f"{object_id} {' '.join(differences)}")
+
+    for shape, count in sorted(shapes.items(), key=lambda item: (-item[1], item[0])):
+        lines.append(f"physics shape[{shape}]={count}")
+
+    if non_default:
+        for line in non_default:
+            lines.append(f"physics material[{line}]")
+    else:
+        # Every prim at OpenSim's defaults. Worth saying out loud: it means
+        # the material path is decoding correctly and the region simply has
+        # nothing non-default to show, which is not the same as a bug.
+        lines.append("physics material=all prims at OpenSim defaults")
+    return lines
+
+
+__all__ = [
+    "TRACKED_FEATURES",
+    "WorldCensus",
+    "census_world",
+    "format_census",
+    "format_object_physics",
+]

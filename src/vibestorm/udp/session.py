@@ -132,11 +132,13 @@ from vibestorm.world.object_inventory import (
     ObjectInventorySnapshot,
     parse_task_inventory_text,
 )
+from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhysicsError
 from vibestorm.caps.viewer_asset_client import (
     ViewerAssetClient,
     ViewerAssetError,
     asset_type_query_key,
 )
+from vibestorm.world.physics_shape import PhysicsProperties
 from vibestorm.world.teleport_flags import decode_teleport_flags
 from vibestorm.world.updater import WorldUpdater
 
@@ -160,6 +162,7 @@ class SessionConfig:
     camera_sweep_period_seconds: float = 24.0
     camera_sweep_height_offset: float = 3.0
     spawn_test_cube: bool = False
+    fetch_object_physics: bool = False
     spawn_delay_seconds: float = 2.0
     region_handshake_reply_flags: int = 0
     max_logged_events: int = 64
@@ -307,6 +310,11 @@ class LiveCircuitSession:
     get_mesh_url: str | None = None
     get_texture_url: str | None = None
     viewer_asset_url: str | None = None
+    object_physics_url: str | None = None
+    #: Per-prim physics pulled from GetObjectPhysicsData. Distinct from the
+    #: UDP ObjectPhysicsProperties echo, which only arrives after an edit.
+    object_physics: dict[UUID, PhysicsProperties] = field(default_factory=dict)
+    object_physics_attempted: set[UUID] = field(default_factory=set)
     #: Asset fetches waiting for the session loop to try over HTTP. The full
     #: request context is kept, not just the type, because a failed HTTP fetch
     #: falls back to a TransferRequest and a task-inventory transfer needs the
@@ -2410,6 +2418,41 @@ async def run_live_session(
                         sock, packet, (bootstrap.sim_ip, bootstrap.sim_port)
                     )
 
+            # Per-prim physics, one prim per tick. Deliberately not batched:
+            # OpenSim's handler emits one closing tag per requested id for a
+            # map it opened once, so any request past the first returns XML
+            # that will not parse.
+            if session.object_physics_url is not None:
+                pending_physics_id = _next_pending_physics_object_id(session)
+                if pending_physics_id is not None:
+                    session.object_physics_attempted.add(pending_physics_id)
+                    try:
+                        properties = await ObjectPhysicsClient(
+                            timeout_seconds=10.0
+                        ).fetch(
+                            session.object_physics_url,
+                            pending_physics_id,
+                            udp_listen_port=session.caps_udp_listen_port,
+                        )
+                    except ObjectPhysicsError as exc:
+                        session._record_event(loop.time(), "physics.error", str(exc))
+                    else:
+                        if properties is None:
+                            # Not a SceneObjectPart — our own avatar is in the
+                            # same collection and answers as an empty map.
+                            session._record_event(
+                                loop.time(),
+                                "physics.absent",
+                                f"object={pending_physics_id}",
+                            )
+                        else:
+                            session.object_physics[pending_physics_id] = properties
+                            session._record_event(
+                                loop.time(),
+                                "physics.ok",
+                                f"object={pending_physics_id} {properties.describe()}",
+                            )
+
             if session.get_mesh_url is not None:
                 pending_mesh_id = _next_pending_mesh_asset_id(session)
                 if pending_mesh_id is not None:
@@ -2536,6 +2579,24 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
             if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
                 continue
             return texture_id
+    return None
+
+
+def _next_pending_physics_object_id(session: LiveCircuitSession) -> UUID | None:
+    """The next prim whose physics has not been asked for.
+
+    Skips the zero id, which `WorldView` filters anyway, and anything already
+    attempted — including prims the sim answered with an empty map, so an
+    avatar id in the collection is asked about once rather than every tick.
+    """
+    for object_id in session.world_view.objects:
+        if object_id.int == 0:
+            continue
+        if object_id in session.object_physics:
+            continue
+        if object_id in session.object_physics_attempted:
+            continue
+        return object_id
     return None
 
 
@@ -2901,6 +2962,7 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         "FetchInventory2",
         "UploadBakedTexture",
         "ViewerAsset",
+        "GetObjectPhysicsData",
         "GetMesh",
         "GetMesh2",
         "GetTexture",
@@ -3027,6 +3089,21 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         session._record_event(now, "map.get_texture_url_ready", "tile fetch deferred until MapBlockReply")
     else:
         session._record_event(now, "map.skip", "GetTexture CAP not resolved")
+
+    object_physics_url = resolved.get("GetObjectPhysicsData")
+    if object_physics_url and session.config.fetch_object_physics:
+        session.object_physics_url = object_physics_url
+        session._record_event(
+            now, "physics.url_ready", "per-prim physics fetch enabled"
+        )
+    elif object_physics_url:
+        session._record_event(
+            now, "physics.skip", "per-prim physics fetch not requested"
+        )
+    else:
+        session._record_event(
+            now, "physics.skip", "GetObjectPhysicsData CAP not resolved"
+        )
 
     viewer_asset_url = resolved.get("ViewerAsset")
     if viewer_asset_url:

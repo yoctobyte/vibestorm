@@ -48,7 +48,7 @@ This document tracks which simulator capabilities matter for Vibestorm and when 
 | `ObjectMedia` | media metadata | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
 | `ObjectMediaNavigate` | media navigation | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
 | `GetObjectCost` | land impact or cost-style data | P4 | planned | offered by the sim (confirmed 2026-08-14); optional later |
-| `GetObjectPhysicsData` | physics-related object data | P4 | planned | offered by the sim (confirmed 2026-08-14). Worth revisiting: `ObjectPhysicsProperties` over UDP only echoes an edit the viewer itself made, so this may be the way to read physics data without an in-world edit |
+| `GetObjectPhysicsData` | physics-related object data | P2 | verified | `caps/object_physics_client.py`, behind `./run.sh census --physics`. This is how to read prim physics *without* an in-world edit — the UDP `ObjectPhysicsProperties` message only echoes an edit the viewer itself made. Live-verified 2026-08-14: 32 of 33 objects answered, all shape `prim` at OpenSim defaults; the one that did not is our own avatar, which is in the same collection but is not a `SceneObjectPart`. **One id per request** — OpenSim's handler closes the outer LLSD map inside its loop, so two ids return XML that does not parse (confirmed live, `mismatched tag`) |
 
 ## Session and Account Capabilities
 
@@ -88,10 +88,11 @@ The initial capability layer should support:
 
 ## Current Requested Capability Set
 
-`_run_caps_prelude` in `udp/session.py` requests these, and all nine resolve
+`_run_caps_prelude` in `udp/session.py` requests these, and all ten resolve
 against local OpenSim:
 
 - `EventQueueGet`
+- `GetObjectPhysicsData`
 - `SimulatorFeatures`
 - `FetchInventoryDescendents2`
 - `FetchInventory2`

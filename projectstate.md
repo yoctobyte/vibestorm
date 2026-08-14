@@ -217,8 +217,11 @@ itself.** Twice the blocker was a missing outbound message rather than a
 missing object.
 
 *Blocked on consent* (needs an in-world edit in the user's region): the
-object-sync CAP verify, and `ObjectPhysicsProperties`, which the sim sends only
-as an echo of an edit the viewer itself made.
+object-sync CAP verify. `ObjectPhysicsProperties` used to be on this list —
+the sim sends that message only as an echo of an edit the viewer itself made —
+but the *data* needs no edit at all: `./run.sh census --physics` pulls it for
+every prim through `GetObjectPhysicsData`. What remains unverified is the UDP
+message, not the physics.
 
 *Blocked on sources* (libomv tables absent from `opensim-source/`, and guessing
 them is worse than leaving them raw): `PrimFlags` for `update_flags`, the
