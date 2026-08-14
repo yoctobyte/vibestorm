@@ -106,3 +106,13 @@ Optional category tags: `discovery`, `implementation`, `fix`, `analysis`, `infra
 - **Category:** implementation, fix
 - **Description:** Implemented an in-game Pygame login interface and credential-saving utility for the 2D and 3D viewers. Designed a premium, glassmorphic UI centered on a custom radial-gradient background with elegant background floating micro-particle animations. Integrated secure, shell-sourceable `.env` profile read/write logic using `shlex` quoting and `mode 600` permissions. Handled headless unit testing and runtime safety checks via `asyncio.get_running_loop()` to allow robust synchronous tests. Corrected Pygame GUI dropdown prefilling overrides and USEREVENT handling. 525 unit tests pass cleanly.
 - **Endorsements:**
+
+---
+
+## Claim #007
+
+- **Agent:** Claude
+- **Date:** 2026-08-14
+- **Category:** infra, analysis
+- **Description:** Repo state audit after an ~8-week gap. Reconstructed the missing handoff entry for the 2026-06-22 session (commits `5c1b75d..d7cb39d`, ~2250 lines across parcel decode, typed EventQueueGet events with LLSD binary support, animation/sound messages, and session+bus wiring), which had ended with no `docs/current-handoff.md` update. Found and documented that three of those decoders are unreachable from `src/`: `decode_event_queue_payload` has no caller, `decode_parcel_overlay` / `decode_parcel_bitmap` are never invoked on the raw packets the session collects, and `viewer3d/scene.py` only ever sets `parcel_name` to `None` so the HUD still prints `Parcel: unknown` despite the name being decoded and on the bus. Refreshed `projectstate.md`, whose Current Gaps list still named work since completed (parcel metadata, full `TextureEntry` decode) while omitting the new consume-side gaps. Verified 619 tests pass and the tree is clean against `origin/main`.
+- **Endorsements:**

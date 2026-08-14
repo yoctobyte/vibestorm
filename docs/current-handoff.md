@@ -1,23 +1,35 @@
 # Current Handoff
 
-Last updated: 2026-05-25
+Last updated: 2026-08-14 (documenting work through 2026-06-22)
 
 ## Where To Move Next
 
-Two coherent next tracks are open:
+Three coherent tracks are open. All three are now blocked on the same kind of
+work: **consuming decoders that already exist**, and live-verifying them.
 
-1. Live-verify object sync: select a scripted object in `viewer3d`, download scripts
+1. Wire up the parcel track (newest, shortest path to visible value).
+   The 2026-06-22 pass decoded `ParcelProperties`, the `ParcelOverlay` grid, and
+   the parcel Bitmap — but `decode_parcel_overlay` / `decode_parcel_bitmap` have
+   no caller in `src/`, and the HUD still prints `Parcel: unknown` because
+   nothing assigns `scene.parcel_name`. Set the name from the bus event first,
+   then reassemble the overlay grid and draw `border_segments` as plot edges.
+   See the 2026-06-22 parcel/EQ/animation/sound update below.
+2. Live-verify object sync: select a scripted object in `viewer3d`, download scripts
    via Save Text, edit a `.lsl` locally, then "Upload File" — confirm the upload dialog
    seeds `local/asset-downloads/<task-id>/`, syncs to the object, and the script
-   recompiles (check chat for "Sync: … compiled OK").
-2. Continue real mesh/sculpt rendering:
+   recompiles (check chat for "Sync: … compiled OK"). The typed
+   `ScriptRunningReply` EQG event now exists to confirm this server-side, but is
+   not wired into the poll loop yet.
+3. Continue real mesh/sculpt rendering:
    - live-verify `GetMesh` against a local OpenSim mesh object
-   - add normals/UVs and per-face/material grouping to decoded mesh assets
+   - ~~add normals/UVs and per-face/material grouping to decoded mesh assets~~
+     (done 2026-06-22 in the decoder; renderer wiring still open — see that update)
    - live-verify sculpt map fetch/deformation against local OpenSim sculpted prims
    - add viewer-grade sculpt stitching/normals/UVs
 
-The object sync track is largely implemented (see 2026-05-25 update below); live
-verification is the concrete next step. The sculpt/mesh track is the next rendering path.
+Nothing from the 2026-06-22 session has been seen against live OpenSim traffic —
+it is all unit-tested against synthetic packets. A live session is the highest-value
+next action regardless of which track you pick.
 
 ## Object Sync Track
 
@@ -1138,6 +1150,123 @@ correctly: add an optional `in_normal` attribute + a uniform flag to the shape
 program, interleave `decoded.normals` into the mesh VBO, and bind per-face
 texture groups using `material_groups`. This needs the GL viewer for visual
 verification, so it was not bundled with the decoder change.
+
+## Update 2026-06-22: Parcel / EventQueue / Animation / Sound Decode Pass
+
+Written up 2026-08-14 from commits `5c1b75d..d7cb39d`; the session ended without
+a handoff entry, so this reconstructs it. ~2250 lines added across 13 files.
+
+### What Changed
+
+**Parcel** (`src/vibestorm/world/parcel_overlay.py`, new)
+
+- `decode_parcel_overlay` reassembles the N `ParcelOverlay` packets into a
+  region-wide 4 m LandUnit grid: `ownership_at` / `ownership_at_meters`
+  (PUBLIC/OTHER/GROUP/SELF/FOR_SALE/AUCTION) plus `border_segments`
+  (west/south property lines in region meters). Cell ordering mirrors OpenSim
+  `LandChannel.cs` / `LandManagementModule.cs` — row-major, y south→north
+  outer, x west→east inner.
+- `decode_parcel_bitmap` turns the `ParcelProperties` `Bitmap` field into a
+  per-parcel membership mask over the same grid (`ParcelBitmap.contains` /
+  `contains_meters` / `bounds_units` / `cell_count`). Bit order mirrors
+  `LandObject.ConvertBytesToLandBitmap` — linear index `y*edge+x`, LSB-first
+  per byte.
+- `parse_parcel_properties` (`udp/messages.py`) decodes the `ParcelData` block
+  through `GroupID`: ownership, AABB extent, Bitmap, area, prim counts, parcel
+  flags, sale price, and the Name/Desc/MusicURL/MediaURL strings. Trailing
+  single blocks past `GroupID` are **not** decoded.
+- The two pair up: the per-parcel Bitmap says which cells are mine, the
+  region-wide overlay grid says who owns each cell.
+
+**EventQueueGet** (`src/vibestorm/event_queue/events.py`, new)
+
+- `decode_event_queue_payload` turns a parsed EQG LLSD map into typed events:
+  `EnableSimulator`, `EstablishAgentCommunication`, `TeleportFinish`,
+  `CrossedRegion`, `ScriptRunningReply`, `ObjectPhysicsProperties`,
+  `AgentGroupDataUpdate`, plus `UnknownEvent` for unrecognized names, and the
+  ack id.
+- `caps.llsd.parse_xml_value` gained binary-tag support (base64 default,
+  base16/base85). OpenSim's LLSD encoder emits uint/ulong as big-endian binary
+  blobs (region handles, sizes, flags, `GroupPowers` u64) and IPs as 4 binary
+  bytes; those are coerced back to ints / dotted-quad IPs.
+- `AgentGroupDataUpdate` merges the parallel `NewGroupData` array's
+  `ListInProfile` flag into each membership by index, matching OpenSim's split
+  encoding.
+- Shapes verified against OpenSim `EventQueueGetHandlers.cs` and
+  `LLSDxmlEncode.cs`.
+
+**Animation / sound** (`src/vibestorm/udp/messages.py`)
+
+- `parse_avatar_animation` — High #20 (wire `0x14`). Sender avatar id plus the
+  running animation list (AnimID + sequence id), with the parallel
+  `AnimationSourceList` ObjectID merged per index when present. Three Variable
+  blocks, each with a 1-byte count.
+- `parse_object_animation` — High #30 (`0x1E`). Same Sender/AnimationList shape
+  minus the source/event lists.
+- `parse_sound_trigger` — High #29. One-shot world sound: sound/owner/object/
+  parent ids, region handle, position, gain.
+- `parse_attached_sound` — Medium #13. Object-bound: sound/object/owner ids,
+  gain, flags.
+- `parse_attached_sound_gain_change` — Medium #14 (ObjectID + Gain).
+- `parse_preload_sound` — Medium #15 (Variable DataBlock of ObjectID/OwnerID/
+  SoundID entries).
+
+**Wiring** (`udp/session.py`, `udp/world_client.py`, `bus/events.py`)
+
+- `LiveCircuitSession.handle_incoming` dispatches all of the above instead of
+  letting them fall through as unknown. `ParcelProperties` →
+  `latest_parcel_properties` + `parcel.properties`; `ParcelOverlay` →
+  `parcel_overlay_packets[seq]` + `parcel.overlay` (new `parse_parcel_overlay`
+  body parser: SequenceID + Variable-2 Data); animations and sounds → their
+  `avatar.*` / `object.*` / `sound.*` events. Decode failures record a
+  `.decode_error` event rather than throwing.
+- New typed bus events: `ParcelPropertiesReceived`, `ParcelOverlayReceived`,
+  `AvatarAnimationReceived`, `ObjectAnimationReceived`, `SoundTriggered`,
+  `AttachedSoundReceived`, `AttachedSoundGainChanged`, `PreloadSoundReceived`,
+  each carrying the decoded dataclass.
+- Session stores the latest decoded animation/sound message and fires
+  `on_event` synchronously *after*, so the `WorldClient` bridge reads the
+  just-set slot — the same "session is source of truth" pattern as
+  `terrain.layer_data`.
+
+### What Was Verified
+
+Unit tests only — no live sim run. Session dispatch was exercised end-to-end
+through `handle_incoming` with synthetic packets, and the bus path through
+`session._record_event` → subscriber. Full suite passes (619 tests as of
+2026-08-14). Nothing here has been seen against live OpenSim traffic.
+
+### Current Boundary — three decoders are written but unreachable
+
+This is the important part for whoever picks this up. Grep confirms:
+
+1. **The whole typed EQG module is dead code outside tests.**
+   `decode_event_queue_payload` has no caller in `src/`. The poll loop
+   (`event_queue/client.py`, `poll_once`) still returns raw LLSD. Nothing
+   consumes `EnableSimulator`/`TeleportFinish`/`ScriptRunningReply` yet.
+2. **The parcel grid decoders are never called.** `session.parcel_overlay_packets`
+   accumulates raw per-sequence bytes and publishes them, but no one calls
+   `decode_parcel_overlay` to reassemble the grid, and no one calls
+   `decode_parcel_bitmap` on `latest_parcel_properties.bitmap`.
+3. **The HUD still says `Parcel: unknown`.** `viewer3d/scene.py:246` declares
+   `parcel_name` and `:275` sets it to `None` — nothing ever assigns it, even
+   though `ParcelProperties.name` is now decoded and on the bus.
+
+So the decode work landed but the consumer side did not. That is the shortest
+path to visible value.
+
+### Concrete Next Step
+
+Close boundary 3 first — it is small and makes the parcel work observable:
+subscribe `viewer3d` to `ParcelPropertiesReceived`, set `scene.parcel_name`
+from the decoded name, and confirm the HUD status bar shows a real parcel name
+against local OpenSim (`./run.sh tester viewer3d`). Then reassemble the overlay
+grid from `parcel_overlay_packets` and draw `border_segments` as plot edges —
+that closes the long-standing bird's-eye "ParcelOverlay → plot-edge polylines"
+item below.
+
+Wiring the typed EQG decoder into `poll_once` is independent and can land in
+any order.
 
 ## Notes For The Next Agent
 

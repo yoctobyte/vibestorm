@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-05-17
+Last updated: 2026-08-14 (reflects code through 2026-06-22)
 
 ## Current Summary
 
@@ -87,7 +87,24 @@ The repo already supports:
   assets to a chosen folder, and upload one `.lsl`, `.txt`, or `.nc` file or
   all matching files from a chosen folder into the user's inventory root
   through `NewFileAgentInventory`.
-
+- full `TextureEntry` multi-section decode (default value first, then per-face
+  overrides) across all sections, not just the image UUID section
+- SL mesh assets decode normals, `TexCoord0` UVs, and per-submesh
+  `material_groups` mapping prim face index to its index-buffer slice
+- parcel decoding: `ParcelProperties` `ParcelData` block through `GroupID`
+  (ownership, AABB, Bitmap, area, prim counts, flags, sale price, name/desc/
+  music/media URLs), the `ParcelOverlay` packed bit-field reassembled into a
+  region-wide 4 m LandUnit ownership grid with property-line segments, and the
+  per-parcel Bitmap cell mask. Cell ordering and bit order mirror OpenSim
+  `LandChannel.cs` / `LandManagementModule.cs` / `LandObject.cs`.
+- typed `EventQueueGet` event decoding: `EnableSimulator`,
+  `EstablishAgentCommunication`, `TeleportFinish`, `CrossedRegion`,
+  `ScriptRunningReply`, `ObjectPhysicsProperties`, `AgentGroupDataUpdate`, plus
+  `UnknownEvent` fallback. LLSD parsing now handles binary tags, so OpenSim's
+  big-endian uint/ulong blobs and 4-byte IPs coerce back to ints / dotted quads.
+- animation and sound message decoding: `AvatarAnimation`, `ObjectAnimation`,
+  `SoundTrigger`, `AttachedSound`, `AttachedSoundGainChange`, `PreloadSound` —
+  all dispatched from the live session and republished as typed bus events
 
 ## What Is Stable
 
@@ -117,9 +134,12 @@ Main implemented areas:
 
 - `src/vibestorm/login/`: login/bootstrap
 - `src/vibestorm/caps/`: seed capability resolution and LLSD support
-- `src/vibestorm/event_queue/`: `EventQueueGet` polling
+- `src/vibestorm/event_queue/`: `EventQueueGet` polling (`client.py`) and typed
+  event decoding (`events.py`, not yet wired to the poll loop)
 - `src/vibestorm/udp/`: packet parsing, template dispatch, semantic message helpers, session loop
-- `src/vibestorm/world/`: normalized world-state models and updater
+- `src/vibestorm/world/`: normalized world-state models and updater, plus
+  `parcel_overlay.py` (region ownership grid + per-parcel Bitmap decode)
+- `src/vibestorm/bus/`: typed event bus bridging session events to consumers
 - `src/vibestorm/viewer/`: pygame 2D viewer, camera, scene aggregation, UI shell,
   input, rendering
 - `src/vibestorm/viewer3d/`: forked pygame/moderngl viewer with selectable 2D/3D
@@ -152,12 +172,26 @@ Main gaps:
 - better census of all visible scene objects
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
-- full `TextureEntry` material decoding and renderer use of per-face overrides
-- `ExtraParams` and related rich-tail fields
+- renderer use of per-face `TextureEntry` overrides beyond cube primitives (the
+  decode side is complete; other prim shapes still fall back to the default
+  texture until their face mapping is modeled)
+- renderer use of decoded mesh normals/UVs/material groups: the shape shader in
+  `viewer3d/perspective.py` still fakes normals via `normalize(in_pos)` and
+  uploads mesh VBOs positions-only
+- `ExtraParams` beyond the sculpt/mesh block (`type=0x30`): flexi, light,
+  projector, and the other rich-tail entries are still undecoded
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
-- parcel name/status is still a placeholder until `ParcelOverlay` and parcel metadata
-  are decoded
+- **decoders written but not consumed** (2026-06-22 pass):
+  - `decode_event_queue_payload` has no caller in `src/`; `event_queue/client.py`
+    `poll_once` still returns raw LLSD
+  - `decode_parcel_overlay` / `decode_parcel_bitmap` have no caller;
+    `session.parcel_overlay_packets` accumulates raw bytes that nobody reassembles
+  - the HUD still shows `Parcel: unknown` — `viewer3d/scene.py` declares
+    `parcel_name` and only ever sets it to `None`, though `ParcelProperties.name`
+    is decoded and on the bus
+- nothing from the 2026-06-22 decode pass has been seen against live OpenSim
+  traffic; it is unit-tested against synthetic packets only
 - extended-region 32x32 terrain patches are not decompressed yet
 - inventory is no longer purely read-only, but write support is still narrow:
   user-inventory folders can be opened
@@ -220,20 +254,31 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 
 ## Recommended Next Step
 
-Move next on object-local file sync for scripts and notecards:
+The repo has drifted into a state where several decoders are complete and
+tested but have no consumer, and none of the 2026-06-22 work has met live
+traffic. So: consume and live-verify rather than decode more.
+
+Shortest path to visible value — surface the parcel data:
 
 1. Start OpenSim: `./run.sh opensim`
 2. Run the viewer with the local test profile: `./run.sh tester viewer3d`
-3. Select an object, load its task inventory, and use the current `Save Text`
-   path to populate `local/asset-downloads/<task-id>/`.
-4. Implement task-inventory update CAP support:
-   `UpdateScriptTask` / `UpdateScriptTaskInventory` for `.lsl` rows and
-   `UpdateNotecardTaskInventory` for `.txt` / `.nc` rows.
-5. Wire Object Inspector upload to sync exact-name local file matches back into
-   the selected object's existing task inventory items. Keep the current
-   `NewFileAgentInventory` upload into the user's inventory root as the
-   fallback when no selected object context exists.
+3. Subscribe `viewer3d` to the `ParcelPropertiesReceived` bus event and assign
+   `scene.parcel_name` from the decoded name. The HUD status bar should stop
+   showing `Parcel: unknown`.
+4. Reassemble `session.parcel_overlay_packets` through `decode_parcel_overlay`
+   and render `border_segments` as plot-edge polylines — this closes the
+   long-standing bird's-eye parcel item.
+5. While the session is live, confirm the animation and sound decoders fire
+   against real traffic; they have only seen synthetic packets.
 
-The first sync pass should update existing script/notecard rows only. Deleting
-object inventory, creating missing rows, conflict resolution, and recursive
-folder sync can follow after the update path is proven live.
+Two independent tracks remain open, either of which can follow:
+
+- Wire `decode_event_queue_payload` into `event_queue/client.py` `poll_once` so
+  `EnableSimulator` / `TeleportFinish` / `ScriptRunningReply` become typed
+  events instead of raw LLSD.
+- Live-verify the object-local script/notecard sync path end to end (implemented
+  2026-05-25, never confirmed against a running sim). `ScriptRunningReply` is
+  the server-side confirmation signal once the EQG decoder is wired.
+
+Deleting object inventory, creating missing rows, conflict resolution, and
+recursive folder sync remain out of scope until the update path is proven live.
