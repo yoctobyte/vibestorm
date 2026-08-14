@@ -224,6 +224,11 @@ Main gaps:
   subset, with unnamed bits reported rather than dropped. Parcel decoding is
   live-exercised (5 of 16 names on a real reply); region decoding resolves 1 of
   9, the rest being bits OpenSim sets but LSL never exposes
+- a prim's `state` byte is decoded: for an attachment it is the attachment
+  point with nibbles swapped, named from the LSL `ATTACH_*` constants, with
+  HUD slots flagged. `AttachItemID` in NameValues is what identifies an
+  attachment; the state byte alone cannot, since a tree also has one. No
+  attachments exist in the test region, so this is unit-tested only
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for

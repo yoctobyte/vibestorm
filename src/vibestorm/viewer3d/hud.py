@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from vibestorm.world.attachments import describe_attachment
 from vibestorm.world.prim_attributes import click_action_name, prim_material_name
 
 if TYPE_CHECKING:
@@ -2643,6 +2644,15 @@ def _inspector_detail_html(e: object, w: object | None, scene: object | None = N
     )
     lines.append(f"Material: {material}")
     lines.append(f"Click Action: {click_action}")
+
+    # Only shown for actual attachments: for any other prim the state byte
+    # means something else entirely (vegetation species, or nothing).
+    attachment = describe_attachment(
+        getattr(w, "state", 0) if w else 0,
+        getattr(w, "name_values", None) if w else None,
+    )
+    if attachment is not None:
+        lines.append(f"Attached To: {_html_escape(attachment)}")
 
     def_tex = getattr(e, "default_texture_id", None)
     lines.append(f"Default Texture: {def_tex or '(none)'}")

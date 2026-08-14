@@ -166,6 +166,8 @@ class CensusFeatureTests(unittest.TestCase):
             hover_text="hi",
             media_url="http://example.invalid/",
             sound_id=SOUND_ID,
+            # AttachItemID is what marks a prim as an attachment.
+            name_values={"AttachItemID": str(SOUND_ID)},
             texture_entry=TextureEntry(
                 default_texture_id=FACE_TEX, face_texture_ids=((0, FACE_TEX),)
             ),

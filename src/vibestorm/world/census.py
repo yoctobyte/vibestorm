@@ -17,6 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from vibestorm.world.extra_params import decode_extra_params
+from vibestorm.world.attachments import is_attachment
 from vibestorm.world.permissions import decode_permissions
 from vibestorm.world.prim_attributes import click_action_name, prim_material_name
 
@@ -86,6 +87,9 @@ TRACKED_FEATURES: tuple[str, ...] = (
     "sculpt",
     "mesh asset",
     "texture animation",
+    # An attachment exercises the nibble-swapped state byte, which nothing
+    # else does.
+    "attachment",
 )
 
 PCODE_AVATAR = 47
@@ -144,6 +148,8 @@ def _features_of(world_object: object) -> list[str]:
         found.append("attached sound")
     if getattr(world_object, "texture_animation", None) is not None:
         found.append("texture animation")
+    if is_attachment(getattr(world_object, "name_values", None)):
+        found.append("attachment")
 
     entry = getattr(world_object, "texture_entry", None)
     if entry is not None and getattr(entry, "face_texture_ids", ()):

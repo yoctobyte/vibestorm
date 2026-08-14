@@ -2258,6 +2258,42 @@ exposes, so they land in `unknown_bits`. That large unknown mask is the correct
 output, not a defect, and it is exactly what the earlier note was right to be
 cautious about — the fix is to report the gap, not to guess the bits.
 
+## 2026-08-14 — the state byte, and a swap that hides in plain sight
+
+Every prim carries a `state` byte the client kept raw. It means two different
+things: for a tree or grass prim it is the species, and for an **attachment**
+it is the attachment point — **nibble-swapped**. `LLClientView` does it twice,
+in the full update and the terse one:
+
+    int st = 0xff & (int)part.ParentGroup.AttachmentPoint;
+    state = (byte)((st >> 4) | (st << 4));
+
+This is the nastiest failure mode seen this session, worse than the
+StatsIndex/StatsID mix-up, because the wrong answer is *in range*: attachment
+point 1 (chest) arrives as `0x10` = 16, and 16 is itself a valid point (right
+eye). Skipping the swap does not corrupt anything or raise — it silently
+reports a different body part. A test asserts both halves: that `0x10` decodes
+to chest, and that the raw 16 would have read as "right eye".
+
+`world/attachments.py` decodes it, names all 55 points from `ATTACH_*` in
+`LSL_Constants.cs`, and flags the eight HUD slots (31-38) separately since
+those are screen-space and visible only to the wearer.
+
+Crucially, the state byte alone cannot tell you a prim *is* an attachment — a
+tree has a non-zero state too. OpenSim marks an attachment's root with the
+`AttachItemID` NameValue, which the client already decoded, so that is the
+test. `describe_attachment` returns None for anything else.
+
+Points 29/30 are worth knowing about: `ATTACH_RPEC`/`ATTACH_LPEC` and
+`ATTACH_LEFT_PEC`/`ATTACH_RIGHT_PEC` share those two values with the sides
+**swapped** — an upstream SL bug (SVC-580) kept for compatibility. Named by
+the newer, correctly-sided constants.
+
+Live: `census absent=… attachment`. The test region has no attachments — the
+tester avatar wears nothing — so this is unit-tested only. Rezzing anything
+onto the avatar would exercise it, and the census now asks the question every
+run.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
