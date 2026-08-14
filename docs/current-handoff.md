@@ -74,6 +74,99 @@ Keep these scope limits for the first pass:
 - no recursive folder sync
 - no automatic upload on every file change
 
+## Update 2026-08-14: Self-Checking Ledgers, IM, Teleport
+
+### The recurring problem, closed
+
+`spec/message-coverage.md` and `spec/capability-coverage.md` have each drifted
+twice, in both directions, and every drift was found by hand months later. Both
+now re-derive themselves from the code:
+
+- `test/test_message_coverage_ledger.py` — a row claiming support must name
+  something the source mentions; every message with a parser must have a row;
+  every message the client can *send* must have a row.
+- `test/test_capability_coverage_ledger.py` — the same two, plus a scale check,
+  because this ledger writes its status scale out in the document and a row can
+  contradict it. It immediately caught a row reading `handled`, a status
+  borrowed from the other ledger's scale.
+
+Wire names are read from what the code actually does, never from a naming
+convention: parsers from their `summary.name != "X"` guard, encoders from the
+message-number prefix they write, resolved through the same template the client
+dispatches with. The guess would be wrong — `parse_simulator_viewer_time`
+decodes `SimulatorViewerTimeMessage`.
+
+Between them these found **22 messages** with working code and no ledger row:
+the appearance handshake, the xfer and transfer requests, map blocks, parcel
+properties, task inventory, and the teleport request.
+
+Neither checks `tested` versus `verified`. That is a claim about live evidence,
+and asserting it offline would be the overclaim the distinction exists to
+prevent. Nor can anything catch a message this client neither sends nor
+parses — indistinguishable from a message that does not concern us.
+
+### "Blocked on region content" was wrong twice
+
+`ImprovedInstantMessage` was filed as needing a second avatar. It does not:
+OpenSim's `InstantMessageModule.OnInstantMessage` routes on `ToAgentID` with no
+self-check, so an IM addressed to our own agent id comes back through exactly
+the inbound path a second avatar's would take. Sent live, delivered 5.5 s later.
+Chat had left the same list a week earlier for the same reason.
+
+**Before filing something as blocked on world content, check whether the client
+can produce the traffic itself.** Twice the blocker was a missing outbound
+message, not a missing object.
+
+The IM encoder writes the trailing `EstateBlock` and `MetaData` blocks that the
+template defines and OpenSim's handler ignores. The packet is deserialised in
+full before the handler runs, so a block the deserialiser expects and does not
+find is malformed, while trailing bytes it does not expect are not. libomv is
+DLL-only in `opensim-source/`, so this was settled by the live round trip
+rather than by reading its packet class.
+
+### Teleport
+
+The client could send `TeleportLocationRequest` and understood none of the
+replies. Now decodes `TeleportStart`, `TeleportProgress`, `TeleportFailed` and
+`TeleportLocal`, with `world/teleport_flags.py` naming the flag word — fully
+sourced from `Constants.cs`, so unlike the parcel and region tables this one
+has no unnamed bits and the pin test demands every flag be named.
+
+Verified live both ways: a hop inside the region, and a teleport to a region
+handle no region occupies (`'The region you tried to teleport to was not
+found'`, zero `AlertInfo` blocks — OpenSim never populates that block).
+
+Two corrections the live run forced:
+
+- `TeleportLocal` is the **entire** response to a same-region hop. No
+  `TeleportFinish`, no new circuit, no seed capability. The session must take
+  its position from it or keep sending `AgentUpdate` from where the avatar used
+  to be.
+- This module first shipped `is_same_region_teleport` /
+  `is_region_crossing_teleport` reading the `FinishedVia*` bits. They looked
+  right and were dead code: **OpenSim sets no `FinishedVia*` bit anywhere**,
+  it forwards the request's own flag word unchanged. The flags stay named for
+  other grids; the predicates are gone, and a test pins the absence to the
+  source tree rather than to one reading of it.
+
+### Also
+
+`UpdateScriptTaskInventory` is the name OpenSim marks `//legacy`; the current
+name is `UpdateScriptTask`. The object-sync path asked only for the legacy
+alias, which works today and would fail as "no task inventory caps available"
+the day it is dropped. It now asks for both, current first.
+
+### A testing note worth keeping
+
+Mutation-checking with `cp` to restore a file can lie. A restored file the same
+size as the mutated one, written in the same second, leaves Python's `.pyc`
+stale — so a mutation reads as caught when it is not, or a restore reads as
+broken when it is not. Run mutation checks with `PYTHONDONTWRITEBYTECODE=1`.
+
+The IM encoder's first mutation pass also missed a swapped `Offline`/`Dialog`
+pair: two adjacent U8s, both 0 in every test, so the swap round-tripped
+perfectly. There is now a test that gives them different values.
+
 ## Update 2026-05-25: Object Task Inventory Sync (Steps 2–4)
 
 ### What Changed

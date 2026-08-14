@@ -200,6 +200,15 @@ probe, a worn attachment, a prim with two different face textures, a
 non-default material or click action, a working sculpt map, a real mesh asset,
 a 32x32 LandExtended varregion, and a second avatar for typing notifications.
 
+Two entries left this list by turning out not to be blocked at all. Chat did
+not need an in-world speaker — the client can say something and read the
+simulator's echo. IM did not need a second avatar — OpenSim routes on
+`ToAgentID` without checking whether it is the sender's own, so an IM to
+ourselves comes back through the normal inbound path. **Before adding
+anything to this list, check whether the client can produce the traffic
+itself.** Twice the blocker was a missing outbound message rather than a
+missing object.
+
 *Blocked on consent* (needs an in-world edit in the user's region): the
 object-sync CAP verify, and `ObjectPhysicsProperties`, which the sim sends only
 as an echo of an edit the viewer itself made.
@@ -210,10 +219,18 @@ particle system block, `ChatSourceType` / `ChatAudibleLevel`, and the region
 flag bits LSL does not expose.
 
 *Genuinely unimplemented, not blocked*: the region-crossing transport half
-(`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child), and the
-inventory *write* surface described at the end of this list. Recursive
-inventory *reading* is done — `./run.sh inventory-walk` walks the whole tree
-breadth-first and reports truncation explicitly.
+(`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child,
+`TeleportFinish` over the event queue), and the inventory *write* surface
+described at the end of this list. Recursive inventory *reading* is done —
+`./run.sh inventory-walk` walks the whole tree breadth-first and reports
+truncation explicitly.
+
+Both coverage ledgers now re-derive themselves from the code
+(`test/test_message_coverage_ledger.py`, `test/test_capability_coverage_ledger.py`),
+so the drift that made these lists untrustworthy twice cannot recur silently.
+The one thing they still cannot check is `tested` versus `verified`: that is a
+claim about live evidence, and asserting it offline would be the overclaim the
+distinction exists to prevent.
 
 Landed work follows:
 
