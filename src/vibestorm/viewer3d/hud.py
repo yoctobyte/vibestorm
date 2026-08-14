@@ -2552,7 +2552,10 @@ def _inspector_detail_html(e: object, w: object | None) -> str:
 
     te = getattr(e, "texture_entry", None)
     if te and hasattr(te, "face_texture_ids") and te.face_texture_ids:
-        faces = [f"{face}: {tid}" for face, tid in te.face_texture_ids.items()]
+        # face_texture_ids is a tuple of (face, uuid) pairs, not a mapping;
+        # calling .items() on it raised the moment any prim in view carried a
+        # per-face override, which no prim in the test region does.
+        faces = [f"{face}: {tid}" for face, tid in te.face_texture_ids]
         lines.append(f"Face Textures: {', '.join(faces)}")
     lines.extend(_extra_param_lines(getattr(e, "extra_params", None)))
     lines.append("")
