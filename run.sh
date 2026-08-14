@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 is_command() {
   case "$1" in
-    help|-h|--help|login|login-show|login-reset|opensim|bootstrap|caps|eventq|udp|handshake|session|upload-smoke|console|viewer|viewer3d|test|fixtures|unknowns)
+    help|-h|--help|login|login-show|login-reset|opensim|bootstrap|caps|eventq|udp|handshake|session|census|upload-smoke|console|viewer|viewer3d|test|fixtures|unknowns)
       return 0
       ;;
     *)
@@ -134,6 +134,7 @@ Commands:
   udp          Send the one-shot UseCircuitCode UDP probe
   handshake    Run the handshake probe
   session      Run the bounded live UDP session loop
+  census       Report what content the region actually holds (and what it lacks)
   upload-smoke Upload a one-space text/notecard item and verify FetchInventory2 sees it
   console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
   viewer       Run the pygame 2D bird's-eye viewer
@@ -461,6 +462,10 @@ do_session() {
     "$@"
 }
 
+do_census() {
+  python_runner -m vibestorm.app.cli world-census "${cli_base_args[@]}" "$@"
+}
+
 do_upload_smoke() {
   python_runner -m vibestorm.app.cli upload-empty-text-smoke "${cli_base_args[@]}" "$@"
 }
@@ -549,6 +554,9 @@ case "$command" in
     fi
     session_args+=(--capture-mode "$CAPTURE_MODE")
     run_login_command do_session "$@"
+    ;;
+  census)
+    run_login_command do_census "$@"
     ;;
   upload-smoke)
     run_login_command do_upload_smoke "$@"

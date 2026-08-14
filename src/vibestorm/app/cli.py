@@ -36,7 +36,9 @@ from vibestorm.udp.messages import (
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.session import SessionConfig, SessionEvent, SessionReport, run_live_session
 from vibestorm.udp.socket_client import UdpSocketClient
+from vibestorm.udp.world_client import WorldClient
 from vibestorm.udp.zerocode import decode_zerocode
+from vibestorm.world.census import census_world, format_census
 from vibestorm.world.models import WorldView
 
 
@@ -185,6 +187,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--packet-log",
         action="store_true",
         help="Also print raw transport/packet events (transport.*, packet.sent, ping.*).",
+    )
+
+    census_parser = subparsers.add_parser(
+        "world-census",
+        help="Login, observe a region, and report what content it actually contains.",
+    )
+    census_parser.add_argument("--login-uri", required=True)
+    census_parser.add_argument("--first", required=True)
+    census_parser.add_argument("--last", required=True)
+    census_parser.add_argument("--password", required=True)
+    census_parser.add_argument("--start", default="last")
+    census_parser.add_argument(
+        "--duration",
+        type=float,
+        default=30.0,
+        help="Seconds to observe before reporting. Object updates keep arriving "
+        "for a while after login, so a short run under-reports.",
+    )
+    census_parser.add_argument(
+        "--examples",
+        type=int,
+        default=3,
+        help="How many example local_ids to show per feature.",
     )
 
     unknowns_parser = subparsers.add_parser(
@@ -730,6 +755,44 @@ def main() -> int:
             ),
         )
         print_lines(format_session_report(report, verbose=args.verbose))
+        return 0
+
+    if args.command == "world-census":
+        request = LoginRequest(
+            login_uri=args.login_uri,
+            credentials=LoginCredentials(
+                first=args.first,
+                last=args.last,
+                password=args.password,
+            ),
+            start=args.start,
+            version=__version__,
+            platform=platform.system(),
+            platform_version=platform.platform(),
+        )
+        bootstrap = asyncio.run(LoginClient().login(request))
+        client = WorldClient()
+        print(
+            f"census=observing sim={bootstrap.sim_ip}:{bootstrap.sim_port} "
+            f"duration={args.duration:.1f}s",
+            flush=True,
+        )
+        asyncio.run(
+            run_live_session(
+                bootstrap,
+                MessageDispatcher.from_repo_root(Path.cwd()),
+                config=SessionConfig(
+                    duration_seconds=args.duration,
+                    auto_upload_bakes=False,
+                ),
+                world_client=client,
+            ),
+        )
+        world_view = client.world_view()
+        if world_view is None:
+            print("census=no world view; the session never reached a region")
+            return 1
+        print_lines(format_census(census_world(world_view), examples=args.examples))
         return 0
 
     if args.command == "upload-empty-text-smoke":
