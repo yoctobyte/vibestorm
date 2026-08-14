@@ -239,7 +239,12 @@ Main gaps:
   alert. Not live-verified (the test sim is standalone), but the events are
   constructible so the scene handling was never blocked on that. The transport
   half — child circuits and promotion on crossing — is still unimplemented
-- deeper object update families such as `ObjectUpdateCached` and `KillObject`
+- `ObjectUpdateCached` is fully handled, not a gap: every cached entry triggers
+  `RequestMultipleObjects`, and that path is what populates most of the region.
+  Measured live — the sim sends it twice, at region entry rather than
+  periodically, and 33 objects end up tracked from only 13 full-update events.
+  `KillObject` removes objects from the `WorldView`; it has no live exercise
+  because nothing in the test region is ever deleted
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for
   swept surfaces) instead of falling back to normalize(position); sculpts derive

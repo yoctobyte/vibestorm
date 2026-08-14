@@ -2559,6 +2559,37 @@ by line index with an `assert` on the target line, it fails correctly.
 Ad-hoc mutation scripts must assert the pattern was found. A `.replace()` that
 misses is indistinguishable from a test that holds.
 
+## 2026-08-14 — a gap that had already been closed
+
+`projectstate.md` listed "deeper object update families such as
+`ObjectUpdateCached` and `KillObject`" as an open gap. `ObjectUpdateCached` is
+not a gap and has not been one for a while: `session.py` already requests a
+full update for every cached entry via `RequestMultipleObjects`, chunked at
+255 ids.
+
+Measured against the live sim rather than assumed:
+
+- `ObjectUpdateCached` arrives **twice**, at ~5.7 s and ~6.3 s — at region
+  entry, not on a repeating timer.
+- 13 `ObjectUpdate` events yield **33 tracked objects**, so the cached-request
+  path is what populates most of the region. It demonstrably works.
+
+I had gone looking for a specific bug — the handler re-requests unconditionally
+rather than only on genuine cache misses, so a sim that re-announced cached
+objects periodically would make us re-request things we already hold. That is
+a real inefficiency in principle and a non-issue in practice at two messages
+per session. Not worth code; worth the measurement that says so.
+
+`KillObject` does remove objects from the `WorldView`. It has no live exercise
+because nothing in the test region is ever deleted.
+
+Also removed the stray empty `tests/` directory. The suite is `test/`; the
+plural one was an empty leftover and had been sitting there unexplained.
+
+**Stale gap entries are their own hazard.** This one would have had someone
+implement a feature that already existed. Worth re-reading the gap list
+occasionally and checking the entries still describe reality.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
