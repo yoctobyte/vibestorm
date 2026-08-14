@@ -84,6 +84,28 @@ status reflects the **weakest** one and the note says which is which.
 | `ParcelOverlay` | region parcel ownership grid | P2 | verified | reassembled into a 64x64 grid with border segments; observed 2026-08-14 |
 | `ParcelProperties` | parcel metadata | P2 | verified | **arrives over the event queue, not UDP** — OpenSim has no UDP send path for it, so it never appears in a UDP census. Confirmed live 2026-08-14 |
 
+## Teleport Messages
+
+The client could already *send* `TeleportLocationRequest` and decoded none of
+the replies, so a teleport was a request into silence. The coverage ledger did
+not say so, because a message with no parser at all is invisible to the
+completeness check — it only catches a parser with no row, not a gap with
+neither.
+
+| Message | Purpose | Priority | Status | Notes |
+| --- | --- | --- | --- | --- |
+| `TeleportLocationRequest` | ask to teleport to a position | P2 | verified | outbound builder; live-verified 2026-08-14 both ways — a real destination and a region handle no region occupies |
+| `TeleportStart` | the sim accepted the request | P2 | verified | observed 2026-08-14, `flags=via location` |
+| `TeleportLocal` | the teleport landed in the same region | P2 | verified | the *entire* response to a same-region hop: no `TeleportFinish`, no new circuit, no seed cap. Updates the session position, which nothing else would. Observed 2026-08-14 |
+| `TeleportFailed` | the teleport did not happen | P2 | verified | observed 2026-08-14: `'The region you tried to teleport to was not found'`, with zero `AlertInfo` blocks — OpenSim never populates that block, so the decode loop for it is `tested` only |
+| `TeleportProgress` | a step within a teleport | P3 | tested | decoded but never observed: OpenSim sends no progress steps for a local teleport, and a crossing needs a neighbour region |
+| `TeleportFinish` | the teleport landed in a *different* region | P2 | planned | marked `UDPBlackListed` in the template and delivered over the event queue, like `ParcelProperties`. Needs a neighbour region to observe, and the region-crossing transport it implies is not built |
+
+The `TeleportFlags` word these carry is fully named from OpenSim's
+`Constants.cs` — see `world/teleport_flags.py`. One caution recorded there:
+OpenSim never sets any `FinishedVia*` bit, so a client cannot use them to tell
+a local teleport from a crossing. The message type is the signal.
+
 ## Asset Delivery Messages
 
 These are the two UDP asset channels. Both are driven from the object inspector

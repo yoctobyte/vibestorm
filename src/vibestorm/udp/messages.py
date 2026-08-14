@@ -466,6 +466,37 @@ class AgentAlertMessageMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class TeleportStartMessage:
+    teleport_flags: int
+
+
+@dataclass(slots=True, frozen=True)
+class TeleportProgressMessage:
+    agent_id: UUID
+    teleport_flags: int
+    message: str
+
+
+@dataclass(slots=True, frozen=True)
+class TeleportFailedMessage:
+    agent_id: UUID
+    reason: str
+    #: ``AlertInfo`` is a variable-count block. OpenSim sends zero of them, so
+    #: this is normally empty; it is decoded rather than skipped because the
+    #: block is what carries the machine-readable message id when it is used.
+    alert_info: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
+class TeleportLocalMessage:
+    agent_id: UUID
+    location_id: int
+    position: tuple[float, float, float]
+    look_at: tuple[float, float, float]
+    teleport_flags: int
+
+
+@dataclass(slots=True, frozen=True)
 class MapBlockReplyEntry:
     x: int
     y: int
@@ -2069,6 +2100,100 @@ def parse_agent_alert_message(message: MessageDispatch) -> AgentAlertMessageMess
         raise MessageDecodeError("AgentAlertMessage Message payload is truncated")
     text = body[18 : 18 + msg_length].decode("utf-8", errors="replace").rstrip("\x00")
     return AgentAlertMessageMessage(agent_id=agent_id, modal=modal, message=text)
+
+
+def parse_teleport_start(message: MessageDispatch) -> TeleportStartMessage:
+    """TeleportStart (Low/73) — the sim has accepted the teleport request."""
+    if message.summary.name != "TeleportStart":
+        raise MessageDecodeError(f"expected TeleportStart, got {message.summary.name}")
+    body = message.body
+    if len(body) < 4:
+        raise MessageDecodeError("TeleportStart body is too short")
+    return TeleportStartMessage(teleport_flags=unpack_from("<I", body, 0)[0])
+
+
+def parse_teleport_progress(message: MessageDispatch) -> TeleportProgressMessage:
+    """TeleportProgress (Low/66) — a human-readable step in a teleport."""
+    if message.summary.name != "TeleportProgress":
+        raise MessageDecodeError(f"expected TeleportProgress, got {message.summary.name}")
+    body = message.body
+    if len(body) < 16 + 4 + 1:
+        raise MessageDecodeError("TeleportProgress body is too short")
+    agent_id = UUID(bytes=body[0:16])
+    teleport_flags = unpack_from("<I", body, 16)[0]
+    msg_length = body[20]
+    if len(body) < 21 + msg_length:
+        raise MessageDecodeError("TeleportProgress Message payload is truncated")
+    text = body[21 : 21 + msg_length].decode("utf-8", errors="replace").rstrip("\x00")
+    return TeleportProgressMessage(
+        agent_id=agent_id, teleport_flags=teleport_flags, message=text
+    )
+
+
+def parse_teleport_failed(message: MessageDispatch) -> TeleportFailedMessage:
+    """TeleportFailed (Low/74) — the teleport did not happen, and why."""
+    if message.summary.name != "TeleportFailed":
+        raise MessageDecodeError(f"expected TeleportFailed, got {message.summary.name}")
+    body = message.body
+    if len(body) < 16 + 1:
+        raise MessageDecodeError("TeleportFailed body is too short")
+    agent_id = UUID(bytes=body[0:16])
+    reason_length = body[16]
+    offset = 17
+    if len(body) < offset + reason_length:
+        raise MessageDecodeError("TeleportFailed Reason payload is truncated")
+    reason = body[offset : offset + reason_length].decode("utf-8", errors="replace").rstrip("\x00")
+    offset += reason_length
+
+    # AlertInfo is a variable-count block. A sender that includes none still
+    # writes the count byte, so a body that stops here is truncated, not empty.
+    if len(body) < offset + 1:
+        raise MessageDecodeError("TeleportFailed AlertInfo block count is missing")
+    block_count = body[offset]
+    offset += 1
+    alert_info: list[tuple[str, str]] = []
+    for _ in range(block_count):
+        if len(body) < offset + 1:
+            raise MessageDecodeError("TeleportFailed AlertInfo Message length is truncated")
+        length = body[offset]
+        offset += 1
+        if len(body) < offset + length:
+            raise MessageDecodeError("TeleportFailed AlertInfo Message payload is truncated")
+        alert_message = body[offset : offset + length].decode("utf-8", errors="replace").rstrip("\x00")
+        offset += length
+        if len(body) < offset + 1:
+            raise MessageDecodeError("TeleportFailed AlertInfo ExtraParams length is truncated")
+        length = body[offset]
+        offset += 1
+        if len(body) < offset + length:
+            raise MessageDecodeError("TeleportFailed AlertInfo ExtraParams payload is truncated")
+        extra = body[offset : offset + length].decode("utf-8", errors="replace").rstrip("\x00")
+        offset += length
+        alert_info.append((alert_message, extra))
+    return TeleportFailedMessage(
+        agent_id=agent_id, reason=reason, alert_info=tuple(alert_info)
+    )
+
+
+def parse_teleport_local(message: MessageDispatch) -> TeleportLocalMessage:
+    """TeleportLocal (Low/64) — the teleport landed inside the same region.
+
+    This is the whole response for an intra-region hop: no TeleportFinish, no
+    new circuit, no seed capability. A client that only watches for
+    ``TeleportFinish`` sees a local teleport as silence.
+    """
+    if message.summary.name != "TeleportLocal":
+        raise MessageDecodeError(f"expected TeleportLocal, got {message.summary.name}")
+    body = message.body
+    if len(body) < 16 + 4 + 12 + 12 + 4:
+        raise MessageDecodeError("TeleportLocal body is too short")
+    return TeleportLocalMessage(
+        agent_id=UUID(bytes=body[0:16]),
+        location_id=unpack_from("<I", body, 16)[0],
+        position=unpack_from("<3f", body, 20),
+        look_at=unpack_from("<3f", body, 32),
+        teleport_flags=unpack_from("<I", body, 44)[0],
+    )
 
 
 def parse_chat_from_simulator(message: MessageDispatch) -> ChatFromSimulatorMessage:

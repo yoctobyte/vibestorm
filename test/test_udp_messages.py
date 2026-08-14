@@ -36,7 +36,12 @@ from vibestorm.udp.messages import (
     parse_coarse_location_update,
     parse_complete_ping_check,
     encode_improved_instant_message,
+    MessageDecodeError,
     parse_improved_instant_message,
+    parse_teleport_failed,
+    parse_teleport_local,
+    parse_teleport_progress,
+    parse_teleport_start,
     parse_improved_terse_object_update,
     parse_kill_object,
     parse_layer_data,
@@ -1832,6 +1837,101 @@ class SemanticMessageTests(unittest.TestCase):
                 from_agent_name="N",
                 dialog=256,
             )
+
+    def test_parse_teleport_local_decodes_the_landing(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        body = (
+            agent_id.bytes
+            + (7).to_bytes(4, "little")  # LocationID
+            + pack("<fff", 130.5, 60.25, 23.0)  # Position
+            + pack("<fff", 1.0, 0.0, 0.0)  # LookAt
+            + (0x20000010).to_bytes(4, "little")  # ViaLocation | FinishedViaSameSim
+        )
+
+        parsed = parse_teleport_local(self.dispatcher.dispatch(b"\xFF\xFF\x00\x40" + body))
+
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertEqual(parsed.location_id, 7)
+        self.assertEqual(parsed.position, (130.5, 60.25, 23.0))
+        self.assertEqual(parsed.look_at, (1.0, 0.0, 0.0))
+        self.assertEqual(parsed.teleport_flags, 0x20000010)
+
+    def test_parse_teleport_local_keeps_position_and_look_at_apart(self) -> None:
+        # Two adjacent LLVector3s. Swapping them round-trips unless the test
+        # gives them different values, and the failure would be a client that
+        # teleports the camera to the look-at vector.
+        body = (
+            UUID(int=1).bytes
+            + (0).to_bytes(4, "little")
+            + pack("<fff", 130.5, 60.25, 23.0)
+            + pack("<fff", 0.0, 1.0, 0.0)
+            + (0).to_bytes(4, "little")
+        )
+
+        parsed = parse_teleport_local(self.dispatcher.dispatch(b"\xFF\xFF\x00\x40" + body))
+
+        self.assertEqual(parsed.position, (130.5, 60.25, 23.0))
+        self.assertEqual(parsed.look_at, (0.0, 1.0, 0.0))
+
+    def test_parse_teleport_start_decodes_flags(self) -> None:
+        body = (0x10).to_bytes(4, "little")
+
+        parsed = parse_teleport_start(self.dispatcher.dispatch(b"\xFF\xFF\x00\x49" + body))
+
+        self.assertEqual(parsed.teleport_flags, 0x10)
+
+    def test_parse_teleport_progress_decodes_the_step_text(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        step = b"resolving destination\x00"
+        body = agent_id.bytes + (0x10).to_bytes(4, "little") + bytes([len(step)]) + step
+
+        parsed = parse_teleport_progress(self.dispatcher.dispatch(b"\xFF\xFF\x00\x42" + body))
+
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertEqual(parsed.teleport_flags, 0x10)
+        self.assertEqual(parsed.message, "resolving destination")
+
+    def test_parse_teleport_failed_decodes_the_reason(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        reason = b"The region you tried to teleport to was not found\x00"
+        body = agent_id.bytes + bytes([len(reason)]) + reason + bytes([0])
+
+        parsed = parse_teleport_failed(self.dispatcher.dispatch(b"\xFF\xFF\x00\x4A" + body))
+
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertEqual(
+            parsed.reason, "The region you tried to teleport to was not found"
+        )
+        self.assertEqual(parsed.alert_info, ())
+
+    def test_parse_teleport_failed_decodes_alert_info_blocks(self) -> None:
+        # OpenSim sends zero of these, so nothing live would exercise the loop.
+        reason = b"nope\x00"
+        alert = b"TeleportFailed_Reason\x00"
+        extra = b"<llsd/>\x00"
+        body = (
+            UUID(int=1).bytes
+            + bytes([len(reason)])
+            + reason
+            + bytes([1])  # one AlertInfo block
+            + bytes([len(alert)])
+            + alert
+            + bytes([len(extra)])
+            + extra
+        )
+
+        parsed = parse_teleport_failed(self.dispatcher.dispatch(b"\xFF\xFF\x00\x4A" + body))
+
+        self.assertEqual(parsed.alert_info, (("TeleportFailed_Reason", "<llsd/>"),))
+
+    def test_parse_teleport_failed_rejects_a_missing_block_count(self) -> None:
+        # A body that stops after Reason is truncated, not an empty AlertInfo:
+        # a sender with no blocks still writes the count byte.
+        reason = b"nope\x00"
+        body = UUID(int=1).bytes + bytes([len(reason)]) + reason
+
+        with self.assertRaises(MessageDecodeError):
+            parse_teleport_failed(self.dispatcher.dispatch(b"\xFF\xFF\x00\x4A" + body))
 
     def test_parse_alert_message_decodes_text(self) -> None:
         text = b"System message\x00"

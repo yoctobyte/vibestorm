@@ -88,6 +88,10 @@ from vibestorm.udp.messages import (
     parse_agent_movement_complete,
     parse_agent_wearables_update,
     parse_alert_message,
+    parse_teleport_failed,
+    parse_teleport_local,
+    parse_teleport_progress,
+    parse_teleport_start,
     parse_attached_sound,
     parse_attached_sound_gain_change,
     parse_avatar_animation,
@@ -128,6 +132,7 @@ from vibestorm.world.object_inventory import (
     ObjectInventorySnapshot,
     parse_task_inventory_text,
 )
+from vibestorm.world.teleport_flags import decode_teleport_flags
 from vibestorm.world.updater import WorldUpdater
 
 if TYPE_CHECKING:
@@ -487,6 +492,48 @@ class LiveCircuitSession:
                 now,
                 "chat.agent_alert",
                 f"modal={int(alert.modal)} message={alert.message!r}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "TeleportStart":
+            start = parse_teleport_start(dispatched)
+            self._record_event(
+                now,
+                "teleport.start",
+                f"flags={decode_teleport_flags(start.teleport_flags).describe()}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "TeleportProgress":
+            progress = parse_teleport_progress(dispatched)
+            self._record_event(
+                now,
+                "teleport.progress",
+                f"step={progress.message!r} "
+                f"flags={decode_teleport_flags(progress.teleport_flags).describe()}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "TeleportFailed":
+            failed = parse_teleport_failed(dispatched)
+            self._record_event(
+                now,
+                "teleport.failed",
+                f"reason={failed.reason!r} alert_info={len(failed.alert_info)}",
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "TeleportLocal":
+            local = parse_teleport_local(dispatched)
+            # A local teleport moves the avatar with no handshake and no new
+            # circuit, so nothing else will correct our idea of where we are.
+            self.camera_center = local.position
+            self.base_camera_center = local.position
+            self._record_event(
+                now,
+                "teleport.local",
+                f"position={local.position} location_id={local.location_id} "
+                f"flags={decode_teleport_flags(local.teleport_flags).describe()}",
             )
             return self._flush_transport_packets(now)
 

@@ -675,6 +675,51 @@ class LiveCircuitSessionTests(unittest.TestCase):
 
         self.assertEqual(len(ids), 3)
 
+    def test_teleport_local_moves_the_session_position(self) -> None:
+        """Nothing else corrects it — a local teleport has no handshake.
+
+        A region crossing re-runs the whole bootstrap and AgentMovementComplete
+        resets the position. TeleportLocal is the entire response for a
+        same-region hop, so a session that ignores it keeps sending AgentUpdate
+        from where the avatar used to be.
+        """
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.camera_center = (128.0, 128.0, 25.0)
+        body = (
+            self.bootstrap.agent_id.bytes
+            + (2).to_bytes(4, "little")
+            + pack("<fff", 140.0, 136.0, 25.0)
+            + pack("<fff", 1.0, 0.0, 0.0)
+            + (0x10).to_bytes(4, "little")
+        )
+
+        session.handle_incoming(
+            build_packet(b"\xFF\xFF\x00\x40" + body, sequence=91), 11.0
+        )
+
+        self.assertEqual(session.camera_center, (140.0, 136.0, 25.0))
+        self.assertEqual(session.base_camera_center, (140.0, 136.0, 25.0))
+        kinds = [event.kind for event in session.events]
+        self.assertIn("teleport.local", kinds)
+
+    def test_teleport_failed_is_logged_and_does_not_move_us(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.camera_center = (128.0, 128.0, 25.0)
+        reason = b"The region you tried to teleport to was not found\x00"
+        body = (
+            self.bootstrap.agent_id.bytes + bytes([len(reason)]) + reason + bytes([0])
+        )
+
+        session.handle_incoming(
+            build_packet(b"\xFF\xFF\x00\x4A" + body, sequence=92), 11.0
+        )
+
+        self.assertEqual(session.camera_center, (128.0, 128.0, 25.0))
+        detail = next(e.detail for e in session.events if e.kind == "teleport.failed")
+        self.assertIn("not found", detail)
+
     def test_shutdown_sends_logout_request(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)
