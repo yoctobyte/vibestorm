@@ -1550,10 +1550,46 @@ configuration (softness 2, tension 1.0, drag 2.0, gravity 0.3, wind 0). The
 region contains no light, projector or reflection-probe prims, so **those three
 paths remain synthetic-test-only** — rez one of each to confirm them.
 
+Render materials (`0x80`) and mesh flags (`0x70`) followed. Render materials
+is the only variable-length block — a count byte then `(face_index, UUID)`
+pairs — and OpenSim rejects the whole list when the declared count does not fit
+the data rather than reading a partial one. This mirrors that: a half-applied
+material set would be worse than none. Mesh flags returns `None` only for a
+short block, so an explicit `0` stays distinguishable from absent, and the
+aggregate filters on `is not None` rather than truthiness for the same reason.
+
+## Update 2026-08-14: 32x32 LandExtended Terrain Patches
+
+Varregions send terrain as 32x32 patches, which `decompress_patch` rejected
+outright — the dequantize table, zig-zag copy matrix, cosine table and IDCT
+were all hard-coded to 16. The algorithms were already generic in libomv; only
+this port had baked in the edge. They are size-parameterized now, with tables
+built once per size and cached. `DEQUANTIZE_TABLE16` / `COPY_MATRIX16` /
+`COSINE_TABLE16` / `idct_patch16` remain as the 16-sized bindings, so nothing
+that used them had to change.
+
+`RegionHeightmap` also grows to fit. It was fixed at 256x256 and raised on any
+patch landing outside — but a varregion is larger and its size is not known
+until patches start arriving. Growth re-lays existing rows at the new stride,
+capped at 2048 m so a malformed patch coordinate cannot allocate unbounded
+memory.
+
+**Unverified against a real varregion.** The test region is a standard 256 m
+sim, so the 32x32 path is exercised only by synthetic bitstreams built with
+`BitPackWriter`. The 16x16 path was live re-checked (14 LayerData messages, no
+errors) to confirm the generalization did not regress it. Standing up a
+varregion would confirm the rest.
+
 ### Remaining
 
-- extended-region 32x32 terrain patches are still undecoded
-- `ExtraParams` render-materials (`0x80`) and mesh-flags (`0x70`) blocks
+Nothing enumerated is now blocked on decoding. What is left is verification
+against world content this test region does not contain:
+
+- rez a light / projector / reflection-probe prim to confirm those three
+  `ExtraParams` decoders live (only flexi has been seen)
+- stand up a varregion to confirm 32x32 terrain live
+- an object with a multi-submesh mesh and per-face materials would exercise the
+  `material_groups` path against real assets rather than synthetic ones
 
 ## Notes For The Next Agent
 

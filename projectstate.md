@@ -117,8 +117,11 @@ The repo already supports:
   `UnknownEvent` fallback. LLSD parsing now handles binary tags, so OpenSim's
   big-endian uint/ulong blobs and 4-byte IPs coerce back to ints / dotted quads.
 - `ExtraParams` prim feature blocks decode beyond sculpt/mesh: flexi, light,
-  projector and reflection probe, surfaced per-object in the viewer3d Object
-  Inspector
+  projector, reflection probe, render materials and mesh flags, surfaced
+  per-object in the viewer3d Object Inspector
+- terrain decoding is patch-size agnostic: standard 16x16 Land patches and
+  32x32 LandExtended (varregion) patches, with the heightmap growing to fit a
+  region larger than 256 m
 - animation and sound message decoding: `AvatarAnimation`, `ObjectAnimation`,
   `SoundTrigger`, `AttachedSound`, `AttachedSoundGainChange`, `PreloadSound` —
   all dispatched from the live session and republished as typed bus events
@@ -192,9 +195,6 @@ Main gaps:
 - renderer use of per-face `TextureEntry` overrides beyond cube primitives (the
   decode side is complete; other prim shapes still fall back to the default
   texture until their face mapping is modeled)
-- `ExtraParams` render-materials (`0x80`) and mesh-flags (`0x70`) blocks are
-  still undecoded; flexi/light/projector/reflection-probe now decode, though
-  only flexi has been seen live
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
 - typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
@@ -204,7 +204,9 @@ Main gaps:
   sends `ParcelProperties` only over the event queue. Kept for other servers.
 - `ObjectAnimation` and the four sound messages are still synthetic-test-only;
   a quiet single-avatar test region produces none of them
-- extended-region 32x32 terrain patches are not decompressed yet
+- the 32x32 LandExtended terrain path and the light/projector/reflection-probe
+  `ExtraParams` decoders exist but have never seen live data — the test region
+  is a standard 256 m sim with none of that content
 - inventory is no longer purely read-only, but write support is still narrow:
   user-inventory folders can be opened
   lazily through `FetchInventoryDescendents2`, and object/task inventory can
@@ -283,10 +285,9 @@ Two independent tracks remain open, either of which can follow:
   2026-05-25, never confirmed against a running sim). This is now the oldest
   open track and everything it needed exists: `ScriptRunningReply` arrives over
   the live event queue and surfaces as a viewer chat line.
-- Decode extended-region 32x32 terrain patches.
-- Rez a light / projector / reflection-probe prim in the test region to confirm
-  those three `ExtraParams` decoders against live data (only flexi has been
-  seen so far).
+- Confirm the decoders that have never seen live data by adding the content:
+  rez a light / projector / reflection-probe prim, and stand up a varregion for
+  the 32x32 terrain path.
 
 Deleting object inventory, creating missing rows, conflict resolution, and
 recursive folder sync remain out of scope until the update path is proven live.
