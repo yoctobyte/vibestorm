@@ -243,6 +243,42 @@ loop body) so that if OpenSim ever fixes it, we find out.
 What remains unverified is the UDP *message*, not the physics. That
 distinction is now in `projectstate.md` in place of the old blocker.
 
+### Land impact, and why one cap batches and its neighbour cannot
+
+`GetObjectCost` sits beside the physics fetch under `./run.sh census
+--physics`: 32 prims live, every one costing 1, `resource_limiting_type=legacy`.
+
+**Batching works here and not next door.** Same source file, same request
+shape, opposite answer — `GetObjectPhysicsData` closes its outer LLSD map
+inside the per-id loop, `GetObjectCost` closes it after. So the one-id limit
+belongs to that handler, not to the family, and each test pins its own
+handler's loop-body shape so a change either way is noticed.
+
+Two traps in the cost response, both confirmed live:
+
+- **A request matching nothing is not an empty map.** OpenSim writes a filler
+  entry keyed by the *zero UUID*, all costs 0, `resource_limiting_type` still
+  `"legacy"` — shaped exactly like a real prim that costs nothing. The parser
+  drops it; keeping it would report a cost for a prim that does not exist.
+- Equal prim and linkset costs mean this prim's cost accounts for its linkset,
+  not that the linkset has one prim.
+
+### These diagnostics run inside the receive loop
+
+The physics and cost fetches are awaited in the same loop that reads UDP, the
+way the texture and mesh fetches already were. That means an awaited fetch is
+time the session spends not reading packets and not sending `AgentUpdate`.
+
+For an asset the client actually needs, waiting is right. For a diagnostic
+nobody asked for beyond a report at the end, a hung capability must not stall
+the circuit for ten seconds per prim — so both use
+`DIAGNOSTIC_CAP_TIMEOUT_SECONDS` (3 s) rather than the 10 s the asset fetches
+take. Against a local sim they answer in milliseconds, so the bound is far
+outside the observed range; it exists for the failure case, not the normal one.
+
+If more per-tick fetches get added, this is the thing to revisit — they are
+sequential, so the worst-case stall is their timeouts summed.
+
 ### A testing note worth keeping
 
 Mutation-checking with `cp` to restore a file can lie. A restored file the same

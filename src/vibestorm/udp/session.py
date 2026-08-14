@@ -2432,7 +2432,7 @@ async def run_live_session(
                     session.object_physics_attempted.add(pending_physics_id)
                     try:
                         properties = await ObjectPhysicsClient(
-                            timeout_seconds=10.0
+                            timeout_seconds=DIAGNOSTIC_CAP_TIMEOUT_SECONDS
                         ).fetch(
                             session.object_physics_url,
                             pending_physics_id,
@@ -2465,7 +2465,9 @@ async def run_live_session(
                 if pending_cost_ids:
                     session.object_cost_attempted.update(pending_cost_ids)
                     try:
-                        costs = await ObjectCostClient(timeout_seconds=10.0).fetch(
+                        costs = await ObjectCostClient(
+                            timeout_seconds=DIAGNOSTIC_CAP_TIMEOUT_SECONDS
+                        ).fetch(
                             session.object_cost_url,
                             pending_cost_ids,
                             udp_listen_port=session.caps_udp_listen_port,
@@ -2614,6 +2616,17 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
 #: carry — and so that one slow round trip cannot stall the session loop for
 #: a whole region's worth of prims.
 COST_BATCH_SIZE = 16
+
+#: Timeout for the optional physics and cost fetches, deliberately shorter than
+#: the ten seconds the asset fetches use.
+#:
+#: These run inside the receive loop, so an awaited fetch is time the session
+#: spends not reading UDP and not sending AgentUpdate. For an asset the client
+#: actually needs, waiting is right. For a diagnostic nobody asked for beyond a
+#: report at the end, a hung capability must not be able to stall the circuit
+#: for ten seconds per prim. Against a local sim these answer in milliseconds,
+#: so three seconds is already far beyond the observed range.
+DIAGNOSTIC_CAP_TIMEOUT_SECONDS = 3.0
 
 
 def _next_pending_cost_object_ids(session: LiveCircuitSession) -> list[UUID]:

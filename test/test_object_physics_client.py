@@ -319,3 +319,31 @@ class PendingSelectorTests(unittest.TestCase):
             object_physics_attempted = {UUID(int=1)}
 
         self.assertIsNone(_next_pending_physics_object_id(_Session()))
+
+
+class LoopBlockingTests(unittest.TestCase):
+    """The diagnostic fetches run inside the receive loop, so they must be brief.
+
+    An awaited fetch there is time the session spends not reading UDP and not
+    sending AgentUpdate. For an asset the client needs, waiting is correct; for
+    a diagnostic the user asked for only as a report, a hung capability must
+    not be able to stall the circuit per prim.
+    """
+
+    def test_the_diagnostic_timeout_is_shorter_than_the_asset_timeout(self) -> None:
+        from vibestorm.udp.session import DIAGNOSTIC_CAP_TIMEOUT_SECONDS
+
+        self.assertLess(DIAGNOSTIC_CAP_TIMEOUT_SECONDS, 10.0)
+        self.assertGreater(DIAGNOSTIC_CAP_TIMEOUT_SECONDS, 0.5)
+
+    def test_both_diagnostic_fetches_use_it(self) -> None:
+        # Two call sites, and a hard-coded 10.0 at either would reintroduce
+        # exactly the stall this constant exists to bound.
+        session_py = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "vibestorm" / "udp" / "session.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            session_py.count("timeout_seconds=DIAGNOSTIC_CAP_TIMEOUT_SECONDS"), 2
+        )
