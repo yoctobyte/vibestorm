@@ -1432,13 +1432,27 @@ Verified live: 4 packets → grid decoded → **128 border segments** in a `Scen
 driven through the real `_wire_scene`, which for this single region-wide parcel
 is exactly the region perimeter. 634 tests pass.
 
-### Concrete Next Step
+### 3D Borders Too — And A Note On "Needs Visual Verification"
 
-**3D parcel borders.** `perspective.py` needs a dedicated line VAO for
-`scene.parcel_borders`; the terrain-line path (`_render_terrain_lines`, a
-`ctx.LINES` VAO with its own program) is the pattern to copy. Deferred here
-because the result only means anything on screen — it wants the GL viewer for
-visual verification, like the mesh-normals work below.
+Landed in the same pass. `perspective.py` gained a line VAO for
+`scene.parcel_borders` reusing the terrain-line program, with endpoints lifted
+onto the heightmap (or the flat ground plane before terrain arrives) plus a
+0.35 m offset so lines follow the land instead of z-fighting it. The VAO
+rebuilds only when the segments or terrain revision change.
+
+**Worth knowing for every future "this needs the GL viewer" item in this repo:
+`moderngl.create_standalone_context()` works on this machine** (NVIDIA GT 1030,
+GL 3.3). So GL work can be verified headlessly by rendering into an offscreen
+framebuffer and reading pixels back — no display, no manual look-and-see. The
+new tests in `test_viewer3d_perspective_gl.py` render the region perimeter with
+and without borders, assert pixels changed, and assert the brightest changed
+pixel is green-dominant. That is a real check that geometry rasterized, not
+just that a VAO was allocated.
+
+This applies directly to the still-open mesh-normals item below, which was
+deferred for exactly this reason.
+
+### Concrete Next Step
 
 Two independent tracks, either order:
 

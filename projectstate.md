@@ -96,7 +96,8 @@ The repo already supports:
   event queue, and `viewer3d`'s HUD shows the real parcel name instead of
   `Parcel: unknown`. The region ownership grid is reassembled from the
   sequenced `ParcelOverlay` packets and its property lines draw as plot edges
-  in the 2D top-down view. Live-verified against local OpenSim.
+  in both the 2D top-down view and the 3D view (terrain-following). Live-verified
+  against local OpenSim.
 - **background EventQueueGet polling**: the queue is polled in a loop for the
   life of the session, acking each batch, instead of once in the caps prelude.
   This is what makes every EQG-only message reachable at all.
@@ -193,8 +194,6 @@ Main gaps:
   projector, and the other rich-tail entries are still undecoded
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
-- parcel borders draw in the 2D top-down path only; `perspective.py` has no
-  line VAO for them yet (needs GL visual verification)
 - the typed EQG events now arrive but most have no consumer: `TeleportFinish`,
   `EnableSimulator`, `CrossedRegion`, `ScriptRunningReply`,
   `ObjectPhysicsProperties` and `AgentGroupDataUpdate` are decoded and dropped
@@ -267,14 +266,14 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 The standing theme: several decoders are complete and tested but have no
 consumer. Consume and live-verify rather than decode more.
 
-Parcel identity and 2D parcel geometry both work end to end (2026-08-14). The
-next step needs the GL viewer:
+Parcel identity and parcel geometry (2D and 3D) work end to end (2026-08-14).
 
-1. Start OpenSim: `./run.sh opensim`
-2. Add a line VAO in `viewer3d/perspective.py` for `scene.parcel_borders`,
-   copying the `_render_terrain_lines` pattern (own program, `ctx.LINES`).
-   The data is already live-verified; only the 3D draw is missing.
-3. Check it with `./run.sh tester viewer3d`.
+Note for anything marked "needs the GL viewer":
+`moderngl.create_standalone_context()` works on this machine, so GL changes can
+be verified headlessly by rendering to an offscreen framebuffer and reading
+pixels back — see `ParcelBorderGLTests` in `test/test_viewer3d_perspective_gl.py`.
+The deferred mesh normals/UV renderer wiring is the next candidate for that
+treatment.
 
 Two independent tracks remain open, either of which can follow:
 
