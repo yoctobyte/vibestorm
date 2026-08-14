@@ -189,9 +189,14 @@ The next meaningful work is not transport stabilization. It is coverage and inte
 
 Main gaps:
 
-- `./run.sh census` now reports region content: shapes, names, per-feature
-  counts with example local_ids, permission masks, and — the useful part — an
-  explicit `absent=` list of features the region cannot exercise
+- `./run.sh census` now reports region content: shapes (with the raw curves
+  behind any unclassified prim), names, sculpt/mesh kinds with asset ids,
+  per-feature counts with example local_ids, permission masks, and — the useful
+  part — an explicit `absent=` list of features the region cannot exercise
+- the sculpt render path is blocked on content, not code: the test region's
+  three sculpts all reference asset `be293869-d0d9-0a69-5989-ad27f1946fd4`,
+  which GetTexture returns 404 for. No mesh (type 5) object exists at all, so
+  GetMesh has never run against live data
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - prim shape now survives `ObjectUpdateCompressed` (it was skipped, leaving
   nearly every prim in a populated region rendering as the fallback cube).

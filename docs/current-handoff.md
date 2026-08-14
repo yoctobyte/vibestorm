@@ -1882,6 +1882,39 @@ sphere until authored mesh assets are fetched and decoded.
 Live-verified by rendering the region offscreen aimed at local_id 234346573 —
 it draws as a hollow square-section ring.
 
+## 2026-08-14 — the census hiding a zero in its own report
+
+Reading the census output rather than just running it turned up two more
+things.
+
+**"sculpt or mesh=3" answered the wrong question.** Sculpts and authored
+meshes ride the same ExtraParams block but fetch through different
+capabilities — GetTexture for a sculpt map, GetMesh for a mesh asset. A count
+that merges them does not say which pipeline a region exercises. The census now
+names the kind (`sculpt:sphere`, `sculpt:torus`, `sculpt:plane`,
+`sculpt:cylinder`, `mesh`) and prints the asset id per prim.
+
+**And merging them hid a zero.** Three sculpts and no meshes produced a
+non-zero total, so the GetMesh pipeline's complete absence of live coverage
+never reached the `absent=` line — the exact silent zero the report exists to
+prevent, inside the report itself. They are separate tracked features now, and
+`absent=` correctly ends with `mesh asset`.
+
+That immediately explained a session log. All three sculpt prims share asset
+`be293869-d0d9-0a69-5989-ad27f1946fd4`, and a verbose session shows:
+
+    event=texture.fetch.error id=be293869-d0d9-0a69-5989-ad27f1946fd4
+        error=GetTexture ... failed: HTTP 404
+
+So the sculpt render path cannot be verified here because **the sculpt map is
+missing from the sim's asset store**, not because of anything client-side. And
+`mesh.get_mesh_url_ready mesh fetch deferred until mesh object seen` is GetMesh
+correctly idling — there is no mesh object in the region to fetch for.
+
+Both are content problems, now visible rather than inferred. Re-uploading that
+sculpt map would light up the sculpt path; a rezzed mesh object would light up
+GetMesh and, with per-face materials, the `material_groups` path too.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
