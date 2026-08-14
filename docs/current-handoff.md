@@ -2462,6 +2462,39 @@ and pruning against an empty live set.
 a capacity bound is not a safety measure — it is a thrash generator. Bound
 those caches by what is live, never by how many.
 
+## 2026-08-14 — testing a cache across frames, and why one-frame tests can't
+
+The pruning above is a **cross-frame** mechanism: frame N uploads, frame N+1
+decides what is still live. Every existing GL test in
+`test_viewer3d_perspective_gl.py` renders exactly one frame and tears the
+renderer down afterwards, so none of them could reach the failure mode at all.
+Added a `_multi_frame` helper that drives several frames through one renderer.
+
+Two things fell out, both instructive.
+
+**The teardown ran before the caller saw the renderer.** The helper returned
+the renderer from inside a `try` whose `finally` called `clear_caches()` — so
+the cache assertions saw an emptied cache and failed with `0 != 1`. Python
+runs the `finally` before the return completes. The pixel assertions, which
+are the ones that matter, had passed all along. Now the cache size is read
+before teardown and returned as a value.
+
+**Then the real lesson: asserting the render output cannot detect thrash.**
+Mutating `_prune_label_textures` to release *everything* every frame — the
+worst possible prune — left all three new GL tests passing. Pruning runs
+before the draw loop, and the draw loop re-rasterises whatever is missing, so
+the frame still comes out pixel-correct. It just re-uploads a texture per label
+per frame forever, which is exactly the pathology this work exists to prevent.
+
+The fix is to assert **identity**, not presence or appearance: for unchanged
+text the cached texture object must be the *same object* across frames. With
+that, the prune-everything mutation fails.
+
+This is the third time this session that a mutation passing revealed a test
+asserting a state the bug also produces — see the object-texture entry above.
+When a mutation passes, suspect the assertion before concluding the code is
+fine.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

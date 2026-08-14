@@ -1578,6 +1578,78 @@ class HoverTextGLTests(_GLTestBase):
 
         self.assertEqual(renderer._hover_text_textures, {})
 
+    def _multi_frame(self, texts, eye=(6.0, 0.0, 1.2)):
+        """Render one frame per text with a single renderer, returning both.
+
+        The cache pruning is a *cross-frame* mechanism: frame N uploads, frame
+        N+1 decides what is still live. Every other test in this class renders
+        exactly one frame and tears the renderer down afterwards, so none of
+        them can reach the case where pruning releases a texture that a later
+        frame still needs.
+        """
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 1.2), eye_position=eye)
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        frames = []
+        identities = []
+        try:
+            for text in texts:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(self._scene(text=text), aspect=1.0)
+                data = self.fbo.read(components=3)
+                frames.append([tuple(data[i : i + 3]) for i in range(0, len(data), 3)])
+                # Identity, not just presence. Pruning runs before the draw
+                # loop and the draw loop re-rasterises whatever is missing, so
+                # a prune that wrongly releases live labels still *renders*
+                # correctly — it just re-uploads every frame. Only the identity
+                # of the cached texture reveals that.
+                entry = renderer._hover_text_textures.get(text)
+                identities.append(id(entry[0]) if entry is not None else None)
+            # Read the cache size here, not in the caller: clear_caches() in
+            # the finally below runs before this function returns, so the
+            # caller would only ever see an emptied cache.
+            cached = len(renderer._hover_text_textures)
+            return frames, cached, identities
+        finally:
+            renderer.clear_caches()
+
+    def test_unchanged_text_still_draws_on_later_frames(self) -> None:
+        # The regression a bad prune would cause: the label is released after
+        # the first frame and the second renders empty.
+        frames, _cached, identities = self._multi_frame(["HELLO"] * 3)
+
+        for index, pixels in enumerate(frames):
+            self.assertGreater(
+                self._magenta_count(pixels), 0, f"frame {index} lost its label"
+            )
+        # And it is the *same* texture each frame, not a fresh upload per
+        # frame that merely looks identical on screen.
+        self.assertEqual(len(set(identities)), 1, "label was re-uploaded each frame")
+
+    def test_changing_text_draws_every_frame_and_keeps_one_texture(self) -> None:
+        # The clock-prim case that motivated pruning at all: text changes each
+        # frame, so each frame must draw, and stale textures must not pile up.
+        frames, cached, _identities = self._multi_frame(["12:00", "12:01", "12:02"])
+
+        for index, pixels in enumerate(frames):
+            self.assertGreater(
+                self._magenta_count(pixels), 0, f"frame {index} did not draw"
+            )
+        self.assertEqual(cached, 1)
+
+    def test_text_that_goes_away_is_released_and_can_come_back(self) -> None:
+        frames, cached, _identities = self._multi_frame(["HELLO", None, "HELLO"])
+
+        self.assertGreater(self._magenta_count(frames[0]), 0)
+        self.assertEqual(self._magenta_count(frames[1]), 0)
+        # Re-rasterised after having been pruned — the round trip works.
+        self.assertGreater(self._magenta_count(frames[2]), 0)
+        self.assertEqual(cached, 1)
+
 
 class AvatarNameTagGLTests(_GLTestBase):
     """Avatar name tags share the hover-text billboard pass."""
