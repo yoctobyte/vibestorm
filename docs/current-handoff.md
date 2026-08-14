@@ -1836,6 +1836,30 @@ That `absent=` list is the standing answer to "what content would let us
 verify the rest", and it should be re-run rather than reasoned about after
 anyone changes the region.
 
+### The census immediately earned itself
+
+The first report had one prim in an `unclassified` bucket. "Unclassified" on
+its own is not actionable, so the census now prints the curves behind it — and
+it said `census unclassified[path=0x80 profile=0x01]=1`, which named the bug
+outright.
+
+`classify_prim_shape` only knew path curves 0x10 (straight) and 0x20/0x30 (the
+two circular extrusions). OpenSim's `Extrusion` enum
+(`PrimitiveBaseShape.cs`) is Straight=0x10, Curve1=0x20, Curve2=0x30,
+**Flexible=0x80**. Flexible is a *path mode*, not a shape of its own: a flexi
+prim is a straight extrusion that bends at runtime, and the flexi ExtraParams
+block carries the bending. So every flexi prim was falling through to the
+unclassified fallback and rendering as a default cube regardless of its
+cross-section — harmless for a flexi box, wrong for a flexi cylinder.
+
+0x80 now joins the linear branch, with a test guarding the obvious wrong fix
+of sending it to the circular branch instead. After it, the region reports no
+unclassified prims and 23 cubes rather than 22.
+
+The general lesson: a diagnostic that reports a *category* of ignorance
+("unclassified", "unknown", "absent") should always carry the raw value that
+produced it. The bucket says something is wrong; only the value says what.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
