@@ -174,7 +174,16 @@ class CensusFeatureTests(unittest.TestCase):
             ),
         )
 
-        census = _census(_View(everything))
+        # Sculpt and mesh asset are separate features on purpose, so the
+        # "everything" region needs one of each.
+        mesh_prim = _Object(
+            2,
+            extra_params_entries=(
+                entry(EXTRA_PARAM_SCULPT, FACE_TEX.bytes + bytes([5])),
+            ),
+        )
+
+        census = _census(_View(everything, mesh_prim))
         lines = format_census(census)
 
         self.assertEqual(
@@ -183,6 +192,78 @@ class CensusFeatureTests(unittest.TestCase):
             f"features still missing: {census.missing_features(TRACKED_FEATURES)}",
         )
         self.assertFalse([line for line in lines if line.startswith("census absent=")])
+
+
+class CensusSculptTests(unittest.TestCase):
+    """Sculpts and meshes share one ExtraParams block but two fetch paths.
+
+    A sculpt map comes down through GetTexture; an authored mesh asset through
+    GetMesh. "sculpt or mesh=3" does not say which pipeline a region exercises,
+    so the census names the kind and the asset id.
+    """
+
+    def _sculpt_object(self, sculpt_type: int, local_id: int = 5):
+        from vibestorm.udp.messages import ExtraParamEntry
+        from vibestorm.world.extra_params import EXTRA_PARAM_SCULPT
+
+        return _Object(
+            local_id,
+            extra_params_entries=(
+                ExtraParamEntry(
+                    param_type=EXTRA_PARAM_SCULPT,
+                    param_in_use=True,
+                    param_data=FACE_TEX.bytes + bytes([sculpt_type]),
+                ),
+            ),
+        )
+
+    def test_sculpt_types_are_named(self) -> None:
+        census = _census(
+            _View(
+                self._sculpt_object(1, local_id=1),
+                self._sculpt_object(2, local_id=2),
+                self._sculpt_object(4, local_id=4),
+            )
+        )
+        kinds = {kind for _, kind, _ in census.sculpt_assets}
+
+        self.assertEqual(kinds, {"sculpt:sphere", "sculpt:torus", "sculpt:cylinder"})
+
+    def test_type_5_is_reported_as_a_mesh_not_a_sculpt(self) -> None:
+        # The distinction that decides which capability fetches the asset.
+        census = _census(_View(self._sculpt_object(5)))
+
+        self.assertEqual(census.sculpt_assets[0][1], "mesh")
+
+    def test_asset_id_is_reported_so_a_404_can_be_traced(self) -> None:
+        census = _census(_View(self._sculpt_object(1)))
+
+        self.assertEqual(census.sculpt_assets[0][2], str(FACE_TEX))
+
+    def test_unknown_sculpt_type_keeps_its_number(self) -> None:
+        census = _census(_View(self._sculpt_object(7)))
+
+        self.assertIn("7", census.sculpt_assets[0][1])
+
+    def test_plain_prims_contribute_nothing(self) -> None:
+        self.assertEqual(_census(_View(_Object(1))).sculpt_assets, [])
+
+    def test_sculpts_do_not_satisfy_the_mesh_asset_feature(self) -> None:
+        # The bug this split fixes: a region with three sculpts and no meshes
+        # reported a non-zero "sculpt or mesh" count, so the GetMesh pipeline's
+        # complete lack of live coverage never showed up in `absent=`.
+        census = _census(_View(self._sculpt_object(1), self._sculpt_object(2, 6)))
+
+        self.assertEqual(census.features["sculpt"], 2)
+        self.assertEqual(census.features.get("mesh asset", 0), 0)
+        self.assertIn("mesh asset", census.missing_features(TRACKED_FEATURES))
+        self.assertNotIn("sculpt", census.missing_features(TRACKED_FEATURES))
+
+    def test_a_mesh_asset_satisfies_only_its_own_feature(self) -> None:
+        census = _census(_View(self._sculpt_object(5)))
+
+        self.assertEqual(census.features["mesh asset"], 1)
+        self.assertIn("sculpt", census.missing_features(TRACKED_FEATURES))
 
 
 class CensusPermissionTests(unittest.TestCase):

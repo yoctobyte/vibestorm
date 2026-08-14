@@ -46,6 +46,11 @@ class WorldCensus:
     # (path_curve, profile_curve) pairs classify_prim_shape did not recognise.
     # "unclassified" on its own is not actionable; the curves are.
     unclassified_curves: Counter[tuple[int, int]] = field(default_factory=Counter)
+    # (local_id, sculpt kind, asset uuid) per sculpt/mesh prim. Sculpts and
+    # meshes ride the same ExtraParams block but fetch through different
+    # capabilities — GetTexture for a sculpt map, GetMesh for a mesh asset —
+    # so "sculpt or mesh=3" does not say which pipeline is being exercised.
+    sculpt_assets: list[tuple[int, str, str]] = field(default_factory=list)
 
     def missing_features(self, expected: tuple[str, ...]) -> tuple[str, ...]:
         """Features with no example in this region.
@@ -69,10 +74,26 @@ TRACKED_FEATURES: tuple[str, ...] = (
     "reflection probe",
     "render materials",
     "mesh flags",
-    "sculpt or mesh",
+    # Split deliberately: a sculpt map is fetched through GetTexture and an
+    # authored mesh asset through GetMesh. Counting them together let a region
+    # with three sculpts and no meshes report a non-zero total, which is the
+    # exact silent-zero this report exists to prevent.
+    "sculpt",
+    "mesh asset",
 )
 
 PCODE_AVATAR = 47
+
+#: Sculpt type (low nibble of the sculpt ExtraParams byte) to its name.
+#: Type 5 is not a sculpt at all — it marks an authored mesh asset riding the
+#: same block, which is why it fetches through GetMesh instead of GetTexture.
+SCULPT_TYPE_NAMES: dict[int, str] = {
+    1: "sculpt:sphere",
+    2: "sculpt:torus",
+    3: "sculpt:plane",
+    4: "sculpt:cylinder",
+    5: "mesh",
+}
 
 
 def _shape_name(world_object: object) -> str:
@@ -85,6 +106,26 @@ def _shape_name(world_object: object) -> str:
     if shape_data is None:
         return "unknown"
     return classify_prim_shape(shape_data.path_curve, shape_data.profile_curve) or "unclassified"
+
+
+def _sculpt_hint(world_object: object) -> tuple[str, str] | None:
+    """The sculpt kind and asset id of a sculpt/mesh prim, if it is one."""
+    from vibestorm.viewer3d.scene import EXTRA_PARAM_SCULPT
+
+    for entry in getattr(world_object, "extra_params_entries", ()) or ():
+        if getattr(entry, "param_type", None) != EXTRA_PARAM_SCULPT:
+            continue
+        if not getattr(entry, "param_in_use", True):
+            continue
+        data = getattr(entry, "param_data", b"") or b""
+        if len(data) < 17:
+            continue
+        from uuid import UUID
+
+        sculpt_type = data[16] & 0x0F
+        kind = SCULPT_TYPE_NAMES.get(sculpt_type, f"sculpt:unknown({sculpt_type})")
+        return kind, str(UUID(bytes=bytes(data[:16])))
+    return None
 
 
 def _features_of(world_object: object) -> list[str]:
@@ -114,10 +155,9 @@ def _features_of(world_object: object) -> list[str]:
     if decoded.mesh_flags is not None:
         found.append("mesh flags")
 
-    from vibestorm.viewer3d.scene import decode_sculpt_mesh_hint
-
-    if decode_sculpt_mesh_hint(entries) is not None:
-        found.append("sculpt or mesh")
+    hint = _sculpt_hint(world_object)
+    if hint is not None:
+        found.append("mesh asset" if hint[0] == "mesh" else "sculpt")
     return found
 
 
@@ -145,6 +185,10 @@ def census_world(world_view: object) -> WorldCensus:
             census.named += 1
         else:
             census.unnamed_local_ids.append(local_id)
+
+        hint = _sculpt_hint(world_object)
+        if hint is not None:
+            census.sculpt_assets.append((local_id, *hint))
 
         for feature in _features_of(world_object):
             census.features[feature] += 1
@@ -182,6 +226,9 @@ def format_census(census: WorldCensus, *, examples: int = 3) -> list[str]:
             f"census unclassified[path={path_curve:#04x} "
             f"profile={profile_curve:#04x}]={count}"
         )
+
+    for local_id, kind, asset_id in census.sculpt_assets:
+        lines.append(f"census sculpt[{kind}] local_id={local_id} asset={asset_id}")
 
     for feature in TRACKED_FEATURES:
         count = census.features.get(feature, 0)
