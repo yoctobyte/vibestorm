@@ -401,6 +401,15 @@ The current evidence workflow is session-aware:
 - use `./run.sh unknowns -- --all` to aggregate across the whole DB
 - use `./run.sh unknowns -- --session-id N` when comparing two specific live runs
 
+Back-to-back runs no longer need a gap. OpenSim refuses a login while a
+previous session is still attached ("You appear to be already logged in...
+please wait a a minute or two"), but the message is misleading: that same
+attempt *disconnects* the lingering session, so an immediate retry succeeds and
+waiting is not what fixes it. `LoginClient` now retries exactly once on that
+specific refusal — the SL grid behaves the same way and a real viewer does the
+same. Anything else, a bad password included, is not retried. Set
+`retry_lingering_session=False` to see the refusal instead.
+
 Important note:
 
 - `local/unknowns.sqlite3` is now intended to accumulate session evidence for later forensic comparison

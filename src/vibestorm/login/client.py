@@ -32,14 +32,47 @@ class TimeoutTransport(xmlrpc.client.Transport):
         return connection
 
 
+#: The substring OpenSim's refusal carries when a previous session is still
+#: attached. Matched on rather than parsed: the surrounding text is a sentence
+#: written for a human ("Please wait a a minute or two and retry", typo and
+#: all) and is not a stable format.
+LINGERING_SESSION_MESSAGE = "already logged in"
+
+
 @dataclass(slots=True)
 class LoginClient:
     """Perform the initial XML-RPC login/bootstrap request."""
 
     timeout_seconds: float = 10.0
+    #: Retry once when the grid reports a lingering session.
+    #:
+    #: The refusal is not a plain "no": the same attempt *disconnects* whatever
+    #: was still attached, so the immediate retry succeeds. The message asking
+    #: for a minute or two is misleading — waiting is not what fixes it, the
+    #: first attempt already did. This mirrors how the SL grid behaves and what
+    #: a real viewer does with it.
+    #:
+    #: Consequential enough to be a flag rather than unconditional: the retry
+    #: takes an account that was logged in elsewhere and moves it here. It is
+    #: on by default because the disconnect has already happened by the time
+    #: this is decided — declining to retry loses the session without saving
+    #: it — but a caller that wants the refusal surfaced can turn it off.
+    retry_lingering_session: bool = True
 
     async def login(self, request: LoginRequest) -> LoginBootstrap:
-        return await asyncio.to_thread(self._login_sync, request)
+        return await asyncio.to_thread(self._login_with_retry, request)
+
+    def _login_with_retry(self, request: LoginRequest) -> LoginBootstrap:
+        try:
+            return self._login_sync(request)
+        except LoginError as exc:
+            if not self.retry_lingering_session:
+                raise
+            if LINGERING_SESSION_MESSAGE not in str(exc).lower():
+                raise
+            # Exactly one retry. A second refusal means something other than a
+            # lingering session, and looping on it would hammer the grid.
+            return self._login_sync(request)
 
     def _login_sync(self, request: LoginRequest) -> LoginBootstrap:
         transport = TimeoutTransport(timeout_seconds=self.timeout_seconds)

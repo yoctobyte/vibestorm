@@ -218,3 +218,100 @@ class LoginClientSyncTests(unittest.TestCase):
                 client._login_sync(request)
         finally:
             xmlrpc.client.ServerProxy = original  # type: ignore[assignment]
+
+
+class LingeringSessionRetryTests(unittest.TestCase):
+    """OpenSim refuses a login while a previous session is still attached.
+
+    The refusal is not a plain no: that same attempt disconnects whatever was
+    lingering, so an immediate retry succeeds. Its message asks for "a minute
+    or two", which is misleading — waiting is not what fixes it. This mirrors
+    the SL grid, and a real viewer retries rather than sleeping.
+    """
+
+    LINGERING = {
+        "login": "false",
+        "message": (
+            "You appear to be already logged in. Please wait a a minute or two "
+            "and retry. If this takes longer than a few minutes please contact "
+            "the grid owner."
+        ),
+    }
+
+    SUCCESS = {
+        "login": "true",
+        "message": "Welcome, Avatar!",
+        "agent_id": "11111111-2222-3333-4444-555555555555",
+        "session_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "secure_session_id": "99999999-8888-7777-6666-555555555555",
+        "circuit_code": 123456,
+        "sim_ip": "127.0.0.1",
+        "sim_port": 9000,
+        "seed_capability": "http://127.0.0.1:9000/CAPS/seed",
+        "region_x": 256000,
+        "region_y": 256000,
+    }
+
+    def _run(self, responses: list[dict], **client_kwargs):
+        calls: list[dict] = []
+
+        class DummyServer:
+            def login_to_simulator(self, payload: dict[str, object]) -> dict[str, object]:
+                calls.append(payload)
+                return responses[min(len(calls) - 1, len(responses) - 1)]
+
+        request = LoginRequest(
+            login_uri="http://127.0.0.1:9000/",
+            credentials=LoginCredentials(first="V", last="A", password="p"),
+        )
+        original = xmlrpc.client.ServerProxy
+        xmlrpc.client.ServerProxy = lambda *a, **k: DummyServer()  # type: ignore[assignment]
+        try:
+            client = LoginClient(**client_kwargs)
+            try:
+                return client._login_with_retry(request), calls, None
+            except LoginError as exc:
+                return None, calls, exc
+        finally:
+            xmlrpc.client.ServerProxy = original  # type: ignore[assignment]
+
+    def test_the_second_attempt_succeeds(self) -> None:
+        bootstrap, calls, error = self._run([self.LINGERING, self.SUCCESS])
+
+        self.assertIsNone(error)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(bootstrap.circuit_code, 123456)
+
+    def test_a_first_attempt_that_works_is_not_retried(self) -> None:
+        # The retry moves an account between machines. It must not happen on
+        # the ordinary path.
+        bootstrap, calls, error = self._run([self.SUCCESS])
+
+        self.assertIsNone(error)
+        self.assertEqual(len(calls), 1)
+
+    def test_it_retries_exactly_once(self) -> None:
+        # A second refusal means something other than a lingering session, and
+        # looping on it would hammer the grid.
+        bootstrap, calls, error = self._run([self.LINGERING])
+
+        self.assertIsNotNone(error)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("already logged in", str(error))
+
+    def test_other_failures_are_not_retried(self) -> None:
+        # Retrying a bad password is pointless and looks like a brute force.
+        bootstrap, calls, error = self._run(
+            [{"login": "false", "message": "Could not authenticate your avatar."}]
+        )
+
+        self.assertIsNotNone(error)
+        self.assertEqual(len(calls), 1)
+
+    def test_the_retry_can_be_declined(self) -> None:
+        bootstrap, calls, error = self._run(
+            [self.LINGERING, self.SUCCESS], retry_lingering_session=False
+        )
+
+        self.assertIsNotNone(error)
+        self.assertEqual(len(calls), 1)
