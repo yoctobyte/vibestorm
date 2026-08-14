@@ -190,8 +190,12 @@ Main gaps:
   - the HUD still shows `Parcel: unknown` — `viewer3d/scene.py` declares
     `parcel_name` and only ever sets it to `None`, though `ParcelProperties.name`
     is decoded and on the bus
-- nothing from the 2026-06-22 decode pass has been seen against live OpenSim
-  traffic; it is unit-tested against synthetic packets only
+- no `ParcelPropertiesRequest` encoder exists, so `ParcelProperties` is never
+  requested and never arrives (verified live 2026-08-14: 0 received over both
+  UDP and the event queue). The parcel name/Bitmap paths cannot run until a
+  request is sent.
+- `ObjectAnimation` and the four sound messages are still synthetic-test-only;
+  a quiet single-avatar test region produces none of them
 - extended-region 32x32 terrain patches are not decompressed yet
 - inventory is no longer purely read-only, but write support is still narrow:
   user-inventory folders can be opened
@@ -261,15 +265,19 @@ traffic. So: consume and live-verify rather than decode more.
 Shortest path to visible value — surface the parcel data:
 
 1. Start OpenSim: `./run.sh opensim`
-2. Run the viewer with the local test profile: `./run.sh tester viewer3d`
-3. Subscribe `viewer3d` to the `ParcelPropertiesReceived` bus event and assign
+2. Add a `ParcelPropertiesRequest` encoder to `udp/messages.py` and autosend it
+   after `RegionHandshake` (same pattern as `MapBlockRequest`). Live
+   verification on 2026-08-14 showed `ParcelProperties` is never sent
+   unsolicited, over UDP or the event queue, and no request builder exists —
+   this is the actual blocker, not the missing subscription.
+3. Run the viewer with the local test profile: `./run.sh tester viewer3d`
+4. Subscribe `viewer3d` to the `ParcelPropertiesReceived` bus event and assign
    `scene.parcel_name` from the decoded name. The HUD status bar should stop
    showing `Parcel: unknown`.
-4. Reassemble `session.parcel_overlay_packets` through `decode_parcel_overlay`
+5. Reassemble `session.parcel_overlay_packets` through `decode_parcel_overlay`
    and render `border_segments` as plot-edge polylines — this closes the
-   long-standing bird's-eye parcel item.
-5. While the session is live, confirm the animation and sound decoders fire
-   against real traffic; they have only seen synthetic packets.
+   long-standing bird's-eye parcel item. The reassembly path is already
+   live-verified (64×64 grid, 128 perimeter segments on the test region).
 
 Two independent tracks remain open, either of which can follow:
 

@@ -1265,8 +1265,73 @@ grid from `parcel_overlay_packets` and draw `border_segments` as plot edges —
 that closes the long-standing bird's-eye "ParcelOverlay → plot-edge polylines"
 item below.
 
+But read the 2026-08-14 live-verification note below first: `ParcelProperties`
+never arrives unsolicited, so step one is sending a request, not subscribing.
+
 Wiring the typed EQG decoder into `poll_once` is independent and can land in
 any order.
+
+## Update 2026-08-14: First Live Verification Of The Parcel Decoders
+
+First run of the 2026-06-22 work against live OpenSim (`Vibestorm Test`,
+`127.0.0.1:9000`). Two 90–100s `./run.sh session --verbose` runs plus a
+scripted bus-subscriber harness. No code changed.
+
+### What Was Verified Live
+
+- Session is healthy end to end: login → caps → UDP handshake →
+  `AgentMovementComplete` → 90s of traffic → clean `LogoutRequest`/`LogoutReply`.
+  293 messages, 9 seed caps, bake upload accepted (`uploaded:5 serial:5`),
+  33 objects tracked with 32 carrying properties, map tile cached.
+- `ParcelOverlay` **decodes correctly on real bytes.** The sim sent 4 packets
+  (seq 0–3, 1024 B each) = 4096 cells = a 64×64 grid, exactly the predicted
+  256 m ÷ 4 m LandUnit layout. `decode_parcel_overlay` reassembled it without
+  error: `cells_per_edge=64`, ownership histogram `{other: 4096}` (the test
+  region is one parcel owned by another account), and 128 border segments —
+  64 west edges plus 64 south edges, i.e. exactly the region perimeter, which
+  is what a single region-wide parcel should produce. First segments
+  `(0,0,0,4)`, `(0,0,4,0)`, `(4,0,8,0)` confirm the west-edge/south-edge
+  meter geometry.
+- `AvatarAnimation` decodes live (`anims=1`, correct sender agent id).
+- Session dispatch emits `parcel.overlay` and `avatar.animation` events with no
+  `.decode_error` anywhere in either run.
+
+### The Finding That Changes The Next Step
+
+**`ParcelProperties` never arrives on its own — 0 received across both runs.**
+OpenSim sends it only in reply to a `ParcelPropertiesRequest` (or on parcel
+entry), and grep confirms **no request builder exists**: there is no
+`ParcelPropertiesRequest` encoder anywhere in `src/`.
+
+So the HUD `Parcel: unknown` problem is not merely a missing subscription. The
+order is:
+
+1. Add a `ParcelPropertiesRequest` encoder in `udp/messages.py` (needs
+   sequence id, region position bounds, and snap-selection flags).
+2. Send it after `RegionHandshake`, the same way `MapBlockRequest` is autosent.
+3. Then subscribe `viewer3d` to `ParcelPropertiesReceived` and set
+   `scene.parcel_name`.
+
+This also settles a standing question: during login OpenSim did **not** deliver
+`ParcelProperties` over the event queue either. The UDP path is the one to
+build against, matching the earlier read of `opensim-source` (no EQG builder
+exists for it).
+
+### Still Unverified
+
+`ObjectAnimation` and all four sound messages did not appear in live traffic —
+a quiet test region with one avatar and no scripted sound emitters. They remain
+synthetic-test-only. `decode_parcel_bitmap` is likewise unexercised on real
+data, since it needs a `ParcelProperties` Bitmap to decode.
+
+### Pre-existing, Not A Regression
+
+The event-queue poll times out once at session start (`event queue poll timed
+out after 5.0s`) and is not retried — no successful EQG poll occurs during a
+normal session. That is the long-poll shape, but it means the EQG path is
+effectively dormant, which is worth confirming when the typed decoder gets
+wired into `poll_once`. One `GetTexture` 404 also appears for a texture the sim
+does not hold.
 
 ## Notes For The Next Agent
 
