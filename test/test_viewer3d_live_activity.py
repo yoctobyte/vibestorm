@@ -178,7 +178,7 @@ class InspectorLiveActivityTests(unittest.TestCase):
         rows = _live_activity_lines(self._WorldObject(OBJECT_A), scene)
 
         self.assertIn(f"Playing Animations: {ANIM_A}", rows)
-        self.assertIn(f"Attached Sound (live): {SOUND_A} gain 0.75", rows)
+        self.assertIn(f"Attached Sound (live): {SOUND_A} gain 0.75 [none]", rows)
 
     def test_a_quiet_object_adds_no_rows(self) -> None:
         from vibestorm.viewer3d.hud import _live_activity_lines

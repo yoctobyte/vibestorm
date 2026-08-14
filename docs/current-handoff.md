@@ -2294,6 +2294,31 @@ tester avatar wears nothing — so this is unit-tested only. Rezzing anything
 onto the avatar would exercise it, and the census now asks the question every
 run.
 
+## 2026-08-14 — sound flags, and the near-miss on sourcing them
+
+The inspector showed `flags 0x00`. `world/sound_flags.py` names the byte:
+LOOP, SYNC_MASTER, SYNC_SLAVE, SYNC_PENDING, QUEUE, STOP.
+
+**The obvious source was the wrong one.** After the LSL_Constants win with
+parcel flags, the natural next move was to reach for `SOUND_*` in
+`LSL_Constants.cs` — PLAY 0, LOOP 1, TRIGGER 2, SYNC 4. Those are
+`llLinkPlaySound` *parameters*, not the wire byte. The real enum is OpenSim's
+own `SoundFlags` in `CoreModules/World/Sound/SoundModule.cs`, and the two
+disagree on every value above 1: wire 2 is SYNC_MASTER, not TRIGGER; wire 4 is
+SYNC_SLAVE, not SYNC. A test asserts exactly that, because the LSL-sourced
+version would have produced confident, wrong, plausible names.
+
+So the lesson from the parcel-flags entry needs a qualifier: LSL_Constants is
+worth checking, but it describes *the scripting API*, which is not always the
+wire. Confirm against the code that writes the bytes.
+
+One behavioural consequence: `AttachedSoundState.is_silent` now also checks the
+STOP bit. A stop message still names a sound, so "sound_id set" was being read
+as "playing" when the sim had just told it to go quiet.
+
+Live: unverified. No prim in the test region has a sound, and `census absent=`
+has listed `attached sound` all session.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

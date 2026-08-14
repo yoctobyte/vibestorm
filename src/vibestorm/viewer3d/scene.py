@@ -34,6 +34,7 @@ from vibestorm.world.chat_types import (
 from vibestorm.world.land_flags import DecodedFlags, decode_parcel_flags
 from vibestorm.world.physics_shape import PhysicsProperties, physics_properties_from_event
 from vibestorm.world.sim_stats import summarize_sim_stats
+from vibestorm.world.sound_flags import decode_sound_flags
 
 if TYPE_CHECKING:
     from vibestorm.bus.events import (
@@ -258,8 +259,16 @@ class AttachedSoundState:
 
     @property
     def is_silent(self) -> bool:
-        """A null sound id is how a sim clears an object's looping sound."""
-        return self.sound_id.int == 0
+        """Whether this object is currently making no sound.
+
+        A null sound id is how a sim clears an object's looping sound, and the
+        STOP flag says the same thing while still naming the sound — both mean
+        silence, so both have to be checked.
+        """
+        return self.sound_id.int == 0 or decode_sound_flags(self.flags).is_stop
+
+    def describe_flags(self) -> str:
+        return decode_sound_flags(self.flags).describe()
 
 
 @dataclass(slots=True, frozen=True)

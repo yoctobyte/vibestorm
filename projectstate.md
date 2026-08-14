@@ -229,6 +229,11 @@ Main gaps:
   HUD slots flagged. `AttachItemID` in NameValues is what identifies an
   attachment; the state byte alone cannot, since a tree also has one. No
   attachments exist in the test region, so this is unit-tested only
+- the sound flags byte is named from OpenSim's `SoundFlags` enum (SoundModule),
+  not LSL's `SOUND_*` constants, which are llLinkPlaySound parameters and
+  disagree on every value above 1. A STOP flag now counts as silence, since a
+  stop message still names the sound it is stopping. No sound-emitting prim
+  exists in the test region, so this is unit-tested only
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for

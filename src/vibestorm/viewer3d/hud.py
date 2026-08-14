@@ -17,6 +17,7 @@ from uuid import UUID
 
 from vibestorm.world.attachments import describe_attachment
 from vibestorm.world.prim_attributes import click_action_name, prim_material_name
+from vibestorm.world.sound_flags import decode_sound_flags
 
 if TYPE_CHECKING:
     import pygame
@@ -2562,7 +2563,10 @@ def _live_activity_lines(world_object: object | None, scene: object | None) -> l
 
     sound = (getattr(scene, "attached_sounds", {}) or {}).get(full_id)
     if sound is not None:
-        rows.append(f"Attached Sound (live): {sound.sound_id} gain {sound.gain:.2f}")
+        rows.append(
+            f"Attached Sound (live): {sound.sound_id} gain {sound.gain:.2f} "
+            f"[{sound.describe_flags()}]"
+        )
 
     # Physics is keyed by local id: ObjectPhysicsProperties addresses prims
     # that way, unlike the sound and animation messages above.
@@ -2602,7 +2606,7 @@ def _inspector_detail_html(e: object, w: object | None, scene: object | None = N
         lines.append(
             f"Sound: {sound_id} gain {getattr(w, 'sound_gain', 0.0):.2f}, "
             f"radius {getattr(w, 'sound_radius', 0.0):.1f}, "
-            f"flags {getattr(w, 'sound_flags', 0):#04x}"
+            f"flags {decode_sound_flags(getattr(w, 'sound_flags', 0)).describe()}"
         )
     lines.append("")
 
