@@ -123,6 +123,57 @@ class ClaimedSupportTests(unittest.TestCase):
         self.assertEqual(missing, [], f"ledger claims support with no code: {missing}")
 
 
+def _prelude_capabilities() -> list[str]:
+    """The ``requested_caps`` list the session prelude actually sends."""
+    session_py = (_SOURCE_DIR / "udp" / "session.py").read_text(encoding="utf-8")
+    literal = re.search(
+        r"requested_caps = \[(.*?)\]", session_py, re.DOTALL
+    )
+    if literal is None:
+        return []
+    return re.findall(r'"(\w+)"', literal.group(1))
+
+
+def _documented_prelude_capabilities() -> list[str]:
+    """The bullet list under "Current Requested Capability Set"."""
+    text = _LEDGER.read_text(encoding="utf-8")
+    if "## Current Requested Capability Set" not in text:
+        return []
+    section = text.split("## Current Requested Capability Set", 1)[1].split("##", 1)[0]
+    return re.findall(r"^- `(\w+)`", section, re.MULTILINE)
+
+
+class PreludeListTests(unittest.TestCase):
+    """The prose list of prelude caps is a copy of a list in the code.
+
+    Every hand-maintained duplicate of something the code already states will
+    drift; this one names the capabilities requested on every login, so drift
+    here misleads about what each session costs the simulator.
+    """
+
+    def test_the_documented_list_matches_the_code(self) -> None:
+        documented = _documented_prelude_capabilities()
+        requested = _prelude_capabilities()
+
+        self.assertGreater(len(requested), 5, "failed to parse requested_caps")
+        self.assertEqual(sorted(documented), sorted(requested))
+
+    def test_the_stated_count_matches_the_list(self) -> None:
+        # The sentence says "all eleven resolve"; a list edited without the
+        # sentence is the more likely half to go stale.
+        text = _LEDGER.read_text(encoding="utf-8")
+        section = text.split("## Current Requested Capability Set", 1)[1].split("##", 1)[0]
+        words = {
+            "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+            "fourteen": 14, "fifteen": 15, "sixteen": 16,
+        }
+
+        stated = [count for word, count in words.items() if f"all {word} resolve" in section]
+
+        self.assertEqual(len(stated), 1, "no single spelled-out count found")
+        self.assertEqual(stated[0], len(_documented_prelude_capabilities()))
+
+
 class LedgerCompletenessTests(unittest.TestCase):
     def test_every_requested_capability_appears_in_the_ledger(self) -> None:
         requested = _requested_capabilities()
