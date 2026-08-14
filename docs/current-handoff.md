@@ -2521,6 +2521,44 @@ blocker (a sound emitter must exist in-world to send AttachedSound) and
 sometimes just an unasked question. Scale, breadth, and volume are usually
 constructible; only genuinely external behaviour is not.
 
+## 2026-08-14 — the last two orphaned bus events get a consumer
+
+`EnableSimulator` and `CrossedRegion` were decoded, published on the bus, and
+consumed by **nothing** — the last such pair. The scene's own docstring claimed
+they "reach consumers through the bus", which described an intention rather
+than reality; that line is corrected.
+
+They deserve opposite treatment, which is why one handler would have been
+wrong:
+
+- **`EnableSimulator`** fires once per neighbouring region and is re-announced,
+  so it is recorded as state (`Scene.neighbour_regions`, handle -> "ip:port")
+  and shown as a count in the diagnostics panel. Announcing each one would put
+  eight alerts on screen on arriving in a region with eight neighbours.
+- **`CrossedRegion`** is rare and means the avatar is now somewhere else, so it
+  posts an alert line, like `TeleportFinish` does.
+
+A real crossing needs a neighbour region and the test sim is standalone, so
+this is not live-verified — but the *events* are constructible, so the scene's
+handling of them was never actually blocked on that. Only the transport
+behaviour is (`world_client`'s documented "EnableSimulator → child circuit,
+CrossedRegion → promote child" remains unimplemented and genuinely does need a
+neighbour to build against).
+
+`neighbour_regions` is cleared in `apply_region_changed`, decided when the
+field was added rather than found later — the habit from the region-scope fix
+earlier today.
+
+### A fourth way a mutation can lie
+
+The "neighbours not cleared" mutation passed, and this time neither the code
+nor the assertion was at fault: the mutation script's string replace **did not
+match**, so it silently changed nothing and tested the unmodified code. Re-run
+by line index with an `assert` on the target line, it fails correctly.
+
+Ad-hoc mutation scripts must assert the pattern was found. A `.replace()` that
+misses is indistinguishable from a test that holds.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

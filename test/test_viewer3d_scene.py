@@ -975,6 +975,78 @@ class SceneChatTypeTests(unittest.TestCase):
         self.assertIsNone(scene.chat_lines[0].delivery())
 
 
+class SceneRegionCrossingTests(unittest.TestCase):
+    """EnableSimulator and CrossedRegion were decoded and consumed by nothing.
+
+    A real crossing needs a neighbouring region, which the standalone test sim
+    does not have — but the events themselves are constructible, so the scene's
+    handling of them is not blocked on that.
+    """
+
+    def _event(self, payload: object) -> object:
+        from vibestorm.bus.events import EventQueueEventReceived
+
+        return EventQueueEventReceived(region_handle=0, event=payload)
+
+    def _enable(self, handle: int, ip: str = "10.0.0.1", port: int = 9000) -> object:
+        from vibestorm.event_queue.events import EnableSimulatorEvent
+
+        return self._event(
+            EnableSimulatorEvent(
+                handle=handle, ip=ip, port=port, region_size_x=256, region_size_y=256
+            ),
+        )
+
+    def _crossed(self, region_handle: int) -> object:
+        from vibestorm.event_queue.events import CrossedRegionEvent
+
+        return self._event(
+            CrossedRegionEvent(
+                agent_id="a", session_id="s",
+                look_at=(1.0, 0.0, 0.0), position=(128.0, 128.0, 25.0),
+                region_handle=region_handle, seed_capability="http://example.invalid/",
+                sim_ip="10.0.0.2", sim_port=9001,
+                region_size_x=256, region_size_y=256,
+            ),
+        )
+
+    def test_neighbours_are_recorded_not_announced(self) -> None:
+        # One event per neighbour: eight alerts on arrival would be noise.
+        scene = Scene()
+        scene.apply_event_queue_event(self._enable(1, "10.0.0.1", 9000))
+        scene.apply_event_queue_event(self._enable(2, "10.0.0.2", 9001))
+
+        self.assertEqual(
+            scene.neighbour_regions, {1: "10.0.0.1:9000", 2: "10.0.0.2:9001"}
+        )
+        self.assertEqual(list(scene.chat_lines), [])
+
+    def test_a_re_announced_neighbour_is_not_duplicated(self) -> None:
+        scene = Scene()
+        scene.apply_event_queue_event(self._enable(1))
+        scene.apply_event_queue_event(self._enable(1))
+
+        self.assertEqual(len(scene.neighbour_regions), 1)
+
+    def test_crossing_is_announced(self) -> None:
+        # Rare, and it means the avatar is somewhere else now.
+        scene = Scene()
+        scene.apply_event_queue_event(self._crossed(0x1234))
+
+        self.assertEqual(len(scene.chat_lines), 1)
+        self.assertIn("Crossed into region 0x1234", scene.chat_lines[0].message)
+        self.assertEqual(scene.chat_lines[0].kind, "alert")
+
+    def test_neighbours_do_not_survive_a_region_change(self) -> None:
+        from vibestorm.bus.events import RegionChanged
+
+        scene = Scene()
+        scene.apply_event_queue_event(self._enable(1))
+        scene.apply_region_changed(RegionChanged(region_handle=9, region_name="New"))
+
+        self.assertEqual(scene.neighbour_regions, {})
+
+
 class SceneRegionChangeResetTests(unittest.TestCase):
     """Region-scoped side state must not survive a region change.
 

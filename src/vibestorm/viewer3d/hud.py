@@ -1376,6 +1376,7 @@ class HUD:
                 # region; this line is the other half of that comparison.
                 f"sim: {scene.sim_health or '(no stats yet)'}",
                 f"parcel flags: {scene.parcel_flags.describe() if scene.parcel_flags else '(none received)'}",
+                f"neighbours: {len(scene.neighbour_regions) or 'none announced'}",
                 f"map: {map_path}",
                 terrain_text,
                 height_text,

@@ -234,6 +234,11 @@ Main gaps:
   disagree on every value above 1. A STOP flag now counts as silence, since a
   stop message still names the sound it is stopping. No sound-emitting prim
   exists in the test region, so this is unit-tested only
+- `EnableSimulator` and `CrossedRegion` finally have a consumer: neighbouring
+  regions are tracked as scene state and shown as a count, a crossing posts an
+  alert. Not live-verified (the test sim is standalone), but the events are
+  constructible so the scene handling was never blocked on that. The transport
+  half — child circuits and promotion on crossing — is still unimplemented
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for

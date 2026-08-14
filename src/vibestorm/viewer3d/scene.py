@@ -357,6 +357,9 @@ class Scene:
     # Physics material per object local_id. Keyed by local_id rather than UUID
     # because ObjectPhysicsProperties identifies the prim that way.
     object_physics: dict[int, PhysicsProperties] = field(default_factory=dict)
+    # Neighbouring regions the sim has told us about, handle -> "ip:port".
+    # Region-scoped: the neighbours of the region just left are not ours.
+    neighbour_regions: dict[int, str] = field(default_factory=dict)
     # One-shot sounds have no lasting state, so these are a bounded tail.
     recent_sound_triggers: deque = field(
         default_factory=lambda: deque(maxlen=SOUND_TRIGGER_HISTORY)
@@ -412,6 +415,7 @@ class Scene:
         # local ids are assigned per region session. Object 42 in the new
         # region would silently inherit object 42's physics from the old one.
         self.object_physics.clear()
+        self.neighbour_regions.clear()
         self.attached_sounds.clear()
         self.object_animations.clear()
         self.avatar_animations.clear()
@@ -514,10 +518,15 @@ class Scene:
         ``TeleportFinish`` confirms a teleport the user asked for, and
         ``ScriptRunningReply`` is the sim confirming a script's state after an
         object-inventory upload — the feedback the object-sync flow needs.
-        Region-management events (``EnableSimulator``, ``CrossedRegion``) reach
-        consumers through the bus but are not chat-worthy.
+        ``EnableSimulator`` announces a neighbouring region, one event per
+        neighbour, so it is recorded as state rather than announced — eight
+        alerts on arriving in a region surrounded by neighbours would be noise.
+        ``CrossedRegion`` is the opposite: it happens rarely and means the
+        avatar has just walked into a different region, which is worth saying.
         """
         from vibestorm.event_queue.events import (
+            CrossedRegionEvent,
+            EnableSimulatorEvent,
             ObjectPhysicsPropertiesEvent,
             ScriptRunningReplyEvent,
             TeleportFinishEvent,
@@ -528,6 +537,23 @@ class Scene:
         # arrives unprompted whenever a prim's physics change.
         if isinstance(payload, ObjectPhysicsPropertiesEvent):
             self.object_physics[payload.local_id] = physics_properties_from_event(payload)
+            return
+        if isinstance(payload, EnableSimulatorEvent):
+            # One per neighbour, and the sim re-announces them, so this is a
+            # set of what is adjacent rather than a log of announcements.
+            self.neighbour_regions[payload.handle] = f"{payload.ip}:{payload.port}"
+            return
+        if isinstance(payload, CrossedRegionEvent):
+            self.chat_lines.append(
+                ChatLine(
+                    kind="alert",
+                    sender="*system*",
+                    message=(
+                        f"Crossed into region {payload.region_handle:#x} "
+                        f"at {payload.sim_ip}:{payload.sim_port}"
+                    ),
+                )
+            )
             return
         if isinstance(payload, TeleportFinishEvent):
             self.chat_lines.append(
