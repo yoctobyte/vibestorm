@@ -2469,6 +2469,17 @@ def _extra_param_lines(extra_params: object) -> list[str]:
             f"Reflection Probe: ambiance {probe.ambiance:.2f}, "
             f"clip {probe.clip_distance:.1f}, flags {probe.flags}"
         )
+    materials = getattr(extra_params, "render_materials", None)
+    if materials is not None and materials.entries:
+        rendered = ", ".join(
+            f"{entry.face_index}: {entry.material_id}" for entry in materials.entries
+        )
+        lines.append(f"Render Materials: {rendered}")
+    mesh_flags = getattr(extra_params, "mesh_flags", None)
+    if mesh_flags is not None:
+        # Raw value: the flag meanings are viewer-side render hints nothing
+        # here interprets yet.
+        lines.append(f"Mesh Flags: {mesh_flags:#010x}")
     return lines
 
 

@@ -6,7 +6,8 @@ sculpt block (``0x30``) for mesh identity; this module decodes the rest.
 
 Field layouts and scaling mirror OpenSim's ``PrimitiveBaseShape``
 (``ReadFlexiData`` / ``ReadLightData`` / ``ReadProjectionData`` /
-``ReadReflectionProbe``). The quantisation is unusual in places — flexi
+``ReadReflectionProbe`` / ``ReadRenderMaterials`` /
+``ReadMeshFlagsData``). The quantisation is unusual in places — flexi
 softness is split across the top bits of two different bytes, and light
 intensity rides in the colour's alpha channel — so the reference is worth
 keeping open when changing this.
@@ -75,6 +76,33 @@ class ProjectionParams:
 
 
 @dataclass(slots=True, frozen=True)
+class RenderMaterialEntry:
+    """One face's material asset (GLTF material override)."""
+
+    face_index: int
+    material_id: UUID
+
+
+@dataclass(slots=True, frozen=True)
+class RenderMaterialsParams:
+    """Per-face GLTF material assignments (``0x80``, 1 + 17*count bytes).
+
+    A count byte followed by ``(face_index, UUID)`` pairs. Unlike the other
+    blocks this one is variable length, and OpenSim rejects it outright when
+    the declared count does not fit the data rather than reading a partial
+    list.
+    """
+
+    entries: tuple[RenderMaterialEntry, ...]
+
+    def material_for_face(self, face_index: int) -> UUID | None:
+        for entry in self.entries:
+            if entry.face_index == face_index:
+                return entry.material_id
+        return None
+
+
+@dataclass(slots=True, frozen=True)
 class ReflectionProbeParams:
     """Reflection-probe settings (``0x90``, 9 bytes)."""
 
@@ -137,6 +165,42 @@ def decode_reflection_probe_params(data: bytes) -> ReflectionProbeParams | None:
     )
 
 
+def decode_mesh_flags_params(data: bytes) -> int | None:
+    """Mesh render flags (``0x70``, 4 bytes, u32 little-endian).
+
+    Returned as a raw int: the flag meanings are viewer-side render hints and
+    nothing here interprets them yet. OpenSim reads a short block as 0 rather
+    than rejecting it, but ``None`` is more useful to a caller that wants to
+    distinguish "absent" from "explicitly zero".
+    """
+    if len(data) < 4:
+        return None
+    return int(unpack_from("<I", data, 0)[0])
+
+
+def decode_render_materials_params(data: bytes) -> RenderMaterialsParams | None:
+    """Per-face GLTF material list (``0x80``).
+
+    Mirrors OpenSim's guards: the block must exceed one entry's worth of bytes
+    and must be long enough for the count it declares, or the whole list is
+    rejected. A truncated list is not read partially — a half-applied material
+    set would be worse than none.
+    """
+    if len(data) <= 17:
+        return None
+    count = data[0]
+    if len(data) < 1 + 17 * count:
+        return None
+    entries = []
+    offset = 1
+    for _ in range(count):
+        face_index = data[offset]
+        material_id = UUID(bytes=bytes(data[offset + 1 : offset + 17]))
+        entries.append(RenderMaterialEntry(face_index=face_index, material_id=material_id))
+        offset += 17
+    return RenderMaterialsParams(entries=tuple(entries))
+
+
 @dataclass(slots=True, frozen=True)
 class DecodedExtraParams:
     """Every recognised block from one prim's ``ExtraParams`` tail.
@@ -149,6 +213,8 @@ class DecodedExtraParams:
     light: LightParams | None = None
     projection: ProjectionParams | None = None
     reflection_probe: ReflectionProbeParams | None = None
+    render_materials: RenderMaterialsParams | None = None
+    mesh_flags: int | None = None
 
 
 _DECODERS = {
@@ -156,6 +222,8 @@ _DECODERS = {
     EXTRA_PARAM_LIGHT: ("light", decode_light_params),
     EXTRA_PARAM_PROJECTION: ("projection", decode_projection_params),
     EXTRA_PARAM_REFLECTION_PROBE: ("reflection_probe", decode_reflection_probe_params),
+    EXTRA_PARAM_RENDER_MATERIALS: ("render_materials", decode_render_materials_params),
+    EXTRA_PARAM_MESH_FLAGS: ("mesh_flags", decode_mesh_flags_params),
 }
 
 
@@ -196,9 +264,13 @@ __all__ = [
     "LightParams",
     "ProjectionParams",
     "ReflectionProbeParams",
+    "RenderMaterialEntry",
+    "RenderMaterialsParams",
     "decode_extra_params",
     "decode_flexible_params",
     "decode_light_params",
+    "decode_mesh_flags_params",
     "decode_projection_params",
     "decode_reflection_probe_params",
+    "decode_render_materials_params",
 ]
