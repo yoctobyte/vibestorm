@@ -37,7 +37,7 @@ This document tracks which simulator capabilities matter for Vibestorm and when 
 | `UploadBakedTexture` | upload baked avatar textures | P2 | verified | five baked J2K blobs uploaded per session; appearance accepted |
 | `GetTexture` | fetch texture assets | P1 | verified | region map tiles and object textures, cached as PNG |
 | `GetMesh` / `GetMesh2` | fetch mesh assets | P1 | verified | `.llmesh` fetch and decode into renderer geometry |
-| `ViewerAsset` | generic asset fetch | P2 | resolved | requested and resolved; no client issues requests against it yet |
+| `ViewerAsset` | generic asset fetch | P2 | verified | `caps/viewer_asset_client.py`. Live-verified 2026-08-14: the region map texture fetched by asset id, 4376 bytes, `image/x-j2c` — the same bytes `GetTexture` returns. A nonexistent id gives 404. Two cautions, both sourced from `GetAssetsHandler`: the query *key* selects the asset type and an unknown key is answered 404 before the asset service is consulted, so there is no generic `asset_id`; and the type check is **not enforced** — the same texture requested as `notecard_id` was served in full, because the `return` under `asset with wrong type` is commented out. A 200 is therefore no evidence about an asset's type. The client's key table covers only the type numbers LSL pins, since `AssetType` itself is libomv's |
 
 ## Phase 4 World/Rendering Relevant Capabilities
 
