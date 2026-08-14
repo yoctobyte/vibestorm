@@ -90,7 +90,9 @@ The repo already supports:
 - full `TextureEntry` multi-section decode (default value first, then per-face
   overrides) across all sections, not just the image UUID section
 - SL mesh assets decode normals, `TexCoord0` UVs, and per-submesh
-  `material_groups` mapping prim face index to its index-buffer slice
+  `material_groups` mapping prim face index to its index-buffer slice — and all
+  three now reach the GPU: `in_normal` lighting, `in_mesh_uv` texture sampling,
+  and per-face texture binding from the material groups
 - **parcel identity end to end** (2026-08-14): `ParcelPropertiesRequest` is
   autosent region-wide after `RegionHandshake`, the reply arrives over the
   event queue, and `viewer3d`'s HUD shows the real parcel name instead of
@@ -187,9 +189,6 @@ Main gaps:
 - renderer use of per-face `TextureEntry` overrides beyond cube primitives (the
   decode side is complete; other prim shapes still fall back to the default
   texture until their face mapping is modeled)
-- renderer use of decoded mesh UVs: normals and per-face `material_groups`
-  binding now reach the GPU, but the fragment shader still generates texture
-  coordinates from position instead of using `decoded.uvs`
 - `ExtraParams` beyond the sculpt/mesh block (`type=0x30`): flexi, light,
   projector, and the other rich-tail entries are still undecoded
 - reliable extraction of ordinary prim names
@@ -280,7 +279,8 @@ Two independent tracks remain open, either of which can follow:
   2026-05-25, never confirmed against a running sim). This is now the oldest
   open track and everything it needed exists: `ScriptRunningReply` arrives over
   the live event queue and surfaces as a viewer chat line.
-- Use decoded mesh UVs in the shader instead of position-generated coordinates.
+- Decode extended-region 32x32 terrain patches, or `ExtraParams` beyond the
+  sculpt/mesh block (flexi, light, projector).
 
 Deleting object inventory, creating missing rows, conflict resolution, and
 recursive folder sync remain out of scope until the update path is proven live.

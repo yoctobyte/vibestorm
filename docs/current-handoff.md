@@ -1499,10 +1499,30 @@ so the server-side "script compiled OK" confirmation is finally observable.
 Select a scripted object in `./run.sh tester viewer3d`, Save Text, edit the
 `.lsl`, upload, and watch the chat line.
 
+### Mesh UVs (2026-08-14)
+
+Also closed. Mesh vertex buffers carry `in_mesh_uv` and a `u_use_mesh_uv`
+uniform selects authored coordinates per draw; primitives and sculpts keep the
+generated fallback.
+
+This forced a decoder change worth knowing about. `DecodedSLMesh.uvs` is
+zero-filled when a submesh omits `TexCoord0`, so an authored `(0, 0)` was
+indistinguishable from a missing array — and defaulting to the authored path
+would sample an untextured mesh at a single texel, visibly *worse* than the
+fallback. `DecodedSLMesh.has_authored_uvs` now records the difference, true
+only when every submesh carried its own array.
+
+That is the same trap as the normals work: **this decoder fills in defaults for
+absent data, so "the field is populated" never means "the asset supplied it."**
+Check for a dedicated flag before treating decoded geometry data as authored.
+
+A GL-testing note: the first version of the test pinned UVs to exactly 1.0 and
+the triangle rendered magenta rather than blue — at the texture edge,
+wrap-around linear filtering blends the last texel with the first. Sample away
+from the seam.
+
 Smaller open items:
 
-- mesh UVs are decoded but the shader still generates coordinates from
-  position; `generated_texture_uv` would become `in_uv`
 - extended-region 32x32 terrain patches are still undecoded
 - `ExtraParams` beyond the sculpt/mesh block (flexi, light, projector)
 
