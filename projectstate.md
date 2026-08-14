@@ -193,8 +193,9 @@ Main gaps:
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - prim shape now survives `ObjectUpdateCompressed` (it was skipped, leaving
   nearly every prim in a populated region rendering as the fallback cube).
-  Other compressed-only fields — text, media URL, particles, sound — are still
-  stepped over rather than decoded
+  Hover text, its colour and the media URL decode in both update paths and
+  reach the inspector; hover text also renders as a 3D billboard. Particles
+  and the sound block are still stepped over rather than decoded
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - per-face `TextureEntry` overrides now follow SL's face numbering for box,
   cylinder and prism, and single-face prims (sphere, torus, sculpt) read the

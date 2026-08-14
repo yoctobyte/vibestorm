@@ -1686,6 +1686,39 @@ overrides, so the face-map work is unit- and pixel-verified but not live-
 verified. A prim with different textures on two faces would close that — and a
 textured prism would settle the side-quad order.
 
+## 2026-08-14 — hover text, wire to pixels
+
+Prim floating text was recorded as a byte count and nothing else, in both
+update paths; `ObjectUpdateCompressed` did not even do that, it stepped over
+the field. Both paths now decode the string, and it carries through
+`WorldObject` -> `SceneEntity` to an Object Inspector row *and* to a
+camera-facing billboard in the 3D view.
+
+**The colour is the trap.** OpenSim writes `argb ^ 0xff000000`
+(`LLUDPZeroEncoder.AddColorArgb`), so fully opaque text goes out with alpha
+byte `0`. Reading the byte as-is makes every ordinary hover text look
+completely transparent — the feature would appear to work right up until
+nothing rendered. `_decode_text_color` inverts it and tests pin both ends.
+
+The billboard is scaled by eye distance so the text keeps a constant apparent
+size, the way SL does it. Two consequences worth knowing:
+
+- Moving the test camera closer does **not** make the label bigger. The GL
+  tests need their own 256x256 framebuffer; at the file's shared 64x64 target
+  a label is about 2 px tall and every glyph pixel is partial coverage, so the
+  colour test can never pass.
+- `depth_mask` lives on the bound framebuffer in moderngl 5, not on the
+  context. Depth *test* stays on (text behind a wall is hidden); depth
+  *writes* are off (overlapping labels blend instead of punching holes).
+
+Live end-to-end: logged in, built a `Scene` from the live `WorldView`, aimed a
+camera at local_id `234346578` and rendered offscreen. The magenta
+`'hover text'` label appears above its prim — 96 pixels matching
+rgba(255, 0, 255, 255), which is exactly the reading an uninverted alpha
+decode would have reported as invisible. The same frame shows spheres and a
+cylinder rendering as spheres and a cylinder, which is the compressed shape
+fix visible in the same shot.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
