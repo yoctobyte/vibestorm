@@ -1299,23 +1299,15 @@ scripted bus-subscriber harness. No code changed.
 ### The Finding That Changes The Next Step
 
 **`ParcelProperties` never arrives on its own — 0 received across both runs.**
-OpenSim sends it only in reply to a `ParcelPropertiesRequest` (or on parcel
-entry), and grep confirms **no request builder exists**: there is no
-`ParcelPropertiesRequest` encoder anywhere in `src/`.
+No `ParcelPropertiesRequest` encoder existed anywhere in `src/`, so parcel data
+was simply never asked for. The HUD `Parcel: unknown` problem was therefore not
+a missing subscription.
 
-So the HUD `Parcel: unknown` problem is not merely a missing subscription. The
-order is:
-
-1. Add a `ParcelPropertiesRequest` encoder in `udp/messages.py` (needs
-   sequence id, region position bounds, and snap-selection flags).
-2. Send it after `RegionHandshake`, the same way `MapBlockRequest` is autosent.
-3. Then subscribe `viewer3d` to `ParcelPropertiesReceived` and set
-   `scene.parcel_name`.
-
-This also settles a standing question: during login OpenSim did **not** deliver
-`ParcelProperties` over the event queue either. The UDP path is the one to
-build against, matching the earlier read of `opensim-source` (no EQG builder
-exists for it).
+> **Superseded on the same day — read the 2026-08-14 follow-up below.** The
+> conclusion drawn here, that "the UDP path is the one to build against", is
+> backwards. `ParcelProperties` is delivered over the *event queue* only. The
+> request is still needed and still goes out over UDP; the reply does not come
+> back that way.
 
 ### Still Unverified
 
@@ -1332,6 +1324,106 @@ normal session. That is the long-poll shape, but it means the EQG path is
 effectively dormant, which is worth confirming when the typed decoder gets
 wired into `poll_once`. One `GetTexture` 404 also appears for a texture the sim
 does not hold.
+
+*(That dormant queue turned out to be the actual root cause — see below.)*
+
+## Update 2026-08-14: Parcel Identity, End To End
+
+The HUD now shows a real parcel name. Three separate gaps were stacked behind
+that one symptom, and each had to be closed before the next was visible.
+
+### 1. Nothing ever asked for parcel data
+
+Added `encode_parcel_properties_request` (`udp/messages.py`,
+ParcelPropertiesRequest = Medium/11, Zerocoded) and autosend it after
+`RegionHandshake`, beside `MapBlockRequest`, guarded by
+`parcel_properties_request_sent`.
+
+The bounds matter. `LandManagementModule.ClientOnParcelPropertiesRequest`
+takes two paths: a box no wider than one 4 m LandUnit resolves a single
+parcel, while anything larger is divided into LandUnits and walked, replying
+once per distinct parcel found. So a region-sized box `(0, 0, 256, 256)`
+enumerates every parcel. The bounds must stay inside the region — OpenSim
+drops the request outright if `end > regionSize`, with no error to the client.
+`SessionConfig.region_size_meters` (default 256) sizes the box; varregions
+need it raised.
+
+### 2. The event queue was dormant
+
+This was the real root cause. `_run_caps_prelude` polled `EventQueueGet`
+exactly once and then never again, so *every* EQG-only message was dropped on
+the floor for the entire session.
+
+Added `_run_event_queue_loop`: a background task started after the prelude,
+cancelled at session teardown, that polls in a loop and acks each batch by id
+(which is how the simulator knows it may drop delivered events). Long-poll
+timeouts on a quiet queue are the normal idle shape and are now recorded as
+`eventqueue.poll_timeout` rather than as errors; a 404 after logout is the
+capability being torn down and is no longer reported at all. New knobs:
+`SessionConfig.event_queue_polling` and `event_queue_timeout_seconds`.
+
+### 3. `ParcelProperties` is an EVENT QUEUE message — the earlier note was backwards
+
+`LLClientView.SendLandProperties` builds an EQG event via `eq.StartEvent(
+"ParcelProperties", ...)` and returns early if no event queue exists. There is
+**no `ParcelPropertiesPacket` send path anywhere in `LLClientView.cs`.**
+
+Consequences worth internalising:
+
+- `udp.messages.parse_parcel_properties`, written 2026-06-22, **never fires
+  against OpenSim.** It is not wrong, just unreachable on this server. Keep it
+  for SL/other-server compatibility, but do not expect it to run.
+- The UDP `ParcelProperties` template entry is marked `UDPDeprecated`, and that
+  turns out to be literally true on OpenSim.
+- The request goes out over UDP; the reply comes back over HTTP. Neither
+  transport tells the whole story on its own — which is exactly why the
+  earlier single-transport reasoning went wrong in both directions.
+
+Added `EVENT_PARCEL_PROPERTIES` / `ParcelPropertiesEvent` to
+`event_queue/events.py`, decoding into the **same** `ParcelPropertiesMessage`
+the UDP parser produces, so `ParcelPropertiesReceived` and every downstream
+consumer are unchanged regardless of transport.
+
+### 4. Consumer side
+
+`LiveCircuitSession.handle_event_queue_batch` folds a decoded batch into
+session state (parcel replies also land in `parcel_properties_by_local_id`,
+since a region-wide request draws one per parcel). `viewer3d`'s `Scene` gained
+`apply_parcel_properties`, wired in `_wire_scene`, preferring the parcel whose
+Bitmap actually covers the avatar and falling back to the first reply while the
+avatar position is unknown.
+
+### One Live Bug Found And Fixed
+
+`_as_uuid` raised on `''`. OpenSim writes an unset UUID as an empty `<uuid/>`,
+which parses to the empty string rather than the all-zero form — hit
+immediately on `GroupID` for an ungrouped parcel, and it killed the decode of
+both parcel events. Blank now yields the null UUID; genuinely malformed values
+still raise.
+
+### What Was Verified Live
+
+- `parcel.properties local_id=1 name='Your Parcel' area=65536
+  owner=6571e388-…` — two replies, one from OpenSim's own login-time land info
+  and one from our request.
+- `decode_parcel_bitmap` on the live 512-byte Bitmap: 4096 cells, edge 64,
+  bounds `(0,0,63,63)`, `contains_meters(128,128)=True`. Consistent with the
+  overlay grid's 128 perimeter segments and with `area=65536` — a single
+  region-wide parcel, three independent decoders agreeing.
+- A headless `Scene` driven through the real `_wire_scene` renders
+  `Parcel: Your Parcel`.
+- 630 tests pass; no new lint findings.
+
+### Concrete Next Step
+
+Draw the parcel borders. `decode_parcel_overlay(session.parcel_overlay_packets)`
+→ `border_segments()` gives `(x0, y0, x1, y1)` meter segments ready to render as
+plot-edge polylines in `viewer3d`, which closes the last bird's-eye parcel item.
+
+Then consider what else the now-live event queue unlocks: `TeleportFinish`,
+`EnableSimulator`, and `ScriptRunningReply` are decoded and arriving but have no
+consumer. `ScriptRunningReply` in particular is the server-side confirmation the
+object-sync live-verify track has been missing.
 
 ## Notes For The Next Agent
 

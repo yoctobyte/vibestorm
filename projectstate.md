@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-08-14 (reflects code through 2026-06-22)
+Last updated: 2026-08-14
 
 ## Current Summary
 
@@ -91,13 +91,22 @@ The repo already supports:
   overrides) across all sections, not just the image UUID section
 - SL mesh assets decode normals, `TexCoord0` UVs, and per-submesh
   `material_groups` mapping prim face index to its index-buffer slice
+- **parcel identity end to end** (2026-08-14): `ParcelPropertiesRequest` is
+  autosent region-wide after `RegionHandshake`, the reply arrives over the
+  event queue, and `viewer3d`'s HUD shows the real parcel name instead of
+  `Parcel: unknown`. Live-verified against local OpenSim.
+- **background EventQueueGet polling**: the queue is polled in a loop for the
+  life of the session, acking each batch, instead of once in the caps prelude.
+  This is what makes every EQG-only message reachable at all.
 - parcel decoding: `ParcelProperties` `ParcelData` block through `GroupID`
   (ownership, AABB, Bitmap, area, prim counts, flags, sale price, name/desc/
   music/media URLs), the `ParcelOverlay` packed bit-field reassembled into a
   region-wide 4 m LandUnit ownership grid with property-line segments, and the
   per-parcel Bitmap cell mask. Cell ordering and bit order mirror OpenSim
   `LandChannel.cs` / `LandManagementModule.cs` / `LandObject.cs`.
-- typed `EventQueueGet` event decoding: `EnableSimulator`,
+- typed `EventQueueGet` event decoding, wired into the live poll loop:
+  `ParcelProperties` (EQG-only on OpenSim — there is no UDP send path),
+  `EnableSimulator`,
   `EstablishAgentCommunication`, `TeleportFinish`, `CrossedRegion`,
   `ScriptRunningReply`, `ObjectPhysicsProperties`, `AgentGroupDataUpdate`, plus
   `UnknownEvent` fallback. LLSD parsing now handles binary tags, so OpenSim's
@@ -182,18 +191,14 @@ Main gaps:
   projector, and the other rich-tail entries are still undecoded
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
-- **decoders written but not consumed** (2026-06-22 pass):
-  - `decode_event_queue_payload` has no caller in `src/`; `event_queue/client.py`
-    `poll_once` still returns raw LLSD
-  - `decode_parcel_overlay` / `decode_parcel_bitmap` have no caller;
-    `session.parcel_overlay_packets` accumulates raw bytes that nobody reassembles
-  - the HUD still shows `Parcel: unknown` — `viewer3d/scene.py` declares
-    `parcel_name` and only ever sets it to `None`, though `ParcelProperties.name`
-    is decoded and on the bus
-- no `ParcelPropertiesRequest` encoder exists, so `ParcelProperties` is never
-  requested and never arrives (verified live 2026-08-14: 0 received over both
-  UDP and the event queue). The parcel name/Bitmap paths cannot run until a
-  request is sent.
+- `decode_parcel_overlay` still has no caller: `session.parcel_overlay_packets`
+  accumulates raw bytes that nobody reassembles, so parcel borders are not drawn
+  yet (the decoder itself is live-verified)
+- the typed EQG events now arrive but most have no consumer: `TeleportFinish`,
+  `EnableSimulator`, `CrossedRegion`, `ScriptRunningReply`,
+  `ObjectPhysicsProperties` and `AgentGroupDataUpdate` are decoded and dropped
+- `udp.messages.parse_parcel_properties` is unreachable against OpenSim, which
+  sends `ParcelProperties` only over the event queue. Kept for other servers.
 - `ObjectAnimation` and the four sound messages are still synthetic-test-only;
   a quiet single-avatar test region produces none of them
 - extended-region 32x32 terrain patches are not decompressed yet
@@ -258,35 +263,29 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 
 ## Recommended Next Step
 
-The repo has drifted into a state where several decoders are complete and
-tested but have no consumer, and none of the 2026-06-22 work has met live
-traffic. So: consume and live-verify rather than decode more.
+The standing theme: several decoders are complete and tested but have no
+consumer. Consume and live-verify rather than decode more.
 
-Shortest path to visible value — surface the parcel data:
+Parcel identity now works end to end (2026-08-14). The next visible step is
+parcel *geometry*:
 
 1. Start OpenSim: `./run.sh opensim`
-2. Add a `ParcelPropertiesRequest` encoder to `udp/messages.py` and autosend it
-   after `RegionHandshake` (same pattern as `MapBlockRequest`). Live
-   verification on 2026-08-14 showed `ParcelProperties` is never sent
-   unsolicited, over UDP or the event queue, and no request builder exists —
-   this is the actual blocker, not the missing subscription.
-3. Run the viewer with the local test profile: `./run.sh tester viewer3d`
-4. Subscribe `viewer3d` to the `ParcelPropertiesReceived` bus event and assign
-   `scene.parcel_name` from the decoded name. The HUD status bar should stop
-   showing `Parcel: unknown`.
-5. Reassemble `session.parcel_overlay_packets` through `decode_parcel_overlay`
-   and render `border_segments` as plot-edge polylines — this closes the
-   long-standing bird's-eye parcel item. The reassembly path is already
-   live-verified (64×64 grid, 128 perimeter segments on the test region).
+2. Reassemble `session.parcel_overlay_packets` through `decode_parcel_overlay`
+   and render `border_segments()` as plot-edge polylines in `viewer3d` — this
+   closes the last bird's-eye parcel item. The decoder is already live-verified
+   (64x64 grid, 128 perimeter segments on the test region); only the consumer
+   is missing.
+3. Check it with `./run.sh tester viewer3d`.
 
 Two independent tracks remain open, either of which can follow:
 
-- Wire `decode_event_queue_payload` into `event_queue/client.py` `poll_once` so
-  `EnableSimulator` / `TeleportFinish` / `ScriptRunningReply` become typed
-  events instead of raw LLSD.
+- Consume the typed EQG events that now arrive but are dropped:
+  `TeleportFinish`, `EnableSimulator`, `CrossedRegion`, `ObjectPhysicsProperties`,
+  `AgentGroupDataUpdate`.
 - Live-verify the object-local script/notecard sync path end to end (implemented
-  2026-05-25, never confirmed against a running sim). `ScriptRunningReply` is
-  the server-side confirmation signal once the EQG decoder is wired.
+  2026-05-25, never confirmed against a running sim). `ScriptRunningReply` now
+  arrives over the live event queue, so the server-side confirmation signal is
+  finally available.
 
 Deleting object inventory, creating missing rows, conflict resolution, and
 recursive folder sync remain out of scope until the update path is proven live.
