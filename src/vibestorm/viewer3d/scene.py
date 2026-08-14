@@ -233,6 +233,26 @@ def avatar_display_name(name_values: object) -> str | None:
     return f"{title}\n{full}" if title else full
 
 
+#: How many one-shot SoundTrigger events to keep. They are transient by
+#: nature; the tail exists so a HUD can answer "did anything just play?".
+SOUND_TRIGGER_HISTORY = 32
+
+
+@dataclass(slots=True, frozen=True)
+class AttachedSoundState:
+    """The looping sound currently bound to an object."""
+
+    sound_id: UUID
+    owner_id: UUID | None
+    gain: float
+    flags: int
+
+    @property
+    def is_silent(self) -> bool:
+        """A null sound id is how a sim clears an object's looping sound."""
+        return self.sound_id.int == 0
+
+
 @dataclass(slots=True, frozen=True)
 class ChatLine:
     kind: str          # "local" | "im" | "alert" | "outbound"
@@ -293,6 +313,18 @@ class Scene:
     render_parcel_borders: bool = True
     render_hover_text: bool = True
     render_avatar_names: bool = True
+
+    # Live world activity, keyed by the object or avatar it belongs to. These
+    # are *current state*, not a log: an AvatarAnimation or AttachedSound
+    # message replaces whatever was there, which is how a sim stops an anim or
+    # clears a sound. A trailing log would show a stopped animation forever.
+    avatar_animations: dict[UUID, tuple[UUID, ...]] = field(default_factory=dict)
+    object_animations: dict[UUID, tuple[UUID, ...]] = field(default_factory=dict)
+    attached_sounds: dict[UUID, "AttachedSoundState"] = field(default_factory=dict)
+    # One-shot sounds have no lasting state, so these are a bounded tail.
+    recent_sound_triggers: deque = field(
+        default_factory=lambda: deque(maxlen=SOUND_TRIGGER_HISTORY)
+    )
     map_tile_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
     mesh_paths: dict[UUID, Path] = field(default_factory=dict)
@@ -443,6 +475,70 @@ class Scene:
                     ),
                 )
             )
+
+    def apply_avatar_animation(self, event: object) -> None:
+        """Record which animations an avatar is currently running."""
+        animation = getattr(event, "animation", None)
+        if animation is None:
+            return
+        self.avatar_animations[animation.sender_id] = tuple(
+            entry.animation_id for entry in animation.animations
+        )
+
+    def apply_object_animation(self, event: object) -> None:
+        """Record which animations an object is currently running."""
+        animation = getattr(event, "animation", None)
+        if animation is None:
+            return
+        self.object_animations[animation.sender_id] = tuple(
+            entry.animation_id for entry in animation.animations
+        )
+
+    def apply_attached_sound(self, event: object) -> None:
+        """Bind or clear an object's looping sound.
+
+        A null sound id is the sim clearing the sound, so the entry is dropped
+        rather than stored as a zero UUID — otherwise "silent" and "playing
+        asset 0" look identical to every consumer.
+        """
+        sound = getattr(event, "sound", None)
+        if sound is None:
+            return
+        if sound.sound_id.int == 0:
+            self.attached_sounds.pop(sound.object_id, None)
+            return
+        self.attached_sounds[sound.object_id] = AttachedSoundState(
+            sound_id=sound.sound_id,
+            owner_id=sound.owner_id,
+            gain=sound.gain,
+            flags=sound.flags,
+        )
+
+    def apply_attached_sound_gain_change(self, event: object) -> None:
+        """Update the gain of a sound already bound to an object.
+
+        A gain change for an object with no known sound is ignored: inventing
+        a state entry from it would claim a sound whose id we never saw.
+        """
+        change = getattr(event, "change", None)
+        if change is None:
+            return
+        existing = self.attached_sounds.get(change.object_id)
+        if existing is None:
+            return
+        self.attached_sounds[change.object_id] = AttachedSoundState(
+            sound_id=existing.sound_id,
+            owner_id=existing.owner_id,
+            gain=change.gain,
+            flags=existing.flags,
+        )
+
+    def apply_sound_trigger(self, event: object) -> None:
+        """Append a one-shot world sound to the bounded recent tail."""
+        sound = getattr(event, "sound", None)
+        if sound is None:
+            return
+        self.recent_sound_triggers.append(sound)
 
     def apply_inventory_snapshot_ready(self, event: InventorySnapshotReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:

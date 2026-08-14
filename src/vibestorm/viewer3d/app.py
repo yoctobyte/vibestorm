@@ -34,6 +34,9 @@ from vibestorm.bus.commands import (
 )
 from vibestorm.bus.events import (
     AssetDataReady,
+    AttachedSoundGainChanged,
+    AttachedSoundReceived,
+    AvatarAnimationReceived,
     ChatAlert,
     ChatIM,
     ChatLocal,
@@ -42,11 +45,13 @@ from vibestorm.bus.events import (
     InventorySnapshotReady,
     LayerDataReceived,
     MeshAssetReady,
+    ObjectAnimationReceived,
     ObjectInventorySnapshotReady,
     ParcelOverlayReceived,
     ParcelPropertiesReceived,
     RegionChanged,
     RegionMapTileReady,
+    SoundTriggered,
     TextureAssetReady,
 )
 from vibestorm.caps.asset_upload_client import (
@@ -976,6 +981,11 @@ def _wire_scene(client: WorldClient, scene: Scene) -> None:
     client.bus.subscribe(ParcelPropertiesReceived, scene.apply_parcel_properties)
     client.bus.subscribe(ParcelOverlayReceived, scene.apply_parcel_overlay)
     client.bus.subscribe(EventQueueEventReceived, scene.apply_event_queue_event)
+    client.bus.subscribe(AvatarAnimationReceived, scene.apply_avatar_animation)
+    client.bus.subscribe(ObjectAnimationReceived, scene.apply_object_animation)
+    client.bus.subscribe(AttachedSoundReceived, scene.apply_attached_sound)
+    client.bus.subscribe(AttachedSoundGainChanged, scene.apply_attached_sound_gain_change)
+    client.bus.subscribe(SoundTriggered, scene.apply_sound_trigger)
 
 
 def _make_asset_data_ready_handler(

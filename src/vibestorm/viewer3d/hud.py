@@ -2426,7 +2426,7 @@ def inspector_rows(scene: Scene, world_view: object | None) -> tuple[InspectorDi
         dist_str = f" [{d:.1f}m]" if avatar_pos is not None else ""
         row_text = f"{name}{dist_str}"
 
-        detail_html = _inspector_detail_html(e, world_obj)
+        detail_html = _inspector_detail_html(e, world_obj, scene)
         rows.append(
             InspectorDisplayRow(text=row_text, detail_html=detail_html, local_id=e.local_id)
         )
@@ -2524,7 +2524,34 @@ def _extra_param_lines(extra_params: object) -> list[str]:
     return lines
 
 
-def _inspector_detail_html(e: object, w: object | None) -> str:
+def _live_activity_lines(world_object: object | None, scene: object | None) -> list[str]:
+    """Rows for what an object is doing right now, as opposed to how it is built.
+
+    ``ObjectUpdate`` carries the sound an object was *created* with;
+    AttachedSound and ObjectAnimation carry what it is playing *now*. Both are
+    worth showing and they can disagree — a script can swap either at runtime.
+
+    Keyed by full UUID, because that is what these messages address objects by;
+    the local id only exists inside one region session.
+    """
+    if scene is None or world_object is None:
+        return []
+    full_id = getattr(world_object, "full_id", None)
+    if full_id is None:
+        return []
+    rows: list[str] = []
+
+    playing = (getattr(scene, "object_animations", {}) or {}).get(full_id)
+    if playing:
+        rows.append(f"Playing Animations: {', '.join(str(a) for a in playing)}")
+
+    sound = (getattr(scene, "attached_sounds", {}) or {}).get(full_id)
+    if sound is not None:
+        rows.append(f"Attached Sound (live): {sound.sound_id} gain {sound.gain:.2f}")
+    return rows
+
+
+def _inspector_detail_html(e: object, w: object | None, scene: object | None = None) -> str:
     lines = []
 
     # Identity
@@ -2589,6 +2616,7 @@ def _inspector_detail_html(e: object, w: object | None) -> str:
         faces = [f"{face}: {tid}" for face, tid in te.face_texture_ids]
         lines.append(f"Face Textures: {', '.join(faces)}")
     lines.extend(_extra_param_lines(getattr(e, "extra_params", None)))
+    lines.extend(_live_activity_lines(w, scene))
     lines.append("")
 
     # Object update/debug
