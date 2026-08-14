@@ -1521,10 +1521,39 @@ the triangle rendered magenta rather than blue — at the texture edge,
 wrap-around linear filtering blends the last texel with the first. Sample away
 from the seam.
 
-Smaller open items:
+## Update 2026-08-14: ExtraParams Beyond Sculpt/Mesh
+
+`vibestorm/world/extra_params.py` decodes the remaining prim feature blocks:
+flexi (`0x10`), light (`0x20`), projector (`0x40`) and reflection probe
+(`0x90`). Layouts from OpenSim `PrimitiveBaseShape`.
+
+Two quantisations are easy to get wrong and are covered by dedicated tests:
+
+- **Flexi softness is a 2-bit level split across the TOP bit of two different
+  bytes**, whose low 7 bits carry tension and drag. Read the bytes naively and
+  you get both a wrong softness and a wrong tension.
+- **Light intensity rides in the colour's alpha channel**, so `LightParams.color`
+  is RGB only. Treating alpha as opacity loses the intensity entirely.
+
+Truncated blocks return `None` rather than raising — a malformed block should
+cost one prim feature, not the whole object update — and `in_use=False` blocks
+are skipped, since that is how a sim *clears* a feature.
+
+Wired to a consumer in the same change, per the lesson from the June backlog:
+`SceneEntity.extra_params` carries the decoded blocks and the Object Inspector
+renders one row per block a prim actually has.
+
+### What Was Verified Live
+
+Two prims in the test region carry flexi blocks and decode to a plausible
+configuration (softness 2, tension 1.0, drag 2.0, gravity 0.3, wind 0). The
+region contains no light, projector or reflection-probe prims, so **those three
+paths remain synthetic-test-only** — rez one of each to confirm them.
+
+### Remaining
 
 - extended-region 32x32 terrain patches are still undecoded
-- `ExtraParams` beyond the sculpt/mesh block (flexi, light, projector)
+- `ExtraParams` render-materials (`0x80`) and mesh-flags (`0x70`) blocks
 
 ## Notes For The Next Agent
 

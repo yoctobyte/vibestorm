@@ -116,6 +116,9 @@ The repo already supports:
   `ScriptRunningReply`, `ObjectPhysicsProperties`, `AgentGroupDataUpdate`, plus
   `UnknownEvent` fallback. LLSD parsing now handles binary tags, so OpenSim's
   big-endian uint/ulong blobs and 4-byte IPs coerce back to ints / dotted quads.
+- `ExtraParams` prim feature blocks decode beyond sculpt/mesh: flexi, light,
+  projector and reflection probe, surfaced per-object in the viewer3d Object
+  Inspector
 - animation and sound message decoding: `AvatarAnimation`, `ObjectAnimation`,
   `SoundTrigger`, `AttachedSound`, `AttachedSoundGainChange`, `PreloadSound` —
   all dispatched from the live session and republished as typed bus events
@@ -189,8 +192,9 @@ Main gaps:
 - renderer use of per-face `TextureEntry` overrides beyond cube primitives (the
   decode side is complete; other prim shapes still fall back to the default
   texture until their face mapping is modeled)
-- `ExtraParams` beyond the sculpt/mesh block (`type=0x30`): flexi, light,
-  projector, and the other rich-tail entries are still undecoded
+- `ExtraParams` render-materials (`0x80`) and mesh-flags (`0x70`) blocks are
+  still undecoded; flexi/light/projector/reflection-probe now decode, though
+  only flexi has been seen live
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
 - typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
@@ -279,8 +283,10 @@ Two independent tracks remain open, either of which can follow:
   2026-05-25, never confirmed against a running sim). This is now the oldest
   open track and everything it needed exists: `ScriptRunningReply` arrives over
   the live event queue and surfaces as a viewer chat line.
-- Decode extended-region 32x32 terrain patches, or `ExtraParams` beyond the
-  sculpt/mesh block (flexi, light, projector).
+- Decode extended-region 32x32 terrain patches.
+- Rez a light / projector / reflection-probe prim in the test region to confirm
+  those three `ExtraParams` decoders against live data (only flexi has been
+  seen so far).
 
 Deleting object inventory, creating missing rows, conflict resolution, and
 recursive folder sync remain out of scope until the update path is proven live.
