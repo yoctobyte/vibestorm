@@ -1753,6 +1753,84 @@ class AuthoredNormalGLTests(_GLTestBase):
             f"avatar torso is a gradient, so authored normals were not used: {samples}",
         )
 
+    def _sculpt_plane_texture(self, tmpdir):
+        """A sculpt map encoding a flat plane in the XY plane at z = 0.5.
+
+        A sculpt map stores XYZ as RGB over the 0..1 range remapped to
+        -0.5..0.5, so a constant blue channel is a constant height.
+        """
+        import pygame
+
+        size = 16
+        surface = pygame.Surface((size, size))
+        for y in range(size):
+            for x in range(size):
+                surface.set_at(
+                    (x, y),
+                    (int(255 * x / (size - 1)), int(255 * y / (size - 1)), 255),
+                )
+        path = Path(tmpdir) / "plane.png"
+        pygame.image.save(surface, str(path))
+        return path
+
+    def test_sculpt_geometry_drives_its_own_normals(self) -> None:
+        # The third upload site. A sculpt map carries only positions, so the
+        # renderer must derive normals from the decoded geometry; the
+        # normalize(position) fallback would only suit a sphere on the origin.
+        # A flat sculpt plane must therefore shade uniformly.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        sculpt_id = UUID("55555555-6666-7777-8888-999999999999")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene = Scene()
+            scene.render_terrain = False
+            scene.render_water = False
+            scene.texture_paths[sculpt_id] = self._sculpt_plane_texture(tmpdir)
+            scene.object_entities[1] = SceneEntity(
+                local_id=1,
+                pcode=9,
+                kind="prim",
+                position=(0.0, 0.0, 0.0),
+                scale=(6.0, 6.0, 6.0),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape="cube",
+                mesh_source_kind="sculpt",
+                mesh_asset_id=sculpt_id,
+                sculpt_type=3,
+                tint=(220, 220, 220),
+            )
+
+            camera = Camera3D(target=(0.0, 0.0, 0.0), eye_position=(1.0, 0.0, 7.0))
+            camera.set_mode("free")
+            camera.screen_size = self.FBO_SIZE
+
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                self.assertIn(
+                    f"sculpt:{sculpt_id}:3",
+                    renderer._shape_meshes,
+                    "sculpt asset never reached the shape meshes",
+                )
+                data = self.fbo.read(components=3)
+                width, height = self.FBO_SIZE
+                band = [
+                    data[((height // 2) * width + x) * 3]
+                    for x in range(width // 2 - 6, width // 2 + 7, 3)
+                ]
+                self.assertTrue(all(v > 0 for v in band), f"sculpt not drawn: {band}")
+                self.assertLessEqual(
+                    max(band) - min(band),
+                    3,
+                    f"flat sculpt shades as a gradient: {band}",
+                )
+            finally:
+                renderer.clear_caches()
+
     def test_a_cube_face_shades_uniformly(self) -> None:
         samples = self._render_cube_face_on()
 

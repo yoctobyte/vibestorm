@@ -39,7 +39,11 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from vibestorm.assets.sculpt import SculptDecodeError, sculpt_mesh_from_rgb
-from vibestorm.assets.sl_mesh import SLMeshDecodeError, decode_sl_mesh_asset
+from vibestorm.assets.sl_mesh import (
+    SLMeshDecodeError,
+    decode_sl_mesh_asset,
+    smooth_vertex_normals,
+)
 
 if TYPE_CHECKING:
     import moderngl
@@ -1428,7 +1432,14 @@ class PerspectiveRenderer:
                 continue
             assert self._program is not None
             assert self._instance_vbo is not None
-            packed = _interleave_vertex_attributes(vertices)
+            # A sculpt map carries only positions, so normals have to come
+            # from the decoded geometry. The renderer's normalize(position)
+            # fallback would only be right for a sculpt that happens to be a
+            # sphere centred on the origin — not for the torus, plane and
+            # cylinder sculpt types.
+            packed = _interleave_vertex_attributes(
+                vertices, smooth_vertex_normals(vertices, indices)
+            )
             vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
             vao = ctx.vertex_array(

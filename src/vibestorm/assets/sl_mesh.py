@@ -12,6 +12,7 @@ import gzip
 import math
 import struct
 import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -295,13 +296,27 @@ def _decode_texcoords(submesh: dict[str, object], vertex_count: int) -> list[flo
     return uvs
 
 
-def _compute_normals(submesh: dict[str, object], vertex_count: int) -> list[float]:
-    """Build smooth per-vertex normals from the submesh triangles."""
-    positions = _decode_positions(submesh)
-    indices = _decode_triangle_list(submesh, vertex_count)
+def smooth_vertex_normals(
+    positions: Sequence[float], indices: Sequence[int]
+) -> list[float]:
+    """Smooth per-vertex normals accumulated from triangle cross products.
+
+    The cross product is left unnormalized before accumulation, so each
+    triangle contributes in proportion to its area — a large face should
+    influence a shared vertex more than a sliver does.
+
+    This is the right answer for any mesh with no authored normals, which
+    includes both an SL mesh submesh that omits ``Normal`` and every decoded
+    sculpt (a sculpt map carries only positions). The alternative the renderer
+    falls back to, ``normalize(position)``, is only correct for a surface
+    centred on the origin.
+    """
+    vertex_count = len(positions) // 3
     accum = [0.0] * (vertex_count * 3)
     for tri in range(0, len(indices) - 2, 3):
         ia, ib, ic = indices[tri], indices[tri + 1], indices[tri + 2]
+        if max(ia, ib, ic) >= vertex_count:
+            continue
         a = positions[ia * 3 : ia * 3 + 3]
         b = positions[ib * 3 : ib * 3 + 3]
         c = positions[ic * 3 : ic * 3 + 3]
@@ -318,6 +333,13 @@ def _compute_normals(submesh: dict[str, object], vertex_count: int) -> list[floa
     for v_index in range(vertex_count):
         normals.extend(_normalized(accum[v_index * 3 : v_index * 3 + 3]))
     return normals
+
+
+def _compute_normals(submesh: dict[str, object], vertex_count: int) -> list[float]:
+    """Build smooth per-vertex normals from the submesh triangles."""
+    return smooth_vertex_normals(
+        _decode_positions(submesh), _decode_triangle_list(submesh, vertex_count)
+    )
 
 
 def _normalized(vec: list[float]) -> tuple[float, float, float]:
