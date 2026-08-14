@@ -158,6 +158,82 @@ class AvatarPlaceholderMeshTests(unittest.TestCase):
         self.assertGreater(max(xs), abs(min(xs)))
 
 
+class TubeAndRingMeshTests(unittest.TestCase):
+    """Tube and ring are swept cross-sections, not the torus or a box.
+
+    They aliased to torus and cube until 2026-08-14, which rendered a
+    square-section tube as a round donut and a ring as a box.
+    """
+
+    def test_tube_fits_the_unit_cube(self) -> None:
+        from vibestorm.viewer3d.meshes import tube_mesh
+
+        verts, _ = tube_mesh()
+        for x, y, z in _xyz_iter(verts):
+            self.assertLessEqual(abs(x), 0.5 + 1e-6)
+            self.assertLessEqual(abs(y), 0.5 + 1e-6)
+            self.assertLessEqual(abs(z), 0.5 + 1e-6)
+
+    def test_ring_fits_the_unit_cube(self) -> None:
+        from vibestorm.viewer3d.meshes import ring_mesh
+
+        verts, _ = ring_mesh()
+        for x, y, z in _xyz_iter(verts):
+            self.assertLessEqual(abs(x), 0.5 + 1e-6)
+            self.assertLessEqual(abs(y), 0.5 + 1e-6)
+            self.assertLessEqual(abs(z), 0.5 + 1e-6)
+
+    def test_tube_cross_section_is_square_not_a_diamond(self) -> None:
+        # A bare 4-side sweep puts profile vertices at 0/90/180/270 degrees,
+        # giving a diamond section that reads as a lumpy torus. The profile is
+        # phased 45 degrees so its flats face outward and up.
+        from vibestorm.viewer3d.meshes import tube_mesh
+
+        verts, _ = tube_mesh()
+        # Along +X the four profile vertices of the first ring must form a
+        # square: two distinct |z| values, each shared by two vertices.
+        first_ring = [
+            (x, y, z) for x, y, z in list(_xyz_iter(verts))[:4]
+        ]
+        zs = sorted(round(z, 6) for _, _, z in first_ring)
+        self.assertEqual(zs[0], zs[1])
+        self.assertEqual(zs[2], zs[3])
+        self.assertNotEqual(zs[0], zs[2])
+
+    def test_tube_has_a_hole(self) -> None:
+        # The defining property versus a cylinder: no geometry near the axis.
+        from vibestorm.viewer3d.meshes import tube_mesh
+
+        verts, _ = tube_mesh()
+        radii = [(x * x + y * y) ** 0.5 for x, y, _ in _xyz_iter(verts)]
+
+        self.assertGreater(min(radii), 0.1)
+
+    def test_ring_profile_has_three_sides(self) -> None:
+        from vibestorm.viewer3d.meshes import ring_mesh
+
+        verts, indices = ring_mesh(rings=8)
+
+        self.assertEqual(len(verts) // 3, 8 * 3)
+        self.assertEqual(len(indices) // 3, 8 * 3 * 2)
+
+    def test_tube_and_ring_are_not_the_same_mesh_as_torus(self) -> None:
+        from vibestorm.viewer3d.meshes import ring_mesh, torus_mesh, tube_mesh
+
+        torus_verts, _ = torus_mesh()
+
+        self.assertNotEqual(tube_mesh()[0], torus_verts)
+        self.assertNotEqual(ring_mesh()[0], torus_verts)
+
+    def test_degenerate_parameters_are_rejected(self) -> None:
+        from vibestorm.viewer3d.meshes import ring_mesh, tube_mesh
+
+        with self.assertRaises(ValueError):
+            tube_mesh(rings=2)
+        with self.assertRaises(ValueError):
+            ring_mesh(rings=2)
+
+
 class SLFaceMapTests(unittest.TestCase):
     """The face maps must partition a mesh and land on the right geometry.
 

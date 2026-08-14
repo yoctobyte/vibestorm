@@ -65,13 +65,12 @@ _INITIAL_INSTANCE_CAPACITY = 1024
 # — wrong size is obvious, wrong shape is not catastrophic.
 _DEFAULT_SHAPE_KEY: str = "cube"
 
-# Aliases from PrimShape values to the underlying mesh used. Tube/ring
-# don't have purpose-built meshes yet. Mesh is a placeholder until
-# authored mesh asset fetch/decode lands, but it deliberately routes
-# through the same instanced mesh path instead of the cube fallback.
+# Aliases from PrimShape values to the underlying mesh used. Tube and ring
+# now have purpose-built swept meshes, so only ``mesh`` still stands in for
+# something else — a placeholder until authored mesh asset fetch/decode
+# lands, deliberately routed through the same instanced mesh path rather
+# than the cube fallback.
 _SHAPE_ALIASES: dict[str, str] = {
-    "tube": "cube",
-    "ring": "torus",
     "mesh": "sphere",
     "avatar": "avatar",
 }
@@ -146,7 +145,7 @@ def _single_face_index(shape_key: str) -> int | None:
     Returns ``None`` for the avatar placeholder and for shapes drawn per face
     elsewhere; those callers keep the default-texture behaviour.
     """
-    if shape_key in ("sphere", "torus") or shape_key.startswith("sculpt:"):
+    if shape_key in ("sphere", "torus", "tube", "ring") or shape_key.startswith("sculpt:"):
         return 0
     return None
 
@@ -1087,6 +1086,8 @@ class PerspectiveRenderer:
             "sphere": meshes.sphere_mesh,
             "cylinder": meshes.cylinder_mesh,
             "torus": meshes.torus_mesh,
+            "tube": meshes.tube_mesh,
+            "ring": meshes.ring_mesh,
             "prism": meshes.prism_mesh,
             "avatar": meshes.avatar_placeholder_mesh,
         }

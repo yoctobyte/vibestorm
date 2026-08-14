@@ -177,6 +177,92 @@ def torus_mesh(
     return tuple(vertices), tuple(indices)
 
 
+def _swept_ring_mesh(
+    rings: int,
+    profile_points: tuple[tuple[float, float], ...],
+    ring_radius: float,
+) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Sweep a closed 2D cross-section around the Z axis.
+
+    ``profile_points`` are ``(radial_offset, z)`` pairs describing the
+    cross-section relative to the centre of the tube; the sweep places each at
+    ``ring_radius + radial_offset`` from the origin. This is the shared body
+    behind torus, tube and ring, which differ only in that cross-section.
+    """
+    if rings < 3 or len(profile_points) < 3:
+        raise ValueError(f"rings={rings}, profile={len(profile_points)} too small (need >=3)")
+
+    sides = len(profile_points)
+    vertices: list[float] = []
+    for i in range(rings):
+        phi = 2.0 * math.pi * i / rings
+        cphi, sphi = math.cos(phi), math.sin(phi)
+        for radial, z in profile_points:
+            radius = ring_radius + radial
+            vertices.extend((radius * cphi, radius * sphi, z))
+
+    indices: list[int] = []
+    for i in range(rings):
+        i1 = (i + 1) % rings
+        for j in range(sides):
+            j1 = (j + 1) % sides
+            a = i * sides + j
+            b = i * sides + j1
+            c = i1 * sides + j
+            d = i1 * sides + j1
+            indices.extend((a, c, d))
+            indices.extend((a, d, b))
+    return tuple(vertices), tuple(indices)
+
+
+def _regular_polygon_profile(
+    sides: int, radius: float, phase: float
+) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (
+            radius * math.cos(phase + 2.0 * math.pi * j / sides),
+            radius * math.sin(phase + 2.0 * math.pi * j / sides),
+        )
+        for j in range(sides)
+    )
+
+
+# ---- tube --------------------------------------------------------------------
+
+
+def tube_mesh(
+    rings: int = 16,
+    ring_radius: float = 0.4,
+    half_width: float = 0.1,
+) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Square-section torus: SL's "tube" prim, a square profile on a circular path.
+
+    The profile is a 4-gon phased by 45 degrees so its flats face outward and
+    up rather than its corners — a bare 4-side sweep produces a diamond
+    cross-section, which reads as a lumpy torus instead of a tube. Its
+    circumradius is therefore ``half_width * sqrt(2)``.
+    """
+    profile = _regular_polygon_profile(4, half_width * math.sqrt(2.0), math.pi / 4.0)
+    return _swept_ring_mesh(rings, profile, ring_radius)
+
+
+# ---- ring --------------------------------------------------------------------
+
+
+def ring_mesh(
+    rings: int = 16,
+    ring_radius: float = 0.4,
+    profile_radius: float = 0.1,
+) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Triangle-section torus: SL's "ring" prim.
+
+    Phased so one profile vertex points outward from the ring centre, matching
+    how ``prism_mesh`` orients its cross-section.
+    """
+    profile = _regular_polygon_profile(3, profile_radius, 0.0)
+    return _swept_ring_mesh(rings, profile, ring_radius)
+
+
 # ---- prism -------------------------------------------------------------------
 
 
@@ -228,6 +314,8 @@ SL_FACE_COUNTS: dict[str, int] = {
     "prism": 5,
     "sphere": 1,
     "torus": 1,
+    "tube": 1,
+    "ring": 1,
 }
 
 

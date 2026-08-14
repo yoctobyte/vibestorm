@@ -899,21 +899,32 @@ class GroupEntitiesByShapeTests(unittest.TestCase):
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
 
         renderer = PerspectiveRenderer(Camera3D(), ctx=None)
-        for key in ("cube", "sphere", "cylinder", "torus", "prism", "avatar"):
+        for key in ("cube", "sphere", "cylinder", "torus", "tube", "ring", "prism", "avatar"):
             renderer._shape_meshes[key] = object()  # sentinel — not touched
         return renderer
 
-    def test_aliases_ring_to_torus_tube_to_cube_and_mesh_to_sphere(self) -> None:
+    def test_tube_and_ring_use_their_own_meshes(self) -> None:
+        # They used to alias to cube and torus. A tube is a square-section
+        # sweep and a ring a triangle-section one, so borrowing the round
+        # torus or a box misreports both.
         renderer = self._grouper()
-        scene = self._make_scene_with(["ring", "tube", "mesh"])
+        scene = self._make_scene_with(["ring", "tube"])
 
         groups = renderer._group_entities_by_shape(scene)
 
-        self.assertIn("torus", groups)
-        self.assertIn("cube", groups)
-        self.assertIn("sphere", groups)
-        self.assertEqual(len(groups["torus"]), 1)
-        self.assertEqual(len(groups["cube"]), 1)
+        self.assertEqual(len(groups.get("ring", [])), 1)
+        self.assertEqual(len(groups.get("tube", [])), 1)
+        self.assertNotIn("cube", groups)
+        self.assertNotIn("torus", groups)
+
+    def test_mesh_still_stands_in_as_a_sphere(self) -> None:
+        # The one remaining alias: a placeholder until authored mesh assets
+        # are fetched and decoded.
+        renderer = self._grouper()
+        scene = self._make_scene_with(["mesh"])
+
+        groups = renderer._group_entities_by_shape(scene)
+
         self.assertEqual(len(groups["sphere"]), 1)
 
     def test_none_shape_falls_back_to_cube(self) -> None:
