@@ -638,6 +638,44 @@ def _read_utf8_fields_with_fallback(
     raise last_error or MessageDecodeError("variable UTF-8 field is truncated")
 
 
+def _parse_compressed_prim_shape_block(data: bytes, offset: int) -> PrimShapeData:
+    """Decode the 23-byte path/profile block from ObjectUpdateCompressed.
+
+    Same 23 fields as ``_parse_prim_shape_block``, but *not* the same order.
+    ``ObjectUpdate`` follows the message template, which puts ProfileCurve
+    second; the compressed block writes every path field first and only then
+    the profile group (see ``LLClientView.CreateCompressedUpdateBlockZC``):
+    PathCurve (U8), PathBegin/End (U16), PathScaleX/Y (U8), PathShearX/Y
+    (U8), PathTwist/Begin (S8), PathRadiusOffset (S8), PathTaperX/Y (S8),
+    PathRevolutions (U8), PathSkew (S8), ProfileCurve (U8),
+    ProfileBegin/End/Hollow (U16).
+
+    Reading it with the template layout does not fail — it silently yields a
+    profile_curve taken from the low byte of PathBegin. Caller guarantees
+    ``len(data) >= offset + 23``.
+    """
+    return PrimShapeData(
+        path_curve=data[offset],
+        path_begin=unpack_from("<H", data, offset + 1)[0],
+        path_end=unpack_from("<H", data, offset + 3)[0],
+        path_scale_x=data[offset + 5],
+        path_scale_y=data[offset + 6],
+        path_shear_x=data[offset + 7],
+        path_shear_y=data[offset + 8],
+        path_twist=unpack_from("<b", data, offset + 9)[0],
+        path_twist_begin=unpack_from("<b", data, offset + 10)[0],
+        path_radius_offset=unpack_from("<b", data, offset + 11)[0],
+        path_taper_x=unpack_from("<b", data, offset + 12)[0],
+        path_taper_y=unpack_from("<b", data, offset + 13)[0],
+        path_revolutions=data[offset + 14],
+        path_skew=unpack_from("<b", data, offset + 15)[0],
+        profile_curve=data[offset + 16],
+        profile_begin=unpack_from("<H", data, offset + 17)[0],
+        profile_end=unpack_from("<H", data, offset + 19)[0],
+        profile_hollow=unpack_from("<H", data, offset + 21)[0],
+    )
+
+
 def _parse_prim_shape_block(data: bytes, offset: int) -> PrimShapeData:
     """Decode the 23-byte path/profile block from ObjectUpdate.
 
@@ -1450,6 +1488,7 @@ def decode_compressed_object_data(
     texture_anim_size = 0
     extra_params_entries: tuple[ExtraParamEntry, ...] = ()
     extra_params_size = 0
+    shape: PrimShapeData | None = None
 
     try:
         if compressed_flags & _COMPRESSED_FLAGS_HAS_ANG_VEL:
@@ -1490,7 +1529,12 @@ def decode_compressed_object_data(
             nv_bytes = data[pos : end]
             name_values = _parse_name_values(nv_bytes)
             pos = end + 1
-        # Skip shape data (23 bytes, always present)
+        # Shape data (23 bytes, always present). This used to be skipped,
+        # which left every compressed prim with shape=None — and compressed
+        # updates carry the bulk of a populated region, so nearly every prim
+        # fell back to the renderer's default cube regardless of its profile.
+        if len(data) >= pos + 23:
+            shape = _parse_compressed_prim_shape_block(data, pos)
         pos += 23
         # TextureEntry: 4-byte length prefix (only lower 16 bits used)
         if len(data) >= pos + 4:
@@ -1549,6 +1593,7 @@ def decode_compressed_object_data(
         texture_entry=parsed_texture_entry,
         interesting_payloads=(),
         extra_params_entries=extra_params_entries,
+        shape=shape,
     )
 
 
