@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from vibestorm.world.parcel_overlay import ParcelOverlayDecodeError, decode_parcel_bitmap
+from vibestorm.world.parcel_overlay import (
+    ParcelOverlay,
+    ParcelOverlayDecodeError,
+    decode_parcel_bitmap,
+    decode_parcel_overlay,
+)
 
 if TYPE_CHECKING:
     from vibestorm.bus.events import (
@@ -30,6 +35,7 @@ if TYPE_CHECKING:
         LayerDataReceived,
         MeshAssetReady,
         ObjectInventorySnapshotReady,
+        ParcelOverlayReceived,
         ParcelPropertiesReceived,
         RegionChanged,
         RegionMapTileReady,
@@ -247,6 +253,12 @@ class Scene:
     water_height: float = DEFAULT_WATER_HEIGHT_M
     avatar_position: tuple[float, float, float] | None = None
     parcel_name: str | None = None
+    # Region-wide parcel ownership grid, reassembled from the sequenced
+    # ParcelOverlay packets, plus its property-line segments in region meters.
+    parcel_overlay_packets: dict[int, bytes] = field(default_factory=dict)
+    parcel_overlay: ParcelOverlay | None = None
+    parcel_borders: tuple[tuple[float, float, float, float], ...] = ()
+    render_parcel_borders: bool = True
     map_tile_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
     mesh_paths: dict[UUID, Path] = field(default_factory=dict)
@@ -276,6 +288,9 @@ class Scene:
         self.water_height = DEFAULT_WATER_HEIGHT_M
         self.avatar_position = None
         self.parcel_name = None
+        self.parcel_overlay_packets.clear()
+        self.parcel_overlay = None
+        self.parcel_borders = ()
         self.object_entities.clear()
         self.avatar_entities.clear()
         self.texture_paths.clear()
@@ -310,6 +325,25 @@ class Scene:
             ):
                 return
         self.parcel_name = properties.name or None
+
+    def apply_parcel_overlay(self, event: ParcelOverlayReceived) -> None:
+        """Accumulate ParcelOverlay pieces and decode the grid once complete.
+
+        The simulator splits the region-wide ownership grid across several
+        sequenced packets (four 1024-byte pieces for a standard 256 m region).
+        Decode is attempted after each piece and simply fails until the set is
+        whole, so a late or reordered packet still lands.
+        """
+        if event.region_handle != self.region_handle and self.region_handle is not None:
+            return
+        self.parcel_overlay_packets[event.sequence_id] = event.data
+        packets = sorted(self.parcel_overlay_packets.items())
+        try:
+            overlay = decode_parcel_overlay(packets)
+        except ParcelOverlayDecodeError:
+            return  # incomplete set; retry when the next piece arrives
+        self.parcel_overlay = overlay
+        self.parcel_borders = overlay.border_segments()
 
     def apply_texture_asset_ready(self, event: TextureAssetReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:

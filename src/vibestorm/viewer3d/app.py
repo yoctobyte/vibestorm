@@ -44,6 +44,7 @@ from vibestorm.bus.events import (
     LayerDataReceived,
     MeshAssetReady,
     ObjectInventorySnapshotReady,
+    ParcelOverlayReceived,
     ParcelPropertiesReceived,
     RegionChanged,
     RegionMapTileReady,
@@ -974,6 +975,7 @@ def _wire_scene(client: WorldClient, scene: Scene) -> None:
     )
     client.bus.subscribe(LayerDataReceived, scene.apply_layer_data_received)
     client.bus.subscribe(ParcelPropertiesReceived, scene.apply_parcel_properties)
+    client.bus.subscribe(ParcelOverlayReceived, scene.apply_parcel_overlay)
 
 
 def _make_asset_data_ready_handler(

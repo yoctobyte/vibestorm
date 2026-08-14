@@ -9,6 +9,7 @@ from vibestorm.bus.events import (
     ChatLocal,
     ChatOutbound,
     LayerDataReceived,
+    ParcelOverlayReceived,
     ParcelPropertiesReceived,
     RegionChanged,
     RegionMapTileReady,
@@ -180,6 +181,74 @@ class SceneEventApplicationTests(unittest.TestCase):
             )
         )
         self.assertEqual(scene.parcel_name, "Home Parcel")
+
+    def test_apply_parcel_overlay_decodes_grid_once_complete(self) -> None:
+        # A 256 m region is 64x64 LandUnits = 4096 cells, split into four
+        # 1024-byte packets. Decode must wait for the whole set.
+        scene = Scene(region_handle=0xAA)
+        packets = [bytes([1]) * 1024 for _ in range(4)]
+
+        for sequence_id in range(3):
+            scene.apply_parcel_overlay(
+                ParcelOverlayReceived(
+                    region_handle=0xAA,
+                    sequence_id=sequence_id,
+                    data=packets[sequence_id],
+                )
+            )
+            self.assertIsNone(scene.parcel_overlay)
+            self.assertEqual(scene.parcel_borders, ())
+
+        scene.apply_parcel_overlay(
+            ParcelOverlayReceived(region_handle=0xAA, sequence_id=3, data=packets[3])
+        )
+
+        self.assertIsNotNone(scene.parcel_overlay)
+        self.assertEqual(scene.parcel_overlay.cells_per_edge, 64)
+        self.assertEqual(scene.parcel_borders, ())  # ownership only, no border flags
+
+    def test_apply_parcel_overlay_exposes_border_segments(self) -> None:
+        scene = Scene(region_handle=0xAA)
+        # Set the west-border flag on cell 0 only.
+        first = bytearray([1]) * 1024
+        first[0] = 1 | 0x40
+        packets = [bytes(first)] + [bytes([1]) * 1024 for _ in range(3)]
+
+        for sequence_id, data in enumerate(packets):
+            scene.apply_parcel_overlay(
+                ParcelOverlayReceived(
+                    region_handle=0xAA, sequence_id=sequence_id, data=data
+                )
+            )
+
+        self.assertEqual(scene.parcel_borders, ((0, 0, 0, 4),))
+
+    def test_apply_parcel_overlay_ignored_for_other_region(self) -> None:
+        scene = Scene(region_handle=0xAA)
+
+        scene.apply_parcel_overlay(
+            ParcelOverlayReceived(
+                region_handle=0xBB, sequence_id=0, data=bytes(1024)
+            )
+        )
+
+        self.assertEqual(scene.parcel_overlay_packets, {})
+
+    def test_region_change_clears_parcel_overlay(self) -> None:
+        scene = Scene(region_handle=0xAA)
+        for sequence_id in range(4):
+            scene.apply_parcel_overlay(
+                ParcelOverlayReceived(
+                    region_handle=0xAA, sequence_id=sequence_id, data=bytes([1]) * 1024
+                )
+            )
+        self.assertIsNotNone(scene.parcel_overlay)
+
+        scene.apply_region_changed(RegionChanged(region_handle=0xBB, region_name="NewSim"))
+
+        self.assertIsNone(scene.parcel_overlay)
+        self.assertEqual(scene.parcel_borders, ())
+        self.assertEqual(scene.parcel_overlay_packets, {})
 
     def test_apply_chat_local_appends_chat_line(self) -> None:
         scene = Scene()

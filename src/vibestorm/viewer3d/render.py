@@ -19,6 +19,7 @@ BG_COLOR: tuple[int, int, int] = (15, 18, 24)
 REGION_BORDER_COLOR: tuple[int, int, int] = (60, 70, 90)
 GRID_COLOR: tuple[int, int, int] = (35, 40, 50)
 AVATAR_DOT_COLOR: tuple[int, int, int] = (255, 230, 90)
+PARCEL_BORDER_COLOR: tuple[int, int, int] = (120, 190, 130)
 
 
 _TILE_CACHE: dict[Path, pygame.Surface] = {}
@@ -39,12 +40,13 @@ def _load_tile(path: Path) -> pygame.Surface | None:
 
 
 def render_scene(surface: pygame.Surface, camera: Camera, scene: Scene) -> None:
-    """Draw one frame: map tile background → grid → markers → avatars."""
+    """Draw one frame: map tile background → grid → parcel edges → markers → avatars."""
     surface.fill(BG_COLOR)
 
     _draw_region_background(surface, camera, scene)
     _draw_grid(surface, camera)
     _draw_region_border(surface, camera)
+    _draw_parcel_borders(surface, camera, scene)
 
     for entity in scene.object_entities.values():
         _draw_entity(surface, camera, entity)
@@ -106,6 +108,29 @@ def _draw_region_border(surface: pygame.Surface, camera: Camera) -> None:
     p3 = camera.world_to_screen(0.0, REGION_SIZE_METERS)
     points = [(int(p[0]), int(p[1])) for p in (p0, p1, p2, p3)]
     pygame.draw.lines(surface, REGION_BORDER_COLOR, True, points, 2)
+
+
+def _draw_parcel_borders(surface: pygame.Surface, camera: Camera, scene: Scene) -> None:
+    """Draw parcel property lines decoded from the ParcelOverlay grid.
+
+    Segments arrive as ``(x0, y0, x1, y1)`` in region meters — west edges run
+    south->north, south edges run west->east — so each is a straight 4 m span
+    that only needs projecting to screen.
+    """
+    if not scene.render_parcel_borders or not scene.parcel_borders:
+        return
+    import pygame
+
+    for x0, y0, x1, y1 in scene.parcel_borders:
+        sx0, sy0 = camera.world_to_screen(x0, y0)
+        sx1, sy1 = camera.world_to_screen(x1, y1)
+        pygame.draw.line(
+            surface,
+            PARCEL_BORDER_COLOR,
+            (int(sx0), int(sy0)),
+            (int(sx1), int(sy1)),
+            2,
+        )
 
 
 def _draw_entity(
