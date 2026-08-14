@@ -1135,5 +1135,116 @@ class ParcelBorderGLTests(_GLTestBase):
             renderer.clear_caches()
 
 
+class MeshNormalGLTests(_GLTestBase):
+    """Decoded mesh normals must actually reach the shader.
+
+    The shape program used to fake normals as ``normalize(in_pos)``. Meshes now
+    carry an ``in_normal`` attribute, so authored normals that disagree with the
+    geometry must shade differently from the decoder's computed ones.
+
+    Note the decoder always populates ``normals`` — computing them from the
+    triangles when the asset omits a ``Normal`` array — so the contrast here is
+    authored-sideways vs computed-from-geometry, not present vs absent.
+    """
+
+    def _mesh_path(self, tmpdir: str, *, with_normals: bool) -> Path:
+        import struct
+
+        from test_sl_mesh import _llsd_binary, _mesh_asset, _triangle_submesh
+
+        submesh = _triangle_submesh()
+        if with_normals:
+            # Author every normal as +X. The triangle lies in the XY plane, so
+            # the decoder would otherwise compute +Z — a maximal disagreement.
+            sideways = struct.pack("<HHH", 65535, 32767, 32767) * 3
+            submesh["Normal"] = _llsd_binary(sideways)
+        path = Path(tmpdir) / f"mesh_{with_normals}.llmesh"
+        path.write_bytes(_mesh_asset([submesh]))
+        return path
+
+    def _render_mesh(self, tmpdir: str, *, with_normals: bool) -> bytes:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        mesh_id = UUID(int=7)
+        camera = Camera3D(target=(0.0, 0.0, 0.0), distance=3.0, yaw=0.0, pitch=0.9)
+        camera.set_mode("orbit")
+        camera.screen_size = self.FBO_SIZE
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.mesh_paths[mesh_id] = self._mesh_path(tmpdir, with_normals=with_normals)
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=(0.0, 0.0, 0.0),
+            scale=(2.0, 2.0, 2.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape="mesh",
+            mesh_source_kind="mesh",
+            mesh_asset_id=mesh_id,
+            tint=(255, 255, 255),
+        )
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self.fbo.read(components=3)
+        finally:
+            renderer.clear_caches()
+
+    def test_authored_normals_change_shading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            faked = self._render_mesh(tmpdir, with_normals=False)
+            authored = self._render_mesh(tmpdir, with_normals=True)
+
+        lit_faked = [p for p in faked if p]
+        lit_authored = [p for p in authored if p]
+        self.assertTrue(lit_faked, "mesh did not render without authored normals")
+        self.assertTrue(lit_authored, "mesh did not render with authored normals")
+        self.assertNotEqual(
+            faked,
+            authored,
+            "authored normals produced identical pixels - in_normal is not "
+            "reaching the shader",
+        )
+
+
+class InterleaveNormalsTests(unittest.TestCase):
+    def test_falls_back_to_normalized_position(self) -> None:
+        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+
+        packed = _interleave_positions_and_normals([0.0, 0.0, 2.0])
+
+        self.assertEqual(packed, [0.0, 0.0, 2.0, 0.0, 0.0, 1.0])
+
+    def test_uses_supplied_normals(self) -> None:
+        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+
+        packed = _interleave_positions_and_normals([5.0, 0.0, 0.0], [0.0, 0.0, 3.0])
+
+        self.assertEqual(packed, [5.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+
+    def test_mismatched_normal_length_falls_back(self) -> None:
+        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+
+        packed = _interleave_positions_and_normals([0.0, 4.0, 0.0], [1.0, 2.0])
+
+        self.assertEqual(packed, [0.0, 4.0, 0.0, 0.0, 1.0, 0.0])
+
+    def test_degenerate_normal_becomes_up(self) -> None:
+        # A vertex at the origin has no position to derive a normal from.
+        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+
+        packed = _interleave_positions_and_normals([0.0, 0.0, 0.0])
+
+        self.assertEqual(packed, [0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+
+
 if __name__ == "__main__":
     unittest.main()

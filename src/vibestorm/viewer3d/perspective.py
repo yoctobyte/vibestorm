@@ -77,6 +77,34 @@ _SHAPE_ALIASES: dict[str, str] = {
 }
 
 
+def _interleave_positions_and_normals(
+    vertices: tuple[float, ...] | list[float],
+    normals: tuple[float, ...] | list[float] | None = None,
+) -> list[float]:
+    """Pack ``x, y, z, nx, ny, nz`` per vertex for the shared shape program.
+
+    When ``normals`` is missing or the wrong length, each normal falls back to
+    the normalized vertex position — the approximation the vertex shader used
+    to compute inline, so primitive shapes light exactly as they did before.
+    """
+    count = len(vertices) // 3
+    use_supplied = normals is not None and len(normals) == len(vertices)
+    packed: list[float] = []
+    for i in range(count):
+        x, y, z = vertices[i * 3], vertices[i * 3 + 1], vertices[i * 3 + 2]
+        if use_supplied:
+            nx, ny, nz = normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]
+        else:
+            nx, ny, nz = x, y, z
+        length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if length <= 1e-8:
+            nx, ny, nz = 0.0, 0.0, 1.0
+        else:
+            nx, ny, nz = nx / length, ny / length, nz / length
+        packed.extend((x, y, z, nx, ny, nz))
+    return packed
+
+
 def _mesh_asset_shape_key(mesh_id: UUID) -> str:
     return f"mesh:{mesh_id}"
 
@@ -98,6 +126,7 @@ uniform vec3 u_sun_dir;
 uniform float u_ambient_light;
 uniform float u_diffuse_light;
 in vec3 in_pos;
+in vec3 in_normal;
 in mat4 in_model;
 in vec3 in_tint;
 
@@ -107,7 +136,11 @@ out vec3 v_local_pos;
 out vec3 v_local_normal;
 
 void main() {
-    vec3 local_normal = normalize(in_pos);
+    // in_normal is authored per mesh. Primitive shapes bake the old
+    // position-derived approximation into their buffer, so switching to a
+    // real attribute changed nothing for them while letting decoded mesh
+    // assets supply true normals.
+    vec3 local_normal = normalize(in_normal);
     vec3 world_normal = normalize(mat3(in_model) * local_normal);
     float diffuse = max(dot(world_normal, normalize(u_sun_dir)), 0.0);
     v_light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
@@ -889,12 +922,13 @@ class PerspectiveRenderer:
         }
         for shape_key, author in shape_authors.items():
             verts, indices = author()
-            vbo = ctx.buffer(struct.pack(f"{len(verts)}f", *verts))
+            packed = _interleave_positions_and_normals(verts)
+            vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f", "in_pos"),
+                    (vbo, "3f 3f", "in_pos", "in_normal"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -906,12 +940,13 @@ class PerspectiveRenderer:
         cube_vertices, cube_indices = meshes.cube_mesh()
         for face_index in range(6):
             face_indices = cube_indices[face_index * 6 : (face_index + 1) * 6]
-            vbo = ctx.buffer(struct.pack(f"{len(cube_vertices)}f", *cube_vertices))
+            packed_cube = _interleave_positions_and_normals(cube_vertices)
+            vbo = ctx.buffer(struct.pack(f"{len(packed_cube)}f", *packed_cube))
             ibo = ctx.buffer(struct.pack(f"{len(face_indices)}I", *face_indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f", "in_pos"),
+                    (vbo, "3f 3f", "in_pos", "in_normal"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -1022,12 +1057,15 @@ class PerspectiveRenderer:
                 continue
             assert self._program is not None
             assert self._instance_vbo is not None
-            vbo = ctx.buffer(struct.pack(f"{len(decoded.vertices)}f", *decoded.vertices))
+            packed = _interleave_positions_and_normals(
+                decoded.vertices, decoded.normals
+            )
+            vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(decoded.indices)}I", *decoded.indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f", "in_pos"),
+                    (vbo, "3f 3f", "in_pos", "in_normal"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -1061,12 +1099,13 @@ class PerspectiveRenderer:
                 continue
             assert self._program is not None
             assert self._instance_vbo is not None
-            vbo = ctx.buffer(struct.pack(f"{len(vertices)}f", *vertices))
+            packed = _interleave_positions_and_normals(vertices)
+            vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f", "in_pos"),
+                    (vbo, "3f 3f", "in_pos", "in_normal"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -1461,7 +1500,7 @@ class PerspectiveRenderer:
             mesh.vao = ctx.vertex_array(
                 self._program,
                 [
-                    (mesh.vbo, "3f", "in_pos"),
+                    (mesh.vbo, "3f 3f", "in_pos", "in_normal"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=mesh.ibo,
@@ -1473,7 +1512,7 @@ class PerspectiveRenderer:
             mesh.vao = ctx.vertex_array(
                 self._program,
                 [
-                    (mesh.vbo, "3f", "in_pos"),
+                    (mesh.vbo, "3f 3f", "in_pos", "in_normal"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=mesh.ibo,
