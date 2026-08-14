@@ -94,7 +94,9 @@ The repo already supports:
 - **parcel identity end to end** (2026-08-14): `ParcelPropertiesRequest` is
   autosent region-wide after `RegionHandshake`, the reply arrives over the
   event queue, and `viewer3d`'s HUD shows the real parcel name instead of
-  `Parcel: unknown`. Live-verified against local OpenSim.
+  `Parcel: unknown`. The region ownership grid is reassembled from the
+  sequenced `ParcelOverlay` packets and its property lines draw as plot edges
+  in the 2D top-down view. Live-verified against local OpenSim.
 - **background EventQueueGet polling**: the queue is polled in a loop for the
   life of the session, acking each batch, instead of once in the caps prelude.
   This is what makes every EQG-only message reachable at all.
@@ -191,9 +193,8 @@ Main gaps:
   projector, and the other rich-tail entries are still undecoded
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
-- `decode_parcel_overlay` still has no caller: `session.parcel_overlay_packets`
-  accumulates raw bytes that nobody reassembles, so parcel borders are not drawn
-  yet (the decoder itself is live-verified)
+- parcel borders draw in the 2D top-down path only; `perspective.py` has no
+  line VAO for them yet (needs GL visual verification)
 - the typed EQG events now arrive but most have no consumer: `TeleportFinish`,
   `EnableSimulator`, `CrossedRegion`, `ScriptRunningReply`,
   `ObjectPhysicsProperties` and `AgentGroupDataUpdate` are decoded and dropped
@@ -266,15 +267,13 @@ This should work cleanly across Codex, Claude Code, Antigravity, or any similar 
 The standing theme: several decoders are complete and tested but have no
 consumer. Consume and live-verify rather than decode more.
 
-Parcel identity now works end to end (2026-08-14). The next visible step is
-parcel *geometry*:
+Parcel identity and 2D parcel geometry both work end to end (2026-08-14). The
+next step needs the GL viewer:
 
 1. Start OpenSim: `./run.sh opensim`
-2. Reassemble `session.parcel_overlay_packets` through `decode_parcel_overlay`
-   and render `border_segments()` as plot-edge polylines in `viewer3d` — this
-   closes the last bird's-eye parcel item. The decoder is already live-verified
-   (64x64 grid, 128 perimeter segments on the test region); only the consumer
-   is missing.
+2. Add a line VAO in `viewer3d/perspective.py` for `scene.parcel_borders`,
+   copying the `_render_terrain_lines` pattern (own program, `ctx.LINES`).
+   The data is already live-verified; only the 3D draw is missing.
 3. Check it with `./run.sh tester viewer3d`.
 
 Two independent tracks remain open, either of which can follow:

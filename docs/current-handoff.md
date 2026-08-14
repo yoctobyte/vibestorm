@@ -1414,16 +1414,40 @@ still raise.
   `Parcel: Your Parcel`.
 - 630 tests pass; no new lint findings.
 
+## Update 2026-08-14: Parcel Borders (2D)
+
+`Scene` now accumulates the sequenced `ParcelOverlay` packets and calls
+`decode_parcel_overlay` after each piece, keeping `parcel_overlay` and
+`parcel_borders` once the set is whole. Retrying per-packet rather than waiting
+for an expected count means a late or reordered packet still completes the grid.
+State clears on region change alongside the map tile.
+
+The 2D top-down path draws the segments (`_draw_parcel_borders` in
+`viewer3d/render.py`, between the region border and the entity markers), gated
+on `Scene.render_parcel_borders`. That closes the bird's-eye
+"`ParcelOverlay` → plot-edge polylines" item that had been open since the
+original plan.
+
+Verified live: 4 packets → grid decoded → **128 border segments** in a `Scene`
+driven through the real `_wire_scene`, which for this single region-wide parcel
+is exactly the region perimeter. 634 tests pass.
+
 ### Concrete Next Step
 
-Draw the parcel borders. `decode_parcel_overlay(session.parcel_overlay_packets)`
-→ `border_segments()` gives `(x0, y0, x1, y1)` meter segments ready to render as
-plot-edge polylines in `viewer3d`, which closes the last bird's-eye parcel item.
+**3D parcel borders.** `perspective.py` needs a dedicated line VAO for
+`scene.parcel_borders`; the terrain-line path (`_render_terrain_lines`, a
+`ctx.LINES` VAO with its own program) is the pattern to copy. Deferred here
+because the result only means anything on screen — it wants the GL viewer for
+visual verification, like the mesh-normals work below.
 
-Then consider what else the now-live event queue unlocks: `TeleportFinish`,
-`EnableSimulator`, and `ScriptRunningReply` are decoded and arriving but have no
-consumer. `ScriptRunningReply` in particular is the server-side confirmation the
-object-sync live-verify track has been missing.
+Two independent tracks, either order:
+
+- **Consume the rest of the event queue.** It is live now, and `TeleportFinish`,
+  `EnableSimulator`, `CrossedRegion`, `ObjectPhysicsProperties` and
+  `AgentGroupDataUpdate` decode and are then dropped on the floor.
+- **Live-verify object sync.** `ScriptRunningReply` now actually arrives, so the
+  server-side "script compiled OK" confirmation that track always needed is
+  finally available.
 
 ## Notes For The Next Agent
 
