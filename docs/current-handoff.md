@@ -2721,6 +2721,43 @@ inventory, which is theirs to authorise.
 was wrong. The server's own source said what it does with the request. Reading
 beats poking, and it needed no permission.
 
+## 2026-08-14 — "verified" was hiding two very different claims
+
+The upload smoke test turned out to verify something weaker than it appeared
+to, which prompted the same audit on `spec/message-coverage.md` that the gap
+list got: does each claim mean what a reader would take it to mean?
+
+The status scale said `verified` meant "covered by fixtures, **tests, or** live
+session evidence". Those are not the same strength of claim, and this session
+produced three decoders that passed their unit tests and were wrong on live
+data — SimStats keyed to the wrong one of two enums, the inventory walk raising
+on the real payload shape, and a GL cache policy that was correct per-frame and
+pathological across frames. A green suite is evidence about the code; only a
+live run is evidence about the protocol.
+
+`tested` and `verified` are now separate statuses, and where a row covers
+several sub-decoders the status reflects the **weakest** one.
+
+Three rows changed as a result:
+
+- **`ObjectExtraParams`** claimed `verified` for seven sub-decoders. Two —
+  sculpt and flexi — are live-confirmed. Light, projector, reflection probe,
+  render materials and mesh flags have never seen live data and are all on the
+  census `absent=` list. Now `tested`, with the split spelled out.
+- **`LayerData`** was `verified` on the strength of the 16x16 path; the 32x32
+  LandExtended half has never run against a sim. Said so.
+- **`ChatFromSimulator` / `ChatFromViewer`** were *understated* — marked
+  `handled` and "needs an in-world speaker to observe", which stopped being
+  true this session when I sent whisper/say/shout and read the sim's echo.
+  Both are now `verified`, with the typing notifications still `tested`.
+
+`SimStats` had **no row at all**, despite arriving in every session since the
+project started. Added.
+
+Note that the drift ran in both directions: one row overclaimed, one
+underclaimed, one message was missing. A ledger nobody re-derives goes stale
+in whichever direction the last edit happened to leave it.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

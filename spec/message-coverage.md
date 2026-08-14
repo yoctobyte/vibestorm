@@ -2,6 +2,10 @@
 
 Last verified: 2026-08-14 (previous revision: 2026-04-02)
 
+Statuses distinguish `tested` from `verified` — see Status Scale. A row that
+says `verified` means a live simulator sent it and the client handled it, not
+that a unit test passes.
+
 This document tracks which UDP message-system messages matter for Vibestorm and
 what level of support each has.
 
@@ -17,7 +21,19 @@ parser in `udp/messages.py`, a handler branch in `udp/session.py` or
 - `planned`: known requirement, not started
 - `parse-only`: message can be identified and decoded enough for inspection
 - `handled`: message participates in client behavior
-- `verified`: behavior covered by fixtures, tests, or live session evidence
+- `tested`: behavior covered by fixtures or unit tests, but the live sim has
+  never sent it — usually because the region holds no content that triggers it
+- `verified`: **observed against a live simulator**, not only tested
+
+The split between the last two matters more than it looks. This session
+produced three cases where a decoder passed its unit tests and was wrong on
+live data: SimStats named from the wrong one of two enums, the inventory walk
+raising on the real payload shape, and a GL cache policy that was correct
+per-frame and pathological across frames. A green suite is evidence about the
+code; only a live run is evidence about the protocol.
+
+Where a row covers several sub-decoders and only some are live-confirmed, the
+status reflects the **weakest** one and the note says which is which.
 
 ## Phase 1-2 Critical Messages
 
@@ -38,13 +54,14 @@ parser in `udp/messages.py`, a handler branch in `udp/session.py` or
 
 | Message | Purpose | Priority | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `ChatFromSimulator` | receive nearby chat/system chat | P1 | handled | parsed and published as `chat.local`; needs an in-world speaker to observe |
-| `ChatFromViewer` | send nearby chat | P1 | handled | outbound builder; wired to the viewer chat window |
+| `ChatFromSimulator` | receive nearby chat/system chat | P1 | verified | parsed and published as `chat.local`, with the chat type named from `ChatTypeEnum`. Live-verified 2026-08-14 by sending whisper/say/shout and reading the sim's echo — types 0/1/2, `audible=1`. Start/stop-typing (4/5) are still `tested` only: this client never sends them and the region has one avatar |
+| `ChatFromViewer` | send nearby chat | P1 | verified | outbound builder; wired to the viewer chat window. Live-verified 2026-08-14 — three lines sent at different chat types and echoed back correctly |
 | `ImprovedInstantMessage` | IM/event-style message path | P1 | handled | parsed and published as `chat.im` |
 | `CoarseLocationUpdate` | coarse avatar positions | P1 | verified | drives `WorldView` agent positions; observed every session |
 | `AvatarAnimation` | avatar state hints | P2 | verified | typed decode plus bus event; observed 2026-08-14 |
 | `ObjectAnimation` | object animation state | P2 | handled | typed decode plus bus event; no animated objects in the test region |
 | `SimulatorViewerTimeMessage` | region time/environment hints | P2 | verified | drives sun phase; observed every session |
+| `SimStats` | region health telemetry | P2 | verified | 41 stat ids decoded and named from OpenSim's `StatsID` — *not* the `StatsIndex` enum beside it, which numbers the internal array and diverges from id 4 on. Surfaced as `world[sim_health]`. Live-verified 2026-08-14: every id resolved, none unknown |
 | `AlertMessage` / `AgentAlertMessage` | user-visible server alerts | P1 | handled | parsed and published as `chat.alert`; needs a sim-side alert to observe |
 | `SoundTrigger` / `AttachedSound` / `AttachedSoundGainChange` / `PreloadSound` | in-world audio | P3 | handled | typed decode plus bus events; no sound emitters in the test region |
 
@@ -58,9 +75,9 @@ parser in `udp/messages.py`, a handler branch in `udp/session.py` or
 | `ImprovedTerseObjectUpdate` | compact frequent updates | P1 | verified | structural parse with terse `local_id` promotion; observed every session |
 | `KillObject` | remove object from world cache | P1 | handled | parsed and applied to `WorldView`; needs an object delete to observe |
 | `ObjectPropertiesFamily` | object name/owner metadata | P1 | verified | drives inspector names; the highest-count inbound message in a populated region |
-| `ObjectExtraParams` | rich per-prim feature blocks | P2 | verified | sculpt/mesh, flexi, light, projector, reflection probe, render materials, mesh flags — flexi confirmed live 2026-08-14 |
+| `ObjectExtraParams` | rich per-prim feature blocks | P2 | tested | seven sub-decoders; only **sculpt and flexi** are live-confirmed (2026-08-14). Light, projector, reflection probe, render materials and mesh flags have never seen live data — `./run.sh census` lists all five under `absent=`, so they are unit-tested only |
 | `AvatarAppearance` | avatar appearance metadata | P3 | verified | parsed; drives the appearance/bake path |
-| `LayerData` | terrain patches | P1 | verified | 16x16 Land decode observed live; 32x32 LandExtended implemented but needs a varregion |
+| `LayerData` | terrain patches | P1 | verified | 16x16 Land decode observed live 2026-08-14. The 32x32 LandExtended path is `tested` only — it needs a varregion, and the test sim is a standard 256 m region |
 | `ParcelOverlay` | region parcel ownership grid | P2 | verified | reassembled into a 64x64 grid with border segments; observed 2026-08-14 |
 | `ParcelProperties` | parcel metadata | P2 | verified | **arrives over the event queue, not UDP** — OpenSim has no UDP send path for it, so it never appears in a UDP census. Confirmed live 2026-08-14 |
 
