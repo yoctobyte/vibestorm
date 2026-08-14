@@ -32,7 +32,7 @@ This document tracks which simulator capabilities matter for Vibestorm and when 
 | `FetchLib2` | fetch library items | P3 | planned | not requested in the seed-cap list |
 | `FetchLibDescendents2` | fetch library descendants | P3 | planned | not requested in the seed-cap list |
 | `NewFileAgentInventory` | upload/create inventory assets | P4 | verified | `caps/asset_upload_client.py`; `./run.sh upload-smoke` confirmed a live round trip |
-| `UpdateScriptTask` / `UpdateNotecardTaskInventory` | update object task inventory | P3 | handled | `caps/task_inventory_upload_client.py`; never confirmed against a running sim |
+| `UpdateScriptTask` / `UpdateScriptTaskInventory` / `UpdateNotecardTaskInventory` | update object task inventory | P3 | used | `caps/task_inventory_upload_client.py` issues the requests; never confirmed against a running sim, because doing so writes scripts into an in-world object and needs the sim owner's consent. OpenSim registers the script cap under both names — `UpdateScriptTask` and, marked `//legacy` in `BunchOfCaps`, `UpdateScriptTaskInventory` — and the client now asks for both, current name first |
 | `RequestTaskInventory` | inspect task inventory | P3 | verified | UDP message plus xfer assembly, not a capability; listed here for completeness |
 | `UploadBakedTexture` | upload baked avatar textures | P2 | verified | five baked J2K blobs uploaded per session; appearance accepted |
 | `GetTexture` | fetch texture assets | P1 | verified | region map tiles and object textures, cached as PNG |

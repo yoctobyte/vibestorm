@@ -253,5 +253,99 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             urllib.request.urlopen = original  # type: ignore[assignment]
 
 
+class ScriptTaskCapNameTests(unittest.TestCase):
+    """The client asked only for the name OpenSim marks as legacy.
+
+    ``BunchOfCaps`` registers ``UpdateScriptTask`` and ``UpdateScriptTaskInventory``
+    against the same handler, the second commented ``//legacy``. Requesting only
+    the legacy alias works against today's OpenSim and would break silently —
+    with "no task inventory caps available" — the day it is dropped.
+    """
+
+    def test_both_names_are_requested_current_first(self) -> None:
+        from vibestorm.viewer3d.app import SCRIPT_TASK_CAP_NAMES
+
+        self.assertEqual(
+            SCRIPT_TASK_CAP_NAMES,
+            ["UpdateScriptTask", "UpdateScriptTaskInventory"],
+        )
+
+    def test_both_names_exist_in_opensim(self) -> None:
+        from pathlib import Path
+
+        from vibestorm.viewer3d.app import SCRIPT_TASK_CAP_NAMES
+
+        caps = (
+            Path(__file__).resolve().parents[1]
+            / "opensim-source" / "OpenSim" / "Region" / "ClientStack" / "Linden"
+            / "Caps" / "BunchOfCaps" / "BunchOfCaps.cs"
+        )
+        if not caps.exists():
+            self.skipTest("opensim-source not present")
+        text = caps.read_text(encoding="utf-8", errors="replace")
+
+        for name in SCRIPT_TASK_CAP_NAMES:
+            self.assertIn(f'RegisterSimpleHandler("{name}"', text, name)
+
+    def test_the_sync_path_looks_the_names_up_through_the_helper(self) -> None:
+        # Every other test here calls _first_resolved directly, so all of them
+        # would still pass if the sync path went back to a single hard-coded
+        # caps.get(). The call site is inside an async viewer method that needs
+        # a live session to reach, so check the source instead of nothing.
+        from pathlib import Path
+
+        app = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "vibestorm" / "viewer3d" / "app.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("_first_resolved(caps, SCRIPT_TASK_CAP_NAMES)", app)
+        self.assertNotIn('caps.get("UpdateScriptTaskInventory")', app)
+
+    def test_the_current_name_wins_when_the_sim_offers_both(self) -> None:
+        from vibestorm.viewer3d.app import _first_resolved
+
+        resolved = _first_resolved(
+            {
+                "UpdateScriptTask": "http://sim/current",
+                "UpdateScriptTaskInventory": "http://sim/legacy",
+            },
+            ["UpdateScriptTask", "UpdateScriptTaskInventory"],
+        )
+
+        self.assertEqual(resolved, "http://sim/current")
+
+    def test_the_legacy_name_is_still_used_when_it_is_all_there_is(self) -> None:
+        from vibestorm.viewer3d.app import _first_resolved
+
+        resolved = _first_resolved(
+            {"UpdateScriptTaskInventory": "http://sim/legacy"},
+            ["UpdateScriptTask", "UpdateScriptTaskInventory"],
+        )
+
+        self.assertEqual(resolved, "http://sim/legacy")
+
+    def test_an_empty_url_does_not_count_as_resolved(self) -> None:
+        # resolve_seed_caps returns only the names the sim answered, but an
+        # empty string would otherwise pass a truthiness-free lookup and be
+        # POSTed to as a URL.
+        from vibestorm.viewer3d.app import _first_resolved
+
+        resolved = _first_resolved(
+            {"UpdateScriptTask": "", "UpdateScriptTaskInventory": "http://sim/legacy"},
+            ["UpdateScriptTask", "UpdateScriptTaskInventory"],
+        )
+
+        self.assertEqual(resolved, "http://sim/legacy")
+
+    def test_no_script_cap_at_all_is_none(self) -> None:
+        from vibestorm.viewer3d.app import _first_resolved
+
+        self.assertIsNone(
+            _first_resolved({"UpdateNotecardTaskInventory": "http://sim/nc"},
+                            ["UpdateScriptTask", "UpdateScriptTaskInventory"])
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

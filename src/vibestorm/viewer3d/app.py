@@ -94,6 +94,14 @@ TEXT_ASSET_TYPES = {7, 10}
 DEFAULT_ASSET_DOWNLOAD_DIR = Path("local/asset-downloads")
 DEFAULT_ASSET_UPLOAD_DIR = Path("local/upload")
 
+#: Both names OpenSim registers for updating a script in object inventory,
+#: current one first. ``BunchOfCaps`` registers ``UpdateScriptTask`` and then
+#: ``UpdateScriptTaskInventory`` against the same handler, with the second
+#: marked ``//legacy`` in the source. Asking only for the legacy alias works
+#: today but leaves the client depending on the name OpenSim has already
+#: labelled as the one it keeps for compatibility.
+SCRIPT_TASK_CAP_NAMES = ["UpdateScriptTask", "UpdateScriptTaskInventory"]
+
 
 @dataclass(slots=True, frozen=True)
 class PendingAssetSave:
@@ -612,14 +620,14 @@ async def run_viewer(args: argparse.Namespace) -> int:
         try:
             caps = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
                 session.bootstrap.seed_capability,
-                ["UpdateScriptTaskInventory", "UpdateNotecardTaskInventory"],
+                SCRIPT_TASK_CAP_NAMES + ["UpdateNotecardTaskInventory"],
                 udp_listen_port=session.caps_udp_listen_port,
                 user_agent="Vibestorm",
             )
         except CapabilityError as exc:
             scene.apply_chat_alert(ChatAlert(region_handle=handle, message=f"Sync caps: {exc}"))
             return
-        script_cap = caps.get("UpdateScriptTaskInventory")
+        script_cap = _first_resolved(caps, SCRIPT_TASK_CAP_NAMES)
         notecard_cap = caps.get("UpdateNotecardTaskInventory")
         if not script_cap and not notecard_cap:
             scene.apply_chat_alert(
@@ -673,7 +681,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
                         scene.apply_chat_alert(
                             ChatAlert(
                                 region_handle=handle,
-                                message=f"Sync: skipped {file_path.name} (UpdateScriptTaskInventory not available)",
+                                message=f"Sync: skipped {file_path.name} (no script task cap)",
                             )
                         )
                         continue
@@ -1102,6 +1110,20 @@ def _upload_kind_for_path(path: Path) -> tuple[str, str] | None:
         return ("lsltext", "lsl")
     if suffix in {".txt", ".nc"}:
         return ("notecard", "notecard")
+    return None
+
+
+def _first_resolved(caps: dict[str, str], names: list[str]) -> str | None:
+    """The first of ``names`` the simulator actually resolved.
+
+    Order is preference, not fallback ranking: a sim that offers both a
+    current and a legacy name for one handler should be talked to by its
+    current name.
+    """
+    for name in names:
+        url = caps.get(name)
+        if url:
+            return url
     return None
 
 
