@@ -378,6 +378,10 @@ HOVER_TEXT_MAX_LINES: int = 8
 #: Cap on cached label textures. Keyed by the text itself, so this bounds
 #: prims whose hover text changes over time rather than the prim count.
 HOVER_TEXT_CACHE_MAX: int = 64
+#: Cap on uploaded object textures. Higher than the label cap because these
+#: are shared across every prim using the same asset, but bounded because each
+#: one is real VRAM rather than a small glyph bitmap.
+OBJECT_TEXTURE_CACHE_MAX: int = 256
 # Avatar name tags share the hover-text billboard but carry no colour of
 # their own; SL draws them in plain white.
 AVATAR_NAME_COLOR: tuple[int, int, int, int] = (255, 255, 255, 235)
@@ -1204,6 +1208,28 @@ class PerspectiveRenderer:
             index_element_size=4,
         )
 
+    def _evict_object_textures(self) -> None:
+        """Drop least-recently-used object textures once over the cap.
+
+        Unlike the label cache this one is deliberately *not* cleared on a
+        region change: texture files persist on disk, so revisiting a region
+        reuses what is already uploaded. The cost of that choice is that the
+        cache otherwise grows for the whole session, and these are real
+        textures — a 1024x1024 RGBA is 4 MB of VRAM, so a long tour across
+        many regions can exhaust it where the label cache never would.
+
+        Eviction happens on upload, which is the only point at which the cache
+        grows; a texture bound earlier in the same frame has already had its
+        draw call issued by then.
+        """
+        while len(self._object_textures) > OBJECT_TEXTURE_CACHE_MAX:
+            oldest_id, texture = next(iter(self._object_textures.items()))
+            del self._object_textures[oldest_id]
+            # Kept in lockstep: a path with no texture would re-upload anyway,
+            # but the dict would grow without bound.
+            self._object_texture_paths.pop(oldest_id, None)
+            texture.release()
+
     def _evict_hover_text_textures(self) -> None:
         """Drop least-recently-used label textures once over the cap.
 
@@ -1694,6 +1720,9 @@ class PerspectiveRenderer:
             return None
         cached = self._object_textures.get(texture_id)
         if cached is not None and self._object_texture_paths.get(texture_id) == path:
+            # Touch for LRU: re-inserting moves it off the eviction front.
+            del self._object_textures[texture_id]
+            self._object_textures[texture_id] = cached
             return cached
 
         import pygame
@@ -1713,6 +1742,7 @@ class PerspectiveRenderer:
         texture.repeat_y = True
         self._object_textures[texture_id] = texture
         self._object_texture_paths[texture_id] = path
+        self._evict_object_textures()
         return texture
 
     def _upload_terrain_mesh(self, ctx: moderngl.Context, scene: Scene) -> None:

@@ -12,7 +12,11 @@ context; the rendering itself is covered by the GL tests elsewhere.
 
 import unittest
 
-from vibestorm.viewer3d.perspective import HOVER_TEXT_CACHE_MAX, PerspectiveRenderer
+from vibestorm.viewer3d.perspective import (
+    HOVER_TEXT_CACHE_MAX,
+    OBJECT_TEXTURE_CACHE_MAX,
+    PerspectiveRenderer,
+)
 
 
 class _StubTexture:
@@ -110,6 +114,104 @@ class LabelCacheTests(unittest.TestCase):
             t for t in self.ctx.textures if not t.released
         ]
         self.assertLessEqual(len(stable_textures), HOVER_TEXT_CACHE_MAX)
+
+
+class ObjectTextureCacheTests(unittest.TestCase):
+    """The object texture cache holds real VRAM, and survives region changes.
+
+    It is kept across regions on purpose — texture files persist on disk, so a
+    revisited region reuses them — which is exactly why it needs a bound: it
+    is the one GL cache nothing ever clears mid-session.
+    """
+
+    def setUp(self) -> None:
+        try:
+            import pygame  # noqa: F401
+        except ImportError:  # pragma: no cover
+            self.skipTest("pygame not available")
+        import tempfile
+        from pathlib import Path
+
+        import pygame
+
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.scene import Scene
+
+        self.renderer = PerspectiveRenderer(Camera3D(), ctx=None)
+        self.ctx = _StubContext()
+        self._scene = Scene()
+
+        # One real 2x2 PNG on disk, reused for every id: the cache keys on the
+        # texture UUID, so distinct ids are what matters, not distinct pixels.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        surface = pygame.Surface((2, 2))
+        surface.fill((10, 20, 30))
+        self._png_path = Path(self._tmp.name) / "tex.png"
+        pygame.image.save(surface, str(self._png_path))
+
+    def _upload(self, index: int) -> None:
+        """Upload through the real code path, not by poking the dict.
+
+        Going through ``_upload_object_texture`` is the point: an earlier version
+        of this test called the evictor directly, so removing the evictor's
+        call site from the upload path still passed.
+        """
+        from uuid import UUID
+
+        texture_id = UUID(int=index)
+        self._scene.texture_paths[texture_id] = self._png_path
+        self.renderer._upload_object_texture(self.ctx, self._scene, texture_id)
+
+    def test_cache_is_bounded(self) -> None:
+        for index in range(OBJECT_TEXTURE_CACHE_MAX + 30):
+            self._upload(index)
+
+        self.assertLessEqual(
+            len(self.renderer._object_textures), OBJECT_TEXTURE_CACHE_MAX
+        )
+
+    def test_evicted_textures_are_released(self) -> None:
+        for index in range(OBJECT_TEXTURE_CACHE_MAX + 7):
+            self._upload(index)
+
+        released = [t for t in self.ctx.textures if t.released]
+        self.assertEqual(len(released), 7)
+
+    def test_the_same_id_is_uploaded_once(self) -> None:
+        # The bound must not turn the cache into a re-upload loop.
+        self._upload(1)
+        self._upload(1)
+        self._upload(1)
+
+        self.assertEqual(len(self.ctx.textures), 1)
+
+    def test_a_reused_texture_survives_churn(self) -> None:
+        from uuid import UUID
+
+        churn = OBJECT_TEXTURE_CACHE_MAX * 2
+        self._upload(9999)
+        for index in range(churn):
+            self._upload(index)
+            self._upload(9999)
+
+        self.assertIn(UUID(int=9999), self.renderer._object_textures)
+        # Presence alone proves nothing: without an LRU touch the reused
+        # texture is evicted and then re-uploaded on the very next request, so
+        # it is still present at the end. The upload count is what shows it was
+        # actually kept — one upload for it, one per distinct churn id.
+        self.assertEqual(len(self.ctx.textures), churn + 1)
+
+    def test_path_bookkeeping_stays_in_lockstep(self) -> None:
+        # A path entry outliving its texture would leave this dict growing
+        # without bound even though the texture cache is capped.
+        for index in range(OBJECT_TEXTURE_CACHE_MAX + 7):
+            self._upload(index)
+
+        self.assertEqual(
+            len(self.renderer._object_texture_paths),
+            len(self.renderer._object_textures),
+        )
 
 
 if __name__ == "__main__":

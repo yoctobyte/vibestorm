@@ -2382,6 +2382,45 @@ completely correct from Python — the dict shrinks, memory usage in the process
 looks fine — while the texture stays allocated on the GPU. Only an explicit
 assertion that evicted textures were *released* catches it.
 
+## 2026-08-14 — the object texture cache, and two tests that lied
+
+Same sweep, next cache. `_object_textures` is keyed by texture UUID and does
+correctly release on re-upload when a path changes. It is also deliberately
+**not** cleared on a region change — texture files persist on disk, so
+revisiting a region reuses what is already uploaded — and that is exactly why
+it needs a bound: it is the one GL cache nothing clears mid-session. Capped
+LRU at 256, which is 256 real textures, not glyph bitmaps.
+
+The interesting part was the tests, both of which passed while testing
+nothing:
+
+**1. The test called the evictor directly.** `_upload()` poked
+`_object_textures` and then called `_evict_object_textures()` itself. Deleting
+the evictor's call site from the real upload path still passed. This is the
+same mistake as the normals work earlier in the session (patching one of three
+upload sites and believing the green run) — a test that reaches past the code
+path it is meant to cover. Fixed by going through `_upload_object_texture`
+with a real PNG in a temp dir.
+
+**2. The LRU test asserted the wrong thing.** It checked that a frequently
+reused texture was still *present* after churn. Without an LRU touch, that
+texture is evicted and then immediately re-uploaded on its next request — so
+it is present at the end either way. Presence was never the property worth
+asserting; the **upload count** was. It now asserts exactly `churn + 1`
+uploads.
+
+Both are the same underlying error: asserting a state that the bug also
+produces. Worth checking for whenever a mutation "passes".
+
+Final mutation matrix, all four failing distinctly:
+
+| mutation | result |
+|---|---|
+| no eviction on upload | 2 failures |
+| evict without `release()` | 1 failure |
+| paths dict not evicted in lockstep | 1 failure |
+| no LRU touch on cache hit | 1 failure |
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
