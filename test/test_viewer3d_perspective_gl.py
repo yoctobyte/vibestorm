@@ -2176,5 +2176,115 @@ class MeshUVGLTests(_GLTestBase):
         )
 
 
+class LargeRegionTextureGLTests(_GLTestBase):
+    """A region holding more distinct textures than any fixed cache cap.
+
+    This is the scenario that made the LRU caps (4e8de78, 782c9f4) the wrong
+    fix and got them replaced by reference pruning in de96035: object textures
+    are uploaded from inside the per-frame draw loop, so a capacity bound
+    evicts textures that are still on screen and re-uploads them every frame,
+    forever. Nothing in the test region comes close to that size, so the case
+    is constructed here rather than observed in-world.
+    """
+
+    #: Comfortably above the 256 cap those reverted commits used.
+    TEXTURE_COUNT = 300
+
+    def _scene_with_many_textures(self, tmpdir):
+        import pygame
+
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        for index in range(self.TEXTURE_COUNT):
+            # Distinct files as well as distinct ids: sharing one path would
+            # let a wrong implementation look right via the path check.
+            surface = pygame.Surface((2, 2))
+            surface.fill((index % 256, 30, 200))
+            path = Path(tmpdir) / f"tex{index}.png"
+            pygame.image.save(surface, str(path))
+
+            texture_id = UUID(int=index + 1)
+            scene.texture_paths[texture_id] = path
+            scene.object_entities[index + 1] = SceneEntity(
+                local_id=index + 1,
+                pcode=9,
+                kind="prim",
+                # Spread them out so they are genuinely separate draws rather
+                # than 300 prims occupying one pixel.
+                position=(float(index % 20) - 10.0, float(index // 20) - 7.0, 0.0),
+                scale=(0.5, 0.5, 0.5),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape="cube",
+                default_texture_id=texture_id,
+                name=None,
+                tint=(255, 255, 255),
+            )
+        return scene
+
+    def test_every_texture_survives_a_second_frame(self) -> None:
+        import tempfile
+
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), distance=30.0, yaw=0.0, pitch=0.5)
+        camera.set_mode("orbit")
+        camera.screen_size = self.FBO_SIZE
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene = self._scene_with_many_textures(tmpdir)
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                renderer.render_gl(scene, aspect=1.0)
+                after_first = dict(renderer._object_textures)
+                renderer.render_gl(scene, aspect=1.0)
+                after_second = dict(renderer._object_textures)
+            finally:
+                renderer.clear_caches()
+
+        self.assertEqual(len(after_first), self.TEXTURE_COUNT)
+        self.assertEqual(len(after_second), self.TEXTURE_COUNT)
+        # Identity across frames is the real assertion: a capacity cap would
+        # keep the count at its limit and silently re-upload, which a count
+        # check alone would not distinguish from correct behaviour.
+        for texture_id, texture in after_first.items():
+            self.assertIs(
+                after_second.get(texture_id),
+                texture,
+                f"texture {texture_id} was re-uploaded on the second frame",
+            )
+
+    def test_leaving_the_region_releases_all_of_them(self) -> None:
+        import tempfile
+
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), distance=30.0, yaw=0.0, pitch=0.5)
+        camera.set_mode("orbit")
+        camera.screen_size = self.FBO_SIZE
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene = self._scene_with_many_textures(tmpdir)
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                renderer.render_gl(scene, aspect=1.0)
+                self.assertEqual(len(renderer._object_textures), self.TEXTURE_COUNT)
+
+                # What apply_region_changed does to the scene.
+                scene.texture_paths.clear()
+                scene.object_entities.clear()
+                renderer.render_gl(scene, aspect=1.0)
+
+                self.assertEqual(renderer._object_textures, {})
+                self.assertEqual(renderer._object_texture_paths, {})
+            finally:
+                renderer.clear_caches()
+
+
 if __name__ == "__main__":
     unittest.main()

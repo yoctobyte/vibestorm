@@ -2495,6 +2495,32 @@ asserting a state the bug also produces — see the object-texture entry above.
 When a mutation passes, suspect the assertion before concluding the code is
 fine.
 
+## 2026-08-14 — constructing the large region the test sim doesn't have
+
+The cache rework left one thing unobserved: the failure an LRU cap causes
+needs *more distinct visible textures than the cap*, and the test region has
+32 prims sharing a handful of textures. That is a content gap — but unlike a
+sound emitter or an attachment, it is one a test can construct.
+
+`LargeRegionTextureGLTests` builds a scene with **300 distinct textures**, each
+its own PNG on disk and its own UUID, on 300 spread-out prims, and renders two
+frames through one renderer on real GL. It asserts identity across frames:
+every texture object after frame 2 must be the *same object* as after frame 1.
+A second test clears `texture_paths` and `object_entities` the way
+`apply_region_changed` does, and asserts everything is released.
+
+Reinstating the reverted LRU-cap design fails **three** tests. Removing texture
+pruning entirely fails one. So this test would have caught the bad fix before
+it was committed — twice.
+
+Distinct files as well as distinct ids, deliberately: a wrong implementation
+that keyed only on path would look correct if 300 ids shared one file.
+
+The general point: "we have no content that exercises this" is sometimes a real
+blocker (a sound emitter must exist in-world to send AttachedSound) and
+sometimes just an unasked question. Scale, breadth, and volume are usually
+constructible; only genuinely external behaviour is not.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
