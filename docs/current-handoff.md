@@ -2101,6 +2101,52 @@ The confirmed live read: time dilation 1.0, sim fps 55.1, agents 1, total prims
 arriving out of numeric order exactly as `StatsIndexID` predicts. All 41 ids
 resolved — no `world[sim_stats_unknown]` line.
 
+## 2026-08-14 — the sourcing boundary, stated once
+
+Three separate features have now been declined for the same reason, so it is
+worth naming the pattern instead of rediscovering it:
+
+**OpenSim's own enums live in `OpenSim/Framework/` and are sourceable. The
+bitfields the viewer sees are libomv's (`OpenMetaverse.*`), and libomv is not
+in `opensim-source/`.** OpenSim's call sites use those names freely, so a
+grep finds `RegionFlags.AllowDamage` or `ChatSourceType.Agent` and it *looks*
+sourced — but only the name is there, never the numeric value.
+
+Declined on these grounds so far: `PrimFlags` (object `update_flags`), the
+particle system block layout, `RegionFlags` (region handshake / SimStats), and
+`ChatSourceType` / `ChatAudibleLevel`.
+
+`RegionFlags` deserves a specific warning: `OpenSim/Framework/RegionFlags.cs`
+**does** exist and defines an enum with that exact name — but it is the *grid
+service's* region-record flags (DefaultRegion, FallbackRegion, Hyperlink), not
+the region flags in `RegionHandshake`. Same trap as StatsIndex/StatsID: a real
+file, the right name, the wrong enum.
+
+## 2026-08-14 — chat had a type byte nobody read
+
+`ChatFromSimulator` carries a chat type that reached the CLI as `type=1` and
+the viewer not at all. `src/vibestorm/world/chat_types.py` names it from
+`OpenSim/Framework/ChatTypeEnum.cs`.
+
+The byte does three unrelated jobs, and conflating them was an actual bug:
+types 4 and 5 are **start/stop typing**, which arrive as ChatFromSimulator
+packets with an empty message. `Scene.apply_chat_local` appended every event
+unconditionally, so each one became a blank row in the chat log. They now feed
+a `typing_senders` indicator instead, cleared by stop-typing *or* by the sender
+actually saying something (a sim does not reliably send stop-typing first).
+Whisper and shout are shown as qualifiers; an ordinary say is left unmarked.
+
+Type 3 is a dead second encoding of Say. It is deliberately left unnamed, so
+that a sim sending it would show up as `unknown type 3` rather than being
+folded silently into "say".
+
+Live-verified by sending whisper/say/shout from a headless session and reading
+the sim's echo back: types 0/1/2, `audible=1`, correct names. The typing path
+is **not** live-verified — this client never sends typing notifications and the
+test region has no second avatar to produce them.
+
+`sourcetype` and `audible` stay raw ints; see the sourcing-boundary note above.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

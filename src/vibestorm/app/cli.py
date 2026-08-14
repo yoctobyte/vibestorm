@@ -39,6 +39,7 @@ from vibestorm.udp.socket_client import UdpSocketClient
 from vibestorm.udp.world_client import WorldClient
 from vibestorm.udp.zerocode import decode_zerocode
 from vibestorm.world.census import census_world, format_census
+from vibestorm.world.chat_types import chat_type_name
 from vibestorm.world.models import WorldView
 from vibestorm.world.sim_stats import summarize_sim_stats
 
@@ -1024,7 +1025,7 @@ def main() -> int:
             print(
                 f"chat[{item['observed_at_seconds']:.3f}]="
                 f"{item['from_name']}: {item['message']} "
-                f"(type={item['chat_type']} audible={item['audible']} "
+                f"({chat_type_name(item['chat_type'])} audible={item['audible']} "
                 f"pos=({item['position'][0]:.2f},{item['position'][1]:.2f},{item['position'][2]:.2f}))",
             )
         return 0

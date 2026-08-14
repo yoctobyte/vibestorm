@@ -25,6 +25,12 @@ from vibestorm.world.parcel_overlay import (
     decode_parcel_bitmap,
     decode_parcel_overlay,
 )
+from vibestorm.world.chat_types import (
+    CHAT_TYPE_SAY,
+    CHAT_TYPE_START_TYPING,
+    chat_type_name,
+    is_typing_notification,
+)
 from vibestorm.world.sim_stats import summarize_sim_stats
 
 if TYPE_CHECKING:
@@ -259,6 +265,15 @@ class ChatLine:
     kind: str          # "local" | "im" | "alert" | "outbound"
     sender: str        # display name (or "" / "*system*")
     message: str
+    # ChatFromSimulator's chat type, for local chat only. None elsewhere, since
+    # IMs, alerts and our own outbound lines have no such byte on the wire.
+    chat_type: int | None = None
+
+    def delivery(self) -> str | None:
+        """"whisper"/"shout"/… when that differs from an ordinary say."""
+        if self.chat_type is None or self.chat_type == CHAT_TYPE_SAY:
+            return None
+        return chat_type_name(self.chat_type)
 
 
 @dataclass(slots=True, frozen=True)
@@ -347,6 +362,9 @@ class Scene:
     sun_phase: float | None = None
     sun_direction: tuple[float, float, float] | None = None
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
+    # Who is currently typing, from the start/stop-typing chat types. Kept as a
+    # dict rather than a set so insertion order gives a stable display order.
+    typing_senders: dict[str, bool] = field(default_factory=dict)
 
     # ---- bus event handlers ----------------------------------------------
 
@@ -424,8 +442,23 @@ class Scene:
             self.mesh_paths[event.mesh_id] = Path(event.cache_path)
 
     def apply_chat_local(self, event: ChatLocal) -> None:
+        # Start/stop-typing arrive as ChatFromSimulator with no message. They
+        # are not chat, and appending them puts blank rows in the log.
+        if is_typing_notification(event.chat_type):
+            if event.chat_type == CHAT_TYPE_START_TYPING:
+                self.typing_senders[event.from_name] = True
+            else:
+                self.typing_senders.pop(event.from_name, None)
+            return
+        # Someone who was typing has now said it.
+        self.typing_senders.pop(event.from_name, None)
         self.chat_lines.append(
-            ChatLine(kind="local", sender=event.from_name, message=event.message)
+            ChatLine(
+                kind="local",
+                sender=event.from_name,
+                message=event.message,
+                chat_type=event.chat_type,
+            )
         )
 
     def apply_chat_im(self, event: ChatIM) -> None:

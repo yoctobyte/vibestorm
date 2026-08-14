@@ -1263,7 +1263,15 @@ class HUD:
             color = _kind_color_html(line.kind)
             sender = _html_escape(line.sender)
             message = _html_escape(line.message)
+            # A whisper and a shout carry very different meaning in-world, and
+            # the two look identical without this.
+            delivery = line.delivery()
+            if delivery is not None:
+                sender = f"{sender} ({_html_escape(delivery)})"
             rows.append(f"<font color='{color}'>{sender}</font>: {message}")
+        if scene.typing_senders:
+            typing = ", ".join(_html_escape(name) for name in scene.typing_senders)
+            rows.append(f"<i>{typing} is typing…</i>")
         html = "<br>".join(rows) if rows else "<i>no chat yet</i>"
         try:
             self.ticker.set_text(html)

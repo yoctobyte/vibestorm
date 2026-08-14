@@ -208,6 +208,10 @@ Main gaps:
   `StatsID`, which is *not* the `StatsIndex` enum sitting beside it in the same
   file — the two agree for 0-3 and diverge after, so mis-keying yields correct
   labels on the wrong numbers. All 41 ids the test region sends resolve
+- chat carries a named type (whisper/say/shout/region/owner/direct) from
+  OpenSim's `ChatTypeEnum`; start/stop-typing are recognised as notifications
+  rather than appended to the log as blank lines. `sourcetype` and `audible`
+  stay raw — those two are libomv enums, absent from `opensim-source/`
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for

@@ -902,6 +902,79 @@ class SceneShapePopulatedTests(unittest.TestCase):
         self.assertIsNone(scene.object_entities[10].shape)
 
 
+class SceneChatTypeTests(unittest.TestCase):
+    """Typing indicators are ChatFromSimulator packets with no message."""
+
+    def _chat(self, name: str, chat_type: int, message: str = "") -> object:
+        from vibestorm.bus.events import ChatLocal
+
+        return ChatLocal(
+            region_handle=0,
+            from_name=name,
+            chat_type=chat_type,
+            audible=1,
+            message=message,
+        )
+
+    def test_typing_notification_does_not_become_a_blank_chat_line(self) -> None:
+        from vibestorm.world.chat_types import CHAT_TYPE_START_TYPING
+
+        scene = Scene()
+        scene.apply_chat_local(self._chat("Ann", CHAT_TYPE_START_TYPING))
+
+        self.assertEqual(list(scene.chat_lines), [])
+        self.assertIn("Ann", scene.typing_senders)
+
+    def test_stop_typing_clears_the_indicator(self) -> None:
+        from vibestorm.world.chat_types import CHAT_TYPE_START_TYPING, CHAT_TYPE_STOP_TYPING
+
+        scene = Scene()
+        scene.apply_chat_local(self._chat("Ann", CHAT_TYPE_START_TYPING))
+        scene.apply_chat_local(self._chat("Ann", CHAT_TYPE_STOP_TYPING))
+
+        self.assertEqual(scene.typing_senders, {})
+        self.assertEqual(list(scene.chat_lines), [])
+
+    def test_actually_saying_something_clears_the_indicator(self) -> None:
+        # A sim does not always send stop-typing before the message itself;
+        # without this the indicator would stick forever.
+        from vibestorm.world.chat_types import CHAT_TYPE_SAY, CHAT_TYPE_START_TYPING
+
+        scene = Scene()
+        scene.apply_chat_local(self._chat("Ann", CHAT_TYPE_START_TYPING))
+        scene.apply_chat_local(self._chat("Ann", CHAT_TYPE_SAY, "hello"))
+
+        self.assertEqual(scene.typing_senders, {})
+        self.assertEqual([line.message for line in scene.chat_lines], ["hello"])
+
+    def test_say_has_no_delivery_qualifier(self) -> None:
+        from vibestorm.world.chat_types import CHAT_TYPE_SAY
+
+        scene = Scene()
+        scene.apply_chat_local(self._chat("Ann", CHAT_TYPE_SAY, "hello"))
+
+        self.assertIsNone(scene.chat_lines[0].delivery())
+
+    def test_whisper_and_shout_are_qualified(self) -> None:
+        from vibestorm.world.chat_types import CHAT_TYPE_SHOUT, CHAT_TYPE_WHISPER
+
+        scene = Scene()
+        scene.apply_chat_local(self._chat("Ann", CHAT_TYPE_WHISPER, "psst"))
+        scene.apply_chat_local(self._chat("Bob", CHAT_TYPE_SHOUT, "HEY"))
+
+        self.assertEqual(scene.chat_lines[0].delivery(), "whisper")
+        self.assertEqual(scene.chat_lines[1].delivery(), "shout")
+
+    def test_non_local_lines_carry_no_chat_type(self) -> None:
+        from vibestorm.bus.events import ChatAlert
+
+        scene = Scene()
+        scene.apply_chat_alert(ChatAlert(region_handle=0, message="server restart"))
+
+        self.assertIsNone(scene.chat_lines[0].chat_type)
+        self.assertIsNone(scene.chat_lines[0].delivery())
+
+
 class SceneSimHealthTests(unittest.TestCase):
     """The HUD's fps is the client's; sim health is the region's.
 
