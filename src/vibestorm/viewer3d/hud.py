@@ -2434,6 +2434,44 @@ def inspector_rows(scene: Scene, world_view: object | None) -> tuple[InspectorDi
     return tuple(rows)
 
 
+def _extra_param_lines(extra_params: object) -> list[str]:
+    """Render decoded ExtraParams blocks as inspector rows.
+
+    Only blocks the prim actually carries appear — an ordinary prim has none
+    of them and adds no rows.
+    """
+    if extra_params is None:
+        return []
+    lines: list[str] = []
+    flexible = getattr(extra_params, "flexible", None)
+    if flexible is not None:
+        lines.append(
+            f"Flexible: softness {flexible.softness}, tension {flexible.tension:.1f}, "
+            f"drag {flexible.drag:.1f}, gravity {flexible.gravity:.1f}, "
+            f"wind {flexible.wind:.1f}"
+        )
+    light = getattr(extra_params, "light", None)
+    if light is not None:
+        r, g, b = (int(round(c * 255)) for c in light.color)
+        lines.append(
+            f"Light: rgb({r}, {g}, {b}) intensity {light.intensity:.2f}, "
+            f"radius {light.radius:.2f}, falloff {light.falloff:.2f}"
+        )
+    projection = getattr(extra_params, "projection", None)
+    if projection is not None:
+        lines.append(
+            f"Projector: {projection.texture_id} fov {projection.field_of_view:.2f}, "
+            f"focus {projection.focus:.2f}"
+        )
+    probe = getattr(extra_params, "reflection_probe", None)
+    if probe is not None:
+        lines.append(
+            f"Reflection Probe: ambiance {probe.ambiance:.2f}, "
+            f"clip {probe.clip_distance:.1f}, flags {probe.flags}"
+        )
+    return lines
+
+
 def _inspector_detail_html(e: object, w: object | None) -> str:
     lines = []
 
@@ -2484,6 +2522,7 @@ def _inspector_detail_html(e: object, w: object | None) -> str:
     if te and hasattr(te, "face_texture_ids") and te.face_texture_ids:
         faces = [f"{face}: {tid}" for face, tid in te.face_texture_ids.items()]
         lines.append(f"Face Textures: {', '.join(faces)}")
+    lines.extend(_extra_param_lines(getattr(e, "extra_params", None)))
     lines.append("")
 
     # Object update/debug

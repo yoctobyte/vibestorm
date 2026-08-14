@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
+from vibestorm.world.extra_params import DecodedExtraParams, decode_extra_params
 from vibestorm.world.parcel_overlay import (
     ParcelOverlay,
     ParcelOverlayDecodeError,
@@ -232,6 +233,7 @@ class SceneEntity:
     mesh_source_kind: MeshSourceKind = "primitive"
     mesh_asset_id: UUID | None = None
     sculpt_type: int | None = None
+    extra_params: DecodedExtraParams | None = None
     tint: tuple[int, int, int] = DEFAULT_MARKER_COLOR
 
     @property
@@ -497,7 +499,9 @@ class Scene:
             shape: PrimShape | None = None
             if shape_data is not None:
                 shape = classify_prim_shape(shape_data.path_curve, shape_data.profile_curve)
-            mesh_hint = decode_sculpt_mesh_hint(getattr(obj, "extra_params_entries", ()))
+            extra_param_entries = getattr(obj, "extra_params_entries", ())
+            mesh_hint = decode_sculpt_mesh_hint(extra_param_entries)
+            extra_params = decode_extra_params(extra_param_entries)
             if mesh_hint is not None:
                 shape = mesh_hint.shape
             entity = SceneEntity(
@@ -515,6 +519,7 @@ class Scene:
                 mesh_source_kind=mesh_hint.source_kind if mesh_hint is not None else "primitive",
                 mesh_asset_id=mesh_hint.asset_id if mesh_hint is not None else None,
                 sculpt_type=mesh_hint.sculpt_type if mesh_hint is not None else None,
+                extra_params=extra_params,
                 tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
             )
             if obj.pcode == PCODE_AVATAR:
