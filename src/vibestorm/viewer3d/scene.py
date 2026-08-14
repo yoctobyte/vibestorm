@@ -206,6 +206,27 @@ def _shape_for_sculpt_type(sculpt_type: int) -> PrimShape:
     return "sphere"
 
 
+def avatar_display_name(name_values: object) -> str | None:
+    """Build an avatar's display name from its ``ObjectUpdate`` NameValues.
+
+    The pairs arrive as ``FirstName`` / ``LastName`` (plus an optional group
+    ``Title``). A last name of ``Resident`` is SL's placeholder for a
+    single-name account and is dropped rather than shown, matching what
+    viewers display.
+    """
+    if not isinstance(name_values, dict):
+        return None
+    first = (name_values.get("FirstName") or "").strip()
+    last = (name_values.get("LastName") or "").strip()
+    if last.lower() == "resident":
+        last = ""
+    full = " ".join(part for part in (first, last) if part)
+    if not full:
+        return None
+    title = (name_values.get("Title") or "").strip()
+    return f"{title}\n{full}" if title else full
+
+
 @dataclass(slots=True, frozen=True)
 class ChatLine:
     kind: str          # "local" | "im" | "alert" | "outbound"
@@ -265,6 +286,7 @@ class Scene:
     parcel_borders: tuple[tuple[float, float, float, float], ...] = ()
     render_parcel_borders: bool = True
     render_hover_text: bool = True
+    render_avatar_names: bool = True
     map_tile_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
     mesh_paths: dict[UUID, Path] = field(default_factory=dict)
@@ -498,6 +520,10 @@ class Scene:
             properties = getattr(obj, "properties_family", None)
             if properties is not None:
                 name = getattr(properties, "name", None) or None
+            if name is None:
+                # Avatars never get an ObjectPropertiesFamily; their name
+                # rides the ObjectUpdate NameValue block instead.
+                name = avatar_display_name(getattr(obj, "name_values", None))
             shape_data = getattr(obj, "shape", None)
             shape: PrimShape | None = None
             if shape_data is not None:

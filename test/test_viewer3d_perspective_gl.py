@@ -1568,6 +1568,76 @@ class HoverTextGLTests(_GLTestBase):
         self.assertEqual(renderer._hover_text_textures, {})
 
 
+class AvatarNameTagGLTests(_GLTestBase):
+    """Avatar name tags share the hover-text billboard pass."""
+
+    FBO_SIZE = (256, 256)
+
+    def _scene(self, *, name):
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.avatar_entities[7] = SceneEntity(
+            local_id=7,
+            pcode=47,
+            kind="avatar",
+            position=(0.0, 0.0, 0.0),
+            scale=(1.0, 1.0, 2.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=None,
+            name=name,
+            tint=(10, 10, 40),
+        )
+        return scene
+
+    def _render(self, scene):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 1.2), eye_position=(6.0, 0.0, 1.4))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = self.fbo.read(components=3)
+            return [tuple(data[i : i + 3]) for i in range(0, len(data), 3)]
+        finally:
+            renderer.clear_caches()
+
+    @staticmethod
+    def _whitish(pixels) -> int:
+        return sum(1 for r, g, b in pixels if r > 180 and g > 180 and b > 180)
+
+    def test_named_avatar_draws_a_white_tag(self) -> None:
+        self.assertGreater(
+            self._whitish(self._render(self._scene(name="Vibestorm Tester"))),
+            0,
+            "avatar name tag did not draw",
+        )
+
+    def test_unnamed_avatar_draws_nothing(self) -> None:
+        self.assertEqual(self._whitish(self._render(self._scene(name=None))), 0)
+
+    def test_scene_flag_hides_avatar_names(self) -> None:
+        scene = self._scene(name="Vibestorm Tester")
+        scene.render_avatar_names = False
+
+        self.assertEqual(self._whitish(self._render(scene)), 0)
+
+    def test_hover_text_flag_does_not_hide_avatar_names(self) -> None:
+        # The two label sources share one pass but must stay independently
+        # switchable.
+        scene = self._scene(name="Vibestorm Tester")
+        scene.render_hover_text = False
+
+        self.assertGreater(self._whitish(self._render(scene)), 0)
+
+
 class MeshMaterialGroupGLTests(_GLTestBase):
     """Each mesh submesh must draw with its own face texture.
 

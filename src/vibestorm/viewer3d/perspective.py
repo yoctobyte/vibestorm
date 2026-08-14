@@ -372,6 +372,9 @@ HOVER_TEXT_SCREEN_HEIGHT: float = 0.045
 HOVER_TEXT_OFFSET_M: float = 0.25
 HOVER_TEXT_FONT_SIZE: int = 28
 HOVER_TEXT_MAX_LINES: int = 8
+# Avatar name tags share the hover-text billboard but carry no colour of
+# their own; SL draws them in plain white.
+AVATAR_NAME_COLOR: tuple[int, int, int, int] = (255, 255, 255, 235)
 
 _LABEL_VERTEX_SHADER = """
 #version 330
@@ -875,8 +878,7 @@ class PerspectiveRenderer:
 
             # Last, so labels blend over finished geometry rather than being
             # blended into by the water pass behind them.
-            if getattr(scene, "render_hover_text", True):
-                self._render_hover_text(ctx, scene, view_data, proj_data)
+            self._render_labels(ctx, scene, view_data, proj_data)
         finally:
             # Leave the depth state predictable for the HUD overlay
             # quad and the next frame's compositor draws.
@@ -1235,14 +1237,36 @@ class PerspectiveRenderer:
         self._hover_text_textures[text] = entry
         return entry
 
-    def _render_hover_text(
+    @staticmethod
+    def _collect_labels(scene: Scene) -> list[tuple[SceneEntity, str, tuple[int, int, int, int]]]:
+        """Gather the world-space text this frame should draw.
+
+        Two sources share one billboard pass: prim hover text, which carries
+        its own colour, and avatar name tags, which do not and get
+        ``AVATAR_NAME_COLOR``. Both are opt-out via a scene flag.
+        """
+        labels: list[tuple[SceneEntity, str, tuple[int, int, int, int]]] = []
+        if getattr(scene, "render_hover_text", True):
+            for entity in scene.object_entities.values():
+                text = getattr(entity, "hover_text", None)
+                if text:
+                    color = getattr(entity, "hover_text_color", None)
+                    labels.append((entity, text, color or (255, 255, 255, 255)))
+        if getattr(scene, "render_avatar_names", True):
+            for entity in scene.avatar_entities.values():
+                name = getattr(entity, "name", None)
+                if name:
+                    labels.append((entity, name, AVATAR_NAME_COLOR))
+        return labels
+
+    def _render_labels(
         self,
         ctx: moderngl.Context,
         scene: Scene,
         view_data: bytes,
         proj_data: bytes,
     ) -> None:
-        """Draw each prim's floating text as a camera-facing billboard.
+        """Draw prim hover text and avatar name tags as camera-facing billboards.
 
         Depth testing stays on, so text behind a wall is hidden rather than
         floating through it; depth *writes* are off so two labels that overlap
@@ -1250,11 +1274,7 @@ class PerspectiveRenderer:
         """
         if self._label_program is None or self._label_vao is None:
             return
-        labelled = [
-            entity
-            for entity in scene.object_entities.values()
-            if getattr(entity, "hover_text", None)
-        ]
+        labelled = self._collect_labels(scene)
         if not labelled:
             return
 
@@ -1271,17 +1291,16 @@ class PerspectiveRenderer:
         if framebuffer is not None:
             framebuffer.depth_mask = False
         try:
-            for entity in labelled:
-                entry = self._hover_text_texture(ctx, entity.hover_text)
+            for entity, text, color in labelled:
+                r, g, b, a = color
+                if a <= 0:
+                    continue
+                entry = self._hover_text_texture(ctx, text)
                 if entry is None:
                     continue
                 texture, width, height = entry
                 x, y, z = entity.position
                 top = z + abs(entity.scale[2]) * 0.5 + HOVER_TEXT_OFFSET_M
-                color = getattr(entity, "hover_text_color", None) or (255, 255, 255, 255)
-                r, g, b, a = color
-                if a <= 0:
-                    continue
                 half_h = HOVER_TEXT_SCREEN_HEIGHT * 0.5
                 self._label_program["u_world_pos"].value = (x, y, top)
                 self._label_program["u_half_size"].value = (

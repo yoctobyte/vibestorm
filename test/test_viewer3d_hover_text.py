@@ -72,5 +72,58 @@ class HoverTextWireDecodeTests(unittest.TestCase):
         self.assertIsNone(_decode_text_color(b"\x01\x02\x03"))
 
 
+class AvatarDisplayNameTests(unittest.TestCase):
+    """Avatar names ride ObjectUpdate NameValues, not ObjectPropertiesFamily.
+
+    The pairs were parsed and stored from the start but never read, so every
+    avatar was anonymous in the inspector and unlabelled in the 3D view.
+    """
+
+    def test_first_and_last_name_are_joined(self) -> None:
+        from vibestorm.viewer3d.scene import avatar_display_name
+
+        self.assertEqual(
+            avatar_display_name({"FirstName": "Vibestorm", "LastName": "Tester"}),
+            "Vibestorm Tester",
+        )
+
+    def test_resident_last_name_is_dropped(self) -> None:
+        # "Resident" is SL's placeholder for a single-name account; viewers
+        # show just the first name.
+        from vibestorm.viewer3d.scene import avatar_display_name
+
+        self.assertEqual(
+            avatar_display_name({"FirstName": "Someone", "LastName": "Resident"}),
+            "Someone",
+        )
+
+    def test_group_title_becomes_the_line_above(self) -> None:
+        from vibestorm.viewer3d.scene import avatar_display_name
+
+        self.assertEqual(
+            avatar_display_name(
+                {"FirstName": "A", "LastName": "B", "Title": "Builder"}
+            ),
+            "Builder\nA B",
+        )
+
+    def test_empty_title_adds_no_line(self) -> None:
+        # OpenSim sends Title as an empty string for an untitled avatar, which
+        # must not become a blank first row on the name tag.
+        from vibestorm.viewer3d.scene import avatar_display_name
+
+        self.assertEqual(
+            avatar_display_name({"FirstName": "A", "LastName": "B", "Title": ""}), "A B"
+        )
+
+    def test_missing_or_unusable_input_reports_none(self) -> None:
+        from vibestorm.viewer3d.scene import avatar_display_name
+
+        self.assertIsNone(avatar_display_name(None))
+        self.assertIsNone(avatar_display_name({}))
+        self.assertIsNone(avatar_display_name({"Title": "Builder"}))
+        self.assertIsNone(avatar_display_name("FirstName A"))
+
+
 if __name__ == "__main__":
     unittest.main()
