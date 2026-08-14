@@ -40,6 +40,7 @@ from vibestorm.udp.world_client import WorldClient
 from vibestorm.udp.zerocode import decode_zerocode
 from vibestorm.world.census import census_world, format_census
 from vibestorm.world.chat_types import chat_type_name
+from vibestorm.world.land_flags import decode_region_flags
 from vibestorm.world.models import WorldView
 from vibestorm.world.sim_stats import summarize_sim_stats
 
@@ -238,6 +239,11 @@ def format_world_status(world_view: WorldView) -> list[str]:
         lines.append(
             f"world[region]={world_view.region.name} "
             f"grid=({world_view.region.grid_x},{world_view.region.grid_y})",
+        )
+        region_flags = decode_region_flags(world_view.region.region_flags)
+        lines.append(
+            f"world[region_flags]={world_view.region.region_flags:#x} "
+            f"{region_flags.describe()}",
         )
     if world_view.latest_sim_stats is not None:
         stats = world_view.latest_sim_stats

@@ -31,6 +31,7 @@ from vibestorm.world.chat_types import (
     chat_type_name,
     is_typing_notification,
 )
+from vibestorm.world.land_flags import DecodedFlags, decode_parcel_flags
 from vibestorm.world.physics_shape import PhysicsProperties, physics_properties_from_event
 from vibestorm.world.sim_stats import summarize_sim_stats
 
@@ -325,6 +326,9 @@ class Scene:
     water_height: float = DEFAULT_WATER_HEIGHT_M
     avatar_position: tuple[float, float, float] | None = None
     parcel_name: str | None = None
+    # Set once ParcelProperties arrives; None means "not asked or not answered
+    # yet", which is not the same as a parcel with no flags set.
+    parcel_flags: "DecodedFlags | None" = None
     # Region-wide parcel ownership grid, reassembled from the sequenced
     # ParcelOverlay packets, plus its property-line segments in region meters.
     parcel_overlay_packets: dict[int, bytes] = field(default_factory=dict)
@@ -417,6 +421,7 @@ class Scene:
             ):
                 return
         self.parcel_name = properties.name or None
+        self.parcel_flags = decode_parcel_flags(properties.parcel_flags)
 
     def apply_parcel_overlay(self, event: ParcelOverlayReceived) -> None:
         """Accumulate ParcelOverlay pieces and decode the grid once complete.

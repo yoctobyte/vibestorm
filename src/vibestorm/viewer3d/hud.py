@@ -1373,6 +1373,7 @@ class HUD:
                 # Client fps alone cannot tell a slow viewer from a slow
                 # region; this line is the other half of that comparison.
                 f"sim: {scene.sim_health or '(no stats yet)'}",
+                f"parcel flags: {scene.parcel_flags.describe() if scene.parcel_flags else '(none received)'}",
                 f"map: {map_path}",
                 terrain_text,
                 height_text,

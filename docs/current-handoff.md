@@ -2113,8 +2113,13 @@ grep finds `RegionFlags.AllowDamage` or `ChatSourceType.Agent` and it *looks*
 sourced — but only the name is there, never the numeric value.
 
 Declined on these grounds so far: `PrimFlags` (object `update_flags`), the
-particle system block layout, `RegionFlags` (region handshake / SimStats), and
-`ChatSourceType` / `ChatAudibleLevel`.
+particle system block layout, and `ChatSourceType` / `ChatAudibleLevel`.
+
+**Partially recanted for region flags** — see the parcel/region flags entry
+below. `LSL_Constants.cs` turned out to define a sourced *subset* of both the
+region and parcel flag words, which is enough to name those bits and report the
+rest as unknown. Before declining anything on this basis, check LSL_Constants:
+it exposes whatever a script can query, which is a surprising amount.
 
 `RegionFlags` deserves a specific warning: `OpenSim/Framework/RegionFlags.cs`
 **does** exist and defines an enum with that exact name — but it is the *grid
@@ -2216,6 +2221,42 @@ Replacing the panel's defensive `getattr(w, "material", ...)` with direct
 attribute access broke the TextureAnim inspector test, whose `_World` stub is
 deliberately partial. The panel's contract is that it walks whatever it is
 handed — every field in it uses `getattr` for that reason. Restored.
+
+## 2026-08-14 — parcel and region flags, and a correction to the note above
+
+**The sourcing-boundary note earlier in this file overstated the case for
+region flags.** It said the viewer-facing `RegionFlags` bitfield is libomv's
+and therefore unsourceable. That is true of the *complete* enum, but OpenSim's
+`LSL_Constants.cs` defines nine `REGION_FLAG_*` and sixteen `PARCEL_FLAG_*`
+constants with real numeric values — `llGetRegionFlags` and `llGetParcelFlags`
+return exactly those words. A partial, sourced table is worth having.
+
+`src/vibestorm/world/land_flags.py` decodes both, using the same contract as
+`world/permissions.py`: name what is sourced, and report everything else
+through `unknown_bits` rather than dropping it. `parcel_flags` reaches the
+scene and the HUD diagnostics panel; `region_flags` is now carried on
+`RegionInfo` (it previously existed only inside a debug detail string) and
+printed by `format_world_status`.
+
+A test asserts the two tables are **not** interchangeable: `0x40` is "allow
+create objects" for a parcel and "block terraform" for a region, so using the
+wrong table gives a wrong answer that still looks like a real flag name.
+
+### Live results — both halves worth reading
+
+    world[region_flags]=0x14108026 allow direct teleport, unknown 0x14008026
+
+    parcel flags=0x2800204b allow fly, allow scripts, allow landmark,
+                            allow create objects, allow all object entry,
+                            unknown 0x20002000
+
+Parcel decoding is genuinely exercised: five of the sixteen names appear on a
+real reply. Region decoding resolves exactly **one** of nine — OpenSim's
+`GetRegionFlags` sets a good many bits (AllowLandmark, AllowSetHome,
+ExternallyVisible, AllowVoice, and others) whose numeric values LSL never
+exposes, so they land in `unknown_bits`. That large unknown mask is the correct
+output, not a defect, and it is exactly what the earlier note was right to be
+cautious about — the fix is to report the gap, not to guess the bits.
 
 ## Notes For The Next Agent
 

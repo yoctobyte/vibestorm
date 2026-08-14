@@ -29,6 +29,9 @@ class RegionInfo:
     grid_x: int
     grid_y: int
     water_height: float | None = None
+    # RegionHandshake's flag word. Kept raw here; world/land_flags.py names the
+    # bits LSL exposes and reports the rest as unknown.
+    region_flags: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -198,12 +201,14 @@ class WorldView:
         grid_x: int,
         grid_y: int,
         water_height: float | None = None,
+        region_flags: int = 0,
     ) -> None:
         self.region = RegionInfo(
             name=name,
             grid_x=grid_x,
             grid_y=grid_y,
             water_height=water_height,
+            region_flags=region_flags,
         )
 
     def apply_sim_stats(self, message: SimStatsMessage) -> None:

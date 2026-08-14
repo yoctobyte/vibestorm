@@ -975,6 +975,42 @@ class SceneChatTypeTests(unittest.TestCase):
         self.assertIsNone(scene.chat_lines[0].delivery())
 
 
+class SceneParcelFlagTests(unittest.TestCase):
+    def _properties(self, flags: int) -> object:
+        from vibestorm.bus.events import ParcelPropertiesReceived
+
+        class _Props:
+            name = "Test Parcel"
+            bitmap = b""
+            parcel_flags = flags
+
+        return ParcelPropertiesReceived(region_handle=0, properties=_Props())
+
+    def test_no_parcel_reply_leaves_flags_unset(self) -> None:
+        # None means "not answered yet", which differs from a parcel that has
+        # no flags set at all; the HUD says so rather than showing "none".
+        self.assertIsNone(Scene().parcel_flags)
+
+    def test_parcel_flags_are_decoded(self) -> None:
+        from vibestorm.world.land_flags import (
+            PARCEL_FLAG_ALLOW_FLY,
+            PARCEL_FLAG_ALLOW_SCRIPTS,
+        )
+
+        scene = Scene()
+        scene.apply_parcel_properties(
+            self._properties(PARCEL_FLAG_ALLOW_FLY | PARCEL_FLAG_ALLOW_SCRIPTS),
+        )
+
+        self.assertEqual(scene.parcel_flags.set_flags, ("allow fly", "allow scripts"))
+
+    def test_unnamed_bits_reach_the_scene(self) -> None:
+        scene = Scene()
+        scene.apply_parcel_properties(self._properties(0x4))
+
+        self.assertEqual(scene.parcel_flags.unknown_bits, 0x4)
+
+
 class SceneObjectPhysicsTests(unittest.TestCase):
     """ObjectPhysicsProperties is per-object detail, not a chat line."""
 
