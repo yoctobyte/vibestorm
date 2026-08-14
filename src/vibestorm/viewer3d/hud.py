@@ -2434,6 +2434,23 @@ def inspector_rows(scene: Scene, world_view: object | None) -> tuple[InspectorDi
     return tuple(rows)
 
 
+def _hover_text_lines(entity: object) -> list[str]:
+    """Render a prim's floating text, with its colour, as inspector rows.
+
+    Multi-line hover text is common (scripted vendors, rental boxes), so each
+    wire newline becomes its own row rather than one squashed line.
+    """
+    text = getattr(entity, "hover_text", None)
+    if not text:
+        return []
+    lines = [f"Hover Text: {_html_escape(part)}" for part in text.split("\n")]
+    color = getattr(entity, "hover_text_color", None)
+    if color is not None:
+        r, g, b, a = color
+        lines.append(f"Hover Text Color: rgba({r}, {g}, {b}, {a})")
+    return lines
+
+
 def _extra_param_lines(extra_params: object) -> list[str]:
     """Render decoded ExtraParams blocks as inspector rows.
 
@@ -2497,6 +2514,10 @@ def _inspector_detail_html(e: object, w: object | None) -> str:
     lines.append(f"Name: {_html_escape(name_str)}")
     lines.append(f"Local ID: {getattr(e, 'local_id', 'unknown')}")
     lines.append(f"UUID: {_html_escape(uuid_str)}")
+    lines.extend(_hover_text_lines(e))
+    media_url = getattr(w, "media_url", None) if w else None
+    if media_url:
+        lines.append(f"Media URL: {_html_escape(media_url)}")
     lines.append("")
 
     # Transform

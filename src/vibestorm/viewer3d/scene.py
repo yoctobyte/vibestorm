@@ -234,6 +234,8 @@ class SceneEntity:
     mesh_asset_id: UUID | None = None
     sculpt_type: int | None = None
     extra_params: DecodedExtraParams | None = None
+    hover_text: str | None = None
+    hover_text_color: tuple[int, int, int, int] | None = None
     tint: tuple[int, int, int] = DEFAULT_MARKER_COLOR
 
     @property
@@ -520,6 +522,8 @@ class Scene:
                 mesh_asset_id=mesh_hint.asset_id if mesh_hint is not None else None,
                 sculpt_type=mesh_hint.sculpt_type if mesh_hint is not None else None,
                 extra_params=extra_params,
+                hover_text=getattr(obj, "hover_text", None),
+                hover_text_color=getattr(obj, "hover_text_color", None),
                 tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
             )
             if obj.pcode == PCODE_AVATAR:

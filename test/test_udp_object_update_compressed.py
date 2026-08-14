@@ -50,8 +50,23 @@ def _shape_block(
     )
 
 
-def _compressed_blob(shape: bytes, *, pcode: int = 9, texture_entry: bytes = b"") -> bytes:
-    """A minimal compressed entry with no optional flag-gated fields set."""
+COMPRESSED_HAS_TEXT = 0x0004
+COMPRESSED_MEDIA_URL = 0x0200
+
+
+def _compressed_blob(
+    shape: bytes,
+    *,
+    pcode: int = 9,
+    texture_entry: bytes = b"",
+    compressed_flags: int = 0,
+    optional: bytes = b"",
+) -> bytes:
+    """A minimal compressed entry.
+
+    ``optional`` is inserted where the flag-gated fields sit: after OwnerID
+    and before the always-present ExtraParams count byte.
+    """
     blob = (
         FULL_ID.bytes
         + struct.pack("<I", 4242)  # LocalID
@@ -61,8 +76,9 @@ def _compressed_blob(shape: bytes, *, pcode: int = 9, texture_entry: bytes = b""
         + struct.pack("<fff", 2.0, 2.0, 4.0)  # Scale
         + struct.pack("<fff", 10.0, 20.0, 30.0)  # Position
         + struct.pack("<fff", 0.0, 0.0, 0.0)  # Rotation XYZ
-        + struct.pack("<I", 0)  # CompressedFlags: nothing optional present
+        + struct.pack("<I", compressed_flags)
         + OWNER_ID.bytes
+        + optional
         + bytes([0])  # ExtraParams: count 0
         + shape
     )
@@ -173,6 +189,84 @@ class CompressedShapeBlockTests(unittest.TestCase):
         )
 
         self.assertEqual(entry.default_texture_id, texture_id)
+
+
+class CompressedHoverTextTests(unittest.TestCase):
+    """Floating text was skipped over rather than decoded.
+
+    The alpha byte is the trap: OpenSim writes ``argb ^ 0xff000000``
+    (``LLUDPZeroEncoder.AddColorArgb``), so opaque text goes out as alpha 0.
+    Reading it as-is makes every ordinary hover text look fully transparent.
+    """
+
+    def _decode(self, *, text: bytes, color: bytes):
+        return decode_compressed_object_data(
+            _compressed_blob(
+                _shape_block(),
+                compressed_flags=COMPRESSED_HAS_TEXT,
+                optional=text + b"\x00" + color,
+            ),
+            region_handle=1,
+            time_dilation=0,
+            update_flags=0,
+        )
+
+    def test_hover_text_is_decoded(self) -> None:
+        entry = self._decode(text="Vendor: 250 L$".encode(), color=bytes([255, 128, 0, 0]))
+
+        self.assertEqual(entry.hover_text, "Vendor: 250 L$")
+        self.assertEqual(entry.text_size, len("Vendor: 250 L$") + 1)
+
+    def test_opaque_text_arrives_as_alpha_zero_on_the_wire(self) -> None:
+        entry = self._decode(text=b"hi", color=bytes([255, 128, 0, 0x00]))
+
+        self.assertEqual(entry.hover_text_color, (255, 128, 0, 255))
+
+    def test_transparent_text_arrives_as_alpha_255_on_the_wire(self) -> None:
+        entry = self._decode(text=b"hi", color=bytes([1, 2, 3, 0xFF]))
+
+        self.assertEqual(entry.hover_text_color, (1, 2, 3, 0))
+
+    def test_text_flag_does_not_disturb_the_shape_or_texture_cursor(self) -> None:
+        texture_id = UUID("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+        entry = decode_compressed_object_data(
+            _compressed_blob(
+                _shape_block(profile_curve=PROFILE_CURVE_CIRCLE),
+                compressed_flags=COMPRESSED_HAS_TEXT,
+                optional=b"floating" + b"\x00" + bytes([9, 9, 9, 0]),
+                texture_entry=texture_id.bytes + bytes(9),
+            ),
+            region_handle=1,
+            time_dilation=0,
+            update_flags=0,
+        )
+
+        self.assertEqual(entry.hover_text, "floating")
+        self.assertEqual(entry.shape.profile_curve, PROFILE_CURVE_CIRCLE)
+        self.assertEqual(entry.default_texture_id, texture_id)
+
+    def test_media_url_is_decoded(self) -> None:
+        entry = decode_compressed_object_data(
+            _compressed_blob(
+                _shape_block(),
+                compressed_flags=COMPRESSED_MEDIA_URL,
+                optional=b"http://example.invalid/stream\x00",
+            ),
+            region_handle=1,
+            time_dilation=0,
+            update_flags=0,
+        )
+
+        self.assertEqual(entry.media_url, "http://example.invalid/stream")
+
+    def test_prim_without_the_text_flag_reports_no_hover_text(self) -> None:
+        entry = decode_compressed_object_data(
+            _compressed_blob(_shape_block()), region_handle=1, time_dilation=0, update_flags=0
+        )
+
+        self.assertIsNone(entry.hover_text)
+        self.assertIsNone(entry.hover_text_color)
+        self.assertEqual(entry.text_size, 0)
 
 
 if __name__ == "__main__":

@@ -558,6 +558,9 @@ class ObjectUpdateEntry:
     interesting_payloads: tuple[ObjectUpdatePayloadSummary, ...]
     extra_params_entries: tuple[ExtraParamEntry, ...] = ()
     shape: PrimShapeData | None = None
+    hover_text: str | None = None
+    hover_text_color: tuple[int, int, int, int] | None = None
+    media_url: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -636,6 +639,31 @@ def _read_utf8_fields_with_fallback(
             continue
 
     raise last_error or MessageDecodeError("variable UTF-8 field is truncated")
+
+
+def _decode_object_string(payload: bytes) -> str | None:
+    """Decode a NUL-terminated UTF-8 object string (hover text, media URL).
+
+    Returns ``None`` for an empty or all-NUL payload so callers can tell
+    "the prim has no hover text" from "the prim has an empty one".
+    """
+    if not payload:
+        return None
+    text = payload.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+    return text or None
+
+
+def _decode_text_color(payload: bytes) -> tuple[int, int, int, int] | None:
+    """Decode the 4-byte hover-text colour that follows the Text field.
+
+    The wire order is R, G, B, A, and **the alpha byte is inverted**: OpenSim
+    writes ``argb ^ 0xff000000`` (``LLUDPZeroEncoder.AddColorArgb``), so fully
+    opaque text goes out as alpha 0. Reading the byte as-is makes every
+    ordinary hover text look fully transparent.
+    """
+    if len(payload) < 4:
+        return None
+    return (payload[0], payload[1], payload[2], payload[3] ^ 0xFF)
 
 
 def _parse_compressed_prim_shape_block(data: bytes, offset: int) -> PrimShapeData:
@@ -1489,6 +1517,11 @@ def decode_compressed_object_data(
     extra_params_entries: tuple[ExtraParamEntry, ...] = ()
     extra_params_size = 0
     shape: PrimShapeData | None = None
+    hover_text: str | None = None
+    hover_text_color: tuple[int, int, int, int] | None = None
+    media_url: str | None = None
+    text_size = 0
+    media_url_size = 0
 
     try:
         if compressed_flags & _COMPRESSED_FLAGS_HAS_ANG_VEL:
@@ -1502,9 +1535,14 @@ def decode_compressed_object_data(
             pos += 1  # tree species byte
         if compressed_flags & _COMPRESSED_FLAGS_HAS_TEXT:
             end = data.index(b"\x00", pos)
+            hover_text = _decode_object_string(data[pos:end])
+            text_size = end + 1 - pos
+            hover_text_color = _decode_text_color(data[end + 1 : end + 5])
             pos = end + 1 + 4  # null-terminated string + RGBA
         if compressed_flags & _COMPRESSED_FLAGS_MEDIA_URL:
             end = data.index(b"\x00", pos)
+            media_url = _decode_object_string(data[pos:end])
+            media_url_size = end + 1 - pos
             pos = end + 1
         if compressed_flags & _COMPRESSED_FLAGS_PARTICLES_OLD:
             pos += 86  # legacy particle system, fixed size
@@ -1585,8 +1623,8 @@ def decode_compressed_object_data(
         texture_entry_size=texture_entry_size,
         texture_anim_size=texture_anim_size,
         data_size=0,
-        text_size=0,
-        media_url_size=0,
+        text_size=text_size,
+        media_url_size=media_url_size,
         ps_block_size=0,
         extra_params_size=extra_params_size,
         default_texture_id=default_texture_id,
@@ -1594,6 +1632,9 @@ def decode_compressed_object_data(
         interesting_payloads=(),
         extra_params_entries=extra_params_entries,
         shape=shape,
+        hover_text=hover_text,
+        hover_text_color=hover_text_color,
+        media_url=media_url,
     )
 
 
@@ -2525,6 +2566,9 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
         interesting_payloads=tuple(interesting_payloads),
         extra_params_entries=extra_params_entries,
         shape=shape,
+        hover_text=_decode_object_string(text_payload),
+        hover_text_color=_decode_text_color(text_color_payload),
+        media_url=_decode_object_string(media_url_payload),
     )
     return entry, next_offset
 

@@ -101,6 +101,9 @@ class WorldObject:
     texture_entry: TextureEntry | None = None
     shape: PrimShapeData | None = None
     properties_family: ObjectPropertiesFamilyMessage | None = None
+    hover_text: str | None = None
+    hover_text_color: tuple[int, int, int, int] | None = None
+    media_url: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -267,6 +270,9 @@ class WorldView:
                 default_texture_id=obj.default_texture_id,
                 texture_entry=obj.texture_entry,
                 shape=obj.shape,
+                hover_text=obj.hover_text,
+                hover_text_color=obj.hover_text_color,
+                media_url=obj.media_url,
                 properties_family=(
                     self.objects.get(obj.full_id).properties_family
                     if obj.full_id in self.objects
@@ -332,6 +338,9 @@ class WorldView:
                 if entry.texture_entry and len(entry.texture_entry) >= 16
                 else obj.texture_entry,
                 shape=obj.shape,
+                hover_text=obj.hover_text,
+                hover_text_color=obj.hover_text_color,
+                media_url=obj.media_url,
                 properties_family=obj.properties_family,
             )
 
@@ -377,6 +386,9 @@ class WorldView:
             default_texture_id=existing.default_texture_id,
             texture_entry=existing.texture_entry,
             shape=existing.shape,
+            hover_text=existing.hover_text,
+            hover_text_color=existing.hover_text_color,
+            media_url=existing.media_url,
             properties_family=message,
         )
 
