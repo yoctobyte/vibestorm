@@ -185,9 +185,35 @@ Current object/world coverage:
 
 ## Current Gaps
 
-The next meaningful work is not transport stabilization. It is coverage and interpretation.
+The next meaningful work is not transport stabilization. It is coverage and
+interpretation.
 
-Main gaps:
+**What is actually open**, grouped by what unblocks it. Everything after this
+is a record of work that has landed — that mixture is deliberate history, but
+read the four lists below first, because a finished item written in the past
+tense reads like an open one.
+
+*Blocked on region content* (the decoder exists and is unit-tested; the sim
+never sends the message, so `./run.sh census` reports it under `absent=`):
+attached sound, texture animation, media URL, light / projector / reflection
+probe, a worn attachment, a prim with two different face textures, a
+non-default material or click action, a working sculpt map, a real mesh asset,
+a 32x32 LandExtended varregion, and a second avatar for typing notifications.
+
+*Blocked on consent* (needs an in-world edit in the user's region): the
+object-sync CAP verify, and `ObjectPhysicsProperties`, which the sim sends only
+as an echo of an edit the viewer itself made.
+
+*Blocked on sources* (libomv tables absent from `opensim-source/`, and guessing
+them is worse than leaving them raw): `PrimFlags` for `update_flags`, the
+particle system block, `ChatSourceType` / `ChatAudibleLevel`, and the region
+flag bits LSL does not expose.
+
+*Genuinely unimplemented, not blocked*: the region-crossing transport half
+(`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child), and the
+inventory write surface described at the end of this list.
+
+Landed work follows:
 
 - `./run.sh census` now reports region content: shapes (with the raw curves
   behind any unclassified prim), names, sculpt/mesh kinds with asset ids,
@@ -197,7 +223,6 @@ Main gaps:
   three sculpts all reference asset `be293869-d0d9-0a69-5989-ad27f1946fd4`,
   which GetTexture returns 404 for. No mesh (type 5) object exists at all, so
   GetMesh has never run against live data
-- semantic decoding of terse object payloads beyond the first inferred `local_id`
 - prim shape now survives `ObjectUpdateCompressed` (it was skipped, leaving
   nearly every prim in a populated region rendering as the fallback cube).
   Hover text, its colour, the media URL, the attached-sound block and the
@@ -264,9 +289,8 @@ Main gaps:
   `update_flags` is still raw hex, because libomv's `PrimFlags` table is not in
   `opensim-source/` and guessing it is worse than leaving it
 - typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
-  `TeleportFinish` and `ScriptRunningReply` in chat. The region-management ones
-  (`EnableSimulator`, `CrossedRegion`) remain the only bus events with no
-  consumer — they need a region crossing to be worth wiring
+  `TeleportFinish` and `ScriptRunningReply` in chat. Every decoded bus event
+  now has a consumer
 - `udp.messages.parse_parcel_properties` is unreachable against OpenSim, which
   sends `ParcelProperties` only over the event queue. Kept for other servers.
 - `ObjectAnimation` and the four sound messages now have consumers: the Scene

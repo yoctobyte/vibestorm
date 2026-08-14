@@ -2618,6 +2618,39 @@ terse-only object, where the terse record is the *only* record — leaving it
 behind keeps a dead prim moving in the viewer. Now covered both ways, and the
 mutation (dropping the `terse_objects.pop`) fails.
 
+## 2026-08-14 — auditing the gap list, which had drifted into a changelog
+
+Prompted by finding one stale entry: if the list said `ObjectUpdateCached` was
+open when it had been done for a while, what else was wrong? Two more were:
+
+- **"semantic decoding of terse object payloads beyond the first inferred
+  `local_id`"** — stale. `parse_improved_terse_object_update` decodes state,
+  is_avatar, the avatar-only collision plane, position, velocity,
+  acceleration, rotation, angular velocity and the TextureEntry. Nothing is
+  left inferred.
+- **"(`EnableSimulator`, `CrossedRegion`) remain the only bus events with no
+  consumer"** — contradicted by a *newer bullet in the same list* saying they
+  now have one. The list had grown two entries that disagreed.
+
+The underlying problem is structural rather than any single wrong line.
+"Current Gaps" had become a changelog: most bullets describe finished work,
+written in the same voice and tense as the open items. There is no way to tell
+"this is missing" from "this was built" by reading a bullet.
+
+Fixed by putting the genuinely open work at the top, grouped by **what would
+unblock it** — region content, consent, sources, or nobody-has-written-it-yet —
+and labelling everything below as landed work. The history is kept; it just no
+longer masquerades as a to-do list.
+
+That grouping is also the honest summary of where this stands: almost
+everything still open needs something from outside the codebase, and the only
+two purely-unimplemented items are region-crossing transport and the inventory
+write surface.
+
+**A stale gap entry costs as much as a bug and leaves no trace.** Two of them
+sent me on investigations this session that ended in no code. Worth re-reading
+the list against reality now and then, which is what this was.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
