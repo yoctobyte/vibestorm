@@ -2434,6 +2434,30 @@ def inspector_rows(scene: Scene, world_view: object | None) -> tuple[InspectorDi
     return tuple(rows)
 
 
+def _permission_lines(properties: object) -> list[str]:
+    """Render the five permission masks as named rights, not raw hex.
+
+    OpenSim's permission bits are non-contiguous (they start at 13 and skip 17
+    and 18), so the hex the inspector used to print was effectively unreadable.
+    The hex is kept alongside the names — it is still the thing you compare
+    against a packet dump.
+    """
+    from vibestorm.world.permissions import decode_permissions
+
+    rows: list[str] = []
+    for label, attribute in (
+        ("Base", "base_mask"),
+        ("Owner", "owner_mask"),
+        ("Group", "group_mask"),
+        ("Everyone", "everyone_mask"),
+        ("Next Owner", "next_owner_mask"),
+    ):
+        mask = getattr(properties, attribute, 0) or 0
+        decoded = decode_permissions(mask)
+        rows.append(f"{label} Perms: {decoded.describe()} (0x{decoded.mask:08x})")
+    return rows
+
+
 def _hover_text_lines(entity: object) -> list[str]:
     """Render a prim's floating text, with its colour, as inspector rows.
 
@@ -2592,11 +2616,7 @@ def _inspector_detail_html(e: object, w: object | None) -> str:
     if prop:
         lines.append(f"Owner ID: {getattr(prop, 'owner_id', 'unknown')}")
         lines.append(f"Group ID: {getattr(prop, 'group_id', 'unknown')}")
-        lines.append(f"Base Mask: 0x{getattr(prop, 'base_mask', 0):08x}")
-        lines.append(f"Owner Mask: 0x{getattr(prop, 'owner_mask', 0):08x}")
-        lines.append(f"Group Mask: 0x{getattr(prop, 'group_mask', 0):08x}")
-        lines.append(f"Everyone Mask: 0x{getattr(prop, 'everyone_mask', 0):08x}")
-        lines.append(f"Next Owner Mask: 0x{getattr(prop, 'next_owner_mask', 0):08x}")
+        lines.extend(_permission_lines(prop))
         lines.append(f"Description: {_html_escape(getattr(prop, 'description', '') or '')}")
         lines.append(
             f"Sale Type: {getattr(prop, 'sale_type', 'unknown')} / Price: {getattr(prop, 'sale_price', 'unknown')}"
