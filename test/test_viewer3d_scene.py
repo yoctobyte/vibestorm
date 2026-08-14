@@ -902,5 +902,57 @@ class SceneShapePopulatedTests(unittest.TestCase):
         self.assertIsNone(scene.object_entities[10].shape)
 
 
+class SceneSimHealthTests(unittest.TestCase):
+    """The HUD's fps is the client's; sim health is the region's.
+
+    Without both, a stutter cannot be attributed to either side.
+    """
+
+    def _view_with_stats(self, *pairs: tuple[int, float]) -> object:
+        from vibestorm.udp.messages import SimStatEntry, SimStatsMessage
+        from vibestorm.world.models import WorldView
+
+        view = WorldView()
+        view.apply_sim_stats(
+            SimStatsMessage(
+                region_x=1000,
+                region_y=1000,
+                region_flags=0,
+                object_capacity=15000,
+                stats=tuple(SimStatEntry(stat_id=i, stat_value=v) for i, v in pairs),
+                pid=0,
+                region_flags_extended=(),
+            ),
+        )
+        return view
+
+    def test_sim_health_is_empty_before_any_stats_arrive(self) -> None:
+        from vibestorm.world.models import WorldView
+
+        scene = Scene()
+        scene.refresh_from_world_view(WorldView())
+
+        self.assertEqual(scene.sim_health, "")
+
+    def test_sim_health_reports_named_region_numbers(self) -> None:
+        # Wire ids, not internal array slots: 1 sim fps, 13 agents, 11 prims.
+        view = self._view_with_stats((1, 55.0), (13, 1.0), (11, 32.0))
+
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        self.assertIn("sim fps=55", scene.sim_health)
+        self.assertIn("agents=1", scene.sim_health)
+        self.assertIn("total prims=32", scene.sim_health)
+
+    def test_sim_health_tracks_later_updates(self) -> None:
+        scene = Scene()
+        scene.refresh_from_world_view(self._view_with_stats((1, 55.0)))
+        scene.refresh_from_world_view(self._view_with_stats((1, 12.0)))
+
+        self.assertIn("sim fps=12", scene.sim_health)
+        self.assertNotIn("55", scene.sim_health)
+
+
 if __name__ == "__main__":
     unittest.main()

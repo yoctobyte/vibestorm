@@ -162,6 +162,28 @@ class RenderModeMenuTests(unittest.TestCase):
         self.assertIn("layer: patches=1 pos=((0, 0),)", text)
         self.assertIn("coeff: nz=3 absmax=9 h=min 1.00 max 4.00 mean 2.50", text)
         self.assertIn("water: level=6.5 avatar_z=19.0 above", text)
+        # No SimStats have arrived in this scene, and saying so is the point:
+        # a blank line would read as "the region is fine".
+        self.assertIn("sim: (no stats yet)", text)
+
+    def test_diagnostics_window_reports_sim_health(self) -> None:
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+        scene = Scene(region_name="TestSim", sim_health="sim fps=12.50 agents=1")
+
+        hud.update(0.05, scene)
+
+        text = hud.diagnostics_text.html_text
+        # Client fps and sim fps have to be separately visible; that pairing is
+        # the whole reason this line exists.
+        self.assertIn("fps:", text)
+        self.assertIn("sim: sim fps=12.50 agents=1", text)
 
     def test_heightmap_debug_surface_maps_samples_to_grayscale(self) -> None:
         from vibestorm.viewer3d.hud import heightmap_debug_surface

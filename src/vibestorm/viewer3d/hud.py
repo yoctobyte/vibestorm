@@ -1360,6 +1360,9 @@ class HUD:
                 f"fps: {self._last_fps:.1f}",
                 f"mode: {mode_label}",
                 f"region: {scene.region_name or scene.region_handle or '(none)'}",
+                # Client fps alone cannot tell a slow viewer from a slow
+                # region; this line is the other half of that comparison.
+                f"sim: {scene.sim_health or '(no stats yet)'}",
                 f"map: {map_path}",
                 terrain_text,
                 height_text,

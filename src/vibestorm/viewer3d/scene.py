@@ -25,6 +25,7 @@ from vibestorm.world.parcel_overlay import (
     decode_parcel_bitmap,
     decode_parcel_overlay,
 )
+from vibestorm.world.sim_stats import summarize_sim_stats
 
 if TYPE_CHECKING:
     from vibestorm.bus.events import (
@@ -302,6 +303,9 @@ class Scene:
 
     region_handle: int | None = None
     region_name: str | None = None
+    # Region-side health, mirrored from the WorldView each refresh. The HUD's
+    # own fps says nothing about whether a stutter is the client or the sim.
+    sim_health: str = ""
     water_height: float = DEFAULT_WATER_HEIGHT_M
     avatar_position: tuple[float, float, float] | None = None
     parcel_name: str | None = None
@@ -683,6 +687,10 @@ class Scene:
                 self.avatar_entities[terse.local_id] = entity
             else:
                 self.object_entities[terse.local_id] = entity
+
+        sim_stats = getattr(world_view, "latest_sim_stats", None)
+        if sim_stats is not None:
+            self.sim_health = summarize_sim_stats(sim_stats.stats)
 
         if world_view.region is not None and self.region_name is None:
             self.region_name = world_view.region.name
