@@ -38,6 +38,14 @@ END_OF_PATCHES: int = 97
 # bump to 32x32 patches in a 16x16 patch grid for variable-region sims
 # — the wire still says "32 m per patch" via the GroupHeader.
 DEFAULT_PATCH_SIZE: int = 16
+# Standard regions send 16x16 Land patches; varregions send 32x32 in the
+# LandExtended layer. Both use the same DCT scheme, just a different edge.
+EXTENDED_PATCH_SIZE: int = 32
+# Upper bound on heightmap growth. OpenSim varregions are far smaller than
+# this in practice; the cap stops a malformed patch coordinate from
+# allocating unbounded memory.
+MAX_REGION_SIZE_METERS: int = 2048
+SUPPORTED_PATCH_SIZES: frozenset[int] = frozenset({16, 32})
 REGION_SIZE_METERS: int = 256
 PATCHES_PER_EDGE: int = 16
 OO_SQRT2: float = 0.7071067811865476
@@ -153,6 +161,31 @@ class RegionHeightmap:
     revision: int = 0
     latest_layer_stats: LayerDecodeStats | None = None
 
+    def _grow_to(self, width: int, height: int) -> None:
+        """Re-lay the sample grid at a larger size, keeping existing rows.
+
+        A varregion is bigger than 256 m and its size is not known until
+        patches start arriving, so the heightmap grows to fit rather than
+        rejecting out-of-range patches.
+        """
+        new_width = max(self.width, width)
+        new_height = max(self.height, height)
+        if new_width == self.width and new_height == self.height:
+            return
+        if new_width > MAX_REGION_SIZE_METERS or new_height > MAX_REGION_SIZE_METERS:
+            raise TerrainDecodeError(
+                f"terrain patch implies a {new_width}x{new_height} region, "
+                f"beyond the {MAX_REGION_SIZE_METERS} m limit"
+            )
+        grown = [0.0] * (new_width * new_height)
+        for row in range(self.height):
+            src = row * self.width
+            dst = row * new_width
+            grown[dst:dst + self.width] = self.samples[src:src + self.width]
+        self.samples = grown
+        self.width = new_width
+        self.height = new_height
+
     def apply_patch(self, patch: HeightPatch) -> None:
         patch_size = int(math.sqrt(len(patch.heights)))
         if patch_size * patch_size != len(patch.heights):
@@ -160,10 +193,7 @@ class RegionHeightmap:
         x0 = patch.header.patch_x * patch_size
         y0 = patch.header.patch_y * patch_size
         if x0 + patch_size > self.width or y0 + patch_size > self.height:
-            raise TerrainDecodeError(
-                f"patch ({patch.header.patch_x}, {patch.header.patch_y}) "
-                f"size {patch_size} exceeds {self.width}x{self.height} heightmap"
-            )
+            self._grow_to(x0 + patch_size, y0 + patch_size)
         for row in range(patch_size):
             dst = (y0 + row) * self.width + x0
             src = row * patch_size
@@ -452,30 +482,32 @@ def _decode_patch_coefficients(
     return tuple(out)
 
 
-def _build_dequantize_table16() -> tuple[float, ...]:
-    return tuple(1.0 + 2.0 * float(i + j) for j in range(16) for i in range(16))
+def _build_dequantize_table(size: int) -> tuple[float, ...]:
+    return tuple(1.0 + 2.0 * float(i + j) for j in range(size) for i in range(size))
 
 
-def _build_copy_matrix16() -> tuple[int, ...]:
-    copy = [0] * (16 * 16)
+def _build_copy_matrix(size: int) -> tuple[int, ...]:
+    """Zig-zag scan order for a ``size`` x ``size`` coefficient block."""
+    last = size - 1
+    copy = [0] * (size * size)
     diag = False
     right = True
     i = 0
     j = 0
     count = 0
-    while i < 16 and j < 16:
-        copy[j * 16 + i] = count
+    while i < size and j < size:
+        copy[j * size + i] = count
         count += 1
         if not diag:
             if right:
-                if i < 15:
+                if i < last:
                     i += 1
                 else:
                     j += 1
                 right = False
                 diag = True
             else:
-                if j < 15:
+                if j < last:
                     j += 1
                 else:
                     i += 1
@@ -484,68 +516,114 @@ def _build_copy_matrix16() -> tuple[int, ...]:
         elif right:
             i += 1
             j -= 1
-            if i == 15 or j == 0:
+            if i == last or j == 0:
                 diag = False
         else:
             i -= 1
             j += 1
-            if j == 15 or i == 0:
+            if j == last or i == 0:
                 diag = False
     return tuple(copy)
 
 
-def _setup_cosines16() -> tuple[float, ...]:
-    hposz = math.pi * 0.5 / 16.0
+def _setup_cosines(size: int) -> tuple[float, ...]:
+    hposz = math.pi * 0.5 / float(size)
     return tuple(
         math.cos((2.0 * float(n) + 1.0) * float(u) * hposz)
-        for u in range(16)
-        for n in range(16)
+        for u in range(size)
+        for n in range(size)
     )
 
 
-DEQUANTIZE_TABLE16: tuple[float, ...] = _build_dequantize_table16()
-COPY_MATRIX16: tuple[int, ...] = _build_copy_matrix16()
-COSINE_TABLE16: tuple[float, ...] = _setup_cosines16()
+# Tables are size-dependent and pure, so build each size once on demand.
+# Standard regions only ever need 16; varregions add 32.
+_DEQUANTIZE_TABLES: dict[int, tuple[float, ...]] = {}
+_COPY_MATRICES: dict[int, tuple[int, ...]] = {}
+_COSINE_TABLES: dict[int, tuple[float, ...]] = {}
 
 
-def idct_patch16(coefficients: tuple[float, ...] | list[float]) -> tuple[float, ...]:
-    """Run libomv's 16x16 inverse DCT over dequantized coefficients."""
-    if len(coefficients) != 16 * 16:
-        raise TerrainDecodeError("IDCTPatch16 requires exactly 256 coefficients")
+def dequantize_table(size: int) -> tuple[float, ...]:
+    table = _DEQUANTIZE_TABLES.get(size)
+    if table is None:
+        table = _build_dequantize_table(size)
+        _DEQUANTIZE_TABLES[size] = table
+    return table
 
-    temp = [0.0] * (16 * 16)
-    out = [0.0] * (16 * 16)
 
-    for column in range(16):
-        for n in range(16):
+def copy_matrix(size: int) -> tuple[int, ...]:
+    matrix = _COPY_MATRICES.get(size)
+    if matrix is None:
+        matrix = _build_copy_matrix(size)
+        _COPY_MATRICES[size] = matrix
+    return matrix
+
+
+def cosine_table(size: int) -> tuple[float, ...]:
+    table = _COSINE_TABLES.get(size)
+    if table is None:
+        table = _setup_cosines(size)
+        _COSINE_TABLES[size] = table
+    return table
+
+
+DEQUANTIZE_TABLE16: tuple[float, ...] = dequantize_table(16)
+COPY_MATRIX16: tuple[int, ...] = copy_matrix(16)
+COSINE_TABLE16: tuple[float, ...] = cosine_table(16)
+
+
+def idct_patch(coefficients: tuple[float, ...] | list[float], size: int) -> tuple[float, ...]:
+    """Run libomv's inverse DCT over dequantized coefficients.
+
+    ``size`` is the patch edge — 16 for standard Land patches, 32 for the
+    LandExtended patches varregions send.
+    """
+    if len(coefficients) != size * size:
+        raise TerrainDecodeError(
+            f"IDCT for {size}x{size} requires exactly {size * size} coefficients"
+        )
+    cosines = cosine_table(size)
+
+    temp = [0.0] * (size * size)
+    out = [0.0] * (size * size)
+
+    for column in range(size):
+        for n in range(size):
             total = OO_SQRT2 * coefficients[column]
-            for u in range(1, 16):
-                total += coefficients[u * 16 + column] * COSINE_TABLE16[u * 16 + n]
-            temp[16 * n + column] = total
+            for u in range(1, size):
+                total += coefficients[u * size + column] * cosines[u * size + n]
+            temp[size * n + column] = total
 
-    for line in range(16):
-        line_size = line * 16
-        for n in range(16):
+    for line in range(size):
+        line_size = line * size
+        for n in range(size):
             total = OO_SQRT2 * temp[line_size]
-            for u in range(1, 16):
-                total += temp[line_size + u] * COSINE_TABLE16[u * 16 + n]
-            out[line_size + n] = total * (2.0 / 16.0)
+            for u in range(1, size):
+                total += temp[line_size + u] * cosines[u * size + n]
+            out[line_size + n] = total * (2.0 / float(size))
 
     return tuple(out)
 
 
+def idct_patch16(coefficients: tuple[float, ...] | list[float]) -> tuple[float, ...]:
+    """Run libomv's 16x16 inverse DCT over dequantized coefficients."""
+    return idct_patch(coefficients, 16)
+
+
 def decompress_patch(patch: DecodedPatch, group: GroupHeader) -> HeightPatch:
     """Dequantize + IDCT one decoded patch into elevation samples."""
-    if group.patch_size != 16:
+    size = group.patch_size
+    if size not in SUPPORTED_PATCH_SIZES:
         raise TerrainDecodeError(
-            f"only 16x16 terrain patches are supported, got {group.patch_size}"
+            f"unsupported terrain patch size {size}; "
+            f"expected one of {sorted(SUPPORTED_PATCH_SIZES)}"
         )
 
+    scan = copy_matrix(size)
+    dequantize = dequantize_table(size)
     block = [
-        float(patch.coefficients[COPY_MATRIX16[n]]) * DEQUANTIZE_TABLE16[n]
-        for n in range(16 * 16)
+        float(patch.coefficients[scan[n]]) * dequantize[n] for n in range(size * size)
     ]
-    idct = idct_patch16(block)
+    idct = idct_patch(block, size)
 
     prequant = patch.header.prequant
     mult = (1.0 / float(1 << prequant)) * float(patch.header.range)
@@ -620,6 +698,13 @@ __all__ = [
     "COSINE_TABLE16",
     "DEFAULT_PATCH_SIZE",
     "DEQUANTIZE_TABLE16",
+    "EXTENDED_PATCH_SIZE",
+    "MAX_REGION_SIZE_METERS",
+    "SUPPORTED_PATCH_SIZES",
+    "copy_matrix",
+    "cosine_table",
+    "dequantize_table",
+    "idct_patch",
     "DecodedPatch",
     "END_OF_PATCHES",
     "GroupHeader",

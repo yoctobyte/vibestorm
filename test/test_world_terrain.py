@@ -427,5 +427,155 @@ class TerrainDecompressionTests(unittest.TestCase):
         self.assertEqual(heightmap.first_patch_keys, ((0, 0), (0, 1), (1, 0), (1, 1)))
 
 
+class ExtendedPatchTests(unittest.TestCase):
+    """32x32 LandExtended patches, as varregions send them.
+
+    Same DCT scheme as the 16x16 Land patches, just a larger edge — so the
+    tables and IDCT have to be size-parameterized rather than hard-coded.
+    """
+
+    def test_dequantize_and_cosine_tables_scale_with_size(self) -> None:
+        from vibestorm.world.terrain import (
+            COSINE_TABLE16,
+            DEQUANTIZE_TABLE16,
+            cosine_table,
+            dequantize_table,
+        )
+
+        self.assertEqual(dequantize_table(16), DEQUANTIZE_TABLE16)
+        self.assertEqual(cosine_table(16), COSINE_TABLE16)
+        self.assertEqual(len(dequantize_table(32)), 32 * 32)
+        self.assertEqual(len(cosine_table(32)), 32 * 32)
+        # libomv formula: 1 + 2*(i + j) over the block.
+        self.assertEqual(dequantize_table(32)[0], 1.0)
+        self.assertEqual(dequantize_table(32)[32 * 32 - 1], 1.0 + 2.0 * (31 + 31))
+
+    def test_copy_matrix_32_is_a_complete_permutation(self) -> None:
+        from vibestorm.world.terrain import copy_matrix
+
+        matrix = copy_matrix(32)
+
+        self.assertEqual(len(matrix), 32 * 32)
+        # A zig-zag scan visits every cell exactly once.
+        self.assertEqual(sorted(matrix), list(range(32 * 32)))
+        self.assertEqual(matrix[0], 0)
+
+    def test_idct_32_of_dc_only_is_constant(self) -> None:
+        from vibestorm.world.terrain import idct_patch
+
+        block = [0.0] * (32 * 32)
+        block[0] = 8.0
+
+        out = idct_patch(block, 32)
+
+        self.assertEqual(len(out), 32 * 32)
+        self.assertTrue(all(abs(v - out[0]) < 1e-9 for v in out))
+        self.assertNotAlmostEqual(out[0], 0.0)
+
+    def test_idct_rejects_wrong_coefficient_count(self) -> None:
+        from vibestorm.world.terrain import TerrainDecodeError, idct_patch
+
+        with self.assertRaises(TerrainDecodeError):
+            idct_patch([0.0] * (16 * 16), 32)
+
+    def test_zero_extended_patch_decompresses_to_addval(self) -> None:
+        from vibestorm.world.terrain import (
+            LAYER_TYPE_LAND_EXTENDED,
+            decode_height_patches,
+        )
+
+        w = _encode_group_header(
+            stride=264, patch_size=32, layer_type=LAYER_TYPE_LAND_EXTENDED
+        )
+        _encode_patch_header_into(
+            w, quant_wbits=(1 << 4) | 3, dc_offset=25.0, range_=1, patch_x=0, patch_y=0
+        )
+        _encode_zero_block(w, 32 * 32)
+        _encode_eod(w)
+
+        group, patches = decode_height_patches(w.to_bytes())
+
+        self.assertEqual(group.patch_size, 32)
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(len(patches[0].heights), 32 * 32)
+        # An all-zero coefficient block flattens to the header's addval.
+        prequant = patches[0].header.prequant
+        mult = (1.0 / float(1 << prequant)) * float(patches[0].header.range)
+        expected = mult * float(1 << (prequant - 1)) + 25.0
+        for value in patches[0].heights:
+            self.assertAlmostEqual(value, expected, places=5)
+
+    def test_unsupported_patch_size_is_rejected(self) -> None:
+        from vibestorm.world.terrain import (
+            LAYER_TYPE_LAND,
+            TerrainDecodeError,
+            decode_height_patches,
+        )
+
+        w = _encode_group_header(stride=264, patch_size=24, layer_type=LAYER_TYPE_LAND)
+        _encode_patch_header_into(
+            w, quant_wbits=(1 << 4) | 3, dc_offset=0.0, range_=1, patch_x=0, patch_y=0
+        )
+        _encode_zero_block(w, 24 * 24)
+        _encode_eod(w)
+
+        with self.assertRaises(TerrainDecodeError):
+            decode_height_patches(w.to_bytes())
+
+
+class HeightmapGrowthTests(unittest.TestCase):
+    """A varregion is larger than 256 m and its size is not known up front."""
+
+    def _patch(self, *, patch_x: int, patch_y: int, size: int, value: float):
+        from vibestorm.world.terrain import HeightPatch, PatchHeader
+
+        return HeightPatch(
+            header=PatchHeader(
+                quant_wbits=(1 << 4) | 3,
+                dc_offset=0.0,
+                range=1,
+                patch_x=patch_x,
+                patch_y=patch_y,
+            ),
+            heights=tuple([value] * (size * size)),
+        )
+
+    def test_patch_beyond_the_grid_grows_it(self) -> None:
+        from vibestorm.world.terrain import RegionHeightmap
+
+        heightmap = RegionHeightmap()
+        self.assertEqual(heightmap.width, 256)
+
+        # Patch (10, 0) at 32 samples starts at x=320, past a 256-wide grid.
+        heightmap.apply_patch(self._patch(patch_x=10, patch_y=0, size=32, value=7.0))
+
+        self.assertGreaterEqual(heightmap.width, 352)
+        self.assertEqual(len(heightmap.samples), heightmap.width * heightmap.height)
+        self.assertAlmostEqual(heightmap.samples[320], 7.0)
+
+    def test_growth_preserves_existing_rows(self) -> None:
+        from vibestorm.world.terrain import RegionHeightmap
+
+        heightmap = RegionHeightmap()
+        heightmap.apply_patch(self._patch(patch_x=0, patch_y=1, size=32, value=3.0))
+        # Row 32 column 0 came from the first patch.
+        self.assertAlmostEqual(heightmap.samples[32 * heightmap.width], 3.0)
+
+        heightmap.apply_patch(self._patch(patch_x=10, patch_y=0, size=32, value=7.0))
+
+        # Same sample, re-laid out at the new stride.
+        self.assertAlmostEqual(heightmap.samples[32 * heightmap.width], 3.0)
+
+    def test_absurd_patch_coordinate_is_rejected_not_allocated(self) -> None:
+        from vibestorm.world.terrain import RegionHeightmap, TerrainDecodeError
+
+        heightmap = RegionHeightmap()
+
+        with self.assertRaises(TerrainDecodeError):
+            heightmap.apply_patch(
+                self._patch(patch_x=1000, patch_y=1000, size=32, value=1.0)
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
