@@ -1215,35 +1215,53 @@ class MeshNormalGLTests(_GLTestBase):
         )
 
 
-class InterleaveNormalsTests(unittest.TestCase):
+class InterleaveVertexAttributesTests(unittest.TestCase):
     def test_falls_back_to_normalized_position(self) -> None:
-        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+        from vibestorm.viewer3d.perspective import _interleave_vertex_attributes
 
-        packed = _interleave_positions_and_normals([0.0, 0.0, 2.0])
+        packed = _interleave_vertex_attributes([0.0, 0.0, 2.0])
 
-        self.assertEqual(packed, [0.0, 0.0, 2.0, 0.0, 0.0, 1.0])
+        self.assertEqual(packed, [0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0])
 
     def test_uses_supplied_normals(self) -> None:
-        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+        from vibestorm.viewer3d.perspective import _interleave_vertex_attributes
 
-        packed = _interleave_positions_and_normals([5.0, 0.0, 0.0], [0.0, 0.0, 3.0])
+        packed = _interleave_vertex_attributes([5.0, 0.0, 0.0], [0.0, 0.0, 3.0])
 
-        self.assertEqual(packed, [5.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.assertEqual(packed, [5.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
 
     def test_mismatched_normal_length_falls_back(self) -> None:
-        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+        from vibestorm.viewer3d.perspective import _interleave_vertex_attributes
 
-        packed = _interleave_positions_and_normals([0.0, 4.0, 0.0], [1.0, 2.0])
+        packed = _interleave_vertex_attributes([0.0, 4.0, 0.0], [1.0, 2.0])
 
-        self.assertEqual(packed, [0.0, 4.0, 0.0, 0.0, 1.0, 0.0])
+        self.assertEqual(packed, [0.0, 4.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+
+    def test_uses_supplied_uvs(self) -> None:
+        from vibestorm.viewer3d.perspective import _interleave_vertex_attributes
+
+        packed = _interleave_vertex_attributes(
+            [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.25, 0.75]
+        )
+
+        self.assertEqual(packed, [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.25, 0.75])
+
+    def test_mismatched_uv_length_falls_back_to_zero(self) -> None:
+        from vibestorm.viewer3d.perspective import _interleave_vertex_attributes
+
+        packed = _interleave_vertex_attributes(
+            [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.25]
+        )
+
+        self.assertEqual(packed, [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
 
     def test_degenerate_normal_becomes_up(self) -> None:
         # A vertex at the origin has no position to derive a normal from.
-        from vibestorm.viewer3d.perspective import _interleave_positions_and_normals
+        from vibestorm.viewer3d.perspective import _interleave_vertex_attributes
 
-        packed = _interleave_positions_and_normals([0.0, 0.0, 0.0])
+        packed = _interleave_vertex_attributes([0.0, 0.0, 0.0])
 
-        self.assertEqual(packed, [0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.assertEqual(packed, [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
 
 
 class MeshMaterialGroupGLTests(_GLTestBase):
@@ -1393,6 +1411,119 @@ class MeshMaterialGroupGLTests(_GLTestBase):
                 self.assertNotIn(f"mesh:{mesh_id}", renderer._mesh_face_meshes)
             finally:
                 renderer.clear_caches()
+
+
+class MeshUVGLTests(_GLTestBase):
+    """Authored TexCoord0 must drive texture sampling, not position.
+
+    The fragment shader derives UVs from position/normal for primitives. A mesh
+    that carried its own TexCoord0 array should sample somewhere else entirely,
+    so a texture with distinct halves reads differently with and without it.
+    """
+
+    def _mesh_asset(self, *, with_uvs: bool) -> bytes:
+        import struct
+
+        from test_sl_mesh import _llsd_binary, _mesh_asset, _triangle_submesh
+
+        submesh = _triangle_submesh()
+        if with_uvs:
+            # Pin all three vertices inside the right-hand half of the texture,
+            # where the position-derived mapping would never send the whole
+            # triangle. Deliberately 0.75 rather than 1.0: at exactly the edge,
+            # wrap-around linear filtering blends the last texel with the
+            # first and the triangle comes out magenta.
+            pinned = int(0.75 * 65535)
+            submesh["TexCoord0"] = _llsd_binary(
+                struct.pack("<HH", pinned, pinned) * 3
+            )
+        return _mesh_asset([submesh])
+
+    def _split_texture(self, tmpdir: str) -> Path:
+        import pygame
+
+        path = Path(tmpdir) / "split.png"
+        surface = pygame.Surface((16, 16))
+        surface.fill((255, 0, 0))
+        pygame.draw.rect(surface, (0, 0, 255), pygame.Rect(8, 0, 8, 16))
+        pygame.image.save(surface, str(path))
+        return path
+
+    def _render(self, tmpdir: str, *, with_uvs: bool) -> bytes:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        mesh_id = UUID(int=31)
+        texture_id = UUID(int=32)
+        mesh_path = Path(tmpdir) / f"uv_{with_uvs}.llmesh"
+        mesh_path.write_bytes(self._mesh_asset(with_uvs=with_uvs))
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), distance=3.0, yaw=0.0, pitch=1.4)
+        camera.set_mode("orbit")
+        camera.screen_size = self.FBO_SIZE
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.mesh_paths[mesh_id] = mesh_path
+        scene.texture_paths[texture_id] = self._split_texture(tmpdir)
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=(0.0, 0.0, 0.0),
+            scale=(3.0, 3.0, 3.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape="mesh",
+            mesh_source_kind="mesh",
+            mesh_asset_id=mesh_id,
+            default_texture_id=texture_id,
+        )
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            self.assertEqual(
+                f"mesh:{mesh_id}" in renderer._mesh_uv_shape_keys,
+                with_uvs,
+                "authored-UV tracking disagrees with the asset",
+            )
+            return self.fbo.read(components=3)
+        finally:
+            renderer.clear_caches()
+
+    def test_authored_uvs_change_texture_sampling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            generated = self._render(tmpdir, with_uvs=False)
+            authored = self._render(tmpdir, with_uvs=True)
+
+        self.assertTrue(any(generated), "mesh did not render with generated UVs")
+        self.assertTrue(any(authored), "mesh did not render with authored UVs")
+        self.assertNotEqual(
+            generated,
+            authored,
+            "authored UVs produced identical pixels - in_mesh_uv is not reaching "
+            "the shader",
+        )
+
+    def test_authored_uvs_sample_the_pinned_texel(self) -> None:
+        # Every vertex is pinned to u=0.75, inside the blue half of the split
+        # texture, so the triangle must come out blue-dominant.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            authored = self._render(tmpdir, with_uvs=True)
+
+        pixels = [tuple(authored[i : i + 3]) for i in range(0, len(authored), 3)]
+        lit = [p for p in pixels if any(p)]
+        self.assertTrue(lit, "mesh did not render")
+        bluish = [p for p in lit if p[2] > p[0]]
+        self.assertGreater(
+            len(bluish),
+            len(lit) // 2,
+            "authored UVs did not sample the pinned half of the texture",
+        )
 
 
 if __name__ == "__main__":

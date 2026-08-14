@@ -41,6 +41,12 @@ class DecodedSLMesh:
     normals: tuple[float, ...] = ()
     uvs: tuple[float, ...] = ()
     material_groups: tuple[MeshMaterialGroup, ...] = ()
+    # ``uvs`` is zero-filled when a submesh omits TexCoord0, which makes an
+    # authored (0, 0) indistinguishable from a missing array. Renderers need
+    # the difference: sampling a whole mesh at one texel looks far worse than
+    # falling back to generated coordinates. True only when every submesh
+    # carried its own TexCoord0.
+    has_authored_uvs: bool = False
 
 
 _BINARY_PREFIX = b"<? LLSD/Binary ?>\n"
@@ -82,6 +88,7 @@ def decode_sl_mesh_asset(data: bytes, *, lod: str = "high_lod") -> DecodedSLMesh
     vertices: list[float] = []
     normals: list[float] = []
     uvs: list[float] = []
+    all_submeshes_have_uvs = True
     indices: list[int] = []
     material_groups: list[MeshMaterialGroup] = []
     submesh_count = 0
@@ -97,6 +104,8 @@ def decode_sl_mesh_asset(data: bytes, *, lod: str = "high_lod") -> DecodedSLMesh
         index_start = len(indices)
         vertices.extend(sub_vertices)
         normals.extend(_decode_normals(submesh, vertex_count))
+        if not isinstance(submesh.get("TexCoord0"), (bytes, bytearray)):
+            all_submeshes_have_uvs = False
         uvs.extend(_decode_texcoords(submesh, vertex_count))
         indices.extend(base + index for index in sub_indices)
         material_groups.append(
@@ -117,6 +126,7 @@ def decode_sl_mesh_asset(data: bytes, *, lod: str = "high_lod") -> DecodedSLMesh
         normals=tuple(normals),
         uvs=tuple(uvs),
         material_groups=tuple(material_groups),
+        has_authored_uvs=all_submeshes_have_uvs and submesh_count > 0,
     )
 
 

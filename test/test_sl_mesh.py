@@ -123,6 +123,34 @@ class SLMeshDecodeTests(unittest.TestCase):
         self.assertAlmostEqual(decoded.uvs[0], 0.0, places=4)
         self.assertAlmostEqual(decoded.uvs[2], 1.0, places=4)
 
+    def test_has_authored_uvs_distinguishes_missing_from_zero(self) -> None:
+        # uvs is zero-filled when TexCoord0 is absent, so length alone cannot
+        # tell an authored (0, 0) from a missing array. Renderers need the
+        # difference: sampling a whole mesh at one texel looks far worse than
+        # falling back to generated coordinates.
+        from vibestorm.assets.sl_mesh import decode_sl_mesh_asset
+
+        authored = decode_sl_mesh_asset(
+            _mesh_asset([_triangle_submesh(with_uvs=True)])
+        )
+        missing = decode_sl_mesh_asset(_mesh_asset([_triangle_submesh()]))
+
+        self.assertTrue(authored.has_authored_uvs)
+        self.assertFalse(missing.has_authored_uvs)
+        # Both still expose a full-length uvs array.
+        self.assertEqual(len(authored.uvs), 6)
+        self.assertEqual(len(missing.uvs), 6)
+
+    def test_has_authored_uvs_requires_every_submesh(self) -> None:
+        # A partially textured mesh cannot be trusted to the authored path.
+        from vibestorm.assets.sl_mesh import decode_sl_mesh_asset
+
+        decoded = decode_sl_mesh_asset(
+            _mesh_asset([_triangle_submesh(with_uvs=True), _triangle_submesh()])
+        )
+
+        self.assertFalse(decoded.has_authored_uvs)
+
     def test_decode_computes_normals_when_absent(self) -> None:
         from vibestorm.assets.sl_mesh import decode_sl_mesh_asset
 

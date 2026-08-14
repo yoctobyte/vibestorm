@@ -77,22 +77,27 @@ _SHAPE_ALIASES: dict[str, str] = {
 }
 
 
-def _interleave_positions_and_normals(
+def _interleave_vertex_attributes(
     vertices: tuple[float, ...] | list[float],
     normals: tuple[float, ...] | list[float] | None = None,
+    uvs: tuple[float, ...] | list[float] | None = None,
 ) -> list[float]:
-    """Pack ``x, y, z, nx, ny, nz`` per vertex for the shared shape program.
+    """Pack ``x, y, z, nx, ny, nz, u, v`` per vertex for the shape program.
 
-    When ``normals`` is missing or the wrong length, each normal falls back to
-    the normalized vertex position — the approximation the vertex shader used
-    to compute inline, so primitive shapes light exactly as they did before.
+    ``normals`` falls back to the normalized vertex position — the
+    approximation the vertex shader used to compute inline, so primitive shapes
+    light exactly as they did before. ``uvs`` falls back to zeros, which the
+    fragment shader ignores unless ``u_use_mesh_uv`` says the mesh authored
+    them. Wrong-length inputs fall back rather than raising: a partially
+    decoded asset should render approximately, not not at all.
     """
     count = len(vertices) // 3
-    use_supplied = normals is not None and len(normals) == len(vertices)
+    use_normals = normals is not None and len(normals) == len(vertices)
+    use_uvs = uvs is not None and len(uvs) == count * 2
     packed: list[float] = []
     for i in range(count):
         x, y, z = vertices[i * 3], vertices[i * 3 + 1], vertices[i * 3 + 2]
-        if use_supplied:
+        if use_normals:
             nx, ny, nz = normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]
         else:
             nx, ny, nz = x, y, z
@@ -101,8 +106,25 @@ def _interleave_positions_and_normals(
             nx, ny, nz = 0.0, 0.0, 1.0
         else:
             nx, ny, nz = nx / length, ny / length, nz / length
-        packed.extend((x, y, z, nx, ny, nz))
+        u, v = (uvs[i * 2], uvs[i * 2 + 1]) if use_uvs else (0.0, 0.0)
+        packed.extend((x, y, z, nx, ny, nz, u, v))
     return packed
+
+
+def _has_usable_uvs(decoded: object) -> bool:
+    """True when a mesh authored its own TexCoord0 and it matches the vertices.
+
+    ``DecodedSLMesh.uvs`` is zero-filled for submeshes that omit TexCoord0, so
+    the length check alone would accept a mesh with no real UVs and sample the
+    whole thing at one texel. ``has_authored_uvs`` is what distinguishes them.
+    """
+    if not getattr(decoded, "has_authored_uvs", False):
+        return False
+    uvs = getattr(decoded, "uvs", None)
+    vertices = getattr(decoded, "vertices", None)
+    if not uvs or not vertices:
+        return False
+    return len(uvs) == (len(vertices) // 3) * 2
 
 
 def _mesh_asset_shape_key(mesh_id: UUID) -> str:
@@ -127,6 +149,7 @@ uniform float u_ambient_light;
 uniform float u_diffuse_light;
 in vec3 in_pos;
 in vec3 in_normal;
+in vec2 in_mesh_uv;
 in mat4 in_model;
 in vec3 in_tint;
 
@@ -134,6 +157,7 @@ out vec3 v_tint;
 out float v_light;
 out vec3 v_local_pos;
 out vec3 v_local_normal;
+out vec2 v_mesh_uv;
 
 void main() {
     // in_normal is authored per mesh. Primitive shapes bake the old
@@ -147,6 +171,7 @@ void main() {
     v_tint = in_tint;
     v_local_pos = in_pos;
     v_local_normal = local_normal;
+    v_mesh_uv = in_mesh_uv;
     gl_Position = u_proj * u_view * in_model * vec4(in_pos, 1.0);
 }
 """
@@ -155,12 +180,14 @@ _FRAGMENT_SHADER = """
 #version 330
 
 uniform bool u_use_texture;
+uniform bool u_use_mesh_uv;
 uniform sampler2D u_texture;
 
 in vec3 v_tint;
 in float v_light;
 in vec3 v_local_pos;
 in vec3 v_local_normal;
+in vec2 v_mesh_uv;
 out vec4 frag_color;
 
 vec2 generated_uv(vec3 pos, vec3 normal) {
@@ -179,7 +206,12 @@ vec2 generated_uv(vec3 pos, vec3 normal) {
 void main() {
     vec3 base_color = v_tint;
     if (u_use_texture) {
-        base_color = texture(u_texture, generated_uv(v_local_pos, v_local_normal)).rgb;
+        // Authored TexCoord0 when the asset carried one; otherwise the
+        // position/normal-derived approximation used for primitives.
+        vec2 uv = u_use_mesh_uv
+            ? v_mesh_uv
+            : generated_uv(v_local_pos, v_local_normal);
+        base_color = texture(u_texture, uv).rgb;
     }
     frag_color = vec4(base_color * v_light, 1.0);
 }
@@ -571,6 +603,9 @@ class PerspectiveRenderer:
         # Per-material-group index buffers for decoded mesh assets, keyed by
         # shape key then prim face index. They share the parent mesh's VBO.
         self._mesh_face_meshes: dict[str, dict[int, _ShapeMesh]] = {}
+        # Shape keys whose buffers carry authored TexCoord0 data. Everything
+        # else falls back to position-generated coordinates in the shader.
+        self._mesh_uv_shape_keys: set[str] = set()
         self._mesh_asset_paths: dict[UUID, Path] = {}
         self._sculpt_asset_paths: dict[tuple[UUID, int | None], Path] = {}
         self._instance_capacity = 0
@@ -698,8 +733,12 @@ class PerspectiveRenderer:
                 if "u_texture" in self._program:
                     self._program["u_texture"].value = 0
                 if cube_entities:
+                    self._program["u_use_mesh_uv"].value = False
                     self._render_cube_faces(ctx, scene, cube_entities)
                 for (shape_key, texture_id), entities in groups.items():
+                    self._program["u_use_mesh_uv"].value = (
+                        shape_key in self._mesh_uv_shape_keys
+                    )
                     if shape_key in self._mesh_face_meshes:
                         self._render_mesh_faces(ctx, scene, shape_key, entities)
                         continue
@@ -847,6 +886,7 @@ class PerspectiveRenderer:
         self._cube_face_meshes.clear()
         for shape_key in list(self._mesh_face_meshes):
             self._release_mesh_face_meshes(shape_key)
+        self._mesh_uv_shape_keys.clear()
         for texture in self._object_textures.values():
             texture.release()
         self._object_textures.clear()
@@ -879,6 +919,7 @@ class PerspectiveRenderer:
         self._program = None
         self._cube_face_meshes = {}
         self._mesh_face_meshes = {}
+        self._mesh_uv_shape_keys = set()
         self._instance_capacity = 0
         self._ground_vao = None
         self._ground_ibo = None
@@ -931,13 +972,13 @@ class PerspectiveRenderer:
         }
         for shape_key, author in shape_authors.items():
             verts, indices = author()
-            packed = _interleave_positions_and_normals(verts)
+            packed = _interleave_vertex_attributes(verts)
             vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f 3f", "in_pos", "in_normal"),
+                    (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -949,13 +990,13 @@ class PerspectiveRenderer:
         cube_vertices, cube_indices = meshes.cube_mesh()
         for face_index in range(6):
             face_indices = cube_indices[face_index * 6 : (face_index + 1) * 6]
-            packed_cube = _interleave_positions_and_normals(cube_vertices)
+            packed_cube = _interleave_vertex_attributes(cube_vertices)
             vbo = ctx.buffer(struct.pack(f"{len(packed_cube)}f", *packed_cube))
             ibo = ctx.buffer(struct.pack(f"{len(face_indices)}I", *face_indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f 3f", "in_pos", "in_normal"),
+                    (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -1059,6 +1100,7 @@ class PerspectiveRenderer:
                 mesh.ibo.release()
                 mesh.vbo.release()
             self._release_mesh_face_meshes(shape_key)
+            self._mesh_uv_shape_keys.discard(shape_key)
             try:
                 decoded = decode_sl_mesh_asset(path.read_bytes())
             except (OSError, SLMeshDecodeError):
@@ -1067,15 +1109,15 @@ class PerspectiveRenderer:
                 continue
             assert self._program is not None
             assert self._instance_vbo is not None
-            packed = _interleave_positions_and_normals(
-                decoded.vertices, decoded.normals
+            packed = _interleave_vertex_attributes(
+                decoded.vertices, decoded.normals, decoded.uvs
             )
             vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(decoded.indices)}I", *decoded.indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f 3f", "in_pos", "in_normal"),
+                    (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -1085,6 +1127,10 @@ class PerspectiveRenderer:
                 vbo=vbo, ibo=ibo, vao=vao, index_count=len(decoded.indices)
             )
             self._build_mesh_face_meshes(ctx, shape_key, vbo, decoded)
+            if _has_usable_uvs(decoded):
+                self._mesh_uv_shape_keys.add(shape_key)
+            else:
+                self._mesh_uv_shape_keys.discard(shape_key)
             self._mesh_asset_paths[mesh_id] = path
 
     def _upload_scene_sculpt_assets(self, ctx: moderngl.Context, scene: Scene) -> None:
@@ -1110,13 +1156,13 @@ class PerspectiveRenderer:
                 continue
             assert self._program is not None
             assert self._instance_vbo is not None
-            packed = _interleave_positions_and_normals(vertices)
+            packed = _interleave_vertex_attributes(vertices)
             vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f 3f", "in_pos", "in_normal"),
+                    (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -1181,7 +1227,7 @@ class PerspectiveRenderer:
             vao = ctx.vertex_array(
                 self._program,
                 [
-                    (vbo, "3f 3f", "in_pos", "in_normal"),
+                    (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=ibo,
@@ -1586,7 +1632,7 @@ class PerspectiveRenderer:
             mesh.vao = ctx.vertex_array(
                 self._program,
                 [
-                    (mesh.vbo, "3f 3f", "in_pos", "in_normal"),
+                    (mesh.vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=mesh.ibo,
@@ -1598,7 +1644,7 @@ class PerspectiveRenderer:
             mesh.vao = ctx.vertex_array(
                 self._program,
                 [
-                    (mesh.vbo, "3f 3f", "in_pos", "in_normal"),
+                    (mesh.vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                     (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                 ],
                 index_buffer=mesh.ibo,
@@ -1611,7 +1657,7 @@ class PerspectiveRenderer:
                 mesh.vao = ctx.vertex_array(
                     self._program,
                     [
-                        (mesh.vbo, "3f 3f", "in_pos", "in_normal"),
+                        (mesh.vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
                         (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
                     ],
                     index_buffer=mesh.ibo,
