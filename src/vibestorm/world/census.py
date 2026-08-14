@@ -43,6 +43,9 @@ class WorldCensus:
     feature_local_ids: dict[str, list[int]] = field(default_factory=dict)
     permissions: Counter[tuple[str, str]] = field(default_factory=Counter)
     unknown_permission_bits: Counter[str] = field(default_factory=Counter)
+    # (path_curve, profile_curve) pairs classify_prim_shape did not recognise.
+    # "unclassified" on its own is not actionable; the curves are.
+    unclassified_curves: Counter[tuple[int, int]] = field(default_factory=Counter)
 
     def missing_features(self, expected: tuple[str, ...]) -> tuple[str, ...]:
         """Features with no example in this region.
@@ -128,7 +131,13 @@ def census_world(world_view: object) -> WorldCensus:
             census.avatar_count += 1
         else:
             census.object_count += 1
-            census.shapes[_shape_name(world_object)] += 1
+            shape = _shape_name(world_object)
+            census.shapes[shape] += 1
+            if shape == "unclassified":
+                shape_data = getattr(world_object, "shape", None)
+                census.unclassified_curves[
+                    (shape_data.path_curve, shape_data.profile_curve)
+                ] += 1
 
         properties = getattr(world_object, "properties_family", None)
         name = getattr(properties, "name", None) if properties is not None else None
@@ -167,6 +176,12 @@ def format_census(census: WorldCensus, *, examples: int = 3) -> list[str]:
 
     for shape, count in sorted(census.shapes.items(), key=lambda item: (-item[1], item[0])):
         lines.append(f"census shape[{shape}]={count}")
+
+    for (path_curve, profile_curve), count in sorted(census.unclassified_curves.items()):
+        lines.append(
+            f"census unclassified[path={path_curve:#04x} "
+            f"profile={profile_curve:#04x}]={count}"
+        )
 
     for feature in TRACKED_FEATURES:
         count = census.features.get(feature, 0)

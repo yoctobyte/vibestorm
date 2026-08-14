@@ -122,7 +122,13 @@ def classify_prim_shape(path_curve: int, profile_curve: int) -> PrimShape | None
     fallback box.
     """
     profile = profile_curve & 0x07
-    if path_curve == PATH_CURVE_LINE:
+    # A flexible prim is a straight extrusion that bends at runtime, so its
+    # cross-section is classified exactly like a linear one; the flexi
+    # ExtraParams block carries the bending. OpenSim's Extrusion enum
+    # (PrimitiveBaseShape.cs) is Straight=0x10, Curve1=0x20, Curve2=0x30,
+    # Flexible=0x80 -- 0x80 is a path mode, not a shape of its own, and
+    # leaving it out sent every flexi prim to the unclassified fallback.
+    if path_curve in (PATH_CURVE_LINE, PATH_CURVE_FLEXIBLE):
         if profile == PROFILE_CURVE_SQUARE:
             return "cube"
         if profile == PROFILE_CURVE_CIRCLE:

@@ -703,6 +703,35 @@ class ClassifyPrimShapeTests(unittest.TestCase):
             classify_prim_shape(PATH_CURVE_CIRCLE, PROFILE_CURVE_CIRCLE), "torus"
         )
 
+    def test_flexible_path_classifies_by_its_profile(self) -> None:
+        # OpenSim's Extrusion enum (PrimitiveBaseShape.cs) is Straight=0x10,
+        # Curve1=0x20, Curve2=0x30, Flexible=0x80. Flexible is a path mode, not
+        # a shape: a flexi prim is a straight extrusion that bends at runtime,
+        # so its profile still decides the cross-section. Omitting 0x80 sent
+        # every flexi prim to the unclassified fallback — seen live as
+        # `census unclassified[path=0x80 profile=0x01]=1`.
+        from vibestorm.viewer3d.scene import PATH_CURVE_FLEXIBLE
+
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_FLEXIBLE, PROFILE_CURVE_SQUARE), "cube"
+        )
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_FLEXIBLE, PROFILE_CURVE_CIRCLE), "cylinder"
+        )
+        self.assertEqual(
+            classify_prim_shape(PATH_CURVE_FLEXIBLE, PROFILE_CURVE_EQUIL_TRIANGLE),
+            "prism",
+        )
+
+    def test_flexible_path_does_not_become_a_torus(self) -> None:
+        # Guards the obvious wrong fix: 0x80 must join the *linear* branch,
+        # not the circular one.
+        from vibestorm.viewer3d.scene import PATH_CURVE_FLEXIBLE
+
+        self.assertNotEqual(
+            classify_prim_shape(PATH_CURVE_FLEXIBLE, PROFILE_CURVE_CIRCLE), "torus"
+        )
+
     def test_unknown_combo_returns_none(self) -> None:
         self.assertIsNone(classify_prim_shape(0xFF, 0xFF))
 
