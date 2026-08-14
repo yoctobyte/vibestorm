@@ -1946,6 +1946,49 @@ Nothing in the test region emits any of them, so unit tests are the only
 coverage until a sound emitter or animated object is rezzed — and `./run.sh
 census` reports `attached sound` in its `absent=` list, so that stays visible.
 
+## 2026-08-14 — every primitive had the wrong normals
+
+Noticed by looking at a live render rather than a test: the avatar drew as a
+smooth vertical plank instead of a figure. Its scale was correct (0.45 x 0.6 x
+1.9 m, a real SL avatar bounding box), so the problem was shading.
+
+`_interleave_vertex_attributes` falls back to `normalize(position)` when a mesh
+supplies no normals — and **no built-in primitive supplied any**. That fallback
+is exact for a sphere centred on the origin and wrong for everything else:
+
+- a torus/tube/ring vertex on the inner wall of the hole got a normal pointing
+  outward from the *world origin*, so the hole lit up backwards
+- cylinder cap vertices shared a normal with the round side
+- box corners got radial diagonals instead of flat face normals
+- and the avatar placeholder's seven boxes sit *away* from the origin, so every
+  part shaded into one gradient — the plank
+
+Fixes, all in `meshes.py` behind `shape_normals()`:
+
+- boxes and the prism are emitted **flat shaded**: a vertex per face corner
+  rather than shared corners, because a shared corner can carry only one normal
+- the cylinder splits its cap rings from its side rings for the same reason
+- swept surfaces get analytic normals pointing away from the **centre of the
+  tube** (the nearest point on the ring circle), not away from the origin
+
+Index emission order is unchanged throughout, so the SL face maps still slice
+correctly. A pleasant side effect: the flat cube normals now *independently*
+confirm the face mapping derived earlier from OpenSim's profile-then-caps rule —
+face 0 comes out (1,0,0), face 1 (0,1,0), face 2 (-1,0,0), face 3 (0,-1,0),
+face 4 (0,0,1), face 5 (0,0,-1).
+
+### The test lesson
+
+Mesh-level tests proved `shape_normals()` was right. They did **not** prove the
+renderer used it: deleting the pass-through left every one of them green. Two
+GL tests now cover that, one per upload site — `_prim_face_meshes` (a cube face)
+and `_shape_meshes` (the avatar's torso face) — each asserting the face shades
+uniformly rather than as a gradient. Both were mutation-checked.
+
+Worth remembering that the first mutation check *appeared* to pass because it
+patched the wrong upload site. There are two, and a cube goes through the
+per-face one; only sphere/torus/tube/ring/avatar go through the other.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

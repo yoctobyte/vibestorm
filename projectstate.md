@@ -204,6 +204,9 @@ Main gaps:
   both update paths and reach the inspector; hover text also renders as a 3D
   billboard. The particle system blocks are still stepped over
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
+- every built-in primitive authors real normals (flat faces for boxes and the
+  prism, split cap/side rings for the cylinder, analytic tube-centre normals for
+  swept surfaces) instead of falling back to normalize(position)
 - tube and ring have purpose-built swept meshes rather than aliasing to cube
   and torus; flexible prims (path curve 0x80) classify by their profile instead
   of falling through to the unclassified fallback
