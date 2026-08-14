@@ -77,9 +77,25 @@ status reflects the **weakest** one and the note says which is which.
 | `ObjectPropertiesFamily` | object name/owner metadata | P1 | verified | drives inspector names; the highest-count inbound message in a populated region |
 | `ObjectExtraParams` | rich per-prim feature blocks | P2 | tested | seven sub-decoders; only **sculpt and flexi** are live-confirmed (2026-08-14). Light, projector, reflection probe, render materials and mesh flags have never seen live data — `./run.sh census` lists all five under `absent=`, so they are unit-tested only |
 | `AvatarAppearance` | avatar appearance metadata | P3 | verified | parsed; drives the appearance/bake path |
+| `AgentWearablesUpdate` | the agent's own worn wearables | P3 | verified | parsed into the appearance state and reported as `appearance[wearables]`; observed 2026-08-14 (serial 0, 6 wearables, types 0-5) |
+| `AgentCachedTextureResponse` | which baked textures the sim already holds | P3 | verified | parsed; gates the deferred bake upload. Observed 2026-08-14 — 11 entries, all texture ids zero, i.e. the sim had nothing cached and every bake had to be uploaded |
+| `MapBlockReply` | region map block metadata | P2 | verified | supplies the region map-tile asset id, which the `GetTexture` cap then fetches; observed 2026-08-14 (`map[tile]=cached`) |
 | `LayerData` | terrain patches | P1 | verified | 16x16 Land decode observed live 2026-08-14. The 32x32 LandExtended path is `tested` only — it needs a varregion, and the test sim is a standard 256 m region |
 | `ParcelOverlay` | region parcel ownership grid | P2 | verified | reassembled into a 64x64 grid with border segments; observed 2026-08-14 |
 | `ParcelProperties` | parcel metadata | P2 | verified | **arrives over the event queue, not UDP** — OpenSim has no UDP send path for it, so it never appears in a UDP census. Confirmed live 2026-08-14 |
+
+## Asset Delivery Messages
+
+These are the two UDP asset channels. Both are driven from the object inspector
+rather than from session startup, so a bounded `./run.sh session` never
+exercises them — the evidence below comes from viewer runs.
+
+| Message | Purpose | Priority | Status | Notes |
+| --- | --- | --- | --- | --- |
+| `ReplyTaskInventory` | object inventory listing header | P3 | verified | supplies the task id, serial and xfer filename; live-confirmed against scripted objects |
+| `SendXferPacket` | xfer payload for that listing | P3 | verified | packets confirmed and reassembled, then parsed into `inv_item` blocks |
+| `TransferInfo` | asset transfer handshake | P3 | verified | `TransferRequest` → `TransferInfo` → `TransferPacket*`; source type 2 (global assets) is reliable |
+| `TransferPacket` | asset payload | P3 | verified | 80 KB reassembled across 130+ packets live; status 1 means Done, not an error. Source type 3 (task inventory) is **inconsistent** — OpenSim withholds the asset id when permissions are insufficient, and the client now declines to send a doomed request rather than hang |
 
 ## Transport and Template Work
 
