@@ -84,6 +84,28 @@ status reflects the **weakest** one and the note says which is which.
 | `ParcelOverlay` | region parcel ownership grid | P2 | verified | reassembled into a 64x64 grid with border segments; observed 2026-08-14 |
 | `ParcelProperties` | parcel metadata | P2 | verified | **arrives over the event queue, not UDP** — OpenSim has no UDP send path for it, so it never appears in a UDP census. Confirmed live 2026-08-14 |
 
+## Outbound Requests
+
+Every message the client can build. Most are the request half of a reply
+listed above, and were unlisted for the same reason the teleport request was:
+a message with no parser is invisible to a check that looks for parsers
+without rows. They are now derived from the message-number prefix each encoder
+writes, so this table cannot fall behind the encoders again.
+
+| Message | Purpose | Priority | Status | Notes |
+| --- | --- | --- | --- | --- |
+| `LogoutRequest` | end the session cleanly | P0 | verified | sent at shutdown of every session |
+| `AgentWearablesRequest` | ask what we are wearing | P2 | verified | drives `appearance[wearables]`; answered every session |
+| `AgentCachedTexture` | ask which bakes the sim already has | P2 | verified | answered by `AgentCachedTextureResponse`; observed 2026-08-14 |
+| `AgentIsNowWearing` / `AgentSetAppearance` | publish our appearance | P2 | verified | the bake upload path; `appearance[baked] uploaded:5` observed 2026-08-14 |
+| `ParcelPropertiesRequest` | ask for parcel metadata | P2 | verified | sent on handshake; the reply arrives over the event queue |
+| `RequestObjectPropertiesFamily` | ask for an object's name/owner | P1 | verified | drives inspector names |
+| `RequestMultipleObjects` | ask for full updates on cache misses | P2 | verified | issued from the `ObjectUpdateCached` path |
+| `MapBlockRequest` | ask for region map blocks | P2 | verified | answered by `MapBlockReply`; observed 2026-08-14 |
+| `RequestTaskInventory` / `RequestXfer` / `ConfirmXferPacket` | read an object's inventory | P3 | verified | the xfer handshake behind the object inspector |
+| `TransferRequest` | ask for an asset | P3 | verified | source type 2 reliable; source type 3 inconsistent — see the asset-delivery table |
+| `ObjectAdd` | rez a prim | P4 | handled | built and sent behind the off-by-default `spawn_test_cube` session flag; no confirmed live rez, and confirming one writes an object into someone's region |
+
 ## Teleport Messages
 
 The client could already *send* `TeleportLocationRequest` and decoded none of
