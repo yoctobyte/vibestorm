@@ -1053,5 +1053,87 @@ class GroupEntitiesByShapeTests(unittest.TestCase):
         )
 
 
+class ParcelBorderGLTests(_GLTestBase):
+    """Parcel property lines must actually rasterize, not just build a VAO."""
+
+    def _scene_with_borders(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene(region_handle=0xAA)
+        scene.render_objects = False
+        scene.render_water = False
+        scene.render_terrain = False
+        # The region perimeter, the shape a single region-wide parcel
+        # produces live: 64 west edges plus 64 south edges.
+        segments = []
+        for i in range(64):
+            segments.append((0.0, i * 4.0, 0.0, i * 4.0 + 4.0))
+            segments.append((i * 4.0, 0.0, i * 4.0 + 4.0, 0.0))
+        scene.parcel_borders = tuple(segments)
+        return scene
+
+    def _camera(self):
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D()
+        camera.screen_size = self.FBO_SIZE
+        camera.set_mode("free")
+        camera.eye_position = (128.0, -180.0, 260.0)
+        camera.target = (128.0, 128.0, 0.0)
+        return camera
+
+    def _frame(self, renderer, scene) -> bytes:
+        self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+        renderer.render_gl(scene, aspect=1.0)
+        return self.fbo.read(components=3)
+
+    def test_parcel_borders_rasterize_in_border_color(self) -> None:
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        renderer = PerspectiveRenderer(self._camera(), ctx=self.ctx)
+        try:
+            scene = self._scene_with_borders()
+
+            scene.render_parcel_borders = False
+            without = self._frame(renderer, scene)
+
+            scene.render_parcel_borders = True
+            with_borders = self._frame(renderer, scene)
+
+            self.assertEqual(renderer._parcel_border_vertex_count, 256)
+            changed = [
+                tuple(with_borders[i : i + 3])
+                for i in range(0, len(with_borders), 3)
+                if with_borders[i : i + 3] != without[i : i + 3]
+            ]
+            self.assertTrue(changed, "parcel borders drew nothing")
+            # PARCEL_BORDER_RGBA is green-dominant.
+            brightest = max(changed, key=sum)
+            self.assertGreater(brightest[1], brightest[0])
+            self.assertGreater(brightest[1], brightest[2])
+        finally:
+            renderer.clear_caches()
+
+    def test_parcel_border_vao_rebuilds_when_segments_change(self) -> None:
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        renderer = PerspectiveRenderer(self._camera(), ctx=self.ctx)
+        try:
+            scene = self._scene_with_borders()
+            self._frame(renderer, scene)
+            self.assertEqual(renderer._parcel_border_vertex_count, 256)
+
+            scene.parcel_borders = ((0.0, 0.0, 0.0, 4.0),)
+            self._frame(renderer, scene)
+            self.assertEqual(renderer._parcel_border_vertex_count, 2)
+
+            scene.parcel_borders = ()
+            self._frame(renderer, scene)
+            self.assertEqual(renderer._parcel_border_vertex_count, 0)
+            self.assertIsNone(renderer._parcel_border_vao)
+        finally:
+            renderer.clear_caches()
+
+
 if __name__ == "__main__":
     unittest.main()

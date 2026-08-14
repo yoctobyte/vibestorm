@@ -278,6 +278,9 @@ WATER_TINT_RGB: tuple[float, float, float] = (0.18, 0.36, 0.55)
 WATER_NOISE_STRENGTH: float = 0.08
 TERRAIN_FILL_RGBA: tuple[float, float, float, float] = (0.28, 0.58, 0.22, 1.0)
 TERRAIN_LINE_RGBA: tuple[float, float, float, float] = (0.05, 1.0, 0.20, 0.85)
+PARCEL_BORDER_RGBA: tuple[float, float, float, float] = (0.45, 0.85, 0.55, 0.9)
+# Lift borders slightly off the terrain so they are not z-fought by the ground.
+PARCEL_BORDER_HEIGHT_OFFSET_M: float = 0.35
 GROUND_FALLBACK_RGBA: bytes = bytes((80, 120, 70, 255))
 
 _WATER_VERTEX_SHADER = """
@@ -551,6 +554,10 @@ class PerspectiveRenderer:
         self._terrain_fill_vao = None  # type: moderngl.VertexArray | None
         self._terrain_vao = None  # type: moderngl.VertexArray | None
         self._terrain_line_program = None  # type: moderngl.Program | None
+        self._parcel_border_vbo = None  # type: moderngl.Buffer | None
+        self._parcel_border_vao = None  # type: moderngl.VertexArray | None
+        self._parcel_border_vertex_count = 0
+        self._parcel_border_key: tuple[int, int] | None = None
         self._terrain_line_ibo = None  # type: moderngl.Buffer | None
         self._terrain_line_vao = None  # type: moderngl.VertexArray | None
         self._terrain_line_index_count: int = 0
@@ -641,6 +648,10 @@ class PerspectiveRenderer:
                 self._ground_texture.use(location=0)
                 assert self._ground_vao is not None
                 self._ground_vao.render()
+
+            if scene.render_parcel_borders:
+                self._upload_parcel_borders(ctx, scene)
+                self._render_parcel_borders(ctx, view_data, proj_data)
 
             if scene.render_objects and (groups or cube_entities):
                 self._program["u_view"].write(view_data)
@@ -799,6 +810,7 @@ class PerspectiveRenderer:
             texture.release()
         self._object_textures.clear()
         self._object_texture_paths.clear()
+        self._release_parcel_borders()
         for resource in (
             self._instance_vbo,
             self._program,
@@ -1321,6 +1333,86 @@ class PerspectiveRenderer:
         self._terrain_fill_program["u_ambient_light"].value = AMBIENT_LIGHT
         self._terrain_fill_program["u_diffuse_light"].value = DIFFUSE_LIGHT
         self._terrain_fill_vao.render()
+
+    def _upload_parcel_borders(self, ctx: moderngl.Context, scene: Scene) -> None:
+        """Build the parcel property-line VAO from ``scene.parcel_borders``.
+
+        Segments are ``(x0, y0, x1, y1)`` in region meters. Each endpoint is
+        lifted onto the terrain (or to the flat ground plane when no heightmap
+        has arrived) plus a small offset, so lines follow the land instead of
+        cutting through it. Rebuilt only when the segments or the terrain
+        revision change.
+        """
+        if self._terrain_line_program is None:
+            return
+        segments = scene.parcel_borders
+        heightmap = scene.terrain_heightmap
+        revision = heightmap.revision if heightmap is not None else -1
+        key = (len(segments), revision)
+        if key == self._parcel_border_key and self._parcel_border_vao is not None:
+            return
+        self._release_parcel_borders()
+        self._parcel_border_key = key
+        if not segments:
+            return
+
+        z_scale = scene.terrain_z_scale
+
+        def _height_at(x: float, y: float) -> float:
+            if heightmap is None:
+                return 0.0
+            ix = min(max(int(x), 0), heightmap.width - 1)
+            iy = min(max(int(y), 0), heightmap.height - 1)
+            return heightmap.samples[iy * heightmap.width + ix] * z_scale
+
+        vertices: list[float] = []
+        for x0, y0, x1, y1 in segments:
+            vertices.extend(
+                (
+                    float(x0),
+                    float(y0),
+                    _height_at(x0, y0) + PARCEL_BORDER_HEIGHT_OFFSET_M,
+                    float(x1),
+                    float(y1),
+                    _height_at(x1, y1) + PARCEL_BORDER_HEIGHT_OFFSET_M,
+                )
+            )
+        self._parcel_border_vbo = ctx.buffer(
+            struct.pack(f"{len(vertices)}f", *vertices)
+        )
+        self._parcel_border_vao = ctx.vertex_array(
+            self._terrain_line_program,
+            [(self._parcel_border_vbo, "3f", "in_pos")],
+        )
+        self._parcel_border_vertex_count = len(vertices) // 3
+
+    def _release_parcel_borders(self) -> None:
+        for resource in (self._parcel_border_vao, self._parcel_border_vbo):
+            if resource is not None:
+                resource.release()
+        self._parcel_border_vao = None
+        self._parcel_border_vbo = None
+        self._parcel_border_vertex_count = 0
+        self._parcel_border_key = None
+
+    def _render_parcel_borders(
+        self, ctx: moderngl.Context, view_data: bytes, proj_data: bytes
+    ) -> None:
+        if (
+            self._terrain_line_program is None
+            or self._parcel_border_vao is None
+            or self._parcel_border_vertex_count <= 0
+        ):
+            return
+        self._terrain_line_program["u_view"].write(view_data)
+        self._terrain_line_program["u_proj"].write(proj_data)
+        self._terrain_line_program["u_color"].value = PARCEL_BORDER_RGBA
+        ctx.enable(ctx.BLEND)
+        ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
+        try:
+            self._parcel_border_vao.render(mode=ctx.LINES)
+        finally:
+            ctx.disable(ctx.BLEND)
 
     def _render_terrain_lines(
         self, ctx: moderngl.Context, view_data: bytes, proj_data: bytes
