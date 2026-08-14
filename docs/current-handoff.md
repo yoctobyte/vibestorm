@@ -2651,6 +2651,54 @@ write surface.
 sent me on investigations this session that ended in no code. Worth re-reading
 the list against reality now and then, which is what this was.
 
+## 2026-08-14 — inventory asset types, and live data that proves the distinction
+
+`./run.sh inventory-walk` now names item types and reports which *gap-closing*
+types the account lacks — the account-side counterpart of the census
+`absent=` line.
+
+Values are the `INVENTORY_*` LSL constants, and the care went into deciding
+**which field they name**. The wire carries both `type` (asset type) and
+`inv_type` (inventory type). These constants are the asset numbering, pinned
+by `llGetInventoryType` returning `item.Type`. libomv's `InventoryType` table
+is not in `opensim-source/`, so `inv_type` is deliberately left unnamed.
+
+The live walk settles it beyond the source reading:
+
+    type=5   inv_type=18   'Default Shirt'
+    type=13  inv_type=18   'Default Eyes'
+    type=24  inv_type=18   (Current Outfit links)
+
+`Default Shirt` is asset type 5 (clothing) but inventory type 18 (wearable).
+Naming `inv_type` with this table would have been wrong on nearly every item
+in a real account, and the two enums diverge worst where it is least visible —
+an animation is asset 20 / inventory 19, a gesture 21 / 20.
+
+Type 24 (link) and type 2 (calling card) appear live and are correctly
+reported as `unknown type N`: real asset types that LSL does not expose. Not
+guessing them is the point.
+
+### What the account actually holds
+
+    inventory type[body part]=12  type[unknown type 24]=6  type[clothing]=4
+    inventory absent=object, sound, animation, gesture
+
+So the standing region-content gaps **cannot be closed from this account's
+existing inventory** — there is nothing to rez or play. That is a concrete
+answer to a question that had been open all session.
+
+### An unrelated finding worth someone's attention
+
+The notecard left by `upload-empty-text-smoke` reads back as
+`type=0 inv_type=0` — asset type 0 is *texture*; a notecard should be 7 for
+both. `NewFileAgentInventory` is sent the correct `"notecard"` strings, and
+every other item in the account parses its type correctly, so this is not a
+decode problem on our side.
+
+Deliberately not "fixed": diagnosing it means uploading again, which writes to
+the user's inventory, and changing what we send without being able to verify
+the result would be guessing. Flagged for whoever picks up the upload path.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

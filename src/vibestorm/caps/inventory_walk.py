@@ -32,6 +32,7 @@ from vibestorm.caps.inventory_client import (
     InventoryFolderRequest,
     parse_inventory_descendents_payload,
 )
+from vibestorm.caps.inventory_types import count_asset_types, missing_gap_closing_types
 
 #: Folders fetched per request. OpenSim answers a batched request happily, but
 #: an unbounded list makes one failure lose the whole level.
@@ -191,6 +192,18 @@ def format_walk(snapshot: InventoryFetchSnapshot, state: WalkState) -> list[str]
         f"inventory totals=folders:{snapshot.folder_count} "
         f"items:{snapshot.total_item_count}"
     )
+
+    all_items = [item for folder in snapshot.folders for item in folder.items]
+    for name, count in sorted(
+        count_asset_types(all_items).items(), key=lambda i: (-i[1], i[0])
+    ):
+        lines.append(f"inventory type[{name}]={count}")
+    # The account-side counterpart of the census `absent=` line: these are the
+    # things that, if present, could turn an unverified decoder into a verified
+    # one by being rezzed, worn or played.
+    absent = missing_gap_closing_types(all_items)
+    if absent:
+        lines.append(f"inventory absent={', '.join(absent)}")
     if state.skipped_depth:
         lines.append(f"inventory skipped[depth>{DEFAULT_MAX_DEPTH}]={len(state.skipped_depth)}")
     if state.skipped_budget:
