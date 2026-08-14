@@ -40,6 +40,7 @@ from vibestorm.udp.world_client import WorldClient
 from vibestorm.udp.zerocode import decode_zerocode
 from vibestorm.world.census import census_world, format_census
 from vibestorm.world.models import WorldView
+from vibestorm.world.sim_stats import summarize_sim_stats
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -238,11 +239,21 @@ def format_world_status(world_view: WorldView) -> list[str]:
             f"grid=({world_view.region.grid_x},{world_view.region.grid_y})",
         )
     if world_view.latest_sim_stats is not None:
+        stats = world_view.latest_sim_stats
         lines.append(
             f"world[sim_stats]=updates:{world_view.sim_stats_updates} "
-            f"capacity:{world_view.latest_sim_stats.object_capacity} "
-            f"stats:{world_view.latest_sim_stats.stats_count}",
+            f"capacity:{stats.object_capacity} "
+            f"stats:{stats.stats_count}",
         )
+        summary = summarize_sim_stats(stats.stats)
+        if summary:
+            lines.append(f"world[sim_health]={summary}")
+        # An id the table does not name means the sim reports something this
+        # client has no source for; say so rather than silently skipping it.
+        unknown = stats.unknown_stats()
+        if unknown:
+            shown = ", ".join(str(entry.stat_id) for entry in unknown)
+            lines.append(f"world[sim_stats_unknown]={shown}")
     if world_view.latest_time is not None:
         lines.append(
             f"world[time]=updates:{world_view.time_updates} "

@@ -2050,6 +2050,57 @@ value.
 
 `texture animation` joins the census `absent=` list — the test region has none.
 
+## 2026-08-14 — SimStats: two enums, and why the live check mattered twice
+
+Every session receives 41 region-health numbers — frame rate, physics time,
+prim and script counts — decoded correctly into `(stat_id, value)` pairs and
+then discarded: `SimStatSnapshot` kept only `len(message.stats)`. The snapshot
+now stores named stats, and `format_world_status` prints a `world[sim_health]`
+line.
+
+Names come from `src/vibestorm/world/sim_stats.py`, transcribed from
+`opensim-source/OpenSim/Framework/SimStats.cs`.
+
+### Two enums, only one of which is on the wire
+
+`SimStats.cs` defines **both** `StatsIndex` and `StatsID`, and they are easy to
+confuse:
+
+- `StatsIndex` numbers the slots of the sim's internal `float[]`.
+- `StatsID` is the wire id. `LLClientView.SendSimStats` writes
+  `SimStats.StatsIndexID[i]`, an array mapping slot → wire id.
+
+The first version of the table was keyed on `StatsIndex`. The two enums are
+**identical for ids 0-3** and diverge from 4 onward, so the mistake survives a
+casual read: `StatsIndex` 4 is `Agents`, wire id 4 is `FrameMS`. The result is
+not a crash or a missing value — it is a full status line of plausible numbers
+under the wrong labels. `test_table_is_not_keyed_on_the_internal_array_index`
+asserts the divergence point directly rather than trusting the 0-3 overlap.
+
+Two further details worth keeping: the extension stats sit at **1000+**, not
+packed just past the viewer range, and `UnAckedBytes` (24) is divided by 1024
+by the writer — it is the only rescaled stat, hence the name `unacked kb`.
+
+### The live run caught a second, quieter bug
+
+After the table was fixed the status line *still* read
+`sim fps=0 physics fps=0 time dilation=0 agents=0 …`. Every label correct,
+every value zero — which reads exactly like an idle region rather than a bug.
+
+`summarize_sim_stats` was re-naming stats that had already been named. It used
+`getattr(entry, "stat_value", 0.0)`, and `NamedSimStat` carries `.value`, not
+`.stat_value` — so the default silently supplied 0.0 for all 41. The defaults
+are gone; the namer now takes raw entries only and raises on anything else, and
+a test pins that feeding named stats back through it raises rather than
+returning zeros.
+
+Both bugs produced output that looked entirely reasonable. Neither would have
+been caught by the unit tests alone — only by comparing against a running sim.
+The confirmed live read: time dilation 1.0, sim fps 55.1, agents 1, total prims
+32 (matching the census object count), active scripts 2, frame ms 18.16, ids
+arriving out of numeric order exactly as `StatsIndexID` predicts. All 41 ids
+resolved — no `world[sim_stats_unknown]` line.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`

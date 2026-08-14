@@ -18,6 +18,7 @@ from vibestorm.udp.messages import (
     SimStatsMessage,
     SimulatorViewerTimeMessage,
 )
+from vibestorm.world.sim_stats import NamedSimStat, name_sim_stats
 from vibestorm.world.texture_anim import TextureAnimation
 from vibestorm.world.texture_entry import TextureEntry, parse_texture_entry
 
@@ -37,6 +38,21 @@ class SimStatSnapshot:
     object_capacity: int
     stats_count: int
     pid: int
+    #: The named stat values themselves. These were previously decoded and then
+    #: dropped, leaving only the count — every measure of region health the sim
+    #: reports arrived and was discarded one step short of being usable.
+    stats: tuple[NamedSimStat, ...] = ()
+
+    def stat(self, stat_id: int) -> float | None:
+        """The value of one stat by ``StatsIndex`` id, or None if not sent."""
+        for entry in self.stats:
+            if entry.stat_id == stat_id:
+                return entry.value
+        return None
+
+    def unknown_stats(self) -> tuple[NamedSimStat, ...]:
+        """Stats whose id is not in the known table — a protocol-drift signal."""
+        return tuple(entry for entry in self.stats if not entry.is_known)
 
 
 @dataclass(slots=True, frozen=True)
@@ -197,6 +213,7 @@ class WorldView:
             object_capacity=message.object_capacity,
             stats_count=len(message.stats),
             pid=message.pid,
+            stats=name_sim_stats(message.stats),
         )
         self.sim_stats_updates += 1
 

@@ -203,6 +203,11 @@ Main gaps:
   Hover text, its colour, the media URL, the attached-sound block and the
   TextureAnim block decode in both update paths and reach the inspector; hover text also renders as a 3D
   billboard. The particle system blocks are still stepped over
+- `SimStats` values are named and surfaced (`world[sim_health]`) instead of
+  being decoded and thrown away as a bare count. Ids come from OpenSim's
+  `StatsID`, which is *not* the `StatsIndex` enum sitting beside it in the same
+  file — the two agree for 0-3 and diverge after, so mis-keying yields correct
+  labels on the wrong numbers. All 41 ids the test region sends resolve
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the
   prism, split cap/side rings for the cylinder, analytic tube-centre normals for
