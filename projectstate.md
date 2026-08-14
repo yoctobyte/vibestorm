@@ -200,6 +200,13 @@ probe, a worn attachment, a prim with two different face textures, a
 non-default material or click action, a working sculpt map, a real mesh asset,
 a 32x32 LandExtended varregion, and a second avatar for typing notifications.
 
+The grid library is a second source of content, and it is not empty: `./run.sh
+inventory-walk --library` reads 19 folders and 123 items on a stock OpenSim —
+64 textures, 17 scripts, 16 gestures, 12 animations, 7 settings, 4 body parts,
+2 clothing, 1 notecard. Real assets of eight types have been fetched from it
+through `ViewerAsset`. It holds no sounds and no objects, so those two remain
+genuinely blocked on someone building something.
+
 Two entries left this list by turning out not to be blocked at all. Chat did
 not need an in-world speaker — the client can say something and read the
 simulator's echo. IM did not need a second avatar — OpenSim routes on

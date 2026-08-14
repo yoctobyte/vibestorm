@@ -118,6 +118,33 @@ class TypeCheckIsNotEnforcedTests(unittest.TestCase):
         )
 
 
+#: Query keys confirmed against a live sim on 2026-08-14 by walking the grid
+#: library and fetching one asset of each type it holds. Each returned the
+#: matching ``application/vnd.ll.*`` content type.
+LIVE_VERIFIED_TYPES = {0, 5, 7, 10, 13, 20, 21, 56}
+
+
+class LiveCoverageTests(unittest.TestCase):
+    """Which keys have actually been exercised, and which have not.
+
+    Eight of twelve. The remaining four are not suspect, they are untried: the
+    OpenSim library ships no sound, landmark, object or material asset, so
+    nothing in reach produces one. Recording that here keeps the gap visible
+    instead of letting "the client supports twelve types" stand unqualified.
+    """
+
+    def test_the_verified_types_are_all_in_the_table(self) -> None:
+        self.assertTrue(LIVE_VERIFIED_TYPES <= set(ASSET_TYPE_QUERY_KEYS))
+
+    def test_the_unverified_types_are_the_ones_the_library_lacks(self) -> None:
+        unverified = set(ASSET_TYPE_QUERY_KEYS) - LIVE_VERIFIED_TYPES
+
+        self.assertEqual(
+            {ASSET_TYPE_QUERY_KEYS[t] for t in unverified},
+            {"sound_id", "landmark_id", "object_id", "material_id"},
+        )
+
+
 class QueryKeyTests(unittest.TestCase):
     def test_known_types(self) -> None:
         self.assertEqual(asset_type_query_key(7), "notecard_id")

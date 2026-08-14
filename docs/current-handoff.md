@@ -187,6 +187,32 @@ libomv's enum and only the DLL ships in `opensim-source/`. `mesh_id` and the
 five TGA/WAV/JPEG keys are absent for that reason alone — an unmappable type
 stays on UDP rather than being routed to a guaranteed 404.
 
+### The grid library, and what "planned" was hiding
+
+Every capability this document called `planned` was asked for once against the
+test sim, to separate "the sim cannot" from "we never asked". **Thirteen of
+fifteen resolved.** Only `RegionObjects` and `AgentState` did not. `planned`
+had mostly meant the second thing, and the two need completely different work.
+
+The useful one is `FetchLibDescendents2`. OpenSim ships a read-only library
+that a stock install populates, and `./run.sh inventory-walk --library` now
+reads it: 19 folders, 123 items — 64 textures, 17 scripts, 16 gestures, 12
+animations, 7 settings, 4 body parts, 2 clothing, 1 notecard.
+
+That is a second content source for a client whose gap list is mostly "the
+region has none of these". One asset of each of the eight types was fetched
+through `ViewerAsset`, every one returning the matching
+`application/vnd.ll.*` content type — so eight of the twelve query keys are
+live-verified rather than merely sourced. The remaining four (`sound_id`,
+`landmark_id`, `object_id`, `material_id`) are untried, not suspect: the
+library has none. `test_viewer_asset_client.LiveCoverageTests` records which
+is which so "supports twelve types" never stands unqualified.
+
+One trap: the owner id must be the **library** owner
+(`11111111-1111-0000-0000-000100bba000`), not our agent id.
+`FetchLibDescHandler` compares it and answers a mismatch with an empty tree
+rather than an error, so the obvious guess looks like an empty library.
+
 ### A testing note worth keeping
 
 Mutation-checking with `cp` to restore a file can lie. A restored file the same

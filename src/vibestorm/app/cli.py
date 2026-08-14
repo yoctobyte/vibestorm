@@ -23,6 +23,7 @@ from vibestorm.caps.inventory_client import (
     InventoryItemRequest,
     parse_inventory_items_payload,
 )
+from vibestorm.caps.library import LIBRARY_OWNER_ID, LIBRARY_ROOT_FOLDER_ID
 from vibestorm.caps.inventory_walk import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_MAX_DEPTH,
@@ -249,6 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_BATCH_SIZE,
         help="Folders requested per round trip.",
+    )
+    inventory_walk_parser.add_argument(
+        "--library",
+        action="store_true",
+        help=(
+            "Walk the grid library instead of the account's own inventory. "
+            "Read-only, and the library holds real sounds, animations and "
+            "gestures on every OpenSim install."
+        ),
     )
 
     unknowns_parser = subparsers.add_parser(
@@ -870,24 +880,35 @@ def main() -> int:
             platform_version=platform.platform(),
         )
         bootstrap = asyncio.run(LoginClient().login(request))
-        if bootstrap.inventory_root_folder_id is None:
-            print("inventory=login response carried no inventory root folder")
-            return 1
+        if args.library:
+            cap_name = "FetchLibDescendents2"
+            root_folder_id = LIBRARY_ROOT_FOLDER_ID
+            # Not our agent id: FetchLibDescHandler compares owner_id against
+            # the library owner and treats a mismatch as a different tree, so
+            # the obvious guess returns an empty walk rather than an error.
+            owner_id = LIBRARY_OWNER_ID
+        else:
+            cap_name = "FetchInventoryDescendents2"
+            if bootstrap.inventory_root_folder_id is None:
+                print("inventory=login response carried no inventory root folder")
+                return 1
+            root_folder_id = bootstrap.inventory_root_folder_id
+            owner_id = bootstrap.agent_id
 
         async def _walk() -> list[str]:
             resolved = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
                 bootstrap.seed_capability,
-                ["FetchInventoryDescendents2"],
+                [cap_name],
                 user_agent="Vibestorm",
             )
-            url = resolved.get("FetchInventoryDescendents2")
+            url = resolved.get(cap_name)
             if not url:
-                return ["inventory=FetchInventoryDescendents2 capability was not resolved"]
+                return [f"inventory={cap_name} capability was not resolved"]
             snapshot, state = await walk_inventory(
                 InventoryCapabilityClient(timeout_seconds=20.0),
                 url,
-                root_folder_id=bootstrap.inventory_root_folder_id,
-                owner_id=bootstrap.agent_id,
+                root_folder_id=root_folder_id,
+                owner_id=owner_id,
                 batch_size=args.batch_size,
                 max_depth=args.max_depth,
                 max_folders=args.max_folders,

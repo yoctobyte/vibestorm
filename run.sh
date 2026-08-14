@@ -136,6 +136,7 @@ Commands:
   session      Run the bounded live UDP session loop
   census       Report what content the region actually holds (and what it lacks)
   inventory-walk  Recursively list the user's inventory (read-only)
+                  add --library to walk the grid library instead
   upload-smoke Upload a one-space text/notecard item and verify FetchInventory2 sees it
   console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
   viewer       Run the pygame 2D bird's-eye viewer

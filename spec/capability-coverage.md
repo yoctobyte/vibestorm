@@ -29,8 +29,8 @@ This document tracks which simulator capabilities matter for Vibestorm and when 
 | --- | --- | --- | --- | --- |
 | `FetchInventory2` | fetch inventory items | P2 | verified | drives the viewer inventory manager; resolved every session |
 | `FetchInventoryDescendents2` | fetch inventory folders/children | P2 | verified | lazy folder expansion in the inventory window |
-| `FetchLib2` | fetch library items | P3 | planned | not requested in the seed-cap list |
-| `FetchLibDescendents2` | fetch library descendants | P3 | planned | not requested in the seed-cap list |
+| `FetchLib2` | fetch library items | P3 | planned | **offered by the sim** (confirmed 2026-08-14) but not requested. `FetchLibDescendents2` already gives the whole tree with items attached, so this adds nothing until something needs a single library item by id |
+| `FetchLibDescendents2` | fetch library descendants | P3 | verified | `./run.sh inventory-walk --library`. Live-verified 2026-08-14: 19 folders, 123 items — 64 textures, 17 scripts, 16 gestures, 12 animations, 7 settings, 4 body parts, 2 clothing, 1 notecard; no sounds or objects. The owner id must be the library owner, not our agent id: `FetchLibDescHandler` compares it and answers a mismatch with an empty tree rather than an error |
 | `NewFileAgentInventory` | upload/create inventory assets | P4 | verified | `caps/asset_upload_client.py`; `./run.sh upload-smoke` confirmed a live round trip |
 | `UpdateScriptTask` / `UpdateScriptTaskInventory` / `UpdateNotecardTaskInventory` | update object task inventory | P3 | used | `caps/task_inventory_upload_client.py` issues the requests; never confirmed against a running sim, because doing so writes scripts into an in-world object and needs the sim owner's consent. OpenSim registers the script cap under both names — `UpdateScriptTask` and, marked `//legacy` in `BunchOfCaps`, `UpdateScriptTaskInventory` — and the client now asks for both, current name first |
 | `RequestTaskInventory` | inspect task inventory | P3 | verified | UDP message plus xfer assembly, not a capability; listed here for completeness |
@@ -43,22 +43,38 @@ This document tracks which simulator capabilities matter for Vibestorm and when 
 
 | Capability | Purpose | Priority | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `RegionObjects` | object/region data path | P2 | planned | evaluate when object UDP coverage is insufficient |
-| `RenderMaterials` | materials data | P4 | planned | the per-face material *UUIDs* now decode from `ExtraParams` (`0x80`), but the material assets themselves are not fetched |
-| `ObjectMedia` | media metadata | P4 | planned | not early-scope |
-| `ObjectMediaNavigate` | media navigation | P4 | planned | not early-scope |
-| `GetObjectCost` | land impact or cost-style data | P4 | planned | optional later |
-| `GetObjectPhysicsData` | physics-related object data | P4 | planned | optional later |
+| `RegionObjects` | object/region data path | P2 | planned | **not offered by this sim** (confirmed 2026-08-14) — one of only two probed names that did not resolve |
+| `RenderMaterials` | materials data | P4 | planned | offered by the sim (confirmed 2026-08-14). The per-face material *UUIDs* decode from `ExtraParams` (`0x80`), but the material assets are not fetched. `ViewerAsset`'s `material_id` key may serve them without this cap; untried, because no prim in the region has a material |
+| `ObjectMedia` | media metadata | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
+| `ObjectMediaNavigate` | media navigation | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
+| `GetObjectCost` | land impact or cost-style data | P4 | planned | offered by the sim (confirmed 2026-08-14); optional later |
+| `GetObjectPhysicsData` | physics-related object data | P4 | planned | offered by the sim (confirmed 2026-08-14). Worth revisiting: `ObjectPhysicsProperties` over UDP only echoes an edit the viewer itself made, so this may be the way to read physics data without an in-world edit |
 
 ## Session and Account Capabilities
 
 | Capability | Purpose | Priority | Status | Notes |
 | --- | --- | --- | --- | --- |
-| `AgentPreferences` | account/session preferences | P3 | planned | later usability work |
-| `AgentState` | agent state data | P3 | planned | later inspection/support |
-| `HomeLocation` | home location operations | P4 | planned | not early-scope |
-| `UpdateAgentInformation` | update agent metadata | P4 | planned | later feature |
-| `UserInfo` | user/account info | P3 | planned | later support feature |
+| `AgentPreferences` | account/session preferences | P3 | planned | offered by the sim (confirmed 2026-08-14); later usability work |
+| `AgentState` | agent state data | P3 | planned | **not offered by this sim** (confirmed 2026-08-14) |
+| `HomeLocation` | home location operations | P4 | planned | offered by the sim (confirmed 2026-08-14). Writes — it *sets* home — so not something to exercise without asking |
+| `UpdateAgentInformation` | update agent metadata | P4 | planned | offered by the sim (confirmed 2026-08-14); a write, so later and by request |
+| `UserInfo` | user/account info | P3 | planned | later support feature; not probed |
+
+### What the sim actually offers
+
+On 2026-08-14 every `planned` name above was asked for once, against the test
+sim, to find out which were unavailable and which were merely unrequested.
+**Thirteen of fifteen resolved.** Only `RegionObjects` and `AgentState` did
+not.
+
+That is the useful correction: `planned` in this document has mostly meant "we
+have not asked", not "the sim cannot". Rows now say which. The distinction
+matters because the two need completely different work — one is a client
+feature, the other is a dead end.
+
+A resolved capability is still not a reason to use it. Three of the thirteen
+(`HomeLocation`, `UpdateAgentInformation`, and the task-inventory updates) are
+writes, and stay unexercised until asked for.
 
 ## Seed-Cap Requirements
 
