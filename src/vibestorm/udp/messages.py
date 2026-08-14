@@ -561,6 +561,10 @@ class ObjectUpdateEntry:
     hover_text: str | None = None
     hover_text_color: tuple[int, int, int, int] | None = None
     media_url: str | None = None
+    sound_id: UUID | None = None
+    sound_gain: float = 0.0
+    sound_flags: int = 0
+    sound_radius: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -639,6 +643,27 @@ def _read_utf8_fields_with_fallback(
             continue
 
     raise last_error or MessageDecodeError("variable UTF-8 field is truncated")
+
+
+def _decode_object_sound(
+    payload: bytes,
+) -> tuple[UUID | None, float, int, float]:
+    """Decode a prim's attached-sound block: UUID, gain, flags, radius.
+
+    25 bytes, identical in both update paths (``LLClientView`` writes
+    ``Sound``, ``SoundGain`` f32, ``SoundFlags`` u8, ``SoundRadius`` f32).
+    A null UUID means the prim has no looping sound, which is how a sim
+    clears one, so it is reported as ``None`` rather than a zero UUID.
+    """
+    if len(payload) < 25:
+        return None, 0.0, 0, 0.0
+    sound_id = UUID(bytes=bytes(payload[:16]))
+    gain = unpack_from("<f", payload, 16)[0]
+    flags = payload[20]
+    radius = unpack_from("<f", payload, 21)[0]
+    if sound_id.int == 0:
+        return None, gain, flags, radius
+    return sound_id, gain, flags, radius
 
 
 def _decode_object_string(payload: bytes) -> str | None:
@@ -1522,6 +1547,10 @@ def decode_compressed_object_data(
     media_url: str | None = None
     text_size = 0
     media_url_size = 0
+    sound_id: UUID | None = None
+    sound_gain = 0.0
+    sound_flags = 0
+    sound_radius = 0.0
 
     try:
         if compressed_flags & _COMPRESSED_FLAGS_HAS_ANG_VEL:
@@ -1561,6 +1590,9 @@ def decode_compressed_object_data(
         except MessageDecodeError:
             extra_params_entries = ()
         if compressed_flags & _COMPRESSED_FLAGS_HAS_SOUND:
+            sound_id, sound_gain, sound_flags, sound_radius = _decode_object_sound(
+                data[pos : pos + 25]
+            )
             pos += 25  # UUID + F32 + U8 + F32
         if compressed_flags & _COMPRESSED_FLAGS_HAS_NV:
             end = data.index(b"\x00", pos)
@@ -1635,6 +1667,10 @@ def decode_compressed_object_data(
         hover_text=hover_text,
         hover_text_color=hover_text_color,
         media_url=media_url,
+        sound_id=sound_id,
+        sound_gain=sound_gain,
+        sound_flags=sound_flags,
+        sound_radius=sound_radius,
     )
 
 
@@ -2479,8 +2515,16 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
         body, tail_offset, 1, "ObjectUpdate.ExtraParams",
     )
     
-    # 66 fixed bytes at the end of every ObjectUpdate entry
-    # Sound (16), OwnerID (16), Gain (4), Flags (1), Radius (4), JointType (1), JointPivot (12), JointAxisOrAnchor (12)
+    # 66 fixed bytes at the end of every ObjectUpdate entry:
+    # Sound (16), OwnerID (16), Gain (4), Flags (1), Radius (4), JointType (1),
+    # JointPivot (12), JointAxisOrAnchor (12). Only the sound group is decoded;
+    # the joint fields are legacy and OpenSim never populates them. Note the
+    # OwnerID sits *between* the sound UUID and its gain here, unlike the
+    # compressed block where the sound fields are contiguous.
+    sound_tail = body[tail_offset : tail_offset + 66]
+    sound_id, sound_gain, sound_flags, sound_radius = _decode_object_sound(
+        sound_tail[:16] + sound_tail[32:41] if len(sound_tail) >= 41 else b""
+    )
     tail_offset += 66
     next_offset = tail_offset
 
@@ -2566,6 +2610,10 @@ def _parse_one_object_update_entry(body: bytes, offset: int) -> tuple[ObjectUpda
         interesting_payloads=tuple(interesting_payloads),
         extra_params_entries=extra_params_entries,
         shape=shape,
+        sound_id=sound_id,
+        sound_gain=sound_gain,
+        sound_flags=sound_flags,
+        sound_radius=sound_radius,
         hover_text=_decode_object_string(text_payload),
         hover_text_color=_decode_text_color(text_color_payload),
         media_url=_decode_object_string(media_url_payload),

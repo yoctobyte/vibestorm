@@ -104,6 +104,10 @@ class WorldObject:
     hover_text: str | None = None
     hover_text_color: tuple[int, int, int, int] | None = None
     media_url: str | None = None
+    sound_id: UUID | None = None
+    sound_gain: float = 0.0
+    sound_flags: int = 0
+    sound_radius: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -273,6 +277,10 @@ class WorldView:
                 hover_text=obj.hover_text,
                 hover_text_color=obj.hover_text_color,
                 media_url=obj.media_url,
+                sound_id=obj.sound_id,
+                sound_gain=obj.sound_gain,
+                sound_flags=obj.sound_flags,
+                sound_radius=obj.sound_radius,
                 properties_family=(
                     self.objects.get(obj.full_id).properties_family
                     if obj.full_id in self.objects
@@ -341,6 +349,10 @@ class WorldView:
                 hover_text=obj.hover_text,
                 hover_text_color=obj.hover_text_color,
                 media_url=obj.media_url,
+                sound_id=obj.sound_id,
+                sound_gain=obj.sound_gain,
+                sound_flags=obj.sound_flags,
+                sound_radius=obj.sound_radius,
                 properties_family=obj.properties_family,
             )
 
@@ -389,6 +401,10 @@ class WorldView:
             hover_text=existing.hover_text,
             hover_text_color=existing.hover_text_color,
             media_url=existing.media_url,
+            sound_id=existing.sound_id,
+            sound_gain=existing.sound_gain,
+            sound_flags=existing.sound_flags,
+            sound_radius=existing.sound_radius,
             properties_family=message,
         )
 

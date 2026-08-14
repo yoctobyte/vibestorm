@@ -51,6 +51,7 @@ def _shape_block(
 
 
 COMPRESSED_HAS_TEXT = 0x0004
+COMPRESSED_HAS_SOUND = 0x0010
 COMPRESSED_MEDIA_URL = 0x0200
 
 
@@ -61,11 +62,14 @@ def _compressed_blob(
     texture_entry: bytes = b"",
     compressed_flags: int = 0,
     optional: bytes = b"",
+    after_extra_params: bytes = b"",
 ) -> bytes:
     """A minimal compressed entry.
 
-    ``optional`` is inserted where the flag-gated fields sit: after OwnerID
-    and before the always-present ExtraParams count byte.
+    The writer's order is: OwnerID, angular velocity, parent, text, media URL,
+    legacy particles, ExtraParams, sound, NameValues, shape, TextureEntry.
+    ``optional`` goes in the first gap (before ExtraParams) and
+    ``after_extra_params`` in the second (sound / NameValues).
     """
     blob = (
         FULL_ID.bytes
@@ -80,6 +84,7 @@ def _compressed_blob(
         + OWNER_ID.bytes
         + optional
         + bytes([0])  # ExtraParams: count 0
+        + after_extra_params
         + shape
     )
     if texture_entry:
@@ -267,6 +272,56 @@ class CompressedHoverTextTests(unittest.TestCase):
         self.assertIsNone(entry.hover_text)
         self.assertIsNone(entry.hover_text_color)
         self.assertEqual(entry.text_size, 0)
+
+
+class CompressedSoundBlockTests(unittest.TestCase):
+    """The 25-byte attached-sound block was stepped over, not decoded."""
+
+    SOUND_ID = UUID("cccccccc-1111-2222-3333-444444444444")
+
+    def _decode(self, sound_uuid: UUID):
+        return decode_compressed_object_data(
+            _compressed_blob(
+                _shape_block(),
+                compressed_flags=COMPRESSED_HAS_SOUND,
+                after_extra_params=sound_uuid.bytes
+                + struct.pack("<f", 0.75)
+                + bytes([0x02])
+                + struct.pack("<f", 12.5),
+            ),
+            region_handle=1,
+            time_dilation=0,
+            update_flags=0,
+        )
+
+    def test_sound_fields_are_decoded(self) -> None:
+        entry = self._decode(self.SOUND_ID)
+
+        self.assertEqual(entry.sound_id, self.SOUND_ID)
+        self.assertAlmostEqual(entry.sound_gain, 0.75, places=5)
+        self.assertEqual(entry.sound_flags, 0x02)
+        self.assertAlmostEqual(entry.sound_radius, 12.5, places=5)
+
+    def test_null_sound_uuid_reports_no_sound(self) -> None:
+        # A null UUID is how a sim clears a looping sound; reporting it as a
+        # zero UUID would make "silent" indistinguishable from "plays asset 0".
+        entry = self._decode(UUID(int=0))
+
+        self.assertIsNone(entry.sound_id)
+
+    def test_sound_block_does_not_disturb_the_shape_cursor(self) -> None:
+        entry = self._decode(self.SOUND_ID)
+
+        self.assertIsNotNone(entry.shape)
+        self.assertEqual(entry.shape.profile_curve, PROFILE_CURVE_SQUARE)
+
+    def test_prim_without_the_sound_flag_reports_no_sound(self) -> None:
+        entry = decode_compressed_object_data(
+            _compressed_blob(_shape_block()), region_handle=1, time_dilation=0, update_flags=0
+        )
+
+        self.assertIsNone(entry.sound_id)
+        self.assertEqual(entry.sound_gain, 0.0)
 
 
 if __name__ == "__main__":

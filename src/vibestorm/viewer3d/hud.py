@@ -2518,6 +2518,13 @@ def _inspector_detail_html(e: object, w: object | None) -> str:
     media_url = getattr(w, "media_url", None) if w else None
     if media_url:
         lines.append(f"Media URL: {_html_escape(media_url)}")
+    sound_id = getattr(w, "sound_id", None) if w else None
+    if sound_id is not None:
+        lines.append(
+            f"Sound: {sound_id} gain {getattr(w, 'sound_gain', 0.0):.2f}, "
+            f"radius {getattr(w, 'sound_radius', 0.0):.1f}, "
+            f"flags {getattr(w, 'sound_flags', 0):#04x}"
+        )
     lines.append("")
 
     # Transform
