@@ -22,6 +22,13 @@ from vibestorm.caps.inventory_client import (
     InventoryItemRequest,
     parse_inventory_items_payload,
 )
+from vibestorm.caps.inventory_walk import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_FOLDERS,
+    format_walk,
+    walk_inventory,
+)
 from vibestorm.event_queue.client import EventQueueClient
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.login.client import LoginClient, LoginError
@@ -213,6 +220,34 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="How many example local_ids to show per feature.",
+    )
+
+    inventory_walk_parser = subparsers.add_parser(
+        "inventory-walk",
+        help="Login and recursively list the user's inventory. Read-only.",
+    )
+    inventory_walk_parser.add_argument("--login-uri", required=True)
+    inventory_walk_parser.add_argument("--first", required=True)
+    inventory_walk_parser.add_argument("--last", required=True)
+    inventory_walk_parser.add_argument("--password", required=True)
+    inventory_walk_parser.add_argument("--start", default="last")
+    inventory_walk_parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=DEFAULT_MAX_DEPTH,
+        help="How deep to descend. Anything deeper is reported as skipped.",
+    )
+    inventory_walk_parser.add_argument(
+        "--max-folders",
+        type=int,
+        default=DEFAULT_MAX_FOLDERS,
+        help="Folder budget for one walk. Anything past it is reported as skipped.",
+    )
+    inventory_walk_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+        help="Folders requested per round trip.",
     )
 
     unknowns_parser = subparsers.add_parser(
@@ -811,6 +846,47 @@ def main() -> int:
             print("census=no world view; the session never reached a region")
             return 1
         print_lines(format_census(census_world(world_view), examples=args.examples))
+        return 0
+
+    if args.command == "inventory-walk":
+        request = LoginRequest(
+            login_uri=args.login_uri,
+            credentials=LoginCredentials(
+                first=args.first,
+                last=args.last,
+                password=args.password,
+            ),
+            start=args.start,
+            version=__version__,
+            platform=platform.system(),
+            platform_version=platform.platform(),
+        )
+        bootstrap = asyncio.run(LoginClient().login(request))
+        if bootstrap.inventory_root_folder_id is None:
+            print("inventory=login response carried no inventory root folder")
+            return 1
+
+        async def _walk() -> list[str]:
+            resolved = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
+                bootstrap.seed_capability,
+                ["FetchInventoryDescendents2"],
+                user_agent="Vibestorm",
+            )
+            url = resolved.get("FetchInventoryDescendents2")
+            if not url:
+                return ["inventory=FetchInventoryDescendents2 capability was not resolved"]
+            snapshot, state = await walk_inventory(
+                InventoryCapabilityClient(timeout_seconds=20.0),
+                url,
+                root_folder_id=bootstrap.inventory_root_folder_id,
+                owner_id=bootstrap.agent_id,
+                batch_size=args.batch_size,
+                max_depth=args.max_depth,
+                max_folders=args.max_folders,
+            )
+            return format_walk(snapshot, state)
+
+        print_lines(asyncio.run(_walk()))
         return 0
 
     if args.command == "upload-empty-text-smoke":

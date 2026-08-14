@@ -211,7 +211,9 @@ flag bits LSL does not expose.
 
 *Genuinely unimplemented, not blocked*: the region-crossing transport half
 (`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child), and the
-inventory write surface described at the end of this list.
+inventory *write* surface described at the end of this list. Recursive
+inventory *reading* is done — `./run.sh inventory-walk` walks the whole tree
+breadth-first and reports truncation explicitly.
 
 Landed work follows:
 
