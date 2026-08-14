@@ -187,9 +187,9 @@ Main gaps:
 - renderer use of per-face `TextureEntry` overrides beyond cube primitives (the
   decode side is complete; other prim shapes still fall back to the default
   texture until their face mapping is modeled)
-- renderer use of decoded mesh normals/UVs/material groups: the shape shader in
-  `viewer3d/perspective.py` still fakes normals via `normalize(in_pos)` and
-  uploads mesh VBOs positions-only
+- renderer use of decoded mesh UVs and `material_groups`: normals now reach the
+  shader through an `in_normal` attribute, but per-face texture binding from
+  `material_groups` is not wired yet
 - `ExtraParams` beyond the sculpt/mesh block (`type=0x30`): flexi, light,
   projector, and the other rich-tail entries are still undecoded
 - reliable extraction of ordinary prim names
@@ -272,8 +272,8 @@ Note for anything marked "needs the GL viewer":
 `moderngl.create_standalone_context()` works on this machine, so GL changes can
 be verified headlessly by rendering to an offscreen framebuffer and reading
 pixels back — see `ParcelBorderGLTests` in `test/test_viewer3d_perspective_gl.py`.
-The deferred mesh normals/UV renderer wiring is the next candidate for that
-treatment.
+That route already closed the deferred mesh-normals item; per-face material
+binding is the next candidate.
 
 Two independent tracks remain open, either of which can follow:
 

@@ -1452,6 +1452,26 @@ just that a VAO was allocated.
 This applies directly to the still-open mesh-normals item below, which was
 deferred for exactly this reason.
 
+### Mesh Normals Landed Too
+
+With headless GL available, the deferred mesh-normals item was closed in the
+same pass. Every VAO bound to the shape program now supplies interleaved
+`"3f 3f"` position+normal. Primitive shapes and sculpt meshes bake the old
+`normalize(in_pos)` approximation into their buffer (so their lighting is
+byte-identical to before), while decoded mesh assets pass `decoded.normals`
+through.
+
+One test-design trap worth recording: the first version of the verification
+compared a mesh **with** a `Normal` array against one **without**, and they
+shaded identically — because `decode_sl_mesh_asset` *computes* normals from the
+triangles when the asset omits them. The meaningful contrast is authored-vs-
+computed, so the test now authors normals pointing +X on a triangle lying in
+the XY plane (which the decoder would otherwise compute as +Z) and asserts the
+frames differ.
+
+Still open on the mesh track: per-face texture binding using
+`decoded.material_groups`, and UV use.
+
 ### Concrete Next Step
 
 Two independent tracks, either order:
