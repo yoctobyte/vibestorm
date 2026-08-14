@@ -134,6 +134,22 @@ def _mesh_asset_shape_key(mesh_id: UUID) -> str:
 def _sculpt_asset_shape_key(sculpt_id: UUID, sculpt_type: int | None) -> str:
     return f"sculpt:{sculpt_id}:{sculpt_type or 0}"
 
+
+def _single_face_index(shape_key: str) -> int | None:
+    """SL face index to texture a whole-mesh draw with, if the prim has one face.
+
+    Spheres, tori and sculpts are single-face prims in SL, so a ``TextureEntry``
+    override on face 0 is the prim's texture. Reading the entry's default
+    instead silently ignores that override. ``texture_for_face`` falls back to
+    the default when face 0 carries none, so this only ever adds information.
+
+    Returns ``None`` for the avatar placeholder and for shapes drawn per face
+    elsewhere; those callers keep the default-texture behaviour.
+    """
+    if shape_key in ("sphere", "torus") or shape_key.startswith("sculpt:"):
+        return 0
+    return None
+
 DEFAULT_SUN_DIRECTION: tuple[float, float, float] = (0.35, -0.55, 0.76)
 AMBIENT_LIGHT: float = 0.78
 DIFFUSE_LIGHT: float = 0.34
@@ -599,7 +615,9 @@ class PerspectiveRenderer:
         self._program = None  # type: moderngl.Program | None
         self._instance_vbo = None  # type: moderngl.Buffer | None
         self._shape_meshes: dict[str, _ShapeMesh] = {}
-        self._cube_face_meshes: dict[int, _ShapeMesh] = {}
+        # Per-SL-face index buffers for the built-in multi-face prims
+        # (cube, cylinder, prism), keyed by shape key then SL face index.
+        self._prim_face_meshes: dict[str, dict[int, _ShapeMesh]] = {}
         # Per-material-group index buffers for decoded mesh assets, keyed by
         # shape key then prim face index. They share the parent mesh's VBO.
         self._mesh_face_meshes: dict[str, dict[int, _ShapeMesh]] = {}
@@ -691,7 +709,14 @@ class PerspectiveRenderer:
         self._upload_scene_mesh_assets(ctx, scene)
         self._upload_scene_sculpt_assets(ctx, scene)
         shape_groups = self._group_entities_by_shape(scene)
-        cube_entities = shape_groups.pop("cube", [])
+        # Multi-face prims bypass the (shape, texture) grouping: their texture
+        # is chosen per SL face, so grouping them by a single texture up front
+        # would only split each shape into redundant passes.
+        face_shape_groups = {
+            shape_key: shape_groups.pop(shape_key)
+            for shape_key in list(shape_groups)
+            if shape_key in self._prim_face_meshes
+        }
         groups = self._group_entities_for_draw(scene, shape_groups=shape_groups)
 
         ctx.enable(ctx.DEPTH_TEST)
@@ -724,7 +749,7 @@ class PerspectiveRenderer:
                 self._upload_parcel_borders(ctx, scene)
                 self._render_parcel_borders(ctx, view_data, proj_data)
 
-            if scene.render_objects and (groups or cube_entities):
+            if scene.render_objects and (groups or face_shape_groups):
                 self._program["u_view"].write(view_data)
                 self._program["u_proj"].write(proj_data)
                 self._program["u_sun_dir"].value = sun_direction
@@ -732,9 +757,10 @@ class PerspectiveRenderer:
                 self._program["u_diffuse_light"].value = DIFFUSE_LIGHT
                 if "u_texture" in self._program:
                     self._program["u_texture"].value = 0
-                if cube_entities:
+                if face_shape_groups:
                     self._program["u_use_mesh_uv"].value = False
-                    self._render_cube_faces(ctx, scene, cube_entities)
+                    for shape_key, entities in face_shape_groups.items():
+                        self._render_prim_faces(ctx, scene, shape_key, entities)
                 for (shape_key, texture_id), entities in groups.items():
                     self._program["u_use_mesh_uv"].value = (
                         shape_key in self._mesh_uv_shape_keys
@@ -879,11 +905,12 @@ class PerspectiveRenderer:
         self._shape_meshes.clear()
         self._mesh_asset_paths.clear()
         self._sculpt_asset_paths.clear()
-        for mesh in self._cube_face_meshes.values():
-            mesh.vao.release()
-            mesh.ibo.release()
-            mesh.vbo.release()
-        self._cube_face_meshes.clear()
+        for face_meshes in self._prim_face_meshes.values():
+            for mesh in face_meshes.values():
+                mesh.vao.release()
+                mesh.ibo.release()
+                mesh.vbo.release()
+        self._prim_face_meshes.clear()
         for shape_key in list(self._mesh_face_meshes):
             self._release_mesh_face_meshes(shape_key)
         self._mesh_uv_shape_keys.clear()
@@ -917,7 +944,7 @@ class PerspectiveRenderer:
                 resource.release()
         self._instance_vbo = None
         self._program = None
-        self._cube_face_meshes = {}
+        self._prim_face_meshes = {}
         self._mesh_face_meshes = {}
         self._mesh_uv_shape_keys = set()
         self._instance_capacity = 0
@@ -987,24 +1014,32 @@ class PerspectiveRenderer:
             self._shape_meshes[shape_key] = _ShapeMesh(
                 vbo=vbo, ibo=ibo, vao=vao, index_count=len(indices)
             )
-        cube_vertices, cube_indices = meshes.cube_mesh()
-        for face_index in range(6):
-            face_indices = cube_indices[face_index * 6 : (face_index + 1) * 6]
-            packed_cube = _interleave_vertex_attributes(cube_vertices)
-            vbo = ctx.buffer(struct.pack(f"{len(packed_cube)}f", *packed_cube))
-            ibo = ctx.buffer(struct.pack(f"{len(face_indices)}I", *face_indices))
-            vao = ctx.vertex_array(
-                self._program,
-                [
-                    (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
-                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
-                ],
-                index_buffer=ibo,
-                index_element_size=4,
-            )
-            self._cube_face_meshes[face_index] = _ShapeMesh(
-                vbo=vbo, ibo=ibo, vao=vao, index_count=len(face_indices)
-            )
+        # Multi-face prims get one VAO per SL face so a TextureEntry override
+        # can be honoured per face. Single-face prims (sphere, torus) and the
+        # avatar placeholder stay on the whole-mesh path.
+        for shape_key, author in shape_authors.items():
+            face_map = meshes.shape_face_indices(shape_key)
+            if face_map is None:
+                continue
+            shape_vertices, _ = author()
+            packed_shape = _interleave_vertex_attributes(shape_vertices)
+            face_meshes: dict[int, _ShapeMesh] = {}
+            for face_index, face_indices in face_map.items():
+                vbo = ctx.buffer(struct.pack(f"{len(packed_shape)}f", *packed_shape))
+                ibo = ctx.buffer(struct.pack(f"{len(face_indices)}I", *face_indices))
+                vao = ctx.vertex_array(
+                    self._program,
+                    [
+                        (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
+                        (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                    ],
+                    index_buffer=ibo,
+                    index_element_size=4,
+                )
+                face_meshes[face_index] = _ShapeMesh(
+                    vbo=vbo, ibo=ibo, vao=vao, index_count=len(face_indices)
+                )
+            self._prim_face_meshes[shape_key] = face_meshes
 
         self._ground_program = ctx.program(
             vertex_shader=_GROUND_VERTEX_SHADER,
@@ -1182,8 +1217,9 @@ class PerspectiveRenderer:
         groups: dict[tuple[str, UUID | None], list[SceneEntity]] = {}
         source_groups = shape_groups if shape_groups is not None else self._group_entities_by_shape(scene)
         for shape_key, entities in source_groups.items():
+            face_index = _single_face_index(shape_key)
             for entity in entities:
-                texture_id = self._texture_id_for_entity_face(scene, entity, None)
+                texture_id = self._texture_id_for_entity_face(scene, entity, face_index)
                 groups.setdefault((shape_key, texture_id), []).append(entity)
         return groups
 
@@ -1272,13 +1308,15 @@ class PerspectiveRenderer:
                 self._upload_instances_for(ctx, face_entities)
                 mesh.vao.render(instances=len(face_entities))
 
-    def _render_cube_faces(
+    def _render_prim_faces(
         self,
         ctx: moderngl.Context,
         scene: Scene,
+        shape_key: str,
         entities: list[SceneEntity],
     ) -> None:
-        for face_index, mesh in self._cube_face_meshes.items():
+        """Draw one instanced pass per SL face, each with that face's texture."""
+        for face_index, mesh in self._prim_face_meshes[shape_key].items():
             face_groups: dict[UUID | None, list[SceneEntity]] = {}
             for entity in entities:
                 texture_id = self._texture_id_for_entity_face(scene, entity, face_index)
@@ -1639,19 +1677,10 @@ class PerspectiveRenderer:
                 index_element_size=4,
             )
             self._shape_meshes[shape_key] = mesh
-        for face_index, mesh in self._cube_face_meshes.items():
-            mesh.vao.release()
-            mesh.vao = ctx.vertex_array(
-                self._program,
-                [
-                    (mesh.vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
-                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
-                ],
-                index_buffer=mesh.ibo,
-                index_element_size=4,
-            )
-            self._cube_face_meshes[face_index] = mesh
-        for face_meshes in self._mesh_face_meshes.values():
+        for face_meshes in (
+            *self._prim_face_meshes.values(),
+            *self._mesh_face_meshes.values(),
+        ):
             for face_index, mesh in face_meshes.items():
                 mesh.vao.release()
                 mesh.vao = ctx.vertex_array(

@@ -210,6 +210,97 @@ def prism_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
     return tuple(vertices), indices
 
 
+# ---- SL prim face maps -------------------------------------------------------
+#
+# A prim's ``TextureEntry`` addresses faces by SL's numbering, which is not the
+# order these authors happen to emit triangles in. The maps below translate:
+# they give, for one SL face index, the triangle indices of that face.
+#
+# SL numbers faces by walking the profile's side segments first and appending
+# the caps last, top (+Z) before bottom (-Z). For a box that gives the familiar
+# 0=+X, 1=+Y, 2=-X, 3=-Y, 4=top, 5=bottom; for a cylinder 0=side, 1=top,
+# 2=bottom. Sphere and torus are single-face prims and need no map — their
+# whole mesh is face 0.
+
+SL_FACE_COUNTS: dict[str, int] = {
+    "cube": 6,
+    "cylinder": 3,
+    "prism": 5,
+    "sphere": 1,
+    "torus": 1,
+}
+
+
+def cube_face_indices() -> dict[int, tuple[int, ...]]:
+    """Map SL box face indices onto ``CUBE_INDICES``' six triangle pairs.
+
+    ``CUBE_INDICES`` is authored in geometric slot order
+    (-Z, +Z, +Y, -Y, +X, -X), which is *not* SL's order. Texturing by slot
+    puts each face's texture on the wrong side of the box.
+    """
+    slot_for_sl_face = {0: 4, 1: 2, 2: 5, 3: 3, 4: 1, 5: 0}
+    return {
+        face: CUBE_INDICES[slot * 6 : (slot + 1) * 6]
+        for face, slot in slot_for_sl_face.items()
+    }
+
+
+def cylinder_face_indices(slices: int = 12) -> dict[int, tuple[int, ...]]:
+    """Map SL cylinder faces (0=side, 1=top, 2=bottom) onto ``cylinder_mesh``.
+
+    ``cylinder_mesh`` interleaves bottom-cap, top-cap and side triangles per
+    slice, so each face gathers a stride rather than a contiguous slice.
+    """
+    _, indices = cylinder_mesh(slices)
+    bottom: list[int] = []
+    top: list[int] = []
+    side: list[int] = []
+    for j in range(slices):
+        base = j * 12
+        bottom.extend(indices[base : base + 3])
+        top.extend(indices[base + 3 : base + 6])
+        side.extend(indices[base + 6 : base + 12])
+    return {0: tuple(side), 1: tuple(top), 2: tuple(bottom)}
+
+
+def prism_face_indices() -> dict[int, tuple[int, ...]]:
+    """Map SL prism faces onto ``prism_mesh``.
+
+    Derived from the profile-then-caps rule rather than observed: faces 0-2
+    are the three side quads walking counter-clockwise from the +X-facing one
+    (the same starting point the box map uses), then 3 = top, 4 = bottom.
+
+    ``prism_mesh`` emits its side quads spanning 90->210 deg, 210->330 deg and
+    330->90 deg, so the +X-facing side is the *last* of the three. The caps are
+    the confident half of this map; which side quad is SL's face 0 has never
+    been checked against a textured in-world prism, and a wrong guess there
+    rotates the three side textures among themselves.
+    """
+    _, indices = prism_mesh()
+    return {
+        0: indices[18:24],
+        1: indices[6:12],
+        2: indices[12:18],
+        3: indices[3:6],
+        4: indices[0:3],
+    }
+
+
+def shape_face_indices(shape_key: str) -> dict[int, tuple[int, ...]] | None:
+    """Per-SL-face triangle indices for a primitive, or ``None`` if it has one face.
+
+    Single-face prims (sphere, torus) and shapes with no face model at all
+    (the avatar placeholder) return ``None``; callers draw those in one pass.
+    """
+    if shape_key == "cube":
+        return cube_face_indices()
+    if shape_key == "cylinder":
+        return cylinder_face_indices()
+    if shape_key == "prism":
+        return prism_face_indices()
+    return None
+
+
 def avatar_placeholder_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
     """Simple human-like avatar placeholder facing local +X.
 

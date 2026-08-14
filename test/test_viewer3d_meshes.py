@@ -158,5 +158,134 @@ class AvatarPlaceholderMeshTests(unittest.TestCase):
         self.assertGreater(max(xs), abs(min(xs)))
 
 
+class SLFaceMapTests(unittest.TestCase):
+    """The face maps must partition a mesh and land on the right geometry.
+
+    A texture applied to the wrong side of a prim is a silent failure — it
+    still renders, just wrongly — so these pin each SL face to the plane it
+    is supposed to occupy rather than only checking that a map exists.
+    """
+
+    def _face_vertices(self, verts, face_indices):
+        return [
+            (verts[i * 3], verts[i * 3 + 1], verts[i * 3 + 2])
+            for i in face_indices
+        ]
+
+    def _assert_partitions(self, indices, face_map) -> None:
+        covered = [i for face in sorted(face_map) for i in face_map[face]]
+        self.assertEqual(
+            len(covered), len(indices), "face map does not cover every triangle exactly once"
+        )
+        self.assertEqual(sorted(covered), sorted(indices))
+
+    def test_cube_faces_partition_the_mesh(self) -> None:
+        from vibestorm.viewer3d.meshes import cube_face_indices, cube_mesh
+
+        _, indices = cube_mesh()
+        self._assert_partitions(indices, cube_face_indices())
+
+    def test_cube_sl_faces_land_on_the_expected_planes(self) -> None:
+        from vibestorm.viewer3d.meshes import cube_face_indices, cube_mesh
+
+        verts, _ = cube_mesh()
+        face_map = cube_face_indices()
+        # SL box numbering: 0=+X, 1=+Y, 2=-X, 3=-Y, 4=top(+Z), 5=bottom(-Z).
+        expectations = {0: (0, 0.5), 1: (1, 0.5), 2: (0, -0.5), 3: (1, -0.5),
+                        4: (2, 0.5), 5: (2, -0.5)}
+        for face, (axis, value) in expectations.items():
+            coords = {
+                round(vertex[axis], 6)
+                for vertex in self._face_vertices(verts, face_map[face])
+            }
+            self.assertEqual(
+                coords, {value}, f"SL face {face} is not the axis-{axis}={value} plane"
+            )
+
+    def test_cylinder_faces_partition_the_mesh(self) -> None:
+        from vibestorm.viewer3d.meshes import cylinder_face_indices, cylinder_mesh
+
+        _, indices = cylinder_mesh()
+        self._assert_partitions(indices, cylinder_face_indices())
+
+    def test_cylinder_caps_are_flat_and_the_side_spans_both(self) -> None:
+        from vibestorm.viewer3d.meshes import cylinder_face_indices, cylinder_mesh
+
+        verts, _ = cylinder_mesh()
+        face_map = cylinder_face_indices()
+
+        top_z = {round(v[2], 6) for v in self._face_vertices(verts, face_map[1])}
+        bottom_z = {round(v[2], 6) for v in self._face_vertices(verts, face_map[2])}
+        side_z = {round(v[2], 6) for v in self._face_vertices(verts, face_map[0])}
+
+        self.assertEqual(top_z, {0.5}, "SL face 1 must be the top cap")
+        self.assertEqual(bottom_z, {-0.5}, "SL face 2 must be the bottom cap")
+        self.assertEqual(side_z, {-0.5, 0.5}, "SL face 0 must be the curved side")
+
+    def test_cylinder_face_map_follows_the_slice_count(self) -> None:
+        from vibestorm.viewer3d.meshes import cylinder_face_indices, cylinder_mesh
+
+        _, indices = cylinder_mesh(7)
+        self._assert_partitions(indices, cylinder_face_indices(7))
+
+    def test_prism_faces_partition_the_mesh(self) -> None:
+        from vibestorm.viewer3d.meshes import prism_face_indices, prism_mesh
+
+        _, indices = prism_mesh()
+        self._assert_partitions(indices, prism_face_indices())
+
+    def test_prism_caps_are_the_triangles(self) -> None:
+        from vibestorm.viewer3d.meshes import prism_face_indices, prism_mesh
+
+        verts, _ = prism_mesh()
+        face_map = prism_face_indices()
+
+        self.assertEqual(
+            {round(v[2], 6) for v in self._face_vertices(verts, face_map[3])}, {0.5}
+        )
+        self.assertEqual(
+            {round(v[2], 6) for v in self._face_vertices(verts, face_map[4])}, {-0.5}
+        )
+        for side in (0, 1, 2):
+            self.assertEqual(
+                {round(v[2], 6) for v in self._face_vertices(verts, face_map[side])},
+                {-0.5, 0.5},
+                f"SL face {side} should be a side quad",
+            )
+
+    def test_prism_face_zero_is_the_plus_x_side(self) -> None:
+        # Derived, not observed live: face 0 is the side whose outward normal
+        # points most toward +X, matching where the box map starts.
+        from vibestorm.viewer3d.meshes import prism_face_indices, prism_mesh
+
+        verts, _ = prism_mesh()
+        face_map = prism_face_indices()
+        centroids = {
+            face: sum(v[0] for v in self._face_vertices(verts, face_map[face]))
+            / len(face_map[face])
+            for face in (0, 1, 2)
+        }
+
+        self.assertEqual(max(centroids, key=centroids.__getitem__), 0)
+
+    def test_face_counts_match_the_maps(self) -> None:
+        from vibestorm.viewer3d.meshes import SL_FACE_COUNTS, shape_face_indices
+
+        for shape_key, count in SL_FACE_COUNTS.items():
+            face_map = shape_face_indices(shape_key)
+            if count == 1:
+                self.assertIsNone(
+                    face_map, f"{shape_key} is single-face and needs no map"
+                )
+            else:
+                self.assertEqual(sorted(face_map), list(range(count)))
+
+    def test_single_face_and_unknown_shapes_have_no_map(self) -> None:
+        from vibestorm.viewer3d.meshes import shape_face_indices
+
+        for shape_key in ("sphere", "torus", "avatar", "not-a-shape"):
+            self.assertIsNone(shape_face_indices(shape_key))
+
+
 if __name__ == "__main__":
     unittest.main()

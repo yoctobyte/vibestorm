@@ -1264,6 +1264,173 @@ class InterleaveVertexAttributesTests(unittest.TestCase):
         self.assertEqual(packed, [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0])
 
 
+class PrimFaceMapGLTests(_GLTestBase):
+    """A TextureEntry override must land on the SL face it names.
+
+    Painting a face is only half the job: the renderer used to split the cube
+    by the order ``CUBE_INDICES`` happens to author its faces in, which is not
+    SL's numbering, so every per-face texture on a box landed on the wrong
+    side. These tests aim the camera at a known face and assert the colour, so
+    a mapping that is merely self-consistent still fails.
+    """
+
+    RED = UUID("dddddddd-0000-0000-0000-000000000001")
+    BLUE = UUID("dddddddd-0000-0000-0000-000000000002")
+
+    # A camera straight above its target has a view direction parallel to the
+    # (0, 0, 1) up vector, which degenerates the view matrix and renders
+    # nothing. Nudge the cap cameras off-axis; the centre ray still lands on
+    # the cap of a 2 m prim.
+    TOP_EYE = (1.5, 0.0, 6.0)
+    BOTTOM_EYE = (1.5, 0.0, -6.0)
+
+    def _scene_with_face(self, shape: str, face_index: int):
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+        from vibestorm.world.texture_entry import TextureEntry
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.texture_paths[self.RED] = _write_solid_tile((255, 0, 0))
+        scene.texture_paths[self.BLUE] = _write_solid_tile((0, 0, 255))
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=(0.0, 0.0, 0.0),
+            scale=(2.0, 2.0, 2.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=shape,
+            default_texture_id=self.BLUE,
+            texture_entry=TextureEntry(
+                default_texture_id=self.BLUE,
+                face_texture_ids=((face_index, self.RED),),
+            ),
+        )
+        return scene
+
+    def _center_pixel_from(self, scene, eye: tuple[float, float, float]):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), eye_position=eye)
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+        finally:
+            renderer.clear_caches()
+
+    def _assert_red(self, pixel, message: str) -> None:
+        r, g, b, _ = pixel
+        self.assertGreater(r, b + 40, f"{message}; got {(r, g, b)}")
+
+    def _assert_blue(self, pixel, message: str) -> None:
+        r, g, b, _ = pixel
+        self.assertGreater(b, r + 40, f"{message}; got {(r, g, b)}")
+
+    # SL box numbering: 0=+X, 1=+Y, 2=-X, 3=-Y, 4=top, 5=bottom.
+    def test_box_face_0_is_the_plus_x_side(self) -> None:
+        scene = self._scene_with_face("cube", 0)
+        self._assert_red(
+            self._center_pixel_from(scene, (6.0, 0.0, 0.0)),
+            "SL box face 0 should face +X",
+        )
+        self._assert_blue(
+            self._center_pixel_from(scene, self.TOP_EYE),
+            "SL box face 0 must not paint the top",
+        )
+
+    def test_box_face_1_is_the_plus_y_side(self) -> None:
+        scene = self._scene_with_face("cube", 1)
+        self._assert_red(
+            self._center_pixel_from(scene, (0.0, 6.0, 0.0)),
+            "SL box face 1 should face +Y",
+        )
+
+    def test_box_face_4_is_the_top(self) -> None:
+        scene = self._scene_with_face("cube", 4)
+        self._assert_red(
+            self._center_pixel_from(scene, self.TOP_EYE),
+            "SL box face 4 should be the top",
+        )
+        self._assert_blue(
+            self._center_pixel_from(scene, self.BOTTOM_EYE),
+            "SL box face 4 must not paint the bottom",
+        )
+
+    def test_box_face_5_is_the_bottom(self) -> None:
+        scene = self._scene_with_face("cube", 5)
+        self._assert_red(
+            self._center_pixel_from(scene, self.BOTTOM_EYE),
+            "SL box face 5 should be the bottom",
+        )
+
+    # SL cylinder numbering: 0=curved side, 1=top, 2=bottom.
+    def test_cylinder_face_0_is_the_curved_side(self) -> None:
+        scene = self._scene_with_face("cylinder", 0)
+        self._assert_red(
+            self._center_pixel_from(scene, (6.0, 0.0, 0.0)),
+            "SL cylinder face 0 should be the side",
+        )
+        self._assert_blue(
+            self._center_pixel_from(scene, self.TOP_EYE),
+            "SL cylinder face 0 must not paint the top cap",
+        )
+
+    def test_cylinder_face_1_is_the_top_cap(self) -> None:
+        scene = self._scene_with_face("cylinder", 1)
+        self._assert_red(
+            self._center_pixel_from(scene, self.TOP_EYE),
+            "SL cylinder face 1 should be the top cap",
+        )
+        self._assert_blue(
+            self._center_pixel_from(scene, self.BOTTOM_EYE),
+            "SL cylinder face 1 must not paint the bottom cap",
+        )
+
+    def test_prism_top_cap_is_face_3(self) -> None:
+        scene = self._scene_with_face("prism", 3)
+        self._assert_red(
+            self._center_pixel_from(scene, self.TOP_EYE),
+            "SL prism face 3 should be the top cap",
+        )
+
+    def test_multi_face_prims_allocate_per_face_buffers(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D()
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.assertEqual(
+                sorted(renderer._prim_face_meshes), ["cube", "cylinder", "prism"]
+            )
+            self.assertEqual(sorted(renderer._prim_face_meshes["cube"]), list(range(6)))
+            self.assertEqual(
+                sorted(renderer._prim_face_meshes["cylinder"]), [0, 1, 2]
+            )
+            self.assertEqual(sorted(renderer._prim_face_meshes["prism"]), list(range(5)))
+        finally:
+            renderer.clear_caches()
+
+    def test_single_face_prims_use_the_face_zero_override(self) -> None:
+        # Spheres and tori have one SL face, so an override on face 0 is the
+        # prim's texture. Reading TextureEntry's default instead ignores it.
+        for shape in ("sphere", "torus"):
+            with self.subTest(shape=shape):
+                scene = self._scene_with_face(shape, 0)
+                self._assert_red(
+                    self._center_pixel_from(scene, (6.0, 0.0, 0.0)),
+                    f"{shape} face 0 override was ignored",
+                )
+
+
 class MeshMaterialGroupGLTests(_GLTestBase):
     """Each mesh submesh must draw with its own face texture.
 
