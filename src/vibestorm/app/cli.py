@@ -227,10 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--physics",
         action="store_true",
         help=(
-            "Also pull each prim's physics through GetObjectPhysicsData. "
-            "Read-only, and unlike the UDP ObjectPhysicsProperties message it "
-            "needs no in-world edit. One request per prim, so it is slow in a "
-            "populated region."
+            "Also pull each prim's physics and land impact through "
+            "GetObjectPhysicsData and GetObjectCost. Read-only, and unlike the "
+            "UDP ObjectPhysicsProperties message neither needs an in-world "
+            "edit. Physics is one request per prim, so it is slow in a "
+            "populated region; cost is batched."
         ),
     )
 

@@ -47,7 +47,7 @@ This document tracks which simulator capabilities matter for Vibestorm and when 
 | `RenderMaterials` | materials data | P4 | planned | offered by the sim (confirmed 2026-08-14). The per-face material *UUIDs* decode from `ExtraParams` (`0x80`), but the material assets are not fetched. `ViewerAsset`'s `material_id` key may serve them without this cap; untried, because no prim in the region has a material |
 | `ObjectMedia` | media metadata | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
 | `ObjectMediaNavigate` | media navigation | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
-| `GetObjectCost` | land impact or cost-style data | P4 | planned | offered by the sim (confirmed 2026-08-14); optional later |
+| `GetObjectCost` | land impact or cost-style data | P3 | verified | `caps/object_cost_client.py`, alongside physics under `./run.sh census --physics`. Live-verified 2026-08-14: 32 prims, every one costing 1, `resource_limiting_type=legacy`. **Batching works here** — unlike `GetObjectPhysicsData` in the same source file, this handler closes its outer map after the loop, and four ids returned four entries. Two traps: a request matching nothing is answered with a filler entry keyed by the **zero UUID** and all costs 0, which is shaped exactly like a real free prim (the client drops it); and equal prim/linkset costs mean the prim's cost covers its linkset, not that the linkset has one prim |
 | `GetObjectPhysicsData` | physics-related object data | P2 | verified | `caps/object_physics_client.py`, behind `./run.sh census --physics`. This is how to read prim physics *without* an in-world edit — the UDP `ObjectPhysicsProperties` message only echoes an edit the viewer itself made. Live-verified 2026-08-14: 32 of 33 objects answered, all shape `prim` at OpenSim defaults; the one that did not is our own avatar, which is in the same collection but is not a `SceneObjectPart`. **One id per request** — OpenSim's handler closes the outer LLSD map inside its loop, so two ids return XML that does not parse (confirmed live, `mismatched tag`) |
 
 ## Session and Account Capabilities
@@ -88,10 +88,11 @@ The initial capability layer should support:
 
 ## Current Requested Capability Set
 
-`_run_caps_prelude` in `udp/session.py` requests these, and all ten resolve
+`_run_caps_prelude` in `udp/session.py` requests these, and all eleven resolve
 against local OpenSim:
 
 - `EventQueueGet`
+- `GetObjectCost`
 - `GetObjectPhysicsData`
 - `SimulatorFeatures`
 - `FetchInventoryDescendents2`

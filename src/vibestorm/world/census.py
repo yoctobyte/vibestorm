@@ -303,6 +303,20 @@ def format_object_physics(session: object) -> list[str]:
     for shape, count in sorted(shapes.items(), key=lambda item: (-item[1], item[0])):
         lines.append(f"physics shape[{shape}]={count}")
 
+    costs = dict(getattr(session, "object_costs", {}) or {})
+    if costs:
+        total = sum(c.resource_cost for c in costs.values())
+        heaviest = max(costs.items(), key=lambda item: item[1].resource_cost)
+        lines.append(f"cost prims={len(costs)} total_resource={total:g}")
+        lines.append(f"cost heaviest[{heaviest[0]}]={heaviest[1].describe()}")
+        limiting = {c.resource_limiting_type for c in costs.values()}
+        lines.append(f"cost limiting_type={','.join(sorted(limiting))}")
+    elif getattr(session, "object_cost_attempted", None):
+        # Distinct from "not fetched": OpenSim answers a request that matches
+        # nothing with a zero-UUID filler, which the parser drops, so an empty
+        # result here is a real statement rather than a missing one.
+        lines.append("cost prims=0 (asked, nothing resolved)")
+
     if non_default:
         for line in non_default:
             lines.append(f"physics material[{line}]")

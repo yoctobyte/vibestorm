@@ -132,6 +132,7 @@ from vibestorm.world.object_inventory import (
     ObjectInventorySnapshot,
     parse_task_inventory_text,
 )
+from vibestorm.caps.object_cost_client import ObjectCost, ObjectCostClient, ObjectCostError
 from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhysicsError
 from vibestorm.caps.viewer_asset_client import (
     ViewerAssetClient,
@@ -315,6 +316,9 @@ class LiveCircuitSession:
     #: UDP ObjectPhysicsProperties echo, which only arrives after an edit.
     object_physics: dict[UUID, PhysicsProperties] = field(default_factory=dict)
     object_physics_attempted: set[UUID] = field(default_factory=set)
+    object_cost_url: str | None = None
+    object_costs: dict[UUID, ObjectCost] = field(default_factory=dict)
+    object_cost_attempted: set[UUID] = field(default_factory=set)
     #: Asset fetches waiting for the session loop to try over HTTP. The full
     #: request context is kept, not just the type, because a failed HTTP fetch
     #: falls back to a TransferRequest and a task-inventory transfer needs the
@@ -2453,6 +2457,29 @@ async def run_live_session(
                                 f"object={pending_physics_id} {properties.describe()}",
                             )
 
+            # Land impact, batched — unlike the physics cap next door, this
+            # handler closes its outer map after the loop and so can answer
+            # many ids at once.
+            if session.object_cost_url is not None:
+                pending_cost_ids = _next_pending_cost_object_ids(session)
+                if pending_cost_ids:
+                    session.object_cost_attempted.update(pending_cost_ids)
+                    try:
+                        costs = await ObjectCostClient(timeout_seconds=10.0).fetch(
+                            session.object_cost_url,
+                            pending_cost_ids,
+                            udp_listen_port=session.caps_udp_listen_port,
+                        )
+                    except ObjectCostError as exc:
+                        session._record_event(loop.time(), "cost.error", str(exc))
+                    else:
+                        session.object_costs.update(costs)
+                        session._record_event(
+                            loop.time(),
+                            "cost.ok",
+                            f"asked={len(pending_cost_ids)} answered={len(costs)}",
+                        )
+
             if session.get_mesh_url is not None:
                 pending_mesh_id = _next_pending_mesh_asset_id(session)
                 if pending_mesh_id is not None:
@@ -2580,6 +2607,29 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
                 continue
             return texture_id
     return None
+
+
+#: How many prims to ask about in one GetObjectCost request. Bounded not by
+#: the handler, which has no limit, but by the LLSD body a single POST should
+#: carry — and so that one slow round trip cannot stall the session loop for
+#: a whole region's worth of prims.
+COST_BATCH_SIZE = 16
+
+
+def _next_pending_cost_object_ids(session: LiveCircuitSession) -> list[UUID]:
+    """The next batch of prims whose land impact has not been asked for."""
+    pending: list[UUID] = []
+    for object_id in session.world_view.objects:
+        if object_id.int == 0:
+            continue
+        if object_id in session.object_costs:
+            continue
+        if object_id in session.object_cost_attempted:
+            continue
+        pending.append(object_id)
+        if len(pending) >= COST_BATCH_SIZE:
+            break
+    return pending
 
 
 def _next_pending_physics_object_id(session: LiveCircuitSession) -> UUID | None:
@@ -2963,6 +3013,7 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         "UploadBakedTexture",
         "ViewerAsset",
         "GetObjectPhysicsData",
+        "GetObjectCost",
         "GetMesh",
         "GetMesh2",
         "GetTexture",
@@ -3104,6 +3155,10 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         session._record_event(
             now, "physics.skip", "GetObjectPhysicsData CAP not resolved"
         )
+
+    object_cost_url = resolved.get("GetObjectCost")
+    if object_cost_url and session.config.fetch_object_physics:
+        session.object_cost_url = object_cost_url
 
     viewer_asset_url = resolved.get("ViewerAsset")
     if viewer_asset_url:
