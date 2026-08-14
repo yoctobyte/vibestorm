@@ -134,6 +134,11 @@ These are the two UDP asset channels. Both are driven from the object inspector
 rather than from session startup, so a bounded `./run.sh session` never
 exercises them — the evidence below comes from viewer runs.
 
+Since 2026-08-14 the `TransferRequest` half is a **fallback**: `RequestAssetData`
+tries the `ViewerAsset` capability first and only sends a `TransferRequest` if
+the HTTP fetch fails, or if the asset type has no sourced query key. The bytes
+land in the same place either way.
+
 | Message | Purpose | Priority | Status | Notes |
 | --- | --- | --- | --- | --- |
 | `ReplyTaskInventory` | object inventory listing header | P3 | verified | supplies the task id, serial and xfer filename; live-confirmed against scripted objects |

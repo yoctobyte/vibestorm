@@ -156,6 +156,37 @@ name is `UpdateScriptTask`. The object-sync path asked only for the legacy
 alias, which works today and would fail as "no task inventory caps available"
 the day it is dropped. It now asks for both, current first.
 
+### ViewerAsset
+
+`ViewerAsset` had been resolved every session since the seed-cap list was
+written and had no client, so notecards, scripts, animations and sounds could
+only come down the UDP `TransferRequest` channel. `caps/viewer_asset_client.py`
+now implements it, and `RequestAssetData` prefers it — the session loop sends a
+`TransferRequest` only if the HTTP fetch fails, so this adds a path without
+removing one. Bytes land in `session.fetched_assets` either way.
+
+Live-verified twice: standalone against the region map texture (4376 bytes,
+`image/x-j2c`, byte-identical to `GetTexture`), and end-to-end through the real
+`_handle_request_asset_data` with no UDP transfer sent.
+
+Two properties of the capability that are easy to get wrong:
+
+- **The query key selects the asset type.** There is no generic `asset_id`, and
+  an unrecognised key is answered 404 *before* the asset service is consulted.
+  So `asset_type_query_key` raises rather than falling back to a plausible key,
+  which would report "the sim does not have it" when the truth is "this client
+  does not know that type".
+- **The type check is not enforced.** `GetAssetsHandler` compares `asset.Type`
+  against the key's implied type, logs `asset with wrong type`, and serves the
+  bytes anyway — the `return` beneath the warning is commented out. Asking for
+  the map texture as `notecard_id` returned the same 4376 bytes. A 200 is
+  therefore no evidence about an asset's type.
+
+The key table covers only the type numbers LSL pins, because `AssetType` is
+libomv's enum and only the DLL ships in `opensim-source/`. `mesh_id` and the
+five TGA/WAV/JPEG keys are absent for that reason alone — an unmappable type
+stays on UDP rather than being routed to a guaranteed 404.
+
 ### A testing note worth keeping
 
 Mutation-checking with `cp` to restore a file can lie. A restored file the same
