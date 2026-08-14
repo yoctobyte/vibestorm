@@ -393,6 +393,9 @@ class Scene:
         self.water_height = DEFAULT_WATER_HEIGHT_M
         self.avatar_position = None
         self.parcel_name = None
+        self.parcel_flags = None
+        # Region health belongs to the region we just left.
+        self.sim_health = ""
         self.parcel_overlay_packets.clear()
         self.parcel_overlay = None
         self.parcel_borders = ()
@@ -401,6 +404,20 @@ class Scene:
         self.texture_paths.clear()
         self.mesh_paths.clear()
         self.object_inventory_snapshots.clear()
+        # Per-object side state. The entity dicts above are rebuilt every frame
+        # from the WorldView, but these are not — they accumulate from bus
+        # events and would otherwise outlive the region they describe.
+        #
+        # object_physics is the dangerous one: it is keyed by local_id, and
+        # local ids are assigned per region session. Object 42 in the new
+        # region would silently inherit object 42's physics from the old one.
+        self.object_physics.clear()
+        self.attached_sounds.clear()
+        self.object_animations.clear()
+        self.avatar_animations.clear()
+        self.recent_sound_triggers.clear()
+        # Whoever was mid-sentence in the old region is not typing here.
+        self.typing_senders.clear()
         self.terrain_heightmap = debug_heightmap
         self.debug_terrain_source = debug_source
         # Map tile is region-scoped; clear so a stale tile from the old region isn't shown.

@@ -975,6 +975,86 @@ class SceneChatTypeTests(unittest.TestCase):
         self.assertIsNone(scene.chat_lines[0].delivery())
 
 
+class SceneRegionChangeResetTests(unittest.TestCase):
+    """Region-scoped side state must not survive a region change.
+
+    The entity dicts are rebuilt from the WorldView every frame, so they take
+    care of themselves. These other dicts accumulate from bus events and do
+    not — and ``object_physics`` is keyed by ``local_id``, which is assigned
+    per region session, so a stale entry does not merely linger: it attaches
+    the old region's physics to a different object in the new one.
+    """
+
+    def _populated_scene(self) -> Scene:
+        from uuid import UUID
+
+        from vibestorm.world.land_flags import decode_parcel_flags
+        from vibestorm.world.physics_shape import PhysicsProperties
+
+        scene = Scene(region_handle=1, region_name="Old")
+        scene.object_physics[42] = PhysicsProperties(
+            shape_type=1, density=1.0, friction=1.0, restitution=1.0,
+            gravity_multiplier=1.0,
+        )
+        scene.object_animations[UUID(int=1)] = (UUID(int=2),)
+        scene.avatar_animations[UUID(int=3)] = (UUID(int=4),)
+        scene.recent_sound_triggers.append(object())
+        scene.typing_senders["Ann"] = True
+        scene.parcel_name = "Old Parcel"
+        scene.parcel_flags = decode_parcel_flags(0x1)
+        scene.sim_health = "sim fps=55"
+        return scene
+
+    def _change_region(self, scene: Scene) -> None:
+        from vibestorm.bus.events import RegionChanged
+
+        scene.apply_region_changed(
+            RegionChanged(region_handle=2, region_name="New"),
+        )
+
+    def test_local_id_keyed_physics_does_not_cross_regions(self) -> None:
+        scene = self._populated_scene()
+
+        self._change_region(scene)
+
+        self.assertEqual(scene.object_physics, {})
+
+    def test_animation_and_sound_state_is_cleared(self) -> None:
+        scene = self._populated_scene()
+
+        self._change_region(scene)
+
+        self.assertEqual(scene.object_animations, {})
+        self.assertEqual(scene.avatar_animations, {})
+        self.assertEqual(len(scene.recent_sound_triggers), 0)
+
+    def test_typing_indicator_does_not_follow_the_avatar(self) -> None:
+        scene = self._populated_scene()
+
+        self._change_region(scene)
+
+        self.assertEqual(scene.typing_senders, {})
+
+    def test_parcel_and_region_summaries_are_cleared(self) -> None:
+        # parcel_name was already cleared; parcel_flags and sim_health were
+        # added later and had been missed.
+        scene = self._populated_scene()
+
+        self._change_region(scene)
+
+        self.assertIsNone(scene.parcel_name)
+        self.assertIsNone(scene.parcel_flags)
+        self.assertEqual(scene.sim_health, "")
+
+    def test_the_new_region_identity_is_kept(self) -> None:
+        scene = self._populated_scene()
+
+        self._change_region(scene)
+
+        self.assertEqual(scene.region_handle, 2)
+        self.assertEqual(scene.region_name, "New")
+
+
 class SceneParcelFlagTests(unittest.TestCase):
     def _properties(self, flags: int) -> object:
         from vibestorm.bus.events import ParcelPropertiesReceived

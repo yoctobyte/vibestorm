@@ -2319,6 +2319,41 @@ as "playing" when the sim had just told it to go quiet.
 Live: unverified. No prim in the test region has a sound, and `census absent=`
 has listed `attached sound` all session.
 
+## 2026-08-14 — region-scoped state that outlived its region
+
+Found by asking a maintenance question rather than a protocol one: *which of
+the Scene's state is region-scoped, and who clears it?*
+
+`Scene.apply_region_changed` already cleared entities, textures, parcel name,
+overlay and map tile — with an explicit comment about not showing a stale tile
+from the old region. But every **per-object side dict** survived the change:
+
+    object_physics        attached_sounds      object_animations
+    avatar_animations     recent_sound_triggers  typing_senders
+    parcel_flags          sim_health
+
+The entity dicts look after themselves — `refresh_from_world_view` rebuilds
+them every frame from the WorldView, which is per-circuit and therefore
+naturally region-scoped. These do not: they accumulate from bus events and
+nothing pruned them.
+
+`object_physics` is the one that is actually *wrong* rather than merely stale.
+It is keyed by **local_id**, and local ids are assigned per region session — so
+object 42 in the new region would silently inherit object 42's physics from the
+region just left. The UUID-keyed dicts are less dangerous (a UUID is global) but
+still wrong: an object left behind keeps a phantom looping sound forever.
+
+`typing_senders` and `parcel_flags` were mine, added earlier this session;
+`parcel_name` was already being cleared right beside `parcel_flags`, which made
+the omission easy to see once the question was asked.
+
+Each cleared field is mutation-checked individually, so the test cannot pass on
+a partial fix.
+
+**Worth repeating as a habit:** every time state is added to a long-lived
+object, ask what its scope is and who resets it. Four of these eight fields
+were added this session without that question being asked.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
