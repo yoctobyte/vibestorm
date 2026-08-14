@@ -200,8 +200,8 @@ Main gaps:
 - semantic decoding of terse object payloads beyond the first inferred `local_id`
 - prim shape now survives `ObjectUpdateCompressed` (it was skipped, leaving
   nearly every prim in a populated region rendering as the fallback cube).
-  Hover text, its colour, the media URL and the attached-sound block decode in
-  both update paths and reach the inspector; hover text also renders as a 3D
+  Hover text, its colour, the media URL, the attached-sound block and the
+  TextureAnim block decode in both update paths and reach the inspector; hover text also renders as a 3D
   billboard. The particle system blocks are still stepped over
 - deeper object update families such as `ObjectUpdateCached` and `KillObject`
 - every built-in primitive authors real normals (flat faces for boxes and the

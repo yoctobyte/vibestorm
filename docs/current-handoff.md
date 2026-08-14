@@ -2011,6 +2011,45 @@ product is accumulated **unnormalized**, so each face contributes in proportion
 to its area. A sliver should not sway a shared vertex as much as a large
 neighbouring face. There is a test pinning that.
 
+## 2026-08-14 — TextureAnim, and a bug the "does not disturb" test caught
+
+Texture animation was another byte count and nothing else. It is how a prim
+scrolls, rotates, scales or flipbook-animates its texture — most of what makes
+a region look alive.
+
+Sourced, not reconstructed: `SceneObjectPart.AddTextureAnimation` writes the 16
+bytes (Flags u8, Face s8, SizeX/SizeY u8, Start/Length/Rate f32) and the mode
+bits are the LSL constants `ANIM_ON`..`SCALE` in `LSL_Constants.cs`.
+
+Three details worth not rediscovering:
+
+- **Face is signed.** `-1` means every face; reading it unsigned turns "all
+  faces" into face 255.
+- **"Off" is an empty block**, not 16 bytes with a cleared flag — absent and
+  off are the same wire state.
+- Under `ROTATE`/`SCALE` the SizeX/SizeY grid is unused, so `describe()`
+  reports angles rather than printing a misleading `0x0` grid.
+
+### The bug
+
+Adding this broke the TextureEntry read, and the test that caught it was the
+one asserting the new field "does not disturb" the old one — worth writing
+every time a field is appended to a cursor-walked blob.
+
+`decode_compressed_object_data` back-computed the TextureEntry start as
+`pos - texture_entry_size`. That was correct only while nothing was parsed
+after it. Appending the TextureAnim advance moved `pos` further on, so the
+TextureEntry was then read ten bytes early and every prim's default texture
+became garbage. The start offset is captured at read time now.
+
+The compressed flag bit for TextureAnim (`0x0040`) is **inferred** from the gap
+between `HAS_PARENT` (0x0020) and `HAS_ANG_VEL` (0x0080), not sourced. It is a
+safe thing to be wrong about: OpenSim writes TextureAnim last, so no later
+field depends on that cursor. Flagged here in case someone later finds the real
+value.
+
+`texture animation` joins the census `absent=` list — the test region has none.
+
 ## Notes For The Next Agent
 
 - All viewer-data protocol primitives live in `src/vibestorm/udp/messages.py`
