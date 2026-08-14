@@ -2985,6 +2985,73 @@ def encode_chat_from_viewer(
     )
 
 
+def encode_improved_instant_message(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    to_agent_id: UUID,
+    message: str,
+    from_agent_name: str,
+    dialog: int = 0,
+    im_id: UUID | None = None,
+    region_id: UUID | None = None,
+    parent_estate_id: int = 0,
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    from_group: bool = False,
+    offline: int = 0,
+    timestamp: int = 0,
+    binary_bucket: bytes = b"",
+) -> bytes:
+    """ImprovedInstantMessage (Low/254, Zerocoded) — send an IM.
+
+    dialog 0 is MessageFromAgent; 41/42 are StartTyping/StopTyping. OpenSim's
+    ``InstantMessageModule.OnInstantMessage`` accepts only MessageFromAgent,
+    Start/StopTyping, BusyAutoResponse and MessageFromObject, and drops every
+    other dialog silently.
+
+    The trailing ``EstateBlock`` and ``MetaData`` blocks are in the message
+    template but are not read by OpenSim's handler, which touches only
+    ``AgentData`` and ``MessageBlock``. They are written anyway because the
+    packet is deserialised in full before the handler sees it: a block the
+    deserialiser expects and does not find is a malformed packet, whereas
+    trailing bytes it does not expect are ignored. ``MetaData`` is a variable
+    *block*, so it is a count byte, here zero.
+    """
+    if not 0 <= dialog <= 0xFF:
+        raise ValueError("dialog must fit in U8")
+    if not 0 <= offline <= 0xFF:
+        raise ValueError("offline must fit in U8")
+    name_bytes = from_agent_name.encode("utf-8") + b"\x00"
+    if len(name_bytes) > 0xFF:
+        raise ValueError("from_agent_name is too long for a Variable 1 field")
+    msg_bytes = message.encode("utf-8") + b"\x00"
+    if len(msg_bytes) > 0xFFFF:
+        raise ValueError("message is too long for a Variable 2 field")
+    if len(binary_bucket) > 0xFFFF:
+        raise ValueError("binary_bucket is too long for a Variable 2 field")
+    return (
+        b"\xFF\xFF\x00\xFE"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([1 if from_group else 0])
+        + to_agent_id.bytes
+        + pack("<I", parent_estate_id)
+        + (region_id or UUID(int=0)).bytes
+        + pack("<3f", *position)
+        + bytes([offline, dialog])
+        + (im_id or UUID(int=0)).bytes
+        + pack("<I", timestamp)
+        + bytes([len(name_bytes)])
+        + name_bytes
+        + pack("<H", len(msg_bytes))
+        + msg_bytes
+        + pack("<H", len(binary_bucket))
+        + binary_bucket
+        + pack("<I", parent_estate_id)  # EstateBlock.EstateID
+        + b"\x00"  # MetaData: zero blocks
+    )
+
+
 def encode_teleport_location_request(
     agent_id: UUID,
     session_id: UUID,

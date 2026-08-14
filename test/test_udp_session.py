@@ -12,7 +12,7 @@ from vibestorm.login.models import (
 )
 from vibestorm.udp.control_flags import DIRECTION_BITS, AgentControlFlags
 from vibestorm.udp.dispatch import MessageDispatcher
-from vibestorm.udp.messages import ReplyTaskInventoryMessage
+from vibestorm.udp.messages import ReplyTaskInventoryMessage, parse_improved_instant_message
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, LL_ZERO_CODE_FLAG, build_packet, split_packet
 from vibestorm.udp.session import (
     LiveCircuitSession,
@@ -630,6 +630,50 @@ class LiveCircuitSessionTests(unittest.TestCase):
 
         kinds = [event.kind for event in session.events[events_before:]]
         self.assertIn("chat.outbound", kinds)
+
+    def test_build_instant_message_packet_addresses_and_logs_the_im(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.camera_center = (128.0, 64.0, 22.5)
+        events_before = len(session.events)
+
+        packet = session.build_instant_message_packet(
+            self.bootstrap.agent_id,
+            "vibestorm im self-probe",
+            from_agent_name="Vibestorm Tester",
+            now=10.5,
+        )
+
+        self.assertTrue(split_packet(packet).header.is_reliable)
+        dispatched = self.dispatcher.dispatch(split_packet(decode_zerocode(packet)).message)
+        self.assertEqual(dispatched.summary.name, "ImprovedInstantMessage")
+        parsed = parse_improved_instant_message(dispatched)
+        self.assertEqual(parsed.agent_id, self.bootstrap.agent_id)
+        self.assertEqual(parsed.to_agent_id, self.bootstrap.agent_id)
+        self.assertEqual(parsed.message, "vibestorm im self-probe")
+        self.assertEqual(parsed.from_agent_name, "Vibestorm Tester")
+        # The sender's position travels with the IM; the session knows it, the
+        # caller does not, so a default here would be silently wrong.
+        self.assertEqual(parsed.position, (128.0, 64.0, 22.5))
+
+        kinds = [event.kind for event in session.events[events_before:]]
+        self.assertIn("im.outbound", kinds)
+
+    def test_each_instant_message_gets_its_own_id(self) -> None:
+        # The IM id is what a viewer threads a conversation on; reusing one
+        # would make every message in a session look like the same message.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+
+        ids = set()
+        for index in range(3):
+            packet = session.build_instant_message_packet(
+                self.bootstrap.agent_id, f"line {index}", now=10.5
+            )
+            dispatched = self.dispatcher.dispatch(split_packet(decode_zerocode(packet)).message)
+            ids.add(parse_improved_instant_message(dispatched).im_id)
+
+        self.assertEqual(len(ids), 3)
 
     def test_shutdown_sends_logout_request(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)

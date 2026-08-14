@@ -66,6 +66,7 @@ from vibestorm.udp.messages import (
     encode_agent_update,
     encode_agent_wearables_request,
     encode_chat_from_viewer,
+    encode_improved_instant_message,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_confirm_xfer_packet,
@@ -1050,6 +1051,49 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "chat.outbound",
             f"type={chat_type} channel={channel} message={message!r}",
+        )
+        return packet
+
+    def build_instant_message_packet(
+        self,
+        to_agent_id: UUID,
+        message: str,
+        *,
+        dialog: int = 0,
+        from_agent_name: str = "Vibestorm",
+        now: float | None = None,
+    ) -> bytes:
+        """Build an ImprovedInstantMessage packet ready for sock_sendto.
+
+        Addressing the IM to this agent's own id is legitimate: OpenSim's
+        InstantMessageModule routes on ToAgentID without a self-check, so the
+        message comes back through the same inbound path a second avatar's IM
+        would take.
+
+        ``from_agent_name`` is display text — OpenSim forwards the name from
+        the packet rather than looking it up — so a caller that wants the IM
+        to read correctly should pass the account's own name.
+        """
+        packet = self._build_outbound_packet(
+            encode_improved_instant_message(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                to_agent_id=to_agent_id,
+                message=message,
+                from_agent_name=from_agent_name,
+                dialog=dialog,
+                im_id=uuid4(),
+                position=self.camera_center,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="ImprovedInstantMessage",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "im.outbound",
+            f"to={to_agent_id} dialog={dialog} message={message!r}",
         )
         return packet
 

@@ -35,6 +35,7 @@ from vibestorm.udp.messages import (
     parse_chat_from_simulator,
     parse_coarse_location_update,
     parse_complete_ping_check,
+    encode_improved_instant_message,
     parse_improved_instant_message,
     parse_improved_terse_object_update,
     parse_kill_object,
@@ -1741,6 +1742,96 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.from_agent_name, "Some Sender")
         self.assertEqual(parsed.message, "hello there")
         self.assertEqual(parsed.binary_bucket, bucket)
+
+    def test_encode_improved_instant_message_round_trips_through_the_parser(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        im_id = UUID("ccccccc1-2222-3333-4444-555555555555")
+
+        packet = encode_improved_instant_message(
+            agent_id,
+            session_id,
+            to_agent_id=agent_id,  # an IM to self is what the live probe sends
+            message="vibestorm im self-probe",
+            from_agent_name="Vibestorm Tester",
+            im_id=im_id,
+            position=(128.0, 64.0, 22.5),
+            timestamp=1700000000,
+        )
+        parsed = parse_improved_instant_message(self.dispatcher.dispatch(packet))
+
+        self.assertEqual(parsed.agent_id, agent_id)
+        self.assertEqual(parsed.session_id, session_id)
+        self.assertEqual(parsed.to_agent_id, agent_id)
+        self.assertEqual(parsed.dialog, 0)
+        self.assertEqual(parsed.im_id, im_id)
+        self.assertEqual(parsed.position, (128.0, 64.0, 22.5))
+        self.assertEqual(parsed.timestamp, 1700000000)
+        self.assertEqual(parsed.from_agent_name, "Vibestorm Tester")
+        self.assertEqual(parsed.message, "vibestorm im self-probe")
+        self.assertEqual(parsed.binary_bucket, b"")
+
+    def test_encode_improved_instant_message_keeps_offline_and_dialog_apart(self) -> None:
+        # Two adjacent U8s. Every other test leaves both at 0, so a swapped
+        # pair round-trips perfectly and the sim would read a MessageFromAgent
+        # as an offline StartTyping.
+        packet = encode_improved_instant_message(
+            UUID(int=1),
+            UUID(int=2),
+            to_agent_id=UUID(int=1),
+            message="x",
+            from_agent_name="N",
+            offline=1,
+            dialog=41,  # StartTyping
+        )
+
+        parsed = parse_improved_instant_message(self.dispatcher.dispatch(packet))
+
+        self.assertEqual(parsed.offline, 1)
+        self.assertEqual(parsed.dialog, 41)
+
+    def test_encode_improved_instant_message_writes_the_trailing_blocks(self) -> None:
+        """The parser stops at BinaryBucket, so nothing else would notice these.
+
+        OpenSim's handler ignores EstateBlock and MetaData, but the packet is
+        deserialised in full before the handler runs — a missing block is a
+        malformed packet. Live-confirmed 2026-08-14: sent in this shape, the IM
+        came back through the inbound path 5.5 s later.
+        """
+        packet = encode_improved_instant_message(
+            UUID(int=1),
+            UUID(int=2),
+            to_agent_id=UUID(int=1),
+            message="x",
+            from_agent_name="N",
+            parent_estate_id=4096,
+        )
+
+        # EstateBlock.EstateID (U32) then MetaData's zero block count.
+        self.assertEqual(packet[-5:], pack("<I", 4096) + b"\x00")
+
+    def test_encode_improved_instant_message_rejects_an_oversized_name(self) -> None:
+        # FromAgentName is Variable 1: the length prefix is a single byte, so
+        # a long name would wrap rather than fail.
+        with self.assertRaises(ValueError):
+            encode_improved_instant_message(
+                UUID(int=1),
+                UUID(int=2),
+                to_agent_id=UUID(int=1),
+                message="x",
+                from_agent_name="N" * 300,
+            )
+
+    def test_encode_improved_instant_message_rejects_a_dialog_outside_u8(self) -> None:
+        with self.assertRaises(ValueError):
+            encode_improved_instant_message(
+                UUID(int=1),
+                UUID(int=2),
+                to_agent_id=UUID(int=1),
+                message="x",
+                from_agent_name="N",
+                dialog=256,
+            )
 
     def test_parse_alert_message_decodes_text(self) -> None:
         text = b"System message\x00"

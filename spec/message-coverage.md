@@ -56,7 +56,7 @@ status reflects the **weakest** one and the note says which is which.
 | --- | --- | --- | --- | --- |
 | `ChatFromSimulator` | receive nearby chat/system chat | P1 | verified | parsed and published as `chat.local`, with the chat type named from `ChatTypeEnum`. Live-verified 2026-08-14 by sending whisper/say/shout and reading the sim's echo — types 0/1/2, `audible=1`. Start/stop-typing (4/5) are still `tested` only: this client never sends them and the region has one avatar |
 | `ChatFromViewer` | send nearby chat | P1 | verified | outbound builder; wired to the viewer chat window. Live-verified 2026-08-14 — three lines sent at different chat types and echoed back correctly |
-| `ImprovedInstantMessage` | IM/event-style message path | P1 | handled | parsed and published as `chat.im` |
+| `ImprovedInstantMessage` | IM/event-style message path | P1 | verified | parsed and published as `chat.im`, and now sent too. Live-verified 2026-08-14 by IMing our own agent id and reading the delivery 5.5 s later — OpenSim's `InstantMessageModule` routes on `ToAgentID` with no self-check, so this needs no second avatar |
 | `CoarseLocationUpdate` | coarse avatar positions | P1 | verified | drives `WorldView` agent positions; observed every session |
 | `AvatarAnimation` | avatar state hints | P2 | verified | typed decode plus bus event; observed 2026-08-14 |
 | `ObjectAnimation` | object animation state | P2 | handled | typed decode plus bus event; no animated objects in the test region |
@@ -119,9 +119,17 @@ census against `session.py` and `updater.py` shows no message arriving that the
 client ignores.
 
 The remaining `handled`-but-not-`verified` rows are not gaps in the code. They
-are messages the test region never produces: no in-world speaker for chat, no
-sim-side alerts, no object deletes, no sound emitters, no animated objects. Each
-needs world content rather than more decoding.
+are messages the test region never produces: no sim-side alerts
+(`AlertMessage`), no object deletes (`KillObject`), no sound emitters, no
+animated objects. Each needs world content rather than more decoding.
+
+Two rows have left this list by the same route. Chat was said to need an
+in-world speaker; it does not — the client can say something and read the
+simulator's echo. IM was said to need a second avatar; it does not — OpenSim
+routes on `ToAgentID` without checking whether it is the sender's own. So:
+before recording a row as blocked on world content, check whether the client
+can produce the traffic itself. Twice now the blocker was a missing outbound
+message rather than a missing object.
 
 ## Notes
 
