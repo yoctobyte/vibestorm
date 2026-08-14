@@ -187,16 +187,16 @@ Main gaps:
 - renderer use of per-face `TextureEntry` overrides beyond cube primitives (the
   decode side is complete; other prim shapes still fall back to the default
   texture until their face mapping is modeled)
-- renderer use of decoded mesh UVs and `material_groups`: normals now reach the
-  shader through an `in_normal` attribute, but per-face texture binding from
-  `material_groups` is not wired yet
+- renderer use of decoded mesh UVs: normals and per-face `material_groups`
+  binding now reach the GPU, but the fragment shader still generates texture
+  coordinates from position instead of using `decoded.uvs`
 - `ExtraParams` beyond the sculpt/mesh block (`type=0x30`): flexi, light,
   projector, and the other rich-tail entries are still undecoded
 - reliable extraction of ordinary prim names
 - clearer mapping of raw flag fields like `update_flags`
-- the typed EQG events now arrive but most have no consumer: `TeleportFinish`,
-  `EnableSimulator`, `CrossedRegion`, `ScriptRunningReply`,
-  `ObjectPhysicsProperties` and `AgentGroupDataUpdate` are decoded and dropped
+- typed EQG events publish as `EventQueueEventReceived`; `viewer3d` reports
+  `TeleportFinish` and `ScriptRunningReply` in chat. The region-management ones
+  (`EnableSimulator`, `CrossedRegion`) are on the bus but have no consumer
 - `udp.messages.parse_parcel_properties` is unreachable against OpenSim, which
   sends `ParcelProperties` only over the event queue. Kept for other servers.
 - `ObjectAnimation` and the four sound messages are still synthetic-test-only;
@@ -272,18 +272,15 @@ Note for anything marked "needs the GL viewer":
 `moderngl.create_standalone_context()` works on this machine, so GL changes can
 be verified headlessly by rendering to an offscreen framebuffer and reading
 pixels back — see `ParcelBorderGLTests` in `test/test_viewer3d_perspective_gl.py`.
-That route already closed the deferred mesh-normals item; per-face material
-binding is the next candidate.
+That route closed the deferred mesh-normals and per-face material items.
 
 Two independent tracks remain open, either of which can follow:
 
-- Consume the typed EQG events that now arrive but are dropped:
-  `TeleportFinish`, `EnableSimulator`, `CrossedRegion`, `ObjectPhysicsProperties`,
-  `AgentGroupDataUpdate`.
 - Live-verify the object-local script/notecard sync path end to end (implemented
-  2026-05-25, never confirmed against a running sim). `ScriptRunningReply` now
-  arrives over the live event queue, so the server-side confirmation signal is
-  finally available.
+  2026-05-25, never confirmed against a running sim). This is now the oldest
+  open track and everything it needed exists: `ScriptRunningReply` arrives over
+  the live event queue and surfaces as a viewer chat line.
+- Use decoded mesh UVs in the shader instead of position-generated coordinates.
 
 Deleting object inventory, creating missing rows, conflict resolution, and
 recursive folder sync remain out of scope until the update path is proven live.

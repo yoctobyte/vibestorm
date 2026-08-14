@@ -1469,19 +1469,42 @@ computed, so the test now authors normals pointing +X on a triangle lying in
 the XY plane (which the decoder would otherwise compute as +Z) and asserts the
 frames differ.
 
-Still open on the mesh track: per-face texture binding using
-`decoded.material_groups`, and UV use.
+### Per-Face Materials And The Event Queue, Consumed
+
+Both remaining "decoded but dropped" items from the June pass are closed.
+
+**`material_groups`.** Mesh index buffers now split along the decoded material
+groups, and each slice draws with that prim face's `TextureEntry` override —
+the treatment cube faces already had. Per-face buffers share the parent VBO;
+only IBOs and VAOs are per face, and they rebind when the instance buffer
+grows. Single-group meshes keep the one-draw-call path. The GL test paints a
+two-submesh mesh red on face 0 and blue on face 1 and asserts both appear;
+**both the structural and the pixel assertions were checked to fail when the
+feature is stubbed out**, so neither passes vacuously. That check is cheap and
+worth repeating for any future pixel-level test — a render test that cannot
+fail is worse than no test.
+
+**The event queue.** Typed EQG events now publish as `EventQueueEventReceived`,
+one carrier rather than one bus event per message, because the queue's
+vocabulary is open-ended — `UnknownEvent` publishes too, so a consumer can
+handle something this client does not decode yet. `viewer3d` reports the two
+that mean something to a person: `TeleportFinish` and `ScriptRunningReply`.
 
 ### Concrete Next Step
 
-Two independent tracks, either order:
+**Live-verify object sync**, the oldest open track (implemented 2026-05-25,
+never confirmed against a running sim). Everything it needed now exists:
+`ScriptRunningReply` arrives over the live queue and surfaces in viewer chat,
+so the server-side "script compiled OK" confirmation is finally observable.
+Select a scripted object in `./run.sh tester viewer3d`, Save Text, edit the
+`.lsl`, upload, and watch the chat line.
 
-- **Consume the rest of the event queue.** It is live now, and `TeleportFinish`,
-  `EnableSimulator`, `CrossedRegion`, `ObjectPhysicsProperties` and
-  `AgentGroupDataUpdate` decode and are then dropped on the floor.
-- **Live-verify object sync.** `ScriptRunningReply` now actually arrives, so the
-  server-side "script compiled OK" confirmation that track always needed is
-  finally available.
+Smaller open items:
+
+- mesh UVs are decoded but the shader still generates coordinates from
+  position; `generated_texture_uv` would become `in_uv`
+- extended-region 32x32 terrain patches are still undecoded
+- `ExtraParams` beyond the sculpt/mesh block (flexi, light, projector)
 
 ## Notes For The Next Agent
 
