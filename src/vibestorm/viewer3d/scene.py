@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
+from vibestorm.world.parcel_overlay import ParcelOverlayDecodeError, decode_parcel_bitmap
+
 if TYPE_CHECKING:
     from vibestorm.bus.events import (
         ChatAlert,
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
         LayerDataReceived,
         MeshAssetReady,
         ObjectInventorySnapshotReady,
+        ParcelPropertiesReceived,
         RegionChanged,
         RegionMapTileReady,
         TextureAssetReady,
@@ -286,6 +289,27 @@ class Scene:
     def apply_map_tile_ready(self, event: RegionMapTileReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:
             self.map_tile_path = Path(event.cache_path)
+
+    def apply_parcel_properties(self, event: ParcelPropertiesReceived) -> None:
+        """Set the parcel identity shown in the HUD status bar.
+
+        A region-wide request draws one reply per parcel, so prefer the parcel
+        whose Bitmap actually covers the avatar; fall back to the first reply
+        while the avatar position is still unknown.
+        """
+        if event.region_handle != self.region_handle and self.region_handle is not None:
+            return
+        properties = event.properties
+        if self.avatar_position is not None and properties.bitmap:
+            try:
+                mask = decode_parcel_bitmap(properties.bitmap)
+            except ParcelOverlayDecodeError:
+                mask = None
+            if mask is not None and not mask.contains_meters(
+                self.avatar_position[0], self.avatar_position[1]
+            ):
+                return
+        self.parcel_name = properties.name or None
 
     def apply_texture_asset_ready(self, event: TextureAssetReady) -> None:
         if event.region_handle == self.region_handle or self.region_handle is None:

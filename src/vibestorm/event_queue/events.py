@@ -10,6 +10,9 @@ handles and sizes arrive as bytes; ``int`` fields arrive as ``<integer>``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import UUID
+
+from vibestorm.udp.messages import ParcelPropertiesMessage
 
 EVENT_ENABLE_SIMULATOR = "EnableSimulator"
 EVENT_ESTABLISH_AGENT_COMMUNICATION = "EstablishAgentCommunication"
@@ -18,6 +21,7 @@ EVENT_CROSSED_REGION = "CrossedRegion"
 EVENT_SCRIPT_RUNNING_REPLY = "ScriptRunningReply"
 EVENT_OBJECT_PHYSICS_PROPERTIES = "ObjectPhysicsProperties"
 EVENT_AGENT_GROUP_DATA_UPDATE = "AgentGroupDataUpdate"
+EVENT_PARCEL_PROPERTIES = "ParcelProperties"
 
 
 class EventQueueDecodeError(ValueError):
@@ -101,6 +105,24 @@ class GroupMembership:
 class AgentGroupDataUpdateEvent:
     agent_id: str
     groups: tuple[GroupMembership, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class ParcelPropertiesEvent:
+    """Parcel identity delivered over the event queue.
+
+    OpenSim sends ``ParcelProperties`` **only** here — ``LLClientView.
+    SendLandProperties`` builds an EQG event and there is no UDP send path at
+    all (no ``ParcelPropertiesPacket`` anywhere in ``LLClientView.cs``). The
+    UDP ``ParcelProperties`` message stays in the template as
+    ``UDPDeprecated``, so ``udp.messages.parse_parcel_properties`` never fires
+    against OpenSim.
+
+    The payload is decoded into the same ``ParcelPropertiesMessage`` the UDP
+    parser produces, so bus consumers do not care which transport delivered it.
+    """
+
+    properties: ParcelPropertiesMessage
 
 
 @dataclass(slots=True, frozen=True)
@@ -241,6 +263,34 @@ def _decode_one(name: str, body: object) -> object:
             agent_id=str(agent.get("AgentID", "")),
             groups=tuple(groups),
         )
+    if name == EVENT_PARCEL_PROPERTIES:
+        parcel = _first_block(body, "ParcelData")
+        return ParcelPropertiesEvent(
+            properties=ParcelPropertiesMessage(
+                request_result=_as_int(parcel.get("RequestResult")),
+                sequence_id=_as_int(parcel.get("SequenceID")),
+                self_count=_as_int(parcel.get("SelfCount")),
+                other_count=_as_int(parcel.get("OtherCount")),
+                public_count=_as_int(parcel.get("PublicCount")),
+                local_id=_as_int(parcel.get("LocalID")),
+                owner_id=_as_uuid(parcel.get("OwnerID")),
+                is_group_owned=bool(parcel.get("IsGroupOwned", False)),
+                aabb_min=_as_vec3(parcel.get("AABBMin")),
+                aabb_max=_as_vec3(parcel.get("AABBMax")),
+                bitmap=_as_bytes(parcel.get("Bitmap")),
+                area=_as_int(parcel.get("Area")),
+                status=_as_int(parcel.get("Status")),
+                max_prims=_as_int(parcel.get("MaxPrims")),
+                total_prims=_as_int(parcel.get("TotalPrims")),
+                parcel_flags=_as_int(parcel.get("ParcelFlags")),
+                sale_price=_as_int(parcel.get("SalePrice")),
+                name=str(parcel.get("Name", "")),
+                description=str(parcel.get("Desc", "")),
+                music_url=str(parcel.get("MusicURL", "")),
+                media_url=str(parcel.get("MediaURL", "")),
+                group_id=_as_uuid(parcel.get("GroupID")),
+            )
+        )
     return UnknownEvent(message=name, body=body)
 
 
@@ -295,6 +345,35 @@ def _as_ip(value: object) -> str:
     return str(value)
 
 
+def _as_uuid(value: object) -> UUID:
+    """Coerce an LLSD uuid value; missing/blank fields become the null UUID.
+
+    OpenSim's LLSD encoder writes an unset UUID as an empty ``<uuid/>``
+    element, which parses to the empty string rather than to the all-zero
+    form — seen live on ``GroupID`` for an ungrouped parcel.
+    """
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return UUID(int=0)
+    text = str(value).strip()
+    if not text:
+        return UUID(int=0)
+    try:
+        return UUID(text)
+    except (TypeError, ValueError) as exc:
+        raise EventQueueDecodeError(f"invalid uuid in event body: {value!r}") from exc
+
+
+def _as_bytes(value: object) -> bytes:
+    """Coerce an LLSD binary blob (the Bitmap field arrives as one)."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if value is None:
+        return b""
+    raise EventQueueDecodeError(f"cannot coerce {type(value).__name__} to bytes")
+
+
 def _as_vec3(value: object) -> tuple[float, float, float]:
     if not isinstance(value, (list, tuple)) or len(value) < 3:
         return (0.0, 0.0, 0.0)
@@ -312,6 +391,7 @@ __all__ = [
     "EVENT_ENABLE_SIMULATOR",
     "EVENT_ESTABLISH_AGENT_COMMUNICATION",
     "EVENT_OBJECT_PHYSICS_PROPERTIES",
+    "EVENT_PARCEL_PROPERTIES",
     "EVENT_SCRIPT_RUNNING_REPLY",
     "EVENT_TELEPORT_FINISH",
     "EnableSimulatorEvent",
@@ -320,6 +400,7 @@ __all__ = [
     "EventQueueDecodeError",
     "GroupMembership",
     "ObjectPhysicsPropertiesEvent",
+    "ParcelPropertiesEvent",
     "ScriptRunningReplyEvent",
     "TeleportFinishEvent",
     "UnknownEvent",

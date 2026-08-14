@@ -8,6 +8,7 @@ import math
 import random
 import socket
 from collections import Counter
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -31,6 +32,13 @@ from vibestorm.caps.upload_baked_texture_client import (
     UploadBakedTextureError,
 )
 from vibestorm.event_queue.client import EventQueueClient, EventQueueError
+from vibestorm.event_queue.events import (
+    EventQueueBatch,
+    EventQueueDecodeError,
+    ParcelPropertiesEvent,
+    UnknownEvent,
+    decode_event_queue_payload,
+)
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.login.models import LoginBootstrap
 from vibestorm.udp.dispatch import MessageDispatcher
@@ -63,6 +71,7 @@ from vibestorm.udp.messages import (
     encode_confirm_xfer_packet,
     encode_logout_request,
     encode_map_block_request,
+    encode_parcel_properties_request,
     encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
@@ -124,6 +133,12 @@ if TYPE_CHECKING:
     from vibestorm.udp.world_client import WorldClient
 
 
+# Echoed back in the ParcelProperties reply so a client can correlate it with
+# its request. The message template specifies -1 or -2; viewers use -1 for an
+# ordinary (non-selection) query.
+PARCEL_PROPERTIES_SEQUENCE_ID = -1
+
+
 @dataclass(slots=True, frozen=True)
 class SessionConfig:
     duration_seconds: float = 60.0
@@ -144,6 +159,15 @@ class SessionConfig:
     unknowns_db_path: Path | None = DEFAULT_UNKNOWNS_DB_PATH
     caps_prelude: bool = True
     auto_upload_bakes: bool = True
+    # Region edge in meters, used to size the region-wide
+    # ParcelPropertiesRequest. Standard regions are 256 m; varregions are
+    # larger and would need this raised to enumerate every parcel.
+    region_size_meters: int = 256
+    # Background EventQueueGet polling. Off means the queue is polled once in
+    # the caps prelude and never again, which silently drops every EQG-only
+    # message (ParcelProperties, TeleportFinish, ScriptRunningReply).
+    event_queue_polling: bool = True
+    event_queue_timeout_seconds: float = 15.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -264,6 +288,11 @@ class LiveCircuitSession:
     get_mesh_url: str | None = None
     get_texture_url: str | None = None
     map_block_request_sent: bool = False
+    parcel_properties_request_sent: bool = False
+    event_queue_url: str | None = None
+    event_queue_ack: int = 0
+    event_queue_polls: int = 0
+    event_queue_events: int = 0
     region_map_image_id: UUID | None = None
     region_map_fetched: bool = False
     region_map_path: Path | None = None
@@ -277,10 +306,15 @@ class LiveCircuitSession:
     # happens in ``vibestorm.world.terrain`` when the bus consumer
     # decodes it.
     latest_layer_data: dict[int, bytes] = field(default_factory=dict)
-    # Most-recent ParcelProperties (parcel identity for the agent's parcel) and
-    # raw ParcelOverlay packets keyed by sequence id. Grid decode lives in
-    # ``vibestorm.world.parcel_overlay``.
+    # Most-recent ParcelProperties and raw ParcelOverlay packets keyed by
+    # sequence id. Grid decode lives in ``vibestorm.world.parcel_overlay``.
+    # A region-wide ParcelPropertiesRequest draws one reply per parcel, so the
+    # replies are also kept keyed by parcel local id; ``latest_`` is just the
+    # most recent one and is what the bus event carries.
     latest_parcel_properties: ParcelPropertiesMessage | None = None
+    parcel_properties_by_local_id: dict[int, ParcelPropertiesMessage] = field(
+        default_factory=dict
+    )
     parcel_overlay_packets: dict[int, bytes] = field(default_factory=dict)
     # Most-recent decoded animation/sound messages. on_event fires
     # synchronously right after these are set, so a bus translator reading
@@ -499,6 +533,7 @@ class LiveCircuitSession:
                 self._record_event(now, "parcel.properties.decode_error", str(exc))
                 return self._flush_transport_packets(now)
             self.latest_parcel_properties = parcel
+            self.parcel_properties_by_local_id[parcel.local_id] = parcel
             self._record_event(
                 now,
                 "parcel.properties",
@@ -708,6 +743,35 @@ class LiveCircuitSession:
                 self.map_block_request_sent = True
                 self._record_event(
                     now, "map.request", f"grid=({grid_x},{grid_y})"
+                )
+            if not self.parcel_properties_request_sent:
+                # OpenSim never sends ParcelProperties unsolicited. A box wider
+                # than one LandUnit makes LandManagementModule walk the region
+                # in 4 m units and reply once per distinct parcel, so a
+                # region-sized box enumerates every parcel. Bounds are
+                # region-local meters and must stay within the region size —
+                # OpenSim drops the request outright if end > region size.
+                size = float(self.config.region_size_meters)
+                packets.append(
+                    self._build_outbound_packet(
+                        encode_parcel_properties_request(
+                            self.bootstrap.agent_id,
+                            self.bootstrap.session_id,
+                            west=0.0,
+                            south=0.0,
+                            east=size,
+                            north=size,
+                            sequence_id=PARCEL_PROPERTIES_SEQUENCE_ID,
+                        ),
+                        reliable=True,
+                        zerocoded=True,
+                        now=now,
+                        label="ParcelPropertiesRequest",
+                    )
+                )
+                self.parcel_properties_request_sent = True
+                self._record_event(
+                    now, "parcel.request", f"box=(0,0,{size:g},{size:g})"
                 )
             packets.extend(self._flush_transport_packets(now))
             return packets
@@ -1997,6 +2061,38 @@ class LiveCircuitSession:
 
         return self._flush_transport_packets(now)
 
+    def handle_event_queue_batch(self, batch: EventQueueBatch, now: float) -> None:
+        """Fold one decoded EventQueueGet poll into session state.
+
+        The event queue is a second inbound channel alongside UDP. Some
+        messages arrive *only* here — notably ``ParcelProperties``, which
+        OpenSim builds as an EQG event and never sends as a UDP packet — so
+        this is not an optional extra.
+        """
+        self.event_queue_polls += 1
+        if batch.ack_id is not None:
+            self.event_queue_ack = batch.ack_id
+        for event in batch.events:
+            self.event_queue_events += 1
+            if isinstance(event, ParcelPropertiesEvent):
+                parcel = event.properties
+                self.latest_parcel_properties = parcel
+                self.parcel_properties_by_local_id[parcel.local_id] = parcel
+                self._record_event(
+                    now,
+                    "parcel.properties",
+                    (
+                        f"local_id={parcel.local_id} name={parcel.name!r} "
+                        f"area={parcel.area} owner={parcel.owner_id}"
+                    ),
+                )
+            elif isinstance(event, UnknownEvent):
+                self._record_event(now, "eventqueue.unknown", event.message)
+            else:
+                self._record_event(
+                    now, "eventqueue.event", type(event).__name__
+                )
+
 
 async def run_live_session(
     bootstrap: LoginBootstrap,
@@ -2032,6 +2128,20 @@ async def run_live_session(
 
         if session_config.caps_prelude:
             await _run_caps_prelude(session, sock, start_time)
+
+        event_queue_task: asyncio.Task[None] | None = None
+        if session_config.event_queue_polling and session.event_queue_url:
+            event_queue_task = asyncio.ensure_future(
+                _run_event_queue_loop(
+                    session,
+                    EventQueueClient(
+                        timeout_seconds=session_config.event_queue_timeout_seconds
+                    ),
+                    session.event_queue_url,
+                    int(sock.getsockname()[1]),
+                    loop,
+                )
+            )
 
         for packet in session.start(start_time):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
@@ -2154,6 +2264,11 @@ async def run_live_session(
 
             for packet in session.handle_incoming(payload, loop.time()):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+
+    if event_queue_task is not None:
+        event_queue_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await event_queue_task
 
     if session.close_reason is None and session.movement_completed:
         session._record_event(loop.time(), "session.completed", "duration elapsed")
@@ -2508,6 +2623,61 @@ def _extract_te_suffix(te_bytes: bytes) -> bytes:
     return b""
 
 
+def _decode_event_queue_poll(
+    session: LiveCircuitSession, payload: object, now: float
+) -> None:
+    """Decode one poll payload into typed events and fold it into the session."""
+    if payload is None:
+        return
+    try:
+        batch = decode_event_queue_payload(payload)
+    except EventQueueDecodeError as exc:
+        session._record_event(now, "eventqueue.decode_error", str(exc))
+        return
+    session.handle_event_queue_batch(batch, now)
+
+
+async def _run_event_queue_loop(
+    session: LiveCircuitSession,
+    client: EventQueueClient,
+    url: str,
+    local_port: int,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Poll EventQueueGet until the session closes.
+
+    Runs as a background task beside the UDP receive loop. Each poll acks the
+    previous batch id, which is how the simulator knows it can drop delivered
+    events. Errors are recorded and retried rather than ending the loop — a
+    long-poll timeout on a quiet queue is normal, not fatal.
+    """
+    while session.close_reason is None:
+        try:
+            result = await client.poll_once(
+                url,
+                ack=session.event_queue_ack,
+                udp_listen_port=local_port,
+            )
+        except asyncio.CancelledError:
+            raise
+        except EventQueueError as exc:
+            # A long-poll timeout on a quiet queue is the normal idle shape,
+            # not a failure — the simulator simply had nothing to deliver.
+            session._record_event(loop.time(), "eventqueue.poll_timeout", str(exc))
+            continue
+        except Exception as exc:  # noqa: BLE001 - a bad poll must not kill the session
+            if session.close_reason is not None:
+                # The queue capability is torn down at logout; a 404 here is
+                # the session ending, not an error worth reporting.
+                return
+            session._record_event(
+                loop.time(), "eventqueue.poll_error", f"{type(exc).__name__}: {exc}"
+            )
+            await asyncio.sleep(1.0)
+            continue
+        _decode_event_queue_poll(session, result.payload, loop.time())
+
+
 async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, now: float) -> None:
     local_port = int(sock.getsockname()[1])
     session.caps_udp_listen_port = local_port
@@ -2546,6 +2716,11 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
 
     event_queue_url = resolved.get("EventQueueGet")
     if event_queue_url:
+        # Keep the URL so the session can keep polling. A single prelude poll
+        # is not enough: OpenSim delivers ParcelProperties (and teleport /
+        # script-state events) only over this queue, and they arrive well
+        # after the prelude.
+        session.event_queue_url = event_queue_url
         try:
             poll_result = await event_queue_client.poll_once(
                 event_queue_url,
@@ -2555,6 +2730,7 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
             session._record_event(now, "caps.event_queue.error", str(exc))
         else:
             session._record_event(now, "caps.event_queue", poll_result.status)
+            _decode_event_queue_poll(session, poll_result.payload, now)
 
     simulator_features_url = resolved.get("SimulatorFeatures")
     if simulator_features_url:

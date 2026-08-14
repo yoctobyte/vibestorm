@@ -2892,6 +2892,41 @@ def encode_map_block_request(
     )
 
 
+def encode_parcel_properties_request(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    west: float,
+    south: float,
+    east: float,
+    north: float,
+    sequence_id: int = -1,
+    snap_selection: bool = False,
+) -> bytes:
+    """ParcelPropertiesRequest (Medium/11, Zerocoded) — ask for parcel metadata.
+
+    OpenSim never sends ``ParcelProperties`` unsolicited; it only replies to
+    this request (verified live 2026-08-14 — nothing arrives over UDP or the
+    event queue during a normal session). The West/South/East/North box is in
+    region-local meters and selects every parcel it touches; a degenerate box
+    at the agent's position asks for just the parcel under the agent.
+
+    The template notes ``SequenceID`` should be -1 or -2 and is echoed back in
+    the reply, which is how a viewer correlates responses to requests.
+    """
+    if not -0x80000000 <= int(sequence_id) <= 0x7FFFFFFF:
+        raise ValueError("sequence_id must fit in S32")
+    header = b"\xFF\x0B"  # Medium frequency, message number 11
+    return (
+        header
+        + agent_id.bytes
+        + session_id.bytes
+        + pack("<i", int(sequence_id))
+        + pack("<ffff", float(west), float(south), float(east), float(north))
+        + bytes([1 if snap_selection else 0])
+    )
+
+
 def encode_request_multiple_objects(
     agent_id: UUID, session_id: UUID, local_ids: list[int]
 ) -> bytes:

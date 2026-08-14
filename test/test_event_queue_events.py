@@ -1,5 +1,12 @@
 import base64
 import unittest
+from uuid import UUID
+
+from vibestorm.event_queue.events import (
+    EventQueueDecodeError,
+    ParcelPropertiesEvent,
+    decode_event_queue_payload,
+)
 
 
 def _be(value: int, size: int) -> bytes:
@@ -324,6 +331,73 @@ class EventQueueDecodeTests(unittest.TestCase):
         self.assertEqual(event.handle, 0x2A)
         self.assertEqual(event.ip, "127.0.0.1")
         self.assertEqual(event.region_size_x, 256)
+
+
+class ParcelPropertiesEventTests(unittest.TestCase):
+    """ParcelProperties arrives ONLY over the event queue.
+
+    OpenSim's ``LLClientView.SendLandProperties`` builds an EQG event and there
+    is no UDP send path, so this decoder — not the UDP parser — is what
+    actually runs against a live sim.
+    """
+
+    def _payload(self, **overrides: object) -> dict:
+        parcel: dict[str, object] = {
+            "LocalID": 1,
+            "Name": "Your Parcel",
+            "Desc": "",
+            "Area": 65536,
+            "OwnerID": "6571e388-6218-4574-87db-f9379718315e",
+            "GroupID": "",
+            "Bitmap": b"\xff" * 512,
+            "AABBMin": [0.0, 0.0, 0.0],
+            "AABBMax": [256.0, 256.0, 0.0],
+            "ParcelFlags": b"\x28\x00\x00\x0b",
+            "SequenceID": -1,
+            "RequestResult": 0,
+            "SelfCount": 0,
+            "OtherCount": 0,
+            "PublicCount": 0,
+            "Status": 0,
+            "MaxPrims": 15000,
+            "TotalPrims": 32,
+            "SalePrice": 0,
+            "IsGroupOwned": False,
+            "MusicURL": "",
+            "MediaURL": "",
+        }
+        parcel.update(overrides)
+        return {"id": 9, "events": [{"message": "ParcelProperties", "body": {"ParcelData": [parcel]}}]}
+
+    def test_decodes_into_parcel_properties_message(self) -> None:
+        batch = decode_event_queue_payload(self._payload())
+
+        self.assertEqual(batch.ack_id, 9)
+        event = batch.events[0]
+        self.assertIsInstance(event, ParcelPropertiesEvent)
+        parcel = event.properties
+        self.assertEqual(parcel.name, "Your Parcel")
+        self.assertEqual(parcel.local_id, 1)
+        self.assertEqual(parcel.area, 65536)
+        self.assertEqual(parcel.total_prims, 32)
+        self.assertEqual(parcel.aabb_max, (256.0, 256.0, 0.0))
+        self.assertEqual(len(parcel.bitmap), 512)
+        self.assertEqual(
+            parcel.owner_id, UUID("6571e388-6218-4574-87db-f9379718315e")
+        )
+        # ParcelFlags is a uint, so it arrives as a big-endian binary blob.
+        self.assertEqual(parcel.parcel_flags, 0x2800000B)
+
+    def test_blank_uuid_becomes_null_uuid(self) -> None:
+        # OpenSim writes an unset UUID as an empty <uuid/>, which parses to "".
+        # Seen live on GroupID for an ungrouped parcel.
+        batch = decode_event_queue_payload(self._payload(GroupID=""))
+
+        self.assertEqual(batch.events[0].properties.group_id, UUID(int=0))
+
+    def test_invalid_uuid_still_raises(self) -> None:
+        with self.assertRaises(EventQueueDecodeError):
+            decode_event_queue_payload(self._payload(OwnerID="not-a-uuid"))
 
 
 if __name__ == "__main__":

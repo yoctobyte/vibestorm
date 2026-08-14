@@ -115,8 +115,10 @@ class LiveCircuitSessionTests(unittest.TestCase):
         packets = session.handle_incoming(inbound, 11.0)
 
         # RegionHandshakeReply, MapBlockRequest (autosent for the current
-        # region grid coords), and the explicit PacketAck.
-        self.assertEqual(len(packets), 3)
+        # region grid coords), ParcelPropertiesRequest (region-wide, since
+        # ParcelProperties never arrives unsolicited), and the explicit
+        # PacketAck.
+        self.assertEqual(len(packets), 4)
         reply = split_packet(decode_zerocode(packets[0]))
         self.assertTrue(reply.header.is_reliable)
         self.assertEqual(reply.appended_acks, ())
@@ -124,11 +126,76 @@ class LiveCircuitSessionTests(unittest.TestCase):
         map_request = split_packet(packets[1])
         self.assertTrue(map_request.header.is_reliable)
         self.assertEqual(self.dispatcher.dispatch(map_request.message).summary.name, "MapBlockRequest")
-        ack = split_packet(packets[2])
+        parcel_request = split_packet(decode_zerocode(packets[2]))
+        self.assertTrue(parcel_request.header.is_reliable)
+        self.assertEqual(
+            self.dispatcher.dispatch(parcel_request.message).summary.name,
+            "ParcelPropertiesRequest",
+        )
+        ack = split_packet(packets[3])
         self.assertEqual(self.dispatcher.dispatch(ack.message).summary.name, "PacketAck")
         self.assertEqual(session.last_region_name, "Test")
         self.assertTrue(any(event.kind == "handshake.region" for event in session.events))
         self.assertTrue(session.map_block_request_sent)
+        self.assertTrue(session.parcel_properties_request_sent)
+        self.assertTrue(any(event.kind == "parcel.request" for event in session.events))
+
+    def test_event_queue_batch_records_parcel_properties(self) -> None:
+        # ParcelProperties reaches the session over the event queue, not UDP:
+        # OpenSim has no UDP send path for it.
+        from vibestorm.event_queue.events import decode_event_queue_payload
+
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        batch = decode_event_queue_payload(
+            {
+                "id": 4,
+                "events": [
+                    {
+                        "message": "ParcelProperties",
+                        "body": {
+                            "ParcelData": [
+                                {
+                                    "LocalID": 7,
+                                    "Name": "Your Parcel",
+                                    "Area": 65536,
+                                    "OwnerID": "6571e388-6218-4574-87db-f9379718315e",
+                                    "GroupID": "",
+                                    "Bitmap": b"\xff" * 512,
+                                    "AABBMin": [0.0, 0.0, 0.0],
+                                    "AABBMax": [256.0, 256.0, 0.0],
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+
+        session.handle_event_queue_batch(batch, 11.0)
+
+        self.assertEqual(session.event_queue_ack, 4)
+        self.assertEqual(session.event_queue_polls, 1)
+        self.assertEqual(session.event_queue_events, 1)
+        self.assertIsNotNone(session.latest_parcel_properties)
+        self.assertEqual(session.latest_parcel_properties.name, "Your Parcel")
+        self.assertIn(7, session.parcel_properties_by_local_id)
+        self.assertTrue(any(event.kind == "parcel.properties" for event in session.events))
+
+    def test_event_queue_batch_records_unknown_event_name(self) -> None:
+        from vibestorm.event_queue.events import decode_event_queue_payload
+
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        batch = decode_event_queue_payload(
+            {"id": 2, "events": [{"message": "SomethingNew", "body": {}}]}
+        )
+
+        session.handle_event_queue_batch(batch, 11.0)
+
+        self.assertEqual(session.event_queue_ack, 2)
+        unknown = [e for e in session.events if e.kind == "eventqueue.unknown"]
+        self.assertEqual([e.detail for e in unknown], ["SomethingNew"])
 
     def test_packet_ack_clears_pending_reliable_sequences(self) -> None:
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
@@ -680,14 +747,16 @@ class LiveCircuitSessionTests(unittest.TestCase):
         first_packets = session.handle_incoming(inbound, 11.0)
         second_packets = session.handle_incoming(inbound, 11.1)
 
-        # First handshake: reply + map block request + ack. Second time
-        # (duplicate sequence): only the ack — handshake state already set,
-        # so map_block_request_sent guards against a re-send.
-        self.assertEqual(len(first_packets), 3)
+        # First handshake: reply + map block request + parcel properties
+        # request + ack. Second time (duplicate sequence): only the ack —
+        # handshake state already set, so map_block_request_sent and
+        # parcel_properties_request_sent guard against a re-send.
+        self.assertEqual(len(first_packets), 4)
         self.assertEqual(len(second_packets), 1)
         self.assertEqual(self.dispatcher.dispatch(split_packet(decode_zerocode(first_packets[0])).message).summary.name, "RegionHandshakeReply")
         self.assertEqual(self.dispatcher.dispatch(split_packet(first_packets[1]).message).summary.name, "MapBlockRequest")
-        self.assertEqual(self.dispatcher.dispatch(split_packet(first_packets[2]).message).summary.name, "PacketAck")
+        self.assertEqual(self.dispatcher.dispatch(split_packet(decode_zerocode(first_packets[2])).message).summary.name, "ParcelPropertiesRequest")
+        self.assertEqual(self.dispatcher.dispatch(split_packet(first_packets[3]).message).summary.name, "PacketAck")
         self.assertEqual(self.dispatcher.dispatch(split_packet(second_packets[0]).message).summary.name, "PacketAck")
         self.assertEqual(session.received_messages["RegionHandshake"], 2)
         self.assertTrue(any(event.kind == "transport.reliable_duplicate" for event in session.events))

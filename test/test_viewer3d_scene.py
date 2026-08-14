@@ -9,9 +9,11 @@ from vibestorm.bus.events import (
     ChatLocal,
     ChatOutbound,
     LayerDataReceived,
+    ParcelPropertiesReceived,
     RegionChanged,
     RegionMapTileReady,
 )
+from vibestorm.udp.messages import ParcelPropertiesMessage
 from vibestorm.viewer3d.scene import (
     DEFAULT_MARKER_COLOR,
     PATH_CURVE_CIRCLE,
@@ -40,6 +42,33 @@ def _make_entity(local_id: int, pcode: int) -> SceneEntity:
         scale=(1.0, 1.0, 1.0),
         rotation=(0.0, 0.0, 0.0, 1.0),
         rotation_z_radians=0.0,
+    )
+
+
+def _make_parcel(*, name: str, bitmap: bytes = b"") -> ParcelPropertiesMessage:
+    return ParcelPropertiesMessage(
+        request_result=0,
+        sequence_id=-1,
+        self_count=0,
+        other_count=0,
+        public_count=0,
+        local_id=1,
+        owner_id=UUID(int=0),
+        is_group_owned=False,
+        aabb_min=(0.0, 0.0, 0.0),
+        aabb_max=(256.0, 256.0, 0.0),
+        bitmap=bitmap,
+        area=65536,
+        status=0,
+        max_prims=15000,
+        total_prims=0,
+        parcel_flags=0,
+        sale_price=0,
+        name=name,
+        description="",
+        music_url="",
+        media_url="",
+        group_id=UUID(int=0),
     )
 
 
@@ -102,6 +131,55 @@ class SceneEventApplicationTests(unittest.TestCase):
         )
 
         self.assertIsNone(scene.map_tile_path)
+
+    def test_apply_parcel_properties_sets_name(self) -> None:
+        scene = Scene(region_handle=0xAA)
+
+        scene.apply_parcel_properties(
+            ParcelPropertiesReceived(
+                region_handle=0xAA,
+                properties=_make_parcel(name="Your Parcel"),
+            )
+        )
+
+        self.assertEqual(scene.parcel_name, "Your Parcel")
+
+    def test_apply_parcel_properties_ignored_for_other_region(self) -> None:
+        scene = Scene(region_handle=0xAA)
+
+        scene.apply_parcel_properties(
+            ParcelPropertiesReceived(
+                region_handle=0xBB,
+                properties=_make_parcel(name="Elsewhere"),
+            )
+        )
+
+        self.assertIsNone(scene.parcel_name)
+
+    def test_apply_parcel_properties_prefers_parcel_under_avatar(self) -> None:
+        # A region-wide request draws one reply per parcel. Only the parcel
+        # whose bitmap covers the avatar should name the HUD.
+        scene = Scene(region_handle=0xAA, avatar_position=(10.0, 10.0, 25.0))
+        # Cell (2, 2) is the 4 m LandUnit containing (10, 10).
+        covering = bytearray(512)
+        index = 2 * 64 + 2
+        covering[index // 8] |= 1 << (index % 8)
+
+        scene.apply_parcel_properties(
+            ParcelPropertiesReceived(
+                region_handle=0xAA,
+                properties=_make_parcel(name="Far Parcel", bitmap=bytes(512)),
+            )
+        )
+        self.assertIsNone(scene.parcel_name)
+
+        scene.apply_parcel_properties(
+            ParcelPropertiesReceived(
+                region_handle=0xAA,
+                properties=_make_parcel(name="Home Parcel", bitmap=bytes(covering)),
+            )
+        )
+        self.assertEqual(scene.parcel_name, "Home Parcel")
 
     def test_apply_chat_local_appends_chat_line(self) -> None:
         scene = Scene()

@@ -1,6 +1,6 @@
 import unittest
 from pathlib import Path
-from struct import pack
+from struct import pack, unpack
 from uuid import UUID
 
 from vibestorm.udp.dispatch import MessageDispatcher
@@ -17,6 +17,7 @@ from vibestorm.udp.messages import (
     encode_complete_ping_check,
     encode_confirm_xfer_packet,
     encode_map_block_request,
+    encode_parcel_properties_request,
     encode_object_add,
     encode_packet_ack,
     encode_region_handshake_reply,
@@ -1484,6 +1485,60 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(body[43:45], (1000).to_bytes(2, "little"))
         self.assertEqual(body[45:47], (2000).to_bytes(2, "little"))
         self.assertEqual(body[47:49], (2000).to_bytes(2, "little"))
+
+    def test_encode_parcel_properties_request_round_trips(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        payload = encode_parcel_properties_request(
+            agent_id,
+            session_id,
+            west=0.0,
+            south=0.0,
+            east=256.0,
+            north=256.0,
+        )
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "ParcelPropertiesRequest")
+        body = dispatched.body
+        self.assertEqual(UUID(bytes=body[0:16]), agent_id)
+        self.assertEqual(UUID(bytes=body[16:32]), session_id)
+        # SequenceID is S32 and defaults to -1 per the message template.
+        self.assertEqual(unpack("<i", body[32:36])[0], -1)
+        self.assertEqual(unpack("<ffff", body[36:52]), (0.0, 0.0, 256.0, 256.0))
+        self.assertEqual(body[52], 0)  # SnapSelection
+
+    def test_encode_parcel_properties_request_snap_selection(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        payload = encode_parcel_properties_request(
+            agent_id,
+            session_id,
+            west=4.0,
+            south=8.0,
+            east=4.0,
+            north=8.0,
+            sequence_id=-2,
+            snap_selection=True,
+        )
+        dispatched = self.dispatcher.dispatch(payload)
+        self.assertEqual(dispatched.summary.name, "ParcelPropertiesRequest")
+        body = dispatched.body
+        self.assertEqual(unpack("<i", body[32:36])[0], -2)
+        self.assertEqual(body[52], 1)
+
+    def test_encode_parcel_properties_request_rejects_bad_sequence_id(self) -> None:
+        agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+        session_id = UUID("11111111-2222-3333-4444-555555555555")
+        with self.assertRaises(ValueError):
+            encode_parcel_properties_request(
+                agent_id,
+                session_id,
+                west=0.0,
+                south=0.0,
+                east=256.0,
+                north=256.0,
+                sequence_id=1 << 40,
+            )
 
     def test_encode_map_block_request_rejects_oversized_coords(self) -> None:
         agent_id = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
