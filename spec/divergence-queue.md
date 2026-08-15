@@ -25,9 +25,6 @@ reference item, not a divergence.
 
 | Area | Divergence | Evidence lives in |
 | --- | --- | --- |
-| Object updates | `ObjectUpdateCompressed`'s shape block does not use the message template's field order — path group first, profile group last | `udp/messages.py` compressed decoder |
-| Object updates | `ExtraParams` header is 6 bytes in the compressed block, 7 in `ObjectUpdate` | `world/extra_params.py` |
-| Object updates | The sound block's field order differs between compressed and full `ObjectUpdate` (OwnerID sits between UUID and gain in one) | `udp/messages.py` |
 | Object updates | Flexi softness is a 2-bit level split across the *top* bit of two bytes whose low 7 bits are tension/drag | `world/extra_params.py` |
 | Object updates | Light intensity is carried in the colour's **alpha** channel, not opacity | `world/extra_params.py` |
 | Object updates | `TextureEntry` face mask is MSB-first 7-bit groups, **not** LEB128 | `world/texture_entry.py` |
@@ -67,3 +64,12 @@ Moved to the docs project; listed so a later session does not re-queue them.
 - `GetObjectPhysicsData` limited to one object by a misplaced brace
 - Hover text colour alpha inverted on the wire
 - `ObjectPhysicsProperties` only echoing the viewer's own edit
+- The compressed shape block moving `ProfileCurve`, shifting thirteen fields
+- Mesh prims sent with rewritten shape values that do not match the stored object
+- `ExtraParams` having no outer length prefix in the compressed block. **The
+  queue line for this was wrong** — it claimed a 6-vs-7-byte header difference;
+  the per-block header is 2+4 in both, and the real difference is the outer
+  `Variable 1` prefix. Caught only because the protocol requires re-verifying
+  from source at write time rather than trusting the queue line.
+- `OwnerID` being unconditional, detached from the sound fields, and set for particles
+- Trees and grass sent as a fixed 113-byte block with no shape and no owner
