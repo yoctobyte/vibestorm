@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 is_command() {
   case "$1" in
-    help|-h|--help|login|login-show|login-reset|opensim|bootstrap|caps|eventq|udp|handshake|session|census|inventory-walk|upload-smoke|console|viewer|viewer3d|test|fixtures|unknowns)
+    help|-h|--help|login|login-show|login-reset|opensim|bootstrap|caps|eventq|udp|handshake|session|census|inventory-walk|upload-smoke|upload-notecard|console|viewer|viewer3d|test|fixtures|unknowns)
       return 0
       ;;
     *)
@@ -137,7 +137,8 @@ Commands:
   census       Report what content the region actually holds (and what it lacks)
   inventory-walk  Recursively list the user's inventory (read-only)
                   add --library to walk the grid library instead
-  upload-smoke Upload a one-space text/notecard item and verify FetchInventory2 sees it
+  upload-smoke Upload via NewFileAgentInventory - stores notecards as textures; kept as the counter-example
+  upload-notecard Create a notecard and fill it in (CreateInventoryItem + UpdateNotecardAgentInventory)
   console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
   viewer       Run the pygame 2D bird's-eye viewer
   viewer3d     Run the 3D viewer fork (currently identical to viewer; 3D work in progress)
@@ -343,7 +344,7 @@ prepare_login() {
 sl_confirmation_required() {
   [[ "$GRID_MODE" == "sl" ]] || return 1
   case "$command" in
-    eventq|udp|handshake|session|upload-smoke|console|viewer|viewer3d)
+    eventq|udp|handshake|session|upload-smoke|upload-notecard|console|viewer|viewer3d)
       return 0
       ;;
     *)
@@ -476,6 +477,10 @@ do_upload_smoke() {
   python_runner -m vibestorm.app.cli upload-empty-text-smoke "${cli_base_args[@]}" "$@"
 }
 
+do_upload_notecard() {
+  python_runner -m vibestorm.app.cli upload-notecard "${cli_base_args[@]}" "$@"
+}
+
 do_console() {
   python_runner -m vibestorm.app.cli console \
     "${cli_base_args[@]}" \
@@ -569,6 +574,9 @@ case "$command" in
     ;;
   upload-smoke)
     run_login_command do_upload_smoke "$@"
+    ;;
+  upload-notecard)
+    run_login_command do_upload_notecard "$@"
     ;;
   console)
     prepare_login

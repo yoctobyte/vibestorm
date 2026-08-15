@@ -106,6 +106,32 @@ def _embedded_item_count(data: bytes) -> int:
         ) from exc
 
 
+def encode_notecard(text: str) -> bytes:
+    """Build notecard container bytes for ``text``.
+
+    The layout is OpenSim's own writer, ``OSSL_Api.osMakeNotecard``, whose
+    prefix literal is pinned in the tests. Written as a container rather than
+    as plain UTF-8 because a viewer expects one: `SLUtil.ParseNotecardToArray`
+    reads the fixed offsets, and the *length* is what bounds the text, so a
+    bare string would be displayed with its container missing.
+
+    Note the declared length is a **byte** count, not a character count.
+
+    OpenSim's other notecard literal, ``Constants.EmptyNotecardData``, ends
+    ``}\n\0`` where this writer ends ``}``. Both are OpenSim-produced and its
+    reader accepts either, since nothing is read past the declared text.
+    """
+    body = text.encode("utf-8")
+    return (
+        CONTAINER_MAGIC
+        + b"\n{\nLLEmbeddedItems version 1\n{\ncount 0\n}\nText length "
+        + str(len(body)).encode("ascii")
+        + b"\n"
+        + body
+        + b"}"
+    )
+
+
 def decode_notecard(data: bytes) -> Notecard:
     """Decode notecard asset bytes, container or not.
 
@@ -165,4 +191,5 @@ __all__ = [
     "Notecard",
     "NotecardDecodeError",
     "decode_notecard",
+    "encode_notecard",
 ]

@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from vibestorm.assets.notecard import (
+    encode_notecard,
     CONTAINER_MAGIC,
     MINIMUM_CONTAINER_LENGTH,
     OPENSIM_MINIMUM_CONTAINER_LENGTH,
@@ -250,3 +251,63 @@ class SessionSummaryTests(unittest.TestCase):
         from vibestorm.udp.session import _summarize_fetched_asset
 
         self.assertEqual(_summarize_fetched_asset(10, b"default\n{\n}\n"), "")
+
+
+class EncodeTests(unittest.TestCase):
+    """The writer half, added when notecard upload was fixed.
+
+    A notecard has to go up as a container: `SLUtil.ParseNotecardToArray`
+    reads fixed offsets and bounds the text by the declared length, so plain
+    UTF-8 bytes would be stored but not read back as a notecard.
+    """
+
+    def test_it_matches_opensim_s_own_writer_prefix(self) -> None:
+        if not _OSSL.exists():
+            self.skipTest("opensim-source not present")
+
+        self.assertTrue(encode_notecard("hi").startswith(_WRITER_PREFIX + b"0"))
+
+    def test_it_round_trips_through_the_decoder(self) -> None:
+        for text in ("", "hello", "line one\nline two", "café ☕"):
+            with self.subTest(text=text):
+                notecard = decode_notecard(encode_notecard(text))
+
+                self.assertTrue(notecard.is_container)
+                self.assertEqual(notecard.text, text)
+
+    def test_the_declared_length_counts_bytes_not_characters(self) -> None:
+        # A multibyte character is where a character count would truncate the
+        # text, and the decoder would not notice - it would just read short.
+        encoded = encode_notecard("é")
+
+        self.assertIn(b"Text length 2\n", encoded)
+        self.assertEqual(decode_notecard(encoded).text, "é")
+
+    def test_it_agrees_with_the_hand_built_fixture(self) -> None:
+        # The tests above build containers with a local helper; if the encoder
+        # and that helper ever disagree, one of them is wrong.
+        self.assertEqual(encode_notecard("hello"), _container(b"hello"))
+
+    def test_an_empty_notecard_encodes_to_the_shortest_container(self) -> None:
+        # 77 bytes - shorter than OpenSim's own reader minimum, which is the
+        # divergence pinned in SourcePinTests.
+        self.assertEqual(len(encode_notecard("")), 77)
+
+    def test_a_live_uploaded_notecard_reads_back_as_written(self) -> None:
+        """The bytes the sim actually stored on 2026-08-15.
+
+        Captured from a real `upload-notecard` run and fetched back through
+        ViewerAsset, so this pins the whole path rather than the encoder
+        agreeing with itself.
+        """
+        stored = (
+            b"Linden text version 2\n{\nLLEmbeddedItems version 1\n{\ncount 0\n}\n"
+            b"Text length 34\nHello from Vibestorm.\nSecond line.}"
+        )
+
+        self.assertEqual(
+            encode_notecard("Hello from Vibestorm.\nSecond line."), stored
+        )
+        self.assertEqual(
+            decode_notecard(stored).text, "Hello from Vibestorm.\nSecond line."
+        )

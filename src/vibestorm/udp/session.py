@@ -78,6 +78,7 @@ from vibestorm.udp.messages import (
     encode_region_handshake_reply,
     encode_request_multiple_objects,
     encode_request_object_properties_family,
+    encode_create_inventory_item,
     encode_request_task_inventory,
     encode_request_xfer,
     encode_teleport_location_request,
@@ -114,6 +115,7 @@ from vibestorm.udp.messages import (
     parse_region_handshake,
     parse_sound_trigger,
     parse_reply_task_inventory,
+    parse_update_create_inventory_item,
     parse_send_xfer_packet,
     parse_start_ping_check,
     parse_transfer_info,
@@ -316,6 +318,10 @@ class LiveCircuitSession:
     pending_task_inventory_by_xfer: dict[int, PendingTaskInventoryXfer] = field(default_factory=dict)
     pending_task_inventory_by_task: dict[UUID, int] = field(default_factory=dict)
     pending_task_inventory_requests: set[int] = field(default_factory=set)
+    #: Items the sim confirmed creating, keyed by the CallbackID we sent. The
+    #: callback id is the only thing tying a reply to a request; the sim echoes
+    #: it back and nothing else in the reply identifies which ask it answers.
+    created_inventory_items: dict[int, object] = field(default_factory=dict)
     pending_asset_transfers: dict[UUID, PendingAssetTransfer] = field(default_factory=dict)
     fetched_assets: dict[UUID, bytes] = field(default_factory=dict)
     fetch_inventory_descendents_url: str | None = None
@@ -742,6 +748,23 @@ class LiveCircuitSession:
             )
             return self._flush_transport_packets(now)
 
+        if dispatched.summary.name == "UpdateCreateInventoryItem":
+            try:
+                created = parse_update_create_inventory_item(dispatched)
+            except (ValueError, IndexError) as exc:
+                self._record_event(now, "inventory.create.decode_error", str(exc))
+                return []
+            for item in created.items:
+                self.created_inventory_items[item.callback_id] = item
+                self._record_event(
+                    now,
+                    "inventory.create.reply",
+                    f"approved={created.sim_approved} item={item.item_id} "
+                    f"asset={item.asset_id} type={item.asset_type} "
+                    f"inv_type={item.inv_type} name={item.name!r} "
+                    f"callback={item.callback_id}",
+                )
+            return []
         if dispatched.summary.name == "ReplyTaskInventory":
             try:
                 reply = parse_reply_task_inventory(dispatched)
@@ -1313,6 +1336,41 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "task_inventory.request",
             f"local_id={int(local_id)} pending={len(self.pending_task_inventory_requests)}",
+        )
+        return packet
+
+    def build_create_inventory_item_packet(
+        self,
+        folder_id: UUID,
+        *,
+        name: str,
+        asset_type: int,
+        inv_type: int,
+        description: str = "",
+        callback_id: int = 1,
+        now: float | None = None,
+    ) -> bytes:
+        """Build CreateInventoryItem for an empty item in agent inventory."""
+        packet = self._build_outbound_packet(
+            encode_create_inventory_item(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                folder_id,
+                name=name,
+                description=description,
+                asset_type=int(asset_type),
+                inv_type=int(inv_type),
+                callback_id=int(callback_id),
+            ),
+            reliable=True,
+            now=now,
+            label="CreateInventoryItem",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "inventory.create.request",
+            f"name={name!r} type={asset_type} inv_type={inv_type} "
+            f"callback={callback_id}",
         )
         return packet
 

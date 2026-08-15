@@ -95,6 +95,7 @@ writes, so this table cannot fall behind the encoders again.
 | Message | Purpose | Priority | Status | Notes |
 | --- | --- | --- | --- | --- |
 | `LogoutRequest` | end the session cleanly | P0 | verified | sent at shutdown of every session |
+| `CreateInventoryItem` | make an empty inventory item | P2 | verified | the working notecard/script creation path. OpenSim's `InventoryAccessModule` switches on `Type` and points a new notecard at `Constants.EmptyNotecardID`; content follows over `UpdateNotecardAgentInventory`. `TransactionID` must be zero or the request goes to the legacy asset-transaction path instead. Live 2026-08-15: created `type:7 inv_type:7` |
 | `AgentWearablesRequest` | ask what we are wearing | P2 | verified | drives `appearance[wearables]`; answered every session |
 | `AgentCachedTexture` | ask which bakes the sim already has | P2 | verified | answered by `AgentCachedTextureResponse`; observed 2026-08-14 |
 | `AgentIsNowWearing` / `AgentSetAppearance` | publish our appearance | P2 | verified | the bake upload path; `appearance[baked] uploaded:5` observed 2026-08-14 |
@@ -141,6 +142,7 @@ land in the same place either way.
 
 | Message | Purpose | Priority | Status | Notes |
 | --- | --- | --- | --- | --- |
+| `UpdateCreateInventoryItem` | reply naming the item just created | P2 | verified | carries the new item id, the asset it points at, both type numbers and the `CallbackID` we sent — the only thing tying a reply to its request. Live 2026-08-15. Its UUIDs are big-endian like the rest of the protocol; reading them little-endian yields a well-formed but wrong id that nothing downstream rejects |
 | `ReplyTaskInventory` | object inventory listing header | P3 | verified | supplies the task id, serial and xfer filename; live-confirmed against scripted objects |
 | `SendXferPacket` | xfer payload for that listing | P3 | verified | packets confirmed and reassembled, then parsed into `inv_item` blocks |
 | `TransferInfo` | asset transfer handshake | P3 | verified | `TransferRequest` → `TransferInfo` → `TransferPacket*`; source type 2 (global assets) is reliable |

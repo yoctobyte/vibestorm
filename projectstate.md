@@ -274,6 +274,32 @@ clothing and served as body parts.
 **A capability that ignores an input is an input you do not have to know.**
 Worth probing for before building a table from memory.
 
+**Notecard upload works** (2026-08-15). `./run.sh` → `upload-notecard` creates
+a notecard and fills it in; verified end to end by fetching the result back
+through `ViewerAsset` and decoding it to the exact text written.
+
+This was the long-standing upload bug: the client used `NewFileAgentInventory`,
+which handles six inventory types and notecard is not one of them, so OpenSim
+left both type fields at 0 and the item was stored as a *texture*. The
+capability reports success either way. The real path is two halves that cannot
+be swapped — `CreateInventoryItem` over UDP to make an empty item, then
+`UpdateNotecardAgentInventory` to fill it — and `upload-empty-text-smoke` is
+kept as the demonstration of the broken one.
+
+Two things that fix turned up:
+
+- **UUIDs in `UpdateCreateInventoryItem` are big-endian, like the rest of the
+  protocol.** Reading them little-endian produces a *well-formed* UUID with the
+  first three groups reversed, and nothing rejects it: the update capability
+  just answers "Failed to update inventory item asset". It was only visible
+  because a new notecard points at a known asset, `Constants.EmptyNotecardID`,
+  so the wrong value had something to disagree with. **A parsed id that has a
+  known expected value is worth checking against it.**
+- **`LLSDAssetUploadError` arrives in two shapes.** The generic uploader nests
+  it under `error`; the item-asset updaters return it *as the whole reply*,
+  with no `state`. Reading only the nested form turned a specific failure
+  message into `state ''`.
+
 *Genuinely unimplemented, not blocked*: the region-crossing transport half
 (`EnableSimulator` -> child circuit, `CrossedRegion` -> promote child,
 `TeleportFinish` over the event queue), and the inventory *write* surface

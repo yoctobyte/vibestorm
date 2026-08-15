@@ -3303,6 +3303,167 @@ def encode_request_task_inventory(agent_id: UUID, session_id: UUID, local_id: in
     return b"\xFF\xFF\x01\x21" + agent_id.bytes + session_id.bytes + pack("<I", int(local_id))
 
 
+def encode_create_inventory_item(
+    agent_id: UUID,
+    session_id: UUID,
+    folder_id: UUID,
+    *,
+    name: str,
+    description: str = "",
+    asset_type: int,
+    inv_type: int,
+    callback_id: int = 0,
+    transaction_id: UUID | None = None,
+    next_owner_mask: int = 0x0008E000,
+    wearable_type: int = 0,
+) -> bytes:
+    """CreateInventoryItem (Low/305, Zerocoded).
+
+    Creates an *empty* item of a given type in the agent's inventory. This is
+    how a viewer makes a notecard or script: OpenSim's
+    ``InventoryAccessModule.CreateNewInventoryItem`` switches on ``Type`` and,
+    for a notecard, creates the item pointing at the shared empty-notecard
+    asset (``Constants.EmptyNotecardID``). Content is filled in afterwards
+    through ``UpdateNotecardAgentInventory``.
+
+    ``transaction_id`` must stay zero for that path. A non-zero value sends the
+    request to ``HandleItemCreationFromTransaction`` instead — the legacy
+    UDP asset-transaction upload — and the switch below is never reached.
+    That is checked in the source before the type switch, for every asset type
+    except Settings and Material.
+
+    ``asset_type`` and ``inv_type`` are separate enumerations that agree for
+    some values and not others, so both are required rather than derived. The
+    grid's own library gives the pairs: notecard 7/7 and script 10/10, but
+    clothing 5/18, animation 20/19, gesture 21/20.
+    """
+    if not -128 <= int(asset_type) <= 127:
+        raise ValueError("asset_type must fit in S8")
+    if not -128 <= int(inv_type) <= 127:
+        raise ValueError("inv_type must fit in S8")
+    if not 0 <= int(wearable_type) <= 0xFF:
+        raise ValueError("wearable_type must fit in U8")
+    if not 0 <= int(callback_id) <= 0xFFFFFFFF:
+        raise ValueError("callback_id must fit in U32")
+    if not 0 <= int(next_owner_mask) <= 0xFFFFFFFF:
+        raise ValueError("next_owner_mask must fit in U32")
+    name_bytes = name.encode("utf-8") + b"\x00"
+    if len(name_bytes) > 0xFF:
+        raise ValueError("name is too long for a Variable 1 field")
+    description_bytes = description.encode("utf-8") + b"\x00"
+    if len(description_bytes) > 0xFF:
+        raise ValueError("description is too long for a Variable 1 field")
+    return (
+        b"\xFF\xFF\x01\x31"
+        + agent_id.bytes
+        + session_id.bytes
+        + pack("<I", int(callback_id))
+        + folder_id.bytes
+        + (transaction_id or UUID(int=0)).bytes
+        + pack("<I", int(next_owner_mask))
+        + pack("<b", int(asset_type))
+        + pack("<b", int(inv_type))
+        + bytes([int(wearable_type)])
+        + bytes([len(name_bytes)])
+        + name_bytes
+        + bytes([len(description_bytes)])
+        + description_bytes
+    )
+
+
+@dataclass(slots=True, frozen=True)
+class CreatedInventoryItem:
+    item_id: UUID
+    folder_id: UUID
+    callback_id: int
+    asset_id: UUID
+    asset_type: int
+    inv_type: int
+    name: str
+    description: str
+
+
+@dataclass(slots=True, frozen=True)
+class UpdateCreateInventoryItemMessage:
+    agent_id: UUID
+    sim_approved: bool
+    transaction_id: UUID
+    items: tuple[CreatedInventoryItem, ...]
+
+
+def parse_update_create_inventory_item(
+    message: DispatchedMessage,
+) -> UpdateCreateInventoryItemMessage:
+    """UpdateCreateInventoryItem (Low/267) — the reply to CreateInventoryItem.
+
+    ``SimApproved`` is carried through rather than treated as success: the
+    item block is present either way, and a caller that ignores the flag would
+    report a rejected creation as a completed one.
+    """
+    if message.summary.name != "UpdateCreateInventoryItem":
+        raise ValueError(f"not an UpdateCreateInventoryItem: {message.summary.name}")
+    body = message.body
+    offset = 0
+    agent_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+    sim_approved = body[offset] != 0
+    offset += 1
+    transaction_id = UUID(bytes=body[offset : offset + 16])
+    offset += 16
+
+    count = body[offset]
+    offset += 1
+    items: list[CreatedInventoryItem] = []
+    for _ in range(count):
+        item_id = UUID(bytes=body[offset : offset + 16])
+        folder_id = UUID(bytes=body[offset + 16 : offset + 32])
+        offset += 32
+        (callback_id,) = unpack_from("<I", body, offset)
+        offset += 4
+        # CreatorID, OwnerID, GroupID then eight permission/ownership fields:
+        # five U32 masks, NextOwnerMask, and GroupOwned as a BOOL.
+        offset += 48
+        offset += 4 * 5
+        offset += 1
+        asset_id = UUID(bytes=body[offset : offset + 16])
+        offset += 16
+        asset_type, inv_type = unpack_from("<bb", body, offset)
+        offset += 2
+        offset += 4  # Flags
+        offset += 1  # SaleType
+        offset += 4  # SalePrice
+        name, offset = _read_variable1_string(body, offset)
+        description, offset = _read_variable1_string(body, offset)
+        offset += 4  # CreationDate
+        offset += 4  # CRC
+        items.append(
+            CreatedInventoryItem(
+                item_id=item_id,
+                folder_id=folder_id,
+                callback_id=callback_id,
+                asset_id=asset_id,
+                asset_type=asset_type,
+                inv_type=inv_type,
+                name=name,
+                description=description,
+            )
+        )
+    return UpdateCreateInventoryItemMessage(
+        agent_id=agent_id,
+        sim_approved=sim_approved,
+        transaction_id=transaction_id,
+        items=tuple(items),
+    )
+
+
+def _read_variable1_string(body: bytes, offset: int) -> tuple[str, int]:
+    length = body[offset]
+    offset += 1
+    raw = body[offset : offset + length]
+    offset += length
+    return raw.rstrip(b"\x00").decode("utf-8", errors="replace"), offset
+
+
 def encode_request_xfer(
     xfer_id: int,
     filename: str,

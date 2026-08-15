@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import suppress
 import platform
 from pathlib import Path
 from typing import Iterable
@@ -23,7 +24,10 @@ from vibestorm.caps.inventory_client import (
     InventoryItemRequest,
     parse_inventory_items_payload,
 )
+from vibestorm.assets.notecard import encode_notecard
+from vibestorm.caps.inventory_types import INVENTORY_NOTECARD
 from vibestorm.caps.library import LIBRARY_OWNER_ID, LIBRARY_ROOT_FOLDER_ID
+from vibestorm.caps.task_inventory_upload_client import TaskInventoryUploadClient
 from vibestorm.caps.inventory_walk import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_MAX_DEPTH,
@@ -157,9 +161,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print live session events and transport diagnostics.",
     )
 
+    notecard_parser = subparsers.add_parser(
+        "upload-notecard",
+        help="Create a notecard in inventory and fill it in (the working path).",
+    )
+    notecard_parser.add_argument("--login-uri", required=True)
+    notecard_parser.add_argument("--first", required=True)
+    notecard_parser.add_argument("--last", required=True)
+    notecard_parser.add_argument("--password", required=True)
+    notecard_parser.add_argument("--start", default="last")
+    notecard_parser.add_argument("--name", default="vibestorm-notecard")
+    notecard_parser.add_argument(
+        "--description", default="Created by Vibestorm."
+    )
+    notecard_parser.add_argument(
+        "--text",
+        default="Written by Vibestorm.",
+        help="Notecard body. Stored in a Linden text version 2 container.",
+    )
+
     upload_parser = subparsers.add_parser(
         "upload-empty-text-smoke",
-        help="Upload a one-space text/notecard asset through NewFileAgentInventory.",
+        help=(
+            "Upload through NewFileAgentInventory. Kept because it demonstrates "
+            "that capability mistyping notecards; use upload-notecard instead."
+        ),
     )
     upload_parser.add_argument("--login-uri", required=True)
     upload_parser.add_argument("--first", required=True)
@@ -545,6 +571,144 @@ def format_appearance_status(report: SessionReport) -> list[str]:
 def print_lines(lines: Iterable[str]) -> None:
     for line in lines:
         print(line)
+
+
+async def upload_notecard(
+    *,
+    bootstrap: LoginBootstrap,
+    name: str,
+    description: str,
+    text: str,
+) -> list[str]:
+    """Create a notecard in the agent's inventory and fill it with text.
+
+    The working path, and it is two halves that cannot be swapped:
+
+    1. ``CreateInventoryItem`` over UDP makes an *empty* notecard item. OpenSim
+       creates it pointing at the shared empty-notecard asset.
+    2. ``UpdateNotecardAgentInventory`` uploads the real bytes against that
+       item id.
+
+    ``NewFileAgentInventory`` — which `upload_empty_text_smoke` uses — is not a
+    shortcut for this. It handles six inventory types and notecard is not one
+    of them, so the item is stored with asset type 0, a texture. See
+    `caps/asset_upload_client.NEW_FILE_INVENTORY_TYPES`.
+
+    Everything runs inside the live session: capabilities stop answering once
+    the agent logs out.
+    """
+    if bootstrap.inventory_root_folder_id is None:
+        raise AssetUploadError("login response did not include an inventory root folder")
+
+    resolved = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
+        bootstrap.seed_capability,
+        ["UpdateNotecardAgentInventory", "FetchInventory2"],
+        user_agent="Vibestorm",
+    )
+    update_url = resolved.get("UpdateNotecardAgentInventory")
+    if not update_url:
+        raise AssetUploadError("UpdateNotecardAgentInventory capability was not resolved")
+    fetch_url = resolved.get("FetchInventory2")
+    if not fetch_url:
+        raise AssetUploadError("FetchInventory2 capability was not resolved")
+
+    body = encode_notecard(text)
+    callback_id = 1
+    lines: list[str] = []
+    finished: asyncio.Future = asyncio.get_running_loop().create_future()
+    client = WorldClient()
+    sent = False
+
+    async def finish(created) -> None:
+        # Reported before the upload is attempted: half the value of this
+        # command is knowing what CreateInventoryItem produced, and that is
+        # exactly what a failed upload would otherwise hide.
+        lines.append(f"notecard[created_item]={created.item_id}")
+        lines.append(f"notecard[empty_asset]={created.asset_id}")
+        lines.append(
+            f"notecard[created_types]=type:{created.asset_type} "
+            f"inv_type:{created.inv_type}"
+        )
+        try:
+            result = await TaskInventoryUploadClient(timeout_seconds=20.0).upload_agent_notecard(
+                update_url, created.item_id, body
+            )
+            lines.append(f"notecard[upload_state]={result.state}")
+            lines.append(f"notecard[new_asset]={result.new_asset_id}")
+
+            items = parse_inventory_items_payload(
+                await InventoryCapabilityClient(timeout_seconds=10.0).fetch_inventory_items(
+                    fetch_url,
+                    [InventoryItemRequest(item_id=created.item_id)],
+                    user_agent="Vibestorm",
+                )
+            )
+            fetched = next((i for i in items if i.item_id == created.item_id), None)
+            if fetched is None:
+                lines.append("notecard[confirm]=FetchInventory2 did not return the item")
+            else:
+                lines.append(
+                    f"notecard[confirm]=name={fetched.name!r} "
+                    f"type:{fetched.type} inv_type:{fetched.inv_type} "
+                    f"asset={fetched.asset_id}"
+                )
+                # The bug this command exists to fix showed up exactly here.
+                if fetched.type != INVENTORY_NOTECARD:
+                    lines.append(
+                        f"notecard[ERROR]=stored as asset type {fetched.type}, "
+                        f"expected {INVENTORY_NOTECARD}"
+                    )
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            lines.append(f"notecard[error]={exc}")
+        finally:
+            if not finished.done():
+                finished.set_result(None)
+
+    def on_event(event: SessionEvent) -> None:
+        nonlocal sent
+        session = client.current
+        if session is None or client.current_handle is None:
+            return
+        if not sent:
+            sent = True
+            client.queue_outbound_packet(
+                client.current_handle,
+                session.build_create_inventory_item_packet(
+                    bootstrap.inventory_root_folder_id,
+                    name=name,
+                    description=description,
+                    asset_type=INVENTORY_NOTECARD,
+                    # Notecards are 7/7. Read off the grid's own library rather
+                    # than assumed: the two enumerations disagree for clothing
+                    # (5/18), animation (20/19) and gesture (21/20).
+                    inv_type=INVENTORY_NOTECARD,
+                    callback_id=callback_id,
+                ),
+            )
+            return
+        created = session.created_inventory_items.pop(callback_id, None)
+        if created is not None:
+            asyncio.ensure_future(finish(created))
+
+    async def _run() -> None:
+        await run_live_session(
+            bootstrap,
+            MessageDispatcher.from_repo_root(Path.cwd()),
+            config=SessionConfig(duration_seconds=45.0, auto_upload_bakes=False),
+            world_client=client,
+            on_event=on_event,
+        )
+
+    session_task = asyncio.ensure_future(_run())
+    try:
+        await asyncio.wait_for(finished, timeout=60.0)
+    except asyncio.TimeoutError:
+        lines.append("notecard[error]=no UpdateCreateInventoryItem reply arrived")
+    finally:
+        session_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await session_task
+    return lines
 
 
 async def upload_empty_text_smoke(
@@ -940,6 +1104,32 @@ def main() -> int:
             return format_walk(snapshot, state)
 
         print_lines(asyncio.run(_walk()))
+        return 0
+
+    if args.command == "upload-notecard":
+        request = LoginRequest(
+            login_uri=args.login_uri,
+            credentials=LoginCredentials(
+                first=args.first,
+                last=args.last,
+                password=args.password,
+            ),
+            start=args.start,
+            version=__version__,
+            platform=platform.system(),
+            platform_version=platform.platform(),
+        )
+        bootstrap = asyncio.run(LoginClient().login(request))
+        print_lines(
+            asyncio.run(
+                upload_notecard(
+                    bootstrap=bootstrap,
+                    name=args.name,
+                    description=args.description,
+                    text=args.text,
+                )
+            )
+        )
         return 0
 
     if args.command == "upload-empty-text-smoke":

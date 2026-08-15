@@ -89,6 +89,45 @@ class TaskInventoryUploadClient:
             )
         return await self.upload_script_bytes(prelude.uploader_url, script_bytes, user_agent=user_agent)
 
+    async def upload_agent_notecard(
+        self,
+        capability_url: str,
+        item_id: UUID,
+        notecard_bytes: bytes,
+        *,
+        udp_listen_port: int | None = None,
+        user_agent: str = "Vibestorm",
+    ) -> TaskNotecardUploadResult:
+        """Fill in a notecard already in the agent's own inventory.
+
+        ``UpdateNotecardAgentInventory`` and ``UpdateNotecardTaskInventory``
+        are the *same handler* in OpenSim — `BunchOfCaps` registers both
+        against one `UpdateNotecardItemAsset` — and it branches on whether
+        ``task_id`` is present. Omitting it is what makes the update apply to
+        agent inventory, so this sends ``item_id`` alone rather than a zero
+        task id, which would be looked up as an object and fail.
+
+        This is the second half of creating a notecard. The first is a
+        ``CreateInventoryItem`` over UDP, which makes an item pointing at
+        OpenSim's shared empty-notecard asset; without that item there is
+        nothing for this to address. ``NewFileAgentInventory`` is *not* an
+        alternative — it does not handle notecards and silently stores them as
+        asset type 0 (texture). See `caps/asset_upload_client`.
+        """
+        prelude = await self.request_uploader(
+            capability_url,
+            {"item_id": item_id},
+            udp_listen_port=udp_listen_port,
+            user_agent=user_agent,
+        )
+        if prelude.state != "upload":
+            raise TaskInventoryUploadError(
+                f"notecard agent upload returned unexpected prelude state {prelude.state!r}"
+            )
+        return await self.upload_notecard_bytes(
+            prelude.uploader_url, notecard_bytes, user_agent=user_agent
+        )
+
     async def upload_task_notecard(
         self,
         capability_url: str,
@@ -310,9 +349,22 @@ def _parse_str(value: object) -> str:
 
 
 def _extract_error_message(payload: dict[str, object]) -> str:
+    """The failure message, from either shape OpenSim uses.
+
+    ``LLSDAssetUploadError`` appears two ways. The generic uploader nests it as
+    ``uploadComplete.error``, so the message is at ``error.message``. But the
+    item-asset updaters serialise the error object *as the whole reply* —
+    ``{message, identifier}`` at the top level with no ``state`` — and reading
+    only the nested form there loses the one thing that says what went wrong,
+    leaving a caller with `state ''` and no reason.
+    """
     error = payload.get("error")
     if isinstance(error, dict):
-        return _parse_str(error.get("message"))
+        message = _parse_str(error.get("message"))
+        if message:
+            return message
+    if "state" not in payload:
+        return _parse_str(payload.get("message"))
     return ""
 
 
