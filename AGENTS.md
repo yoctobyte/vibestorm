@@ -35,7 +35,7 @@ Timestamped historical notes live under `docs/archive/` and are not the primary 
 - When you learn something protocol-specific, update `docs/reverse-engineered-protocol.md`, **and** if it meets the bar in `spec/divergence-queue.md`, add a line there. See "Documentation project" below.
 - When you change the current recommended workflow or repo structure, update `projectstate.md` or `docs/README.md`.
 - When you stop with work in progress, update `docs/current-handoff.md`.
-- Do not auto-push by default. Commit locally when appropriate, and push only when the user explicitly asks for it.
+- **Push once the suite is green.** Commit incrementally and push; work that is tested is better in the remote than lingering on this machine. The gate is the tests, not permission — do not push a red or unrun suite. Same rule in the docs repo, where `python3 check.py` is the gate.
 
 ## Documentation Project
 
