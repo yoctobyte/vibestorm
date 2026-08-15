@@ -40,3 +40,6 @@ local/
 
 # OpenSim full source checkout (reference only, 100MB+)
 opensim-source/
+
+# Separate repository, checked out here for convenience
+virtual-world-protocol/
