@@ -1,10 +1,14 @@
 import unittest
+from dataclasses import fields
+from pathlib import Path
 from urllib.error import URLError
 from uuid import UUID
 
 from vibestorm.caps.task_inventory_upload_client import (
     TaskInventoryUploadClient,
     TaskInventoryUploadError,
+    TaskNotecardUploadResult,
+    TaskScriptUploadResult,
 )
 
 
@@ -111,7 +115,9 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
 
         self.assertEqual(result.state, "complete")
         self.assertTrue(result.compiled)
-        self.assertEqual(result.new_asset_id, UUID("12345678-1111-2222-3333-444444444444"))
+        # Named new_item_id because that is what the value is; see the
+        # source pin in ScriptUploadFieldNamingTests.
+        self.assertEqual(result.new_item_id, UUID("12345678-1111-2222-3333-444444444444"))
         self.assertEqual(result.errors, [])
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["body"], b"default { state_entry() {} }")
@@ -158,7 +164,7 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
 
         self.assertEqual(result.state, "complete")
         self.assertFalse(result.compiled)
-        self.assertEqual(result.new_asset_id, UUID("12345678-1111-2222-3333-444444444444"))
+        self.assertEqual(result.new_item_id, UUID("12345678-1111-2222-3333-444444444444"))
         self.assertEqual(result.errors, ["(10, 15): Name not defined within scope"])
 
     def test_upload_notecard_bytes_success(self) -> None:
@@ -349,3 +355,48 @@ class ScriptTaskCapNameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScriptUploadFieldNamingTests(unittest.TestCase):
+    """Why the script result has no asset id.
+
+    `TaskInventoryScriptUpdater` puts the *inventory item* id into a field
+    called `new_asset`. Fetching that value through ViewerAsset returns 404,
+    which reads as "the upload failed" when it succeeded — the mistake this
+    naming exists to prevent, made for real on 2026-08-15 before the source
+    was checked.
+    """
+
+    _UPDATE_ITEM_ASSET = (
+        Path(__file__).resolve().parents[1] / "opensim-source" / "OpenSim" / "Region"
+        / "ClientStack" / "Linden" / "Caps" / "BunchOfCaps" / "UpdateItemAsset.cs"
+    )
+
+    def test_the_script_updater_returns_the_item_id(self) -> None:
+        if not self._UPDATE_ITEM_ASSET.exists():
+            self.skipTest("opensim-source not present")
+        text = self._UPDATE_ITEM_ASSET.read_text(encoding="utf-8", errors="replace")
+
+        self.assertIn("uploadComplete.new_asset = m_inventoryItemID;", text)
+
+    def test_the_notecard_updater_in_the_same_file_does_not(self) -> None:
+        # The asymmetry is the reason neither can be inferred from the other.
+        if not self._UPDATE_ITEM_ASSET.exists():
+            self.skipTest("opensim-source not present")
+        text = self._UPDATE_ITEM_ASSET.read_text(encoding="utf-8", errors="replace")
+
+        self.assertIn("uploadComplete.new_asset = assetID.ToString();", text)
+        self.assertIn("uploadComplete.new_inventory_item = m_inventoryItemID;", text)
+
+    def test_the_script_result_exposes_no_asset_id(self) -> None:
+        # A field called new_asset_id here would be a standing invitation to
+        # fetch it.
+        self.assertNotIn(
+            "new_asset_id", {f.name for f in fields(TaskScriptUploadResult)}
+        )
+        self.assertIn("new_item_id", {f.name for f in fields(TaskScriptUploadResult)})
+
+    def test_the_notecard_result_still_has_both(self) -> None:
+        names = {f.name for f in fields(TaskNotecardUploadResult)}
+
+        self.assertEqual(names, {"state", "new_asset_id", "new_inventory_item_id"})

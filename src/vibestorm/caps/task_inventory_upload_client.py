@@ -27,12 +27,33 @@ class TaskInventoryUploadPrelude:
 class TaskScriptUploadResult:
     state: str
     compiled: bool
-    new_asset_id: UUID | None
+    #: The **inventory item** id, despite arriving in a field named
+    #: ``new_asset``. That is OpenSim's own doing, not a decode slip:
+    #: ``TaskInventoryScriptUpdater`` in ``BunchOfCaps/UpdateItemAsset.cs``
+    #: assigns ``uploadComplete.new_asset = m_inventoryItemID``.
+    #:
+    #: So a script task upload reports **no asset id at all**, and treating
+    #: this one as an asset id fails in a confusing way — fetching it through
+    #: ``ViewerAsset`` returns 404, which reads as "the upload did not happen"
+    #: when the upload succeeded. Confirmed live 2026-08-15.
+    #:
+    #: To check that a write landed, re-read the object's task inventory and
+    #: compare the row's asset id: the sim mints a new asset per upload. The
+    #: notecard path in the same file does return a real asset id — see
+    #: `TaskNotecardUploadResult`.
+    new_item_id: UUID | None
     errors: list[object]
 
 
 @dataclass(slots=True, frozen=True)
 class TaskNotecardUploadResult:
+    """Unlike the script result, both ids here mean what they are named.
+
+    ``TaskInventoryNotecardUpdater`` sets ``new_asset`` to the asset id and
+    ``new_inventory_item`` to the item id. The two updaters live in the same
+    file and disagree, so neither can be inferred from the other.
+    """
+
     state: str
     new_asset_id: UUID | None
     new_inventory_item_id: UUID | None
@@ -221,7 +242,9 @@ class TaskInventoryUploadClient:
         return TaskScriptUploadResult(
             state=state,
             compiled=compiled,
-            new_asset_id=_parse_uuid(payload.get("new_asset")),
+            # Faithful to the wire; see the field's docstring for why the name
+            # differs from the one OpenSim uses.
+            new_item_id=_parse_uuid(payload.get("new_asset")),
             errors=errors,
         )
 

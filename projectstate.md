@@ -217,8 +217,9 @@ anything to this list, check whether the client can produce the traffic
 itself.** Twice the blocker was a missing outbound message rather than a
 missing object.
 
-*Blocked on consent* (needs an in-world edit in the user's region): the
-object-sync CAP verify. `ObjectPhysicsProperties` used to be on this list —
+*Blocked on consent*: nothing. The object-sync CAP verify was the last entry
+and was performed on 2026-08-15 with the user's go-ahead — see below.
+`ObjectPhysicsProperties` used to be on this list —
 the sim sends that message only as an echo of an edit the viewer itself made —
 but the *data* needs no edit at all: `./run.sh census --physics` pulls it for
 every prim through `GetObjectPhysicsData`. What remains unverified is the UDP
@@ -314,7 +315,9 @@ Landed work follows:
 - a prim's physics material and shape type (`ObjectPhysicsProperties`) reach
   the inspector, named from OpenSim's `PhysShapeType`. Not live-verified: the
   sim only sends this as an echo of an edit the viewer itself made, so it needs
-  the same in-world-edit consent as the object-sync verify
+  this client to *send* a physics edit — a different gap from the object-sync
+  verify (done 2026-08-15), which writes task inventory and produces no such
+  echo. The data itself is already readable via `GetObjectPhysicsData`
 - prim material and click action are named from OpenSim's LSL constants and
   counted by the census. Live run resolves every value with no unknowns, but
   all 32 prims are wood/touch — the defaults — so the non-default names are
@@ -455,12 +458,27 @@ be verified headlessly by rendering to an offscreen framebuffer and reading
 pixels back — see `ParcelBorderGLTests` in `test/test_viewer3d_perspective_gl.py`.
 That route closed the deferred mesh-normals and per-face material items.
 
-Two independent tracks remain open, either of which can follow:
+The object script sync path is **verified** (2026-08-15), closing what was the
+oldest open track. It was written as a viewer HUD flow, but the CAP client
+underneath is GUI-independent, so the verify ran headless: upload a modified
+script to a prim's task inventory, confirm `compiled=True`, re-read, restore.
+Both uploads returned `state=complete compiled=True` and the object was left
+byte-identical to how it started.
 
-- Live-verify the object-local script/notecard sync path end to end (implemented
-  2026-05-25, never confirmed against a running sim). This is now the oldest
-  open track and everything it needed exists: `ScriptRunningReply` arrives over
-  the live event queue and surfaces as a viewer chat line.
+Two things that verify settled, neither of which was guessable:
+
+- **A script task upload reports no asset id.** `TaskInventoryScriptUpdater`
+  assigns `uploadComplete.new_asset = m_inventoryItemID`, so the field named
+  `new_asset` carries the *item* id. Fetching it as an asset returns 404, which
+  reads as "the upload failed" when it succeeded. The client's field is now
+  `new_item_id` and the viewer no longer prints it as `asset=`. The **notecard**
+  updater in the same file does return a real asset id plus the item id, so the
+  two cannot be inferred from each other.
+- **To confirm a write landed, re-read the task inventory.** The sim mints a new
+  asset id per upload, and that change is the only available evidence.
+
+One track remains open:
+
 - Confirm the decoders that have never seen live data by adding the content:
   rez a light / projector / reflection-probe prim, and stand up a varregion for
   the 32x32 terrain path.

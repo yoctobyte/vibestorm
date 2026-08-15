@@ -693,7 +693,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
                         udp_listen_port=session.caps_udp_listen_port,
                     )
                     if result.compiled:
-                        msg = f"Sync: {file_path.name} → compiled OK (asset={result.new_asset_id})"
+                        msg = f"Sync: {file_path.name} → compiled OK (item={result.new_item_id})"
                     else:
                         errs = "; ".join(str(e) for e in result.errors[:3])
                         msg = f"Sync: {file_path.name} → compile errors: {errs}"
@@ -717,7 +717,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     scene.apply_chat_alert(
                         ChatAlert(
                             region_handle=handle,
-                            message=f"Sync: {file_path.name} → OK (asset={result.new_asset_id})",
+                            message=f"Sync: {file_path.name} → OK (item={result.new_item_id})",
                         )
                     )
                 uploaded += 1
