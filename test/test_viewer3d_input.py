@@ -3,7 +3,10 @@ import unittest
 
 class Viewer3DInputTests(unittest.TestCase):
     def test_function_keys_emit_camera_presets(self) -> None:
-        import pygame
+        try:
+            import pygame
+        except ImportError:  # pragma: no cover
+            self.skipTest("pygame not available")
 
         from vibestorm.bus import Bus
         from vibestorm.viewer3d.camera import Camera3D
