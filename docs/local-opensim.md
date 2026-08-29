@@ -28,6 +28,41 @@ when they are trivial, disposable, and clearly scoped to local testing. Never
 track credentials for OSgrid, Second Life, GitHub, hosting providers, or other
 real services.
 
+## Runtime Prerequisites
+
+OpenSim is a C# application. Our pinned build (`LastDotNetBuild.zip`, release
+`r575abd6`) is a framework-dependent `net8.0` build, so it needs a **.NET 8**
+runtime present on the machine. Nothing in Vibestorm itself needs .NET.
+
+Ubuntu 24.04 packaged this; **Ubuntu 26.04 does not** (it ships only .NET 10).
+On 26.04, install the runtime user-locally — no sudo, nothing system-wide:
+
+```bash
+curl -fsSL https://dot.net/v1/dotnet-install.sh \
+  | bash -s -- --channel 8.0 --runtime dotnet
+```
+
+That lands in `~/.dotnet`, which `tools/start_opensim.sh` picks up
+automatically. Override with `DOTNET_ROOT` if you keep it elsewhere. The
+launcher fails with the install command rather than starting on the wrong
+runtime.
+
+Also required, and still a normal distro package:
+
+```bash
+sudo apt install libgdiplus
+```
+
+Without it, `VectorRenderModule` and `MapImageService` die at startup with
+`DllNotFoundException: Unable to load shared library 'libgdiplus'`.
+
+**Do not run the sim on .NET 9 or newer, including via
+`DOTNET_ROLL_FORWARD`.** It boots, reports the region ready, and is then subtly
+wrong: `BinaryFormatter` was removed in .NET 9, and OpenSim relies on it for the
+asset cache, keyframed prim motion, and script state. Captures taken against
+such a sim are not trustworthy. See `runtime-platform-risk.md` for the evidence
+and the long-term options.
+
 ## Main Commands
 
 Start OpenSim:

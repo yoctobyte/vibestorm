@@ -13,6 +13,7 @@ This directory now has a small current-state surface plus an archive of older pl
 - `opensim-source-map.md`: where to look in the full local OpenSim checkout for UDP/session questions
 - `protocol-hypothesis.md`: compact working model distilled from captures, docs, and source-history clues
 - `local-opensim.md`: how to run and use the local OpenSim target
+- `runtime-platform-risk.md`: why the OpenSim host needs .NET 8 specifically, and why we do not chase newer runtimes
 - `viewer-help.md`: in-app movement/menu help loaded by the pygame viewer
 - `viewer-3d-plan.md`: planned path from current 2D viewer to 2.5D and real 3D modes
 - `claude-handoff-2026-04-04.md`: detailed peer handoff focused on the current appearance/cloud blocker
