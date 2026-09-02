@@ -41,24 +41,40 @@ live grid, because that needs the owner's SL credentials. Treat as untested.
 depends on the asset types: text assets are covered; textures, sounds and
 animations inside an object have not been checked as a batch export.
 
-**D -- the real gap.** `sync_files_to_object_task_inventory` matches files to
-inventory rows **that already exist**, by sanitised name, and skips everything
-else with a "no matching inventory item" alert. Uploading a *whole folder*
-means creating task inventory rows that are not there yet, which is explicitly
-out of scope in the current code. That is the next piece of implementation
-work, and it is the one that unblocks D and completes E.
+**D -- done for scripts, live-verified 2026-09-02.** Sync used to match files
+only against rows that already existed and skip the rest. It now creates the
+missing rows: unmatched `.lsl` files go through `RezScript`, and the contents
+upload onto the new row. `tools/verify_folder_sync.py` drives the shipped code
+paths against local OpenSim and confirms the whole chain -- row created,
+`compiled=True`, and the row's asset id moved off `Constants.DefaultScriptID`,
+which is what distinguishes "the upload landed" from "a row exists".
+
+Not done for **notecards**: `RezScript` is script-specific and there is no
+equivalent create, so an unmatched `.txt`/`.nc` is still skipped, now with a
+reason that says so. Finding the notecard create path is the remaining piece.
+
+The GUI path has not been exercised -- the verification drove
+`_create_task_script_rows` and the capability directly, the same way the
+2026-08-15 object-sync verify ran headless. Pressing Upload in the viewer is
+still untested.
 
 **E -- one-shot sync exists, loop does not.** Folder to object works and is
-live-verified (2026-08-15). There is no watch, no re-sync on change, and no
-object-to-folder direction beyond the initial download.
+live-verified. There is no watch, no re-sync on change, and no object-to-folder
+direction beyond the initial download. With D's create in place, E is now
+mostly a matter of *when* to re-run the sync rather than what it does.
 
 ### Concrete next step
 
-Implement task inventory item *creation* so an unmatched file becomes a new
-script or notecard on the object, then re-verify D end to end on the local sim:
-drop a new `.lsl` into the folder, sync, and confirm it appears in the object
-and compiles. Keep the existing scope limits otherwise -- no deletes, no
-conflict resolution, no recursive folders.
+Either close the notecard half of D by finding how a viewer creates a notecard
+inside a prim (`UpdateTaskInventory` is the likely path -- it is registered in
+`LLClientView` and not yet read), or start E's watch loop on top of the sync
+that now works. Keep the existing scope limits -- no deletes, no conflict
+resolution, no recursive folders.
+
+**The local test prim `d7f47f7e-4328-4d17-a665-19feaec7b1e9` now carries
+several `vibestorm-sync-*` and `e2e-sync-*` scripts** left by probes and the
+end-to-end check. Nothing removes them, because no delete path exists. Clear
+them from a viewer if they get in the way.
 
 ## Environment Note (2026-09-02)
 

@@ -74,6 +74,7 @@ from vibestorm.caps.task_inventory_upload_client import (
 )
 from vibestorm.login.client import LoginError
 from vibestorm.udp.dispatch import MessageDispatcher
+from vibestorm.udp.messages import DEFAULT_SCRIPT_ASSET_ID
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient
 from vibestorm.viewer3d.camera import Camera, CameraPreset
@@ -84,6 +85,7 @@ from vibestorm.viewer3d.perspective import PerspectiveRenderer
 from vibestorm.viewer3d.render import clear_tile_cache
 from vibestorm.viewer3d.renderer import TopDownRenderer, ViewerRenderer
 from vibestorm.viewer3d.scene import Scene
+from vibestorm.world.object_inventory import ObjectInventorySnapshot
 
 if TYPE_CHECKING:
     import moderngl
@@ -647,6 +649,40 @@ async def run_viewer(args: argparse.Namespace) -> int:
             )
             return
         matched, unmatched = _match_files_to_task_selections(upload_dir, asset_rows)
+
+        # Files with no row yet: make the row, then treat them like any other
+        # match. Without this step a whole-folder sync can only ever update
+        # what the object already contains, which is not what "upload a folder"
+        # means. Only scripts can be created this way -- RezScript is
+        # script-specific, and there is no equivalent create for notecards.
+        skipped: list[tuple[Path, str]] = []
+        if unmatched:
+            to_create = [f for f in unmatched if f.suffix.lower() == ".lsl"]
+            skipped.extend(
+                (f, "no matching inventory item, and only .lsl rows can be created")
+                for f in unmatched
+                if f.suffix.lower() != ".lsl"
+            )
+            if to_create and not script_cap:
+                skipped.extend((f, "no script task cap to fill it in") for f in to_create)
+                to_create = []
+            if to_create:
+                obj = session.world_view.objects.get(task_id)
+                if obj is None:
+                    skipped.extend((f, "object not in view; cannot create") for f in to_create)
+                else:
+                    created, create_skipped = await _create_task_script_rows(
+                        client,
+                        session,
+                        scene,
+                        handle=handle,
+                        task_id=task_id,
+                        local_id=obj.local_id,
+                        files=to_create,
+                    )
+                    matched.extend(created)
+                    skipped.extend(create_skipped)
+
         if not matched:
             scene.apply_chat_alert(
                 ChatAlert(
@@ -654,14 +690,22 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     message=f"Sync: no file names match inventory items in {upload_dir}",
                 )
             )
+            for file_path, reason in skipped:
+                scene.apply_chat_alert(
+                    ChatAlert(
+                        region_handle=handle,
+                        message=f"Sync: skipped {file_path.name} ({reason})",
+                    )
+                )
             return
-        for file_path in unmatched:
+        for file_path, reason in skipped:
             scene.apply_chat_alert(
                 ChatAlert(
                     region_handle=handle,
-                    message=f"Sync: skipped {file_path.name} (no matching inventory item)",
+                    message=f"Sync: skipped {file_path.name} ({reason})",
                 )
             )
+        created_count = sum(1 for _f, sel in matched if sel.item_key == _CREATED_ROW_KEY)
         uploader = TaskInventoryUploadClient(timeout_seconds=20.0)
         uploaded = 0
         failed = 0
@@ -731,7 +775,10 @@ async def run_viewer(args: argparse.Namespace) -> int:
         scene.apply_chat_alert(
             ChatAlert(
                 region_handle=handle,
-                message=f"Sync complete: {uploaded} uploaded, {len(unmatched)} skipped, {failed} failed.",
+                message=(
+                    f"Sync complete: {uploaded} uploaded, {created_count} created, "
+                    f"{len(skipped)} skipped, {failed} failed."
+                ),
             )
         )
 
@@ -1068,6 +1115,120 @@ def _asset_file_suffix(asset_type: int) -> str:
     if asset_type == 0:
         return ".j2k"
     return ".bin"
+
+
+#: Marks a selection this session created rather than read off the object, so
+#: the completion line can report creates separately from updates.
+_CREATED_ROW_KEY = "__created__"
+
+#: How long to wait for the object's inventory to come back after creating
+#: rows. The reply is a RequestXfer round trip, not a single packet.
+_TASK_INVENTORY_REFRESH_TIMEOUT = 15.0
+
+
+async def _await_object_inventory(
+    client: WorldClient,
+    local_id: int,
+    *,
+    timeout: float = _TASK_INVENTORY_REFRESH_TIMEOUT,
+) -> ObjectInventorySnapshot | None:
+    """Request one object's task inventory and wait for the snapshot.
+
+    Subscribes *before* dispatching the request: the snapshot can arrive while
+    this coroutine is still being set up, and a subscription taken afterwards
+    would miss it and then wait out the full timeout.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[ObjectInventorySnapshot] = loop.create_future()
+
+    def _on_ready(event: ObjectInventorySnapshotReady) -> None:
+        if event.snapshot.local_id == local_id and not future.done():
+            future.set_result(event.snapshot)
+
+    subscription = client.bus.subscribe(ObjectInventorySnapshotReady, _on_ready)
+    try:
+        client.bus.dispatch(RequestObjectInventory(local_id))
+        return await asyncio.wait_for(future, timeout)
+    except (TimeoutError, BusError):
+        return None
+    finally:
+        subscription.cancel()
+
+
+async def _create_task_script_rows(
+    client: WorldClient,
+    session: object,
+    scene: Scene,
+    *,
+    handle: int,
+    task_id: UUID,
+    local_id: int,
+    files: list[Path],
+    timeout: float = _TASK_INVENTORY_REFRESH_TIMEOUT,
+) -> tuple[list[tuple[Path, ObjectAssetSelection]], list[tuple[Path, str]]]:
+    """Create one empty script per file, then resolve the rows they became.
+
+    Returns the files that now have a row to upload onto, plus the ones that
+    did not get one and why.
+
+    The rows are created in a batch and the inventory is re-read **once**. A
+    read per file would be correct too, but each read is an Xfer round trip, so
+    a ten-file folder would spend ten of them to learn what one tells us.
+
+    New rows are identified by diffing item ids against a baseline rather than
+    by looking for the name: an object may already hold a script called
+    ``foo.lsl`` while the file ``foo.lsl`` failed to match for some other
+    reason, and then matching on name would upload over the wrong row.
+    """
+    before = await _await_object_inventory(client, local_id, timeout=timeout)
+    if before is None:
+        return [], [(f, "could not read object inventory before creating") for f in files]
+    baseline = {item.item_id for item in before.items if item.item_id is not None}
+
+    for file_path in files:
+        packet = session.build_rez_script_packet(  # type: ignore[attr-defined]
+            part_id=task_id,
+            local_id=local_id,
+            name=file_path.stem,
+            description="created by Vibestorm folder sync",
+        )
+        client.queue_outbound_packet(handle, packet)
+        scene.apply_chat_alert(
+            ChatAlert(region_handle=handle, message=f"Sync: creating {file_path.name}")
+        )
+
+    after = await _await_object_inventory(client, local_id, timeout=timeout)
+    if after is None:
+        return [], [(f, "created, but the object inventory did not come back") for f in files]
+
+    added = [
+        item
+        for item in after.items
+        if item.item_id is not None and item.item_id not in baseline
+    ]
+    by_name = {item.name: item for item in added}
+
+    created: list[tuple[Path, ObjectAssetSelection]] = []
+    skipped: list[tuple[Path, str]] = []
+    for file_path in files:
+        item = by_name.pop(file_path.stem, None)
+        if item is None:
+            skipped.append((file_path, "the sim did not create a row for it"))
+            continue
+        created.append(
+            (
+                file_path,
+                ObjectAssetSelection(
+                    item_key=_CREATED_ROW_KEY,
+                    asset_id=item.asset_id or DEFAULT_SCRIPT_ASSET_ID,
+                    asset_type=10,
+                    item_name=item.name,
+                    task_id=task_id,
+                    item_id=item.item_id,
+                ),
+            )
+        )
+    return created, skipped
 
 
 def _match_files_to_task_selections(
