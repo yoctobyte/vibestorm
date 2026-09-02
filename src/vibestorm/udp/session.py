@@ -67,6 +67,7 @@ from vibestorm.udp.messages import (
     DEFAULT_AVATAR_SIZE,
     DEFAULT_AVATAR_TEXTURE_ENTRY,
     DEFAULT_AVATAR_VISUAL_PARAMS,
+    DEFAULT_SCRIPT_ASSET_ID,
     AgentCachedTextureResponseMessage,
     AgentWearablesUpdateMessage,
     AttachedSoundGainChangeMessage,
@@ -102,6 +103,7 @@ from vibestorm.udp.messages import (
     encode_request_object_properties_family,
     encode_request_task_inventory,
     encode_request_xfer,
+    encode_rez_script,
     encode_teleport_location_request,
     encode_transfer_request,
     encode_use_circuit_code,
@@ -203,6 +205,10 @@ class SessionConfig:
     #: cannot send them, but because nothing in the region had the feature
     #: turned on. Writing one is how we get the sim to send it back.
     probe_extra_params: bool = False
+    #: Create a script inside a prim this avatar owns and confirm the row
+    #: appears, then leave it in place. Proves the RezScript create path
+    #: that whole-folder object sync needs.
+    probe_create_script: bool = False
     fetch_object_physics: bool = False
     #: Fetch the assets behind `AgentWearablesUpdate` so the session can say
     #: what the avatar is actually wearing rather than only how many items.
@@ -301,6 +307,8 @@ class SessionReport:
     #: Kept off the event log deliberately: that log is a rolling window,
     #: so a result recorded mid-session does not survive to the report.
     extra_params_probe_result: str | None
+    #: Outcome of the RezScript create probe, or None if it did not run.
+    create_script_probe_result: str | None
     events: tuple[SessionEvent, ...]
 
 
@@ -425,6 +433,13 @@ class LiveCircuitSession:
     extra_params_probe_sent_at: float | None = None
     extra_params_probe_cleared: bool = False
     extra_params_probe_result: str | None = None
+    create_script_probe_stage: str = 'idle'
+    create_script_probe_target: UUID | None = None
+    create_script_probe_local_id: int | None = None
+    create_script_probe_name: str | None = None
+    create_script_probe_at: float | None = None
+    create_script_probe_baseline: frozenset[str] = frozenset()
+    create_script_probe_result: str | None = None
     started: bool = False
     started_at: float | None = None
     events: list[SessionEvent] = field(default_factory=list)
@@ -1095,6 +1110,7 @@ class LiveCircuitSession:
             packets.extend(self._drain_appearance_packets(now))
             packets.extend(self._drain_test_cube_packets(now))
             packets.extend(self._drain_extra_params_probe(now))
+            packets.extend(self._drain_create_script_probe(now))
             packets.extend(self._drain_properties_requests(now))
             return packets
 
@@ -1103,6 +1119,7 @@ class LiveCircuitSession:
         packets.extend(self._drain_appearance_packets(now))
         packets.extend(self._drain_test_cube_packets(now))
         packets.extend(self._drain_extra_params_probe(now))
+        packets.extend(self._drain_create_script_probe(now))
         packets.extend(self._drain_properties_requests(now))
         self._update_camera_sweep(now)
         self.agent_update_count += 1
@@ -1153,6 +1170,7 @@ class LiveCircuitSession:
             region_map_image_id=self.region_map_image_id,
             region_map_path=self.region_map_path,
             extra_params_probe_result=self.extra_params_probe_result,
+            create_script_probe_result=self.create_script_probe_result,
             events=tuple(self.events),
         )
 
@@ -1348,6 +1366,42 @@ class LiveCircuitSession:
                 f"region_handle={region_handle:#018x} "
                 f"position=({position[0]:.1f},{position[1]:.1f},{position[2]:.1f})"
             ),
+        )
+        return packet
+
+    def build_rez_script_packet(
+        self,
+        *,
+        part_id: UUID,
+        local_id: int,
+        name: str,
+        description: str = "",
+        now: float | None = None,
+    ) -> bytes:
+        """Build RezScript to create a new, empty script inside a prim.
+
+        The row it makes points at `DEFAULT_SCRIPT_ASSET_ID`; the real bytes go
+        up afterwards through the ``UpdateScriptTask`` capability. That split is
+        OpenSim's, not ours -- the same two-step shape as creating a notecard.
+        """
+        packet = self._build_outbound_packet(
+            encode_rez_script(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                part_id=part_id,
+                object_local_id=int(local_id),
+                name=name,
+                description=description,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="RezScript",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "task_inventory.rez_script",
+            f"part={part_id} local_id={int(local_id)} name={name!r}",
         )
         return packet
 
@@ -1998,6 +2052,115 @@ class LiveCircuitSession:
                 label="ObjectExtraParams",
             )
         ]
+
+    #: Seconds to wait for a task inventory fetch to complete. The reply is a
+    #: RequestXfer round trip, not a single packet, so it is not instant.
+    CREATE_SCRIPT_PROBE_STEP_SECONDS = 6.0
+
+    def _drain_create_script_probe(self, now: float) -> list[bytes]:
+        """Create a script in a prim we own and confirm the row appeared.
+
+        Staged, because each step needs the previous one's reply:
+        ``baseline`` reads the prim's current rows, ``created`` sends RezScript,
+        ``verify`` re-reads and compares. Comparing against a baseline rather
+        than just looking for the name matters -- the object may already have a
+        script of that name, and then "it is there afterwards" proves nothing.
+        """
+        if not self.config.probe_create_script or not self.movement_completed:
+            return []
+        if self.create_script_probe_stage == "done":
+            return []
+
+        if self.create_script_probe_stage == "idle":
+            target = self._find_editable_prim()
+            if target is None:
+                return []
+            obj = self.world_view.objects[target]
+            self.create_script_probe_target = target
+            self.create_script_probe_local_id = obj.local_id
+            self.create_script_probe_stage = "baseline"
+            self.create_script_probe_at = now
+            return [self.build_request_task_inventory_packet(obj.local_id, now=now)]
+
+        local_id = self.create_script_probe_local_id
+        if local_id is None or self.create_script_probe_at is None:
+            return []
+        elapsed = now - self.create_script_probe_at
+
+        if self.create_script_probe_stage == "baseline":
+            snapshot = self.object_inventory_snapshots.get(local_id)
+            if snapshot is None:
+                if elapsed > self.CREATE_SCRIPT_PROBE_STEP_SECONDS:
+                    self.create_script_probe_stage = "done"
+                    self.create_script_probe_result = (
+                        f"failed: no task inventory for local_id={local_id} after "
+                        f"{elapsed:.1f}s"
+                    )
+                return []
+            self.create_script_probe_baseline = frozenset(
+                str(item.item_id) for item in snapshot.items if item.item_id is not None
+            )
+            name = f"vibestorm-sync-{int(now * 1000) % 100000}.lsl"
+            self.create_script_probe_name = name
+            self.create_script_probe_stage = "created"
+            self.create_script_probe_at = now
+            assert self.create_script_probe_target is not None
+            return [
+                self.build_rez_script_packet(
+                    part_id=self.create_script_probe_target,
+                    local_id=local_id,
+                    name=name,
+                    description="created by --probe-create-script",
+                    now=now,
+                )
+            ]
+
+        if self.create_script_probe_stage == "created":
+            # Give the sim a moment to add the row, then ask for the list again.
+            if elapsed < 2.0:
+                return []
+            self.create_script_probe_stage = "verify"
+            self.create_script_probe_at = now
+            self.object_inventory_snapshots.pop(local_id, None)
+            return [self.build_request_task_inventory_packet(local_id, now=now)]
+
+        if self.create_script_probe_stage == "verify":
+            snapshot = self.object_inventory_snapshots.get(local_id)
+            if snapshot is None:
+                if elapsed > self.CREATE_SCRIPT_PROBE_STEP_SECONDS:
+                    self.create_script_probe_stage = "done"
+                    self.create_script_probe_result = (
+                        f"failed: no task inventory re-read after {elapsed:.1f}s"
+                    )
+                return []
+            self.create_script_probe_stage = "done"
+            added = [
+                item
+                for item in snapshot.items
+                if item.item_id is not None
+                and str(item.item_id) not in self.create_script_probe_baseline
+            ]
+            if not added:
+                self.create_script_probe_result = (
+                    f"failed: no new row on local_id={local_id} "
+                    f"(rows={len(snapshot.items)}, name={self.create_script_probe_name})"
+                )
+                return []
+            details = []
+            for item in added:
+                # A new row must point at the default script asset. Checking a
+                # known expected value is what turns "a row appeared" into
+                # evidence about which code path produced it.
+                matches_default = item.asset_id == DEFAULT_SCRIPT_ASSET_ID
+                details.append(
+                    f"name={item.name!r} item_id={item.item_id} asset_id={item.asset_id} "
+                    f"type={item.asset_type} default_script_asset={matches_default}"
+                )
+            self.create_script_probe_result = (
+                f"created target={self.create_script_probe_target} added={len(added)} "
+                + " | ".join(details)
+            )
+        return []
 
     def _drain_properties_requests(self, now: float) -> list[bytes]:
         """Send RequestObjectPropertiesFamily for tracked objects not yet requested.

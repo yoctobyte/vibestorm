@@ -3365,6 +3365,105 @@ def encode_object_extra_params(
     return b"\xFF\xFF\x00\x63" + agent_id.bytes + session_id.bytes + object_data
 
 
+#: Asset id every freshly rezzed script points at, before anything is uploaded
+#: over it (``Constants.DefaultScriptID``). A new row carrying this id is proof
+#: the create landed; a row carrying anything else means something other than
+#: our create made it.
+DEFAULT_SCRIPT_ASSET_ID = UUID("2074003b-8d5f-40e5-8b20-581c1c50aedb")
+
+#: Full owner permissions, matching `world.permissions.PERM_ALL`.
+_REZ_SCRIPT_FULL_PERMS = 0x8E000
+
+
+def encode_rez_script(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    part_id: UUID,
+    object_local_id: int,
+    name: str,
+    description: str = "",
+    group_id: UUID | None = None,
+    enabled: bool = True,
+    asset_type: int = 10,
+    inv_type: int = 10,
+    base_mask: int = _REZ_SCRIPT_FULL_PERMS,
+    owner_mask: int = _REZ_SCRIPT_FULL_PERMS,
+    group_mask: int = 0,
+    everyone_mask: int = 0,
+    next_owner_mask: int = _REZ_SCRIPT_FULL_PERMS,
+    creation_date: int = 0,
+) -> bytes:
+    """Encode RezScript (Low/304, Zerocoded) to create a **new** script in a prim.
+
+    ``Scene.RezScript`` branches on the item id: a zero one means
+    ``RezNewScript`` -- "rez a new script from nothing" -- while a non-zero one
+    copies an existing item out of agent inventory. This encoder only writes the
+    zero form, because creating from nothing is the half that object sync needs
+    and conflating the two behind one function would make the caller's intent
+    unreadable.
+
+    **``part_id`` goes in the FolderID field.** ``RezNewScript`` looks the prim
+    up with ``GetSceneObjectPart(itemBase.Folder)`` -- OpenSim's own source
+    comments the line "The part ID is the folder ID!". Passing a real folder id
+    there finds no part and the call returns silently, having done nothing.
+
+    The new row points at `DEFAULT_SCRIPT_ASSET_ID`; upload the real bytes over
+    it with the ``UpdateScriptTask`` capability afterwards.
+    """
+    if not 0 <= int(object_local_id) <= 0xFFFFFFFF:
+        raise ValueError("object_local_id must fit in U32")
+    if not -128 <= int(asset_type) <= 127:
+        raise ValueError("asset_type must fit in S8")
+    if not -128 <= int(inv_type) <= 127:
+        raise ValueError("inv_type must fit in S8")
+    name_bytes = name.encode("utf-8") + b"\x00"
+    if len(name_bytes) > 0xFF:
+        raise ValueError("name is too long for a Variable 1 field")
+    description_bytes = description.encode("utf-8") + b"\x00"
+    if len(description_bytes) > 0xFF:
+        raise ValueError("description is too long for a Variable 1 field")
+    zero = UUID(int=0)
+    return (
+        b"\xFF\xFF\x01\x30"
+        # AgentData
+        + agent_id.bytes
+        + session_id.bytes
+        + (group_id or zero).bytes
+        # UpdateBlock
+        + pack("<I", int(object_local_id))
+        + bytes([1 if enabled else 0])
+        # InventoryBlock. A zero ItemID is what selects RezNewScript.
+        + zero.bytes
+        + part_id.bytes
+        + agent_id.bytes  # CreatorID
+        + agent_id.bytes  # OwnerID
+        + zero.bytes  # GroupID
+        + pack("<I", int(base_mask))
+        + pack("<I", int(owner_mask))
+        + pack("<I", int(group_mask))
+        + pack("<I", int(everyone_mask))
+        + pack("<I", int(next_owner_mask))
+        + bytes([0])  # GroupOwned
+        + zero.bytes  # TransactionID
+        + pack("<b", int(asset_type))
+        + pack("<b", int(inv_type))
+        + pack("<I", 0)  # Flags
+        + bytes([0])  # SaleType
+        + pack("<i", 0)  # SalePrice
+        + bytes([len(name_bytes)])
+        + name_bytes
+        + bytes([len(description_bytes)])
+        + description_bytes
+        + pack("<i", int(creation_date))
+        + pack("<I", 0)  # CRC
+        # NewScriptInfo is a Variable block, so it needs its u8 count even when
+        # empty. The packet is deserialised in full before the handler runs, so
+        # a block the deserialiser expects and cannot find makes it malformed.
+        + bytes([0])
+    )
+
+
 def encode_request_task_inventory(agent_id: UUID, session_id: UUID, local_id: int) -> bytes:
     """RequestTaskInventory (Low/289, Unencoded) for one task/object local ID."""
     if not 0 <= int(local_id) <= 0xFFFFFFFF:

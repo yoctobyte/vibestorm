@@ -125,6 +125,14 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--camera-sweep", action="store_true")
     session_parser.add_argument("--spawn-cube", action="store_true")
     session_parser.add_argument(
+        "--probe-create-script",
+        action="store_true",
+        help=(
+            "Create a new script inside a prim this avatar owns and confirm the row "
+            "appears. Writes to the region and leaves the script in place."
+        ),
+    )
+    session_parser.add_argument(
         "--probe-extra-params",
         action="store_true",
         help=(
@@ -580,6 +588,8 @@ def format_appearance_status(report: SessionReport) -> list[str]:
     # none come back is the single most useful thing this can tell you.
     if report.extra_params_probe_result is not None:
         lines.append(f"world[extra_params_probe]={report.extra_params_probe_result}")
+    if report.create_script_probe_result is not None:
+        lines.append(f"world[create_script_probe]={report.create_script_probe_result}")
     return lines
 
 
@@ -1018,6 +1028,7 @@ def main() -> int:
                     camera_sweep=args.camera_sweep,
                     spawn_test_cube=args.spawn_cube,
                     probe_extra_params=args.probe_extra_params,
+                    probe_create_script=args.probe_create_script,
                     fetch_worn_wearables=args.fetch_wearables,
                     auto_upload_bakes=not args.no_auto_bake_upload,
                     capture_dir=args.capture_dir,

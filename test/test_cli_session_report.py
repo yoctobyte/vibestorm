@@ -257,6 +257,7 @@ class CliSessionReportTests(unittest.TestCase):
             region_map_image_id=None,
             region_map_path=None,
             extra_params_probe_result=None,
+            create_script_probe_result=None,
             events=(SessionEvent(at_seconds=0.0, kind="session.started", detail=""),),
         )
 
@@ -323,6 +324,7 @@ class CliSessionReportTests(unittest.TestCase):
             region_map_image_id=None,
             region_map_path=None,
             extra_params_probe_result=None,
+            create_script_probe_result=None,
             events=(),
         )
 
@@ -357,6 +359,7 @@ class CliSessionReportTests(unittest.TestCase):
             region_map_image_id=None,
             region_map_path=None,
             extra_params_probe_result=None,
+            create_script_probe_result=None,
             events=(),
         )
 
