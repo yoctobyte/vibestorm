@@ -1,35 +1,117 @@
 # Current Handoff
 
-Last updated: 2026-08-14 (documenting work through 2026-06-22)
+Last updated: 2026-09-02
 
-## Where To Move Next
+## The Owner's Priorities
 
-Three coherent tracks are open. All three are now blocked on the same kind of
-work: **consuming decoders that already exist**, and live-verifying them.
+Stated 2026-09-02, and they are the primary goal of the project. Everything
+else is subordinate to these five:
 
-1. Wire up the parcel track (newest, shortest path to visible value).
-   The 2026-06-22 pass decoded `ParcelProperties`, the `ParcelOverlay` grid, and
-   the parcel Bitmap — but `decode_parcel_overlay` / `decode_parcel_bitmap` have
-   no caller in `src/`, and the HUD still prints `Parcel: unknown` because
-   nothing assigns `scene.parcel_name`. Set the name from the bus event first,
-   then reassemble the overlay grid and draw `border_segments` as plot edges.
-   See the 2026-06-22 parcel/EQ/animation/sound update below.
-2. Live-verify object sync: select a scripted object in `viewer3d`, download scripts
-   via Save Text, edit a `.lsl` locally, then "Upload File" — confirm the upload dialog
-   seeds `local/asset-downloads/<task-id>/`, syncs to the object, and the script
-   recompiles (check chat for "Sync: … compiled OK"). The typed
-   `ScriptRunningReply` EQG event now exists to confirm this server-side, but is
-   not wired into the poll loop yet.
-3. Continue real mesh/sculpt rendering:
-   - live-verify `GetMesh` against a local OpenSim mesh object
-   - ~~add normals/UVs and per-face/material grouping to decoded mesh assets~~
-     (done 2026-06-22 in the decoder; renderer wiring still open — see that update)
-   - live-verify sculpt map fetch/deformation against local OpenSim sculpted prims
-   - add viewer-grade sculpt stitching/normals/UVs
+- **A. A reasonable visualization of the world, without crashes.**
+- **B. Log in to the Second Life main grid, at the home location by default.**
+- **C. Edit an object and extract all its internals.**
+- **D. Upload a whole folder into an in-world selected object.**
+- **E. Sync an object's internals to an external folder, so scripts can be
+  worked on outside, then synced and tested easily.**
 
-Nothing from the 2026-06-22 session has been seen against live OpenSim traffic —
-it is all unit-tested against synthetic packets. A live session is the highest-value
-next action regardless of which track you pick.
+C, D and E are one track seen from three angles: get an object's contents out,
+get a folder's contents in, and keep the two in step. D is the piece with real
+missing code.
+
+### Where each stands
+
+**A -- substantially improved 2026-09-02, not finished.** The viewer crashed on
+the first `AvatarAnimation`, which arrives within seconds of any local session,
+so in practice it never survived a minute. Fixed in 395a58c. It now runs
+indefinitely against local OpenSim and draws terrain, water, 32 prims and the
+avatar nametag. The terrain debug wireframe was also on by default and made a
+working world look broken; it is off now.
+
+Still open: framerate. The offscreen check reports ~7 fps, but that is llvmpipe
+under Xvfb and says nothing about real hardware. **Needs a run on the owner's
+GPU before anyone optimises anything** -- measuring the software rasteriser
+would send the work in the wrong direction.
+
+**B -- launcher done, unverified.** `run.sh` now defaults SL sessions to
+`home` rather than `last`. Nothing about this has been exercised against the
+live grid, because that needs the owner's SL credentials. Treat as untested.
+
+**C -- partly there.** Object task inventory downloads to
+`local/asset-downloads/<task-id>/`. Whether "all internals" is satisfied
+depends on the asset types: text assets are covered; textures, sounds and
+animations inside an object have not been checked as a batch export.
+
+**D -- the real gap.** `sync_files_to_object_task_inventory` matches files to
+inventory rows **that already exist**, by sanitised name, and skips everything
+else with a "no matching inventory item" alert. Uploading a *whole folder*
+means creating task inventory rows that are not there yet, which is explicitly
+out of scope in the current code. That is the next piece of implementation
+work, and it is the one that unblocks D and completes E.
+
+**E -- one-shot sync exists, loop does not.** Folder to object works and is
+live-verified (2026-08-15). There is no watch, no re-sync on change, and no
+object-to-folder direction beyond the initial download.
+
+### Concrete next step
+
+Implement task inventory item *creation* so an unmatched file becomes a new
+script or notecard on the object, then re-verify D end to end on the local sim:
+drop a new `.lsl` into the folder, sync, and confirm it appears in the object
+and compiles. Keep the existing scope limits otherwise -- no deletes, no
+conflict resolution, no recursive folders.
+
+## Environment Note (2026-09-02)
+
+`uv` was missing and `.venv/` did not exist, so nothing Python-side ran. Both
+restored; everything resolves on the system Python 3.14.4 with no pin needed.
+
+`./run.sh test` was using the base dependency set, so on a cold machine the
+suite skipped 137 viewer/GL tests and errored on two Pillow ones -- a red
+suite, from the command that is the push gate. It now uses the `dev` extra
+(50e8019). `README.md` recommended a bare `uv sync` for the same reason.
+
+If the sim is dead rather than the Python side, `docs/runtime-platform-risk.md`
+and `docs/local-opensim.md` have the .NET 8 story; do not re-derive it.
+
+## Two Ways A Test Can Agree With A Bug
+
+Both of these happened on 2026-09-02, hours apart, and they are the same
+mistake wearing different clothes:
+
+- `parse_object_extra_params` skipped the u8 count that a `Variable` block
+  carries. Three tests built synthetic packets **without** the count, so they
+  agreed with the parser. Nothing contradicted it because OpenSim never sends
+  that message at all.
+- `Scene.apply_avatar_animation` read `entry.animation_id`; the wire type's
+  field is `anim_id`. The test file hand-rolled an `_AnimEntry` declaring
+  `animation_id`, so seventeen tests passed against a viewer that died on the
+  first live animation.
+
+**Build test data from the real type or the real template, not from a reading
+of the code under test.** Where a hand-rolled stand-in is unavoidable, say in
+the test why it is faithful.
+
+A corollary worth keeping: `BusDeliveryError` used to report only *how many*
+subscribers failed. Since the traceback stops at `publish()`, the cause was
+unrecoverable from a crash log -- the first viewer crash log named nothing at
+all. It now names and chains the failures, which is what located the bug.
+
+## ExtraParams: Write A Feature To Observe It (2026-09-02)
+
+Five `ExtraParams` decoders -- light, projector, reflection probe, render
+materials, mesh flags -- were filed "blocked on region content". They were not.
+The sim sends them whenever a prim has the feature; nothing in the region had
+one turned on. `session-run --probe-extra-params` sets all five on a prim we
+own, reads the echo, and clears them again. Every value came back byte-exact.
+
+This is the third time the blocker turned out to be a missing *outbound*
+message rather than missing content, after chat and IM. **Before filing
+anything as blocked on world content, ask whether the client can produce the
+traffic itself.**
+
+The probe clears what it set. A following `./run.sh census` reporting the five
+back under `absent=` is the restore check; leaving them set would make every
+later census read them as real region content.
 
 ## Object Sync Track
 
