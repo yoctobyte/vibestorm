@@ -1440,6 +1440,7 @@ class SemanticMessageTests(unittest.TestCase):
         body = (
             agent_id.bytes
             + session_id.bytes
+            + bytes([2])  # ObjectData is a Variable block: u8 count first.
             + (7).to_bytes(4, "little")
             + (0x10).to_bytes(2, "little")
             + bytes([1])

@@ -598,6 +598,7 @@ class WorldUpdaterTests(unittest.TestCase):
             (
                 UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").bytes
                 + UUID("11111111-2222-3333-4444-555555555555").bytes
+                + bytes([2])  # ObjectData is a Variable block: u8 count first.
                 + (7).to_bytes(4, "little")
                 + (0x10).to_bytes(2, "little")
                 + bytes([1])

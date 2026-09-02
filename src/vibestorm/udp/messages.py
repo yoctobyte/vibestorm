@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from struct import pack, unpack_from
 from uuid import UUID
@@ -1876,6 +1877,20 @@ def parse_transfer_packet(message: MessageDispatch) -> TransferPacketMessage:
 
 
 def parse_object_extra_params(message: MessageDispatch) -> ObjectExtraParamsMessage:
+    """Parse ObjectExtraParams (Low/99).
+
+    **OpenSim never sends this message.** ``LLClientView`` registers
+    ``HandleObjectExtraParams`` and there is no construction site for
+    ``ObjectExtraParamsPacket`` anywhere in the tree, so this is a
+    viewer-to-sim message only and this parser cannot fire against OpenSim. It
+    is kept because it decodes what *we* send -- which is what the encoder
+    round-trip test uses it for -- and other grids may differ.
+
+    Prim features arrive from the sim in the ``ExtraParams`` tail of
+    ``ObjectUpdate`` instead, a different framing that
+    ``vibestorm.world.extra_params.decode_extra_params`` reads via the shared
+    entry shape.
+    """
     if message.summary.name != "ObjectExtraParams":
         raise MessageDecodeError(f"expected ObjectExtraParams, got {message.summary.name}")
     if len(message.body) < 32:
@@ -1887,8 +1902,17 @@ def parse_object_extra_params(message: MessageDispatch) -> ObjectExtraParamsMess
     session_id = UUID(bytes=message.body[offset : offset + 16])
     offset += 16
 
+    # ObjectData is a Variable block, so it is prefixed with a u8 count. This
+    # read previously ran to the end of the body instead, which happens to work
+    # only on a packet built without the count -- and no real one exists to
+    # disagree, because OpenSim never sends this message. See the note above.
+    if len(message.body) < offset + 1:
+        raise MessageDecodeError("ObjectExtraParams object count is missing")
+    object_count = message.body[offset]
+    offset += 1
+
     objects: list[ObjectExtraParamsEntry] = []
-    while offset < len(message.body):
+    for _ in range(object_count):
         if len(message.body) < offset + 11:
             raise MessageDecodeError("ObjectExtraParams block header is truncated")
         object_local_id = unpack_from("<I", message.body, offset)[0]
@@ -3294,6 +3318,51 @@ def encode_request_multiple_objects(
         bytes([0]) + pack("<I", lid) for lid in local_ids
     )
     return header + agent_data + object_data
+
+
+def encode_object_extra_params(
+    agent_id: UUID,
+    session_id: UUID,
+    entries: Sequence[tuple[int, int, bool, bytes]],
+) -> bytes:
+    """Encode ObjectExtraParams (Low/99, Zerocoded) to set prim feature blocks.
+
+    ``entries`` is a sequence of ``(local_id, param_type, in_use, param_data)``.
+    Use the ``encode_*_params`` builders in ``vibestorm.world.extra_params`` to
+    produce ``param_data``; the type codes are the ``EXTRA_PARAM_*`` constants
+    there.
+
+    This is the write half of a feature the client could previously only read.
+    ``SceneGraph.UpdateExtraParam`` gates on ``Permissions.CanEditObject``, so
+    it only works on a prim we may edit, and then calls ``ScheduleFullAnimUpdate``
+    -- which is the useful part: the sim echoes the change back as a full
+    ``ObjectUpdate``, so setting a feature is also how we get to observe it.
+
+    ``in_use=False`` clears a block, and the sim ignores ``param_data``
+    entirely in that case; that is the documented way to turn a feature off,
+    as distinct from sending an empty block.
+    """
+    if not entries:
+        raise ValueError("entries must not be empty")
+    if len(entries) > 255:
+        raise ValueError("at most 255 entries per packet")
+    object_data = bytes([len(entries)])
+    for local_id, param_type, in_use, param_data in entries:
+        if not 0 <= int(local_id) <= 0xFFFFFFFF:
+            raise ValueError("local_id must fit in U32")
+        if not 0 <= int(param_type) <= 0xFFFF:
+            raise ValueError("param_type must fit in U16")
+        if len(param_data) > 255:
+            raise ValueError("param_data is a Variable 1 field, so at most 255 bytes")
+        object_data += (
+            pack("<I", int(local_id))
+            + pack("<H", int(param_type))
+            + bytes([1 if in_use else 0])
+            + pack("<I", len(param_data))
+            + bytes([len(param_data)])
+            + bytes(param_data)
+        )
+    return b"\xFF\xFF\x00\x63" + agent_id.bytes + session_id.bytes + object_data
 
 
 def encode_request_task_inventory(agent_id: UUID, session_id: UUID, local_id: int) -> bytes:

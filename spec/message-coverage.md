@@ -1,6 +1,6 @@
 # Message Coverage
 
-Last verified: 2026-08-14 (previous revision: 2026-04-02)
+Last verified: 2026-09-02 (previous revision: 2026-08-14)
 
 Statuses distinguish `tested` from `verified` — see Status Scale. A row that
 says `verified` means a live simulator sent it and the client handled it, not
@@ -75,7 +75,7 @@ status reflects the **weakest** one and the note says which is which.
 | `ImprovedTerseObjectUpdate` | compact frequent updates | P1 | verified | structural parse with terse `local_id` promotion; observed every session |
 | `KillObject` | remove object from world cache | P1 | handled | parsed and applied to `WorldView`; needs an object delete to observe |
 | `ObjectPropertiesFamily` | object name/owner metadata | P1 | verified | drives inspector names; the highest-count inbound message in a populated region |
-| `ObjectExtraParams` | rich per-prim feature blocks | P2 | tested | seven sub-decoders; only **sculpt and flexi** are live-confirmed (2026-08-14). Light, projector, reflection probe, render materials and mesh flags have never seen live data — `./run.sh census` lists all five under `absent=`, so they are unit-tested only |
+| `ObjectExtraParams` | rich per-prim feature blocks | P2 | verified | all seven sub-decoders live-confirmed. Sculpt and flexi from region content (2026-08-14); light, projector, reflection probe, render materials and mesh flags on 2026-09-02 by **writing** them — `encode_object_extra_params` sets the blocks on a prim we own, the sim echoes them in `ObjectUpdate`, and every value decoded back byte-exact. Run it with `session-run --probe-extra-params`, which clears the blocks again afterwards. The inbound parser is kept for other grids but cannot fire against OpenSim, which has no send path for this message |
 | `AvatarAppearance` | avatar appearance metadata | P3 | verified | parsed; drives the appearance/bake path |
 | `AgentWearablesUpdate` | the agent's own worn wearables | P3 | verified | parsed into the appearance state and reported as `appearance[wearables]`; observed 2026-08-14 (serial 0, 6 wearables, types 0-5) |
 | `AgentCachedTextureResponse` | which baked textures the sim already holds | P3 | verified | parsed; gates the deferred bake upload. Observed 2026-08-14 — 11 entries, all texture ids zero, i.e. the sim had nothing cached and every bake had to be uploaded |

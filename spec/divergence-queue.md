@@ -73,3 +73,13 @@ Moved to the docs project; listed so a later session does not re-queue them.
   from source at write time rather than trusting the queue line.
 - `OwnerID` being unconditional, detached from the sound fields, and set for particles
 - Trees and grass sent as a fixed 113-byte block with no shape and no owner
+
+- `ObjectExtraParams` is viewer-to-sim only in OpenSim: `LLClientView` registers
+  `HandleObjectExtraParams` and the tree contains no construction site for
+  `ObjectExtraParamsPacket`, so a client's inbound parser for it can never fire.
+  Prim feature blocks reach the viewer in the `ExtraParams` tail of
+  `ObjectUpdate` instead. (2026-09-02)
+- The `ObjectData` block of `ObjectExtraParams` is `Variable`, so it carries a
+  u8 count before the first entry. Worth stating because a decoder written to
+  run to the end of the body round-trips against its own synthetic packets and
+  is never contradicted by a real one — see the point above. (2026-09-02)

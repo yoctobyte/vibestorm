@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import suppress
 import platform
+from collections.abc import Iterable
+from contextlib import suppress
 from pathlib import Path
-from typing import Iterable
 
 from vibestorm import __version__
 from vibestorm.app.main import get_status
+from vibestorm.assets.notecard import encode_notecard
 from vibestorm.caps.asset_upload_client import (
     AssetUploadClient,
     AssetUploadError,
@@ -24,10 +25,7 @@ from vibestorm.caps.inventory_client import (
     InventoryItemRequest,
     parse_inventory_items_payload,
 )
-from vibestorm.assets.notecard import encode_notecard
 from vibestorm.caps.inventory_types import INVENTORY_NOTECARD
-from vibestorm.caps.library import LIBRARY_OWNER_ID, LIBRARY_ROOT_FOLDER_ID
-from vibestorm.caps.task_inventory_upload_client import TaskInventoryUploadClient
 from vibestorm.caps.inventory_walk import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_MAX_DEPTH,
@@ -35,6 +33,8 @@ from vibestorm.caps.inventory_walk import (
     format_walk,
     walk_inventory,
 )
+from vibestorm.caps.library import LIBRARY_OWNER_ID, LIBRARY_ROOT_FOLDER_ID
+from vibestorm.caps.task_inventory_upload_client import TaskInventoryUploadClient
 from vibestorm.event_queue.client import EventQueueClient
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.login.client import LoginClient, LoginError
@@ -124,6 +124,15 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--agent-update-interval", type=float, default=1.0)
     session_parser.add_argument("--camera-sweep", action="store_true")
     session_parser.add_argument("--spawn-cube", action="store_true")
+    session_parser.add_argument(
+        "--probe-extra-params",
+        action="store_true",
+        help=(
+            "Set light/projector/reflection-probe/mesh-flag/render-material blocks on a "
+            "prim this avatar owns, observe the sim echo them back, then clear them. "
+            "Writes to the region, so use it on a sim you own."
+        ),
+    )
     session_parser.add_argument(
         "--fetch-wearables",
         action="store_true",
@@ -565,6 +574,12 @@ def format_appearance_status(report: SessionReport) -> list[str]:
             lines.append(f"map[tile]=none events={kinds}")
         else:
             lines.append("map[tile]=none no_events")
+
+    # ExtraParams write probe. Reported unconditionally when it ran, including
+    # the "nothing was observed" case -- a probe that sets five blocks and sees
+    # none come back is the single most useful thing this can tell you.
+    if report.extra_params_probe_result is not None:
+        lines.append(f"world[extra_params_probe]={report.extra_params_probe_result}")
     return lines
 
 
@@ -702,7 +717,7 @@ async def upload_notecard(
     session_task = asyncio.ensure_future(_run())
     try:
         await asyncio.wait_for(finished, timeout=60.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         lines.append("notecard[error]=no UpdateCreateInventoryItem reply arrived")
     finally:
         session_task.cancel()
@@ -985,6 +1000,7 @@ def main() -> int:
             f"duration={args.duration:.1f}s "
             f"camera_sweep={args.camera_sweep} "
             f"spawn_cube={args.spawn_cube} "
+            f"probe_extra_params={args.probe_extra_params} "
             f"auto_bake_upload={not args.no_auto_bake_upload} "
             f"capture={args.capture_dir if args.capture_dir else 'off'} "
             f"capture_mode={args.capture_mode} "
@@ -1001,6 +1017,7 @@ def main() -> int:
                     agent_update_interval_seconds=args.agent_update_interval,
                     camera_sweep=args.camera_sweep,
                     spawn_test_cube=args.spawn_cube,
+                    probe_extra_params=args.probe_extra_params,
                     fetch_worn_wearables=args.fetch_wearables,
                     auto_upload_bakes=not args.no_auto_bake_upload,
                     capture_dir=args.capture_dir,

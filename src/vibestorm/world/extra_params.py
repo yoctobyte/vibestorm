@@ -14,12 +14,22 @@ keeping open when changing this.
 
 Every decoder returns ``None`` rather than raising when a block is too short.
 A truncated block should cost one prim feature, not the whole update.
+
+The ``encode_*`` functions are the inverse, and exist so this client can *set*
+these features on a prim it owns rather than only read them. That is the point:
+five of these blocks had never seen live data, not because the sim cannot send
+them but because nothing in the region had the feature turned on. A client that
+can write one can observe its own echo. See ``encode_object_extra_params``.
+
+They are sourced from ``PrimitiveBaseShape.ExtraParamsToBytes`` -- OpenSim's own
+encoder -- so the pairing is checked against the tree in both directions rather
+than being one reading of the decoders inverted by eye.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from struct import unpack_from
+from struct import pack, unpack_from
 from uuid import UUID
 
 # ExtraParams block type codes (PrimitiveBaseShape.ReadInUpdateExtraParam).
@@ -201,6 +211,105 @@ def decode_render_materials_params(data: bytes) -> RenderMaterialsParams | None:
     return RenderMaterialsParams(entries=tuple(entries))
 
 
+def _zero_one_to_byte(value: float) -> int:
+    """Quantise a 0..1 float to one byte, the way ``FloatZeroOneToByte`` does.
+
+    libomv ships only as a DLL in ``opensim-source/``, so the exact rounding of
+    ``Utils.FloatZeroOneToByte`` cannot be read here. It does not need to be:
+    the sim stores what we send as ``byte / 255`` and re-encodes it on the way
+    out, and every one of the 256 byte values survives that trip unchanged for
+    both rounding and truncation. So a value we send comes back byte-identical
+    regardless of which one libomv uses, and only *our* quantisation is visible.
+    """
+    return min(max(int(round(value * 255.0)), 0), 255)
+
+
+def encode_flexible_params(params: FlexibleParams) -> bytes:
+    """Encode a flexi block (``0x10``, 16 bytes).
+
+    Softness is the awkward one: its two bits go back into the top bit of each
+    of the first two bytes, which the tension and drag fields share.
+    """
+    softness = min(max(int(params.softness), 0), 3)
+    tension = min(max(int(round(params.tension * 10.0)), 0), 0x7F)
+    drag = min(max(int(round(params.drag * 10.0)), 0), 0x7F)
+    gravity = min(max(int(round((params.gravity + 10.0) * 10.0)), 0), 255)
+    wind = min(max(int(round(params.wind * 10.0)), 0), 255)
+    return (
+        bytes(
+            [
+                ((softness << 6) & 0x80) | tension,
+                ((softness << 7) & 0x80) | drag,
+                gravity,
+                wind,
+            ]
+        )
+        + pack("<fff", *params.force)
+    )
+
+
+def encode_light_params(params: LightParams) -> bytes:
+    """Encode a point-light block (``0x20``, 16 bytes).
+
+    Intensity rides in the colour's alpha byte -- it is not opacity.
+    """
+    return (
+        bytes(
+            [
+                _zero_one_to_byte(params.color[0]),
+                _zero_one_to_byte(params.color[1]),
+                _zero_one_to_byte(params.color[2]),
+                _zero_one_to_byte(params.intensity),
+            ]
+        )
+        + pack("<fff", params.radius, params.cutoff, params.falloff)
+    )
+
+
+def encode_projection_params(params: ProjectionParams) -> bytes:
+    """Encode a projector block (``0x40``, 28 bytes)."""
+    return params.texture_id.bytes + pack(
+        "<fff", params.field_of_view, params.focus, params.ambiance
+    )
+
+
+def encode_reflection_probe_params(params: ReflectionProbeParams) -> bytes:
+    """Encode a reflection-probe block (``0x90``, 9 bytes).
+
+    Clamped on the way out to the same bounds ``ReadReflectionProbe`` clamps on
+    the way in, so a value that would not survive the round trip is rejected
+    here rather than silently changing meaning at the sim.
+    """
+    return pack(
+        "<ffB",
+        min(max(params.ambiance, 0.0), 1.0),
+        min(max(params.clip_distance, 0.0), 1024.0),
+        params.flags & 0xFF,
+    )
+
+
+def encode_mesh_flags_params(flags: int) -> bytes:
+    """Encode a mesh render-flags block (``0x70``, 4 bytes)."""
+    return pack("<I", int(flags) & 0xFFFFFFFF)
+
+
+def encode_render_materials_params(params: RenderMaterialsParams) -> bytes:
+    """Encode a per-face GLTF material list (``0x80``, 1 + 17*count bytes).
+
+    ``ReadRenderMaterials`` requires ``size > 17``, so a single-entry list --
+    exactly 18 bytes -- is the shortest one the sim will read. An empty list is
+    rejected here: the way to clear materials is ``param_in_use=False``, not a
+    zero-length block, which the sim would drop on the floor instead.
+    """
+    if not params.entries:
+        raise ValueError("render materials block needs at least one entry; clear with in_use=False")
+    if len(params.entries) > 255:
+        raise ValueError("at most 255 render material entries")
+    return bytes([len(params.entries)]) + b"".join(
+        bytes([entry.face_index & 0xFF]) + entry.material_id.bytes for entry in params.entries
+    )
+
+
 @dataclass(slots=True, frozen=True)
 class DecodedExtraParams:
     """Every recognised block from one prim's ``ExtraParams`` tail.
@@ -273,4 +382,10 @@ __all__ = [
     "decode_projection_params",
     "decode_reflection_probe_params",
     "decode_render_materials_params",
+    "encode_flexible_params",
+    "encode_light_params",
+    "encode_mesh_flags_params",
+    "encode_projection_params",
+    "encode_reflection_probe_params",
+    "encode_render_materials_params",
 ]

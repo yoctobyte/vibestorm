@@ -8,13 +8,18 @@ import math
 import random
 import socket
 from collections import Counter
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from vibestorm.assets.animation import AnimationDecodeError, decode_animation
+from vibestorm.assets.gesture import GestureDecodeError, decode_gesture
 from vibestorm.assets.j2k import J2KDecodeError, decode_j2k
+from vibestorm.assets.notecard import NotecardDecodeError, decode_notecard
+from vibestorm.assets.wearable import WearableDecodeError, decode_wearable
 from vibestorm.caps.client import CapabilityClient, CapabilityError
 from vibestorm.caps.get_mesh_client import GetMeshClient, GetMeshError
 from vibestorm.caps.get_texture_client import GetTextureClient, GetTextureError
@@ -27,9 +32,24 @@ from vibestorm.caps.inventory_client import (
     parse_inventory_descendents_payload,
     parse_inventory_items_payload,
 )
+from vibestorm.caps.inventory_types import (
+    INVENTORY_ANIMATION,
+    INVENTORY_BODYPART,
+    INVENTORY_CLOTHING,
+    INVENTORY_GESTURE,
+    INVENTORY_NOTECARD,
+)
+from vibestorm.caps.object_cost_client import ObjectCost, ObjectCostClient, ObjectCostError
+from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhysicsError
 from vibestorm.caps.upload_baked_texture_client import (
     UploadBakedTextureClient,
     UploadBakedTextureError,
+)
+from vibestorm.caps.viewer_asset_client import (
+    ViewerAssetClient,
+    ViewerAssetError,
+    asset_type_from_content_type,
+    asset_type_query_key,
 )
 from vibestorm.event_queue.client import EventQueueClient, EventQueueError
 from vibestorm.event_queue.events import (
@@ -66,19 +86,20 @@ from vibestorm.udp.messages import (
     encode_agent_update,
     encode_agent_wearables_request,
     encode_chat_from_viewer,
-    encode_improved_instant_message,
     encode_complete_agent_movement,
     encode_complete_ping_check,
     encode_confirm_xfer_packet,
+    encode_create_inventory_item,
+    encode_improved_instant_message,
     encode_logout_request,
     encode_map_block_request,
-    encode_parcel_properties_request,
     encode_object_add,
+    encode_object_extra_params,
     encode_packet_ack,
+    encode_parcel_properties_request,
     encode_region_handshake_reply,
     encode_request_multiple_objects,
     encode_request_object_properties_family,
-    encode_create_inventory_item,
     encode_request_task_inventory,
     encode_request_xfer,
     encode_teleport_location_request,
@@ -89,10 +110,6 @@ from vibestorm.udp.messages import (
     parse_agent_movement_complete,
     parse_agent_wearables_update,
     parse_alert_message,
-    parse_teleport_failed,
-    parse_teleport_local,
-    parse_teleport_progress,
-    parse_teleport_start,
     parse_attached_sound,
     parse_attached_sound_gain_change,
     parse_avatar_animation,
@@ -113,13 +130,17 @@ from vibestorm.udp.messages import (
     parse_parcel_properties,
     parse_preload_sound,
     parse_region_handshake,
-    parse_sound_trigger,
     parse_reply_task_inventory,
-    parse_update_create_inventory_item,
     parse_send_xfer_packet,
+    parse_sound_trigger,
     parse_start_ping_check,
+    parse_teleport_failed,
+    parse_teleport_local,
+    parse_teleport_progress,
+    parse_teleport_start,
     parse_transfer_info,
     parse_transfer_packet,
+    parse_update_create_inventory_item,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.template import (
@@ -129,29 +150,28 @@ from vibestorm.udp.template import (
     decode_message_number,
 )
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
+from vibestorm.world.extra_params import (
+    EXTRA_PARAM_LIGHT,
+    EXTRA_PARAM_MESH_FLAGS,
+    EXTRA_PARAM_PROJECTION,
+    EXTRA_PARAM_REFLECTION_PROBE,
+    EXTRA_PARAM_RENDER_MATERIALS,
+    LightParams,
+    ProjectionParams,
+    ReflectionProbeParams,
+    RenderMaterialEntry,
+    RenderMaterialsParams,
+    decode_extra_params,
+    encode_light_params,
+    encode_mesh_flags_params,
+    encode_projection_params,
+    encode_reflection_probe_params,
+    encode_render_materials_params,
+)
 from vibestorm.world.models import WorldView
 from vibestorm.world.object_inventory import (
     ObjectInventorySnapshot,
     parse_task_inventory_text,
-)
-from vibestorm.assets.animation import AnimationDecodeError, decode_animation
-from vibestorm.assets.gesture import GestureDecodeError, decode_gesture
-from vibestorm.assets.notecard import NotecardDecodeError, decode_notecard
-from vibestorm.assets.wearable import WearableDecodeError, decode_wearable
-from vibestorm.caps.inventory_types import (
-    INVENTORY_ANIMATION,
-    INVENTORY_BODYPART,
-    INVENTORY_CLOTHING,
-    INVENTORY_GESTURE,
-    INVENTORY_NOTECARD,
-)
-from vibestorm.caps.object_cost_client import ObjectCost, ObjectCostClient, ObjectCostError
-from vibestorm.caps.object_physics_client import ObjectPhysicsClient, ObjectPhysicsError
-from vibestorm.caps.viewer_asset_client import (
-    ViewerAssetClient,
-    ViewerAssetError,
-    asset_type_from_content_type,
-    asset_type_query_key,
 )
 from vibestorm.world.physics_shape import PhysicsProperties
 from vibestorm.world.teleport_flags import decode_teleport_flags
@@ -177,6 +197,12 @@ class SessionConfig:
     camera_sweep_period_seconds: float = 24.0
     camera_sweep_height_offset: float = 3.0
     spawn_test_cube: bool = False
+    #: Set light / projector / reflection-probe / mesh-flag / render-material
+    #: blocks on a prim this avatar owns, then clear them again. These five
+    #: ExtraParams decoders had never seen live data -- not because the sim
+    #: cannot send them, but because nothing in the region had the feature
+    #: turned on. Writing one is how we get the sim to send it back.
+    probe_extra_params: bool = False
     fetch_object_physics: bool = False
     #: Fetch the assets behind `AgentWearablesUpdate` so the session can say
     #: what the avatar is actually wearing rather than only how many items.
@@ -271,6 +297,10 @@ class SessionReport:
     baked_appearance_override: BakedAppearanceOverride | None
     region_map_image_id: UUID | None
     region_map_path: Path | None
+    #: Outcome of the ExtraParams write probe, or None if it did not run.
+    #: Kept off the event log deliberately: that log is a rolling window,
+    #: so a result recorded mid-session does not survive to the report.
+    extra_params_probe_result: str | None
     events: tuple[SessionEvent, ...]
 
 
@@ -344,7 +374,7 @@ class LiveCircuitSession:
     #: request context is kept, not just the type, because a failed HTTP fetch
     #: falls back to a TransferRequest and a task-inventory transfer needs the
     #: task, item and owner ids to be built at all.
-    pending_http_assets: dict[UUID, "PendingHttpAsset"] = field(default_factory=dict)
+    pending_http_assets: dict[UUID, PendingHttpAsset] = field(default_factory=dict)
     http_asset_attempted: set[UUID] = field(default_factory=set)
     map_block_request_sent: bool = False
     parcel_properties_request_sent: bool = False
@@ -391,6 +421,10 @@ class LiveCircuitSession:
     resolved_capabilities: tuple[str, ...] = ()
     properties_requested: set[UUID] = field(default_factory=set)
     test_cube_spawned: bool = False
+    extra_params_probe_target: UUID | None = None
+    extra_params_probe_sent_at: float | None = None
+    extra_params_probe_cleared: bool = False
+    extra_params_probe_result: str | None = None
     started: bool = False
     started_at: float | None = None
     events: list[SessionEvent] = field(default_factory=list)
@@ -1060,6 +1094,7 @@ class LiveCircuitSession:
             packets = self._drain_throttle_packets(now)
             packets.extend(self._drain_appearance_packets(now))
             packets.extend(self._drain_test_cube_packets(now))
+            packets.extend(self._drain_extra_params_probe(now))
             packets.extend(self._drain_properties_requests(now))
             return packets
 
@@ -1067,6 +1102,7 @@ class LiveCircuitSession:
         packets = self._drain_throttle_packets(now)
         packets.extend(self._drain_appearance_packets(now))
         packets.extend(self._drain_test_cube_packets(now))
+        packets.extend(self._drain_extra_params_probe(now))
         packets.extend(self._drain_properties_requests(now))
         self._update_camera_sweep(now)
         self.agent_update_count += 1
@@ -1116,6 +1152,7 @@ class LiveCircuitSession:
             baked_appearance_override=self.baked_appearance_override,
             region_map_image_id=self.region_map_image_id,
             region_map_path=self.region_map_path,
+            extra_params_probe_result=self.extra_params_probe_result,
             events=tuple(self.events),
         )
 
@@ -1765,6 +1802,201 @@ class LiveCircuitSession:
                 now=now,
                 label="ObjectAdd",
             ),
+        ]
+
+    #: How long the probe leaves the features set before clearing them again.
+    #: Long enough for the sim's echoing ObjectUpdate to arrive and be decoded,
+    #: short enough that a session does not end with the prim still modified.
+    EXTRA_PARAMS_PROBE_HOLD_SECONDS = 8.0
+
+    def _extra_params_probe_blocks(self) -> list[tuple[int, bool, bytes]]:
+        """The five feature blocks the probe sets, as (type, in_use, data).
+
+        Values are deliberately unmistakable rather than realistic -- a red
+        light at full intensity, a probe with a distinctive clip distance --
+        so the echo cannot be confused with a default the sim supplied itself.
+        """
+        return [
+            (
+                EXTRA_PARAM_LIGHT,
+                True,
+                encode_light_params(
+                    LightParams(
+                        color=(1.0, 0.0, 0.0),
+                        intensity=1.0,
+                        radius=10.0,
+                        cutoff=0.0,
+                        falloff=0.75,
+                    )
+                ),
+            ),
+            (
+                EXTRA_PARAM_PROJECTION,
+                True,
+                encode_projection_params(
+                    ProjectionParams(
+                        texture_id=UUID("89556747-24cb-43ed-920b-47caed15465f"),
+                        field_of_view=1.25,
+                        focus=2.5,
+                        ambiance=0.5,
+                    )
+                ),
+            ),
+            (
+                EXTRA_PARAM_REFLECTION_PROBE,
+                True,
+                encode_reflection_probe_params(
+                    ReflectionProbeParams(ambiance=0.5, clip_distance=64.0, flags=1)
+                ),
+            ),
+            (EXTRA_PARAM_MESH_FLAGS, True, encode_mesh_flags_params(0x00000001)),
+            (
+                EXTRA_PARAM_RENDER_MATERIALS,
+                True,
+                encode_render_materials_params(
+                    RenderMaterialsParams(
+                        entries=(
+                            RenderMaterialEntry(
+                                face_index=0,
+                                material_id=UUID("89556747-24cb-43ed-920b-47caed15465f"),
+                            ),
+                        )
+                    )
+                ),
+            ),
+        ]
+
+    def _find_editable_prim(self) -> UUID | None:
+        """Pick a root prim this avatar owns.
+
+        ``SceneGraph.UpdateExtraParam`` gates on ``Permissions.CanEditObject``,
+        so a prim we do not own is silently ignored -- no error, no echo, which
+        would read exactly like a broken encoder. Ownership comes from
+        ``ObjectPropertiesFamily``, so this returns ``None`` until those replies
+        have arrived rather than guessing from anything cheaper.
+        """
+        for full_id, obj in self.world_view.objects.items():
+            family = obj.properties_family
+            if family is None or obj.parent_id != 0:
+                continue
+            if family.owner_id == self.bootstrap.agent_id:
+                return full_id
+        return None
+
+    def _drain_extra_params_probe(self, now: float) -> list[bytes]:
+        """Set the five unseen feature blocks on a prim we own, then clear them.
+
+        The clear half is not optional politeness: the sim persists the shape,
+        so a probe that only set the blocks would leave every future census of
+        this region reporting features that a later reader would take for real
+        region content.
+        """
+        if not self.config.probe_extra_params or not self.movement_completed:
+            return []
+
+        if self.extra_params_probe_sent_at is None:
+            target = self._find_editable_prim()
+            if target is None:
+                # Ownership comes from ObjectPropertiesFamily, which arrives a
+                # few seconds after the objects themselves. Retry next cycle.
+                return []
+            obj = self.world_view.objects[target]
+            self.extra_params_probe_target = target
+            self.extra_params_probe_sent_at = now
+            self._record_event(
+                now,
+                "world.extra_params_probe",
+                f"set target={target} local_id={obj.local_id} blocks=5",
+            )
+            return [
+                self._build_outbound_packet(
+                    encode_object_extra_params(
+                        self.bootstrap.agent_id,
+                        self.bootstrap.session_id,
+                        [
+                            (obj.local_id, param_type, in_use, data)
+                            for param_type, in_use, data in self._extra_params_probe_blocks()
+                        ],
+                    ),
+                    reliable=True,
+                    zerocoded=True,
+                    now=now,
+                    label="ObjectExtraParams",
+                )
+            ]
+
+        if self.extra_params_probe_cleared:
+            return []
+        if now - self.extra_params_probe_sent_at < self.EXTRA_PARAMS_PROBE_HOLD_SECONDS:
+            return []
+
+        target = self.extra_params_probe_target
+        if target is None or target not in self.world_view.objects:
+            self.extra_params_probe_cleared = True
+            return []
+        obj = self.world_view.objects[target]
+        self.extra_params_probe_cleared = True
+        decoded = decode_extra_params(obj.extra_params_entries)
+        # Report the values, not just presence. "light is not None" would look
+        # identical whether the sim echoed what we sent or supplied a default of
+        # its own, and only the former is evidence about the decoder.
+        parts: list[str] = []
+        if decoded.light is None:
+            parts.append("light=absent")
+        else:
+            parts.append(
+                f"light=rgb({decoded.light.color[0]:.2f},{decoded.light.color[1]:.2f},"
+                f"{decoded.light.color[2]:.2f}) intensity={decoded.light.intensity:.2f} "
+                f"radius={decoded.light.radius:g} falloff={decoded.light.falloff:g}"
+            )
+        if decoded.projection is None:
+            parts.append("projection=absent")
+        else:
+            parts.append(
+                f"projection=texture={decoded.projection.texture_id} "
+                f"fov={decoded.projection.field_of_view:g} "
+                f"focus={decoded.projection.focus:g} "
+                f"ambiance={decoded.projection.ambiance:g}"
+            )
+        if decoded.reflection_probe is None:
+            parts.append("reflection_probe=absent")
+        else:
+            parts.append(
+                f"reflection_probe=ambiance={decoded.reflection_probe.ambiance:g} "
+                f"clip={decoded.reflection_probe.clip_distance:g} "
+                f"flags={decoded.reflection_probe.flags}"
+            )
+        if decoded.render_materials is None:
+            parts.append("render_materials=absent")
+        else:
+            parts.append(
+                "render_materials="
+                + ",".join(
+                    f"face{entry.face_index}={entry.material_id}"
+                    for entry in decoded.render_materials.entries
+                )
+            )
+        parts.append(
+            "mesh_flags=absent" if decoded.mesh_flags is None else f"mesh_flags={decoded.mesh_flags}"
+        )
+        self.extra_params_probe_result = f"target={target} " + " ".join(parts)
+        self._record_event(now, "world.extra_params_probe", f"observed {' '.join(parts)}")
+        # in_use=False is how a block is cleared; the sim ignores ParamData.
+        return [
+            self._build_outbound_packet(
+                encode_object_extra_params(
+                    self.bootstrap.agent_id,
+                    self.bootstrap.session_id,
+                    [
+                        (obj.local_id, param_type, False, b"")
+                        for param_type, _in_use, _data in self._extra_params_probe_blocks()
+                    ],
+                ),
+                reliable=True,
+                zerocoded=True,
+                now=now,
+                label="ObjectExtraParams",
+            )
         ]
 
     def _drain_properties_requests(self, now: float) -> list[bytes]:
