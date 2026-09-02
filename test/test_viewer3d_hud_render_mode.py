@@ -255,11 +255,17 @@ class RenderModeMenuTests(unittest.TestCase):
             on_render_setting_change=lambda name, value: calls.append((name, value)),
         )
 
+        # Assert the toggle inverts whatever the current default is, rather than
+        # a literal. Pinning the literal made this test a second copy of the
+        # default, so changing the default failed the test for no real reason.
+        before = hud._render_setting_values["render_terrain_lines"]
+
         consumed = self._click(hud, hud.render_terrain_lines_button)
 
         self.assertTrue(consumed)
-        self.assertEqual(calls, [("render_terrain_lines", False)])
-        self.assertIn("[ ] Mesh Lines", hud.render_terrain_lines_button.text)
+        self.assertEqual(calls, [("render_terrain_lines", not before)])
+        expected_mark = "[x] Mesh Lines" if not before else "[ ] Mesh Lines"
+        self.assertIn(expected_mark, hud.render_terrain_lines_button.text)
 
     def test_water_opacity_slider_calls_callback(self) -> None:
         from vibestorm.viewer3d.hud import HUD

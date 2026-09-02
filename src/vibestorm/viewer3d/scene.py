@@ -373,7 +373,11 @@ class Scene:
     debug_terrain_source: str | None = None
     terrain_z_scale: float = 1.0
     render_terrain: bool = True
-    render_terrain_lines: bool = True
+    #: Terrain wireframe. A decode-debugging aid, off by default: it draws a
+    #: bright green line per heightfield edge, which at 64x64 covers the whole
+    #: region and reads as the world being broken rather than as an overlay.
+    #: The HUD "Mesh Lines" button turns it back on.
+    render_terrain_lines: bool = False
     render_water: bool = True
     render_objects: bool = True
     water_alpha: float = 0.72
@@ -586,7 +590,7 @@ class Scene:
         if animation is None:
             return
         self.avatar_animations[animation.sender_id] = tuple(
-            entry.animation_id for entry in animation.animations
+            entry.anim_id for entry in animation.animations
         )
 
     def apply_object_animation(self, event: object) -> None:
@@ -595,7 +599,7 @@ class Scene:
         if animation is None:
             return
         self.object_animations[animation.sender_id] = tuple(
-            entry.animation_id for entry in animation.animations
+            entry.anim_id for entry in animation.animations
         )
 
     def apply_attached_sound(self, event: object) -> None:

@@ -47,7 +47,15 @@ class BusDeliveryError(BusError):
     failures: tuple[BaseException, ...]
 
     def __str__(self) -> str:
-        return f"{len(self.failures)} subscriber(s) failed for {type(self.event).__name__}"
+        # Name the failures. Without this the message says only how many
+        # subscribers broke, which is the one fact that does not help: the
+        # traceback stops at publish(), so the cause is otherwise unrecoverable
+        # from a crash log.
+        detail = "; ".join(f"{type(exc).__name__}: {exc}" for exc in self.failures)
+        return (
+            f"{len(self.failures)} subscriber(s) failed for "
+            f"{type(self.event).__name__}: {detail}"
+        )
 
 
 @dataclass(slots=True)
@@ -87,7 +95,9 @@ class Bus:
             except BaseException as exc:  # noqa: BLE001 - collect and rethrow
                 failures.append(exc)
         if failures:
-            raise BusDeliveryError(event=event, failures=tuple(failures))
+            # Chain the first failure so the original traceback survives; the
+            # rest are still on .failures.
+            raise BusDeliveryError(event=event, failures=tuple(failures)) from failures[0]
 
     def _unsubscribe(self, sub: Subscription) -> None:
         bucket = self._subscribers.get(sub.event_type)

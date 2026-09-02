@@ -108,7 +108,9 @@ case "$GRID_MODE" in
     ;;
   sl)
     LOGIN_URI="${LOGIN_URI:-https://login.agni.lindenlab.com/cgi-bin/login.cgi}"
-    START_LOCATION="${START_LOCATION:-last}"
+    # Home, not last. "last" drops the avatar wherever the previous session
+    # ended, which on a grid we do not control is not a known starting state.
+    START_LOCATION="${START_LOCATION:-home}"
     ;;
 esac
 SESSION_DURATION="${VIBESTORM_SESSION_DURATION:-60}"
@@ -251,7 +253,7 @@ apply_login_preset() {
       ;;
     sl|secondlife|second-life)
       LOGIN_URI="${LOGIN_URI:-https://login.agni.lindenlab.com/cgi-bin/login.cgi}"
-      START_LOCATION="${START_LOCATION:-last}"
+      START_LOCATION="${START_LOCATION:-home}"
       ;;
     custom)
       ;;

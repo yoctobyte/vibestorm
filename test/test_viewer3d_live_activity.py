@@ -1,9 +1,15 @@
 """Tests for live sound and animation state in the Scene.
 
 These six bus events were published from the session but had no consumer
-anywhere — the "on the bus but no consumer" gap. Nothing in the test region
-emits them, so this is the only coverage they will get until someone rezzes a
-sound emitter or an animated object.
+anywhere — the "on the bus but no consumer" gap.
+
+`AvatarAnimation` is *not* one of the ones the region never sends: a plain
+local session receives several, and until 2026-09-02 every one of them crashed
+the 3D viewer within seconds. The animation entries below therefore use the
+real `AvatarAnimationEntry`, not a stand-in. The stand-in was the bug — it
+declared an `animation_id` attribute that the real type does not have, which
+is exactly the name the scene code was reading, so these tests passed while
+the viewer could not survive a single live animation.
 
 The design point being tested is that these are *current state*, not a log: a
 new AvatarAnimation or AttachedSound replaces what was there, because that is
@@ -14,6 +20,7 @@ stopped animation forever.
 import unittest
 from uuid import UUID
 
+from vibestorm.udp.messages import AvatarAnimationEntry, AvatarAnimationMessage
 from vibestorm.viewer3d.scene import Scene
 
 OBJECT_A = UUID("aaaa0000-0000-0000-0000-000000000001")
@@ -25,17 +32,20 @@ ANIM_B = UUID("cccc0000-0000-0000-0000-000000000002")
 OWNER = UUID("dddd0000-0000-0000-0000-000000000001")
 
 
-class _AnimEntry:
-    def __init__(self, animation_id):
-        self.animation_id = animation_id
-        self.sequence_id = 1
-        self.source_object_id = None
+def _Anim(sender_id, *animation_ids):
+    """Build a real AvatarAnimationMessage.
 
-
-class _Anim:
-    def __init__(self, sender_id, *animation_ids):
-        self.sender_id = sender_id
-        self.animations = tuple(_AnimEntry(a) for a in animation_ids)
+    Deliberately not a stand-in: a hand-rolled one is free to have attributes
+    the wire type does not, and that is precisely how the viewer crash below
+    survived a green suite.
+    """
+    return AvatarAnimationMessage(
+        sender_id=sender_id,
+        animations=tuple(
+            AvatarAnimationEntry(anim_id=a, sequence_id=1, source_object_id=None)
+            for a in animation_ids
+        ),
+    )
 
 
 class _AnimEvent:

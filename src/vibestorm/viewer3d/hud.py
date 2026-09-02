@@ -162,7 +162,7 @@ class HUD:
         )
         self._render_setting_values: dict[str, object] = {
             "render_terrain": True,
-            "render_terrain_lines": True,
+            "render_terrain_lines": False,
             "render_water": True,
             "render_objects": True,
             "water_alpha": 0.72,
