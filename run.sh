@@ -434,6 +434,18 @@ viewer_python_runner() {
   fi
 }
 
+# The suite is the push gate, so it must not quietly shrink when the optional
+# dependencies are absent. Without the dev extra, 137 viewer and GL tests skip
+# themselves and the two Pillow-backed J2K tests error outright -- a fresh
+# checkout reports a red suite for a reason that has nothing to do with the code.
+test_python_runner() {
+  if command -v uv >/dev/null 2>&1; then
+    uv run --extra dev --python python3 "$@"
+  else
+    PYTHONPATH=src python3 "$@"
+  fi
+}
+
 cli_base_args=()
 
 do_bootstrap() {
@@ -616,7 +628,7 @@ case "$command" in
     ;;
   test)
     cd "$ROOT_DIR"
-    python_runner -m unittest discover -s test -v "$@"
+    test_python_runner -m unittest discover -s test -v "$@"
     ;;
   fixtures)
     cd "$ROOT_DIR"

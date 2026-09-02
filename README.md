@@ -59,9 +59,13 @@ For current repo state and collaboration context:
 Recommended:
 
 ```bash
-uv sync
+uv sync --extra dev
 uv run vibestorm --help
 ```
+
+The `dev` extra is what the fallback below installs as `.[dev]`, and the test
+suite needs it: a base-only environment skips the 137 viewer and GL tests and
+errors on the two Pillow-backed J2K ones.
 
 Fallback:
 
