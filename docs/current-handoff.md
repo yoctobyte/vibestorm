@@ -49,9 +49,33 @@ paths against local OpenSim and confirms the whole chain -- row created,
 `compiled=True`, and the row's asset id moved off `Constants.DefaultScriptID`,
 which is what distinguishes "the upload landed" from "a row exists".
 
-Not done for **notecards**: `RezScript` is script-specific and there is no
-equivalent create, so an unmatched `.txt`/`.nc` is still skipped, now with a
-reason that says so. Finding the notecard create path is the remaining piece.
+Not done for **notecards**, but both halves are now proven and only need
+joining. There is no create-from-nothing message for a notecard inside a prim:
+`Scene.UpdateTaskInventory` rejects a zero item id, and an unknown one it looks
+up in *agent* inventory and copies in. So the route is two hops:
+
+1. Create the notecard in agent inventory. Already works -- `CreateInventoryItem`
+   then `UpdateNotecardAgentInventory`, verified 2026-08-15. It currently lives
+   in `cli.upload_notecard`, which builds **its own** `WorldClient`, so it is a
+   standalone command rather than something the viewer's sync can call. Making
+   it usable against an already-running session is the work.
+2. Copy it into the prim with `UpdateTaskInventory`. Live-verified 2026-09-02 by
+   `tools/verify_drop_item.py` -- a notecard went from agent inventory into a
+   prim we own, 2 rows to 3.
+
+Until those join, an unmatched `.txt`/`.nc` is skipped with a reason that says
+why rather than the old generic message.
+
+One trap on hop 2: the sim *removes* a no-copy item from agent inventory,
+because copying it in is a move. Items created full-perm are unaffected, but a
+sync that drops user-supplied items must not assume otherwise.
+
+A framing trap worth recording, because it cost a debugging round: a message
+encoder returns a bare body, and `WorldClient.queue_outbound_packet` expects a
+**framed** packet -- header, sequence, flags. Passing the encoder's output
+straight in produces no error anywhere; the sim silently drops it and logs
+nothing, which reads exactly like a permissions denial. Always go through the
+session's `build_*_packet`.
 
 The GUI path has not been exercised -- the verification drove
 `_create_task_script_rows` and the capability directly, the same way the

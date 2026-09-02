@@ -3375,6 +3375,133 @@ DEFAULT_SCRIPT_ASSET_ID = UUID("2074003b-8d5f-40e5-8b20-581c1c50aedb")
 _REZ_SCRIPT_FULL_PERMS = 0x8E000
 
 
+def _encode_inventory_data_block(
+    *,
+    item_id: UUID,
+    folder_id: UUID,
+    creator_id: UUID,
+    owner_id: UUID,
+    asset_type: int,
+    inv_type: int,
+    name_bytes: bytes,
+    description_bytes: bytes,
+    base_mask: int,
+    owner_mask: int,
+    group_mask: int,
+    everyone_mask: int,
+    next_owner_mask: int,
+    creation_date: int,
+    group_id: UUID | None = None,
+) -> bytes:
+    """The InventoryData/InventoryBlock body shared by RezScript and
+    UpdateTaskInventory.
+
+    The two messages declare byte-identical blocks, so they are encoded once.
+    Keeping two copies in step by eye is exactly the kind of thing that drifts.
+    """
+    zero = UUID(int=0)
+    return (
+        item_id.bytes
+        + folder_id.bytes
+        + creator_id.bytes
+        + owner_id.bytes
+        + (group_id or zero).bytes
+        + pack("<I", int(base_mask))
+        + pack("<I", int(owner_mask))
+        + pack("<I", int(group_mask))
+        + pack("<I", int(everyone_mask))
+        + pack("<I", int(next_owner_mask))
+        + bytes([0])  # GroupOwned
+        + zero.bytes  # TransactionID
+        + pack("<b", int(asset_type))
+        + pack("<b", int(inv_type))
+        + pack("<I", 0)  # Flags
+        + bytes([0])  # SaleType
+        + pack("<i", 0)  # SalePrice
+        + bytes([len(name_bytes)])
+        + name_bytes
+        + bytes([len(description_bytes)])
+        + description_bytes
+        + pack("<i", int(creation_date))
+        + pack("<I", 0)  # CRC
+    )
+
+
+def encode_update_task_inventory(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    object_local_id: int,
+    item_id: UUID,
+    name: str,
+    description: str = "",
+    asset_type: int = 7,
+    inv_type: int = 7,
+    base_mask: int = _REZ_SCRIPT_FULL_PERMS,
+    owner_mask: int = _REZ_SCRIPT_FULL_PERMS,
+    group_mask: int = 0,
+    everyone_mask: int = 0,
+    next_owner_mask: int = _REZ_SCRIPT_FULL_PERMS,
+    creation_date: int = 0,
+) -> bytes:
+    """Encode UpdateTaskInventory (Low/286, Zerocoded) to drop an item into a prim.
+
+    ``item_id`` is an **agent inventory** item. `Scene.UpdateTaskInventory`
+    looks it up in the prim first and, not finding it, fetches it from the
+    agent's inventory (then the grid library) and copies it in. There is no way
+    to create an item from nothing here: a zero ``item_id`` is rejected before
+    anything else happens, which is why notecards need making in agent
+    inventory first and scripts can use `encode_rez_script` directly.
+
+    One consequence worth knowing: if the copied item is **no-copy**, the sim
+    removes it from the agent's inventory, because it moved rather than copied.
+    Items created full-perm are unaffected.
+
+    ``Key`` is 0 and not a parameter -- the handler returns immediately on any
+    other value, since a non-zero Key means an asset update rather than an
+    inventory one.
+    """
+    if not 0 <= int(object_local_id) <= 0xFFFFFFFF:
+        raise ValueError("object_local_id must fit in U32")
+    if item_id.int == 0:
+        raise ValueError("item_id must not be zero; the sim rejects a zero item id")
+    if not -128 <= int(asset_type) <= 127:
+        raise ValueError("asset_type must fit in S8")
+    if not -128 <= int(inv_type) <= 127:
+        raise ValueError("inv_type must fit in S8")
+    name_bytes = name.encode("utf-8") + b"\x00"
+    if len(name_bytes) > 0xFF:
+        raise ValueError("name is too long for a Variable 1 field")
+    description_bytes = description.encode("utf-8") + b"\x00"
+    if len(description_bytes) > 0xFF:
+        raise ValueError("description is too long for a Variable 1 field")
+    return (
+        b"\xFF\xFF\x01\x1E"
+        + agent_id.bytes
+        + session_id.bytes
+        # UpdateData. Key must be 0: anything else means "asset", and the
+        # handler returns without doing anything.
+        + pack("<I", int(object_local_id))
+        + bytes([0])
+        + _encode_inventory_data_block(
+            item_id=item_id,
+            folder_id=UUID(int=0),
+            creator_id=agent_id,
+            owner_id=agent_id,
+            asset_type=asset_type,
+            inv_type=inv_type,
+            name_bytes=name_bytes,
+            description_bytes=description_bytes,
+            base_mask=base_mask,
+            owner_mask=owner_mask,
+            group_mask=group_mask,
+            everyone_mask=everyone_mask,
+            next_owner_mask=next_owner_mask,
+            creation_date=creation_date,
+        )
+    )
+
+
 def encode_rez_script(
     agent_id: UUID,
     session_id: UUID,
@@ -3434,29 +3561,22 @@ def encode_rez_script(
         + pack("<I", int(object_local_id))
         + bytes([1 if enabled else 0])
         # InventoryBlock. A zero ItemID is what selects RezNewScript.
-        + zero.bytes
-        + part_id.bytes
-        + agent_id.bytes  # CreatorID
-        + agent_id.bytes  # OwnerID
-        + zero.bytes  # GroupID
-        + pack("<I", int(base_mask))
-        + pack("<I", int(owner_mask))
-        + pack("<I", int(group_mask))
-        + pack("<I", int(everyone_mask))
-        + pack("<I", int(next_owner_mask))
-        + bytes([0])  # GroupOwned
-        + zero.bytes  # TransactionID
-        + pack("<b", int(asset_type))
-        + pack("<b", int(inv_type))
-        + pack("<I", 0)  # Flags
-        + bytes([0])  # SaleType
-        + pack("<i", 0)  # SalePrice
-        + bytes([len(name_bytes)])
-        + name_bytes
-        + bytes([len(description_bytes)])
-        + description_bytes
-        + pack("<i", int(creation_date))
-        + pack("<I", 0)  # CRC
+        + _encode_inventory_data_block(
+            item_id=zero,
+            folder_id=part_id,
+            creator_id=agent_id,
+            owner_id=agent_id,
+            asset_type=asset_type,
+            inv_type=inv_type,
+            name_bytes=name_bytes,
+            description_bytes=description_bytes,
+            base_mask=base_mask,
+            owner_mask=owner_mask,
+            group_mask=group_mask,
+            everyone_mask=everyone_mask,
+            next_owner_mask=next_owner_mask,
+            creation_date=creation_date,
+        )
         # NewScriptInfo is a Variable block, so it needs its u8 count even when
         # empty. The packet is deserialised in full before the handler runs, so
         # a block the deserialiser expects and cannot find makes it malformed.

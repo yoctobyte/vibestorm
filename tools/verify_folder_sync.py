@@ -11,7 +11,6 @@ import platform
 import tempfile
 from pathlib import Path
 
-from vibestorm.bus.events import ObjectInventorySnapshotReady
 from vibestorm.caps.client import CapabilityClient
 from vibestorm.caps.task_inventory_upload_client import TaskInventoryUploadClient
 from vibestorm.login.client import LoginClient
@@ -151,7 +150,7 @@ async def main() -> int:
         stop.set()
         try:
             await asyncio.wait_for(task, timeout=20)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
 
 

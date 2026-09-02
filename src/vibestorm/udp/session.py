@@ -106,6 +106,7 @@ from vibestorm.udp.messages import (
     encode_rez_script,
     encode_teleport_location_request,
     encode_transfer_request,
+    encode_update_task_inventory,
     encode_use_circuit_code,
     parse_agent_alert_message,
     parse_agent_cached_texture_response,
@@ -1402,6 +1403,46 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "task_inventory.rez_script",
             f"part={part_id} local_id={int(local_id)} name={name!r}",
+        )
+        return packet
+
+    def build_update_task_inventory_packet(
+        self,
+        *,
+        local_id: int,
+        item_id: UUID,
+        name: str,
+        description: str = "",
+        asset_type: int = 7,
+        inv_type: int = 7,
+        now: float | None = None,
+    ) -> bytes:
+        """Build UpdateTaskInventory to copy an agent inventory item into a prim.
+
+        This is the only way in for item types with no create-from-nothing
+        message. Scripts have `encode_rez_script`; notecards do not, so they
+        must exist in agent inventory first and be copied from there.
+        """
+        packet = self._build_outbound_packet(
+            encode_update_task_inventory(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                object_local_id=int(local_id),
+                item_id=item_id,
+                name=name,
+                description=description,
+                asset_type=asset_type,
+                inv_type=inv_type,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="UpdateTaskInventory",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "task_inventory.update_task_inventory",
+            f"local_id={int(local_id)} item={item_id} name={name!r}",
         )
         return packet
 
