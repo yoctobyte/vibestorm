@@ -38,7 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--last")
     parser.add_argument("--password")
     parser.add_argument("--start", default="last")
-    parser.add_argument("--agent-update-interval", type=float, default=1.0)
+    # 10 Hz, as an interactive viewer needs: at the old 1 Hz default a keypress
+    # waited up to a second to reach the simulator, and releasing it waited
+    # another second to stop.
+    parser.add_argument("--agent-update-interval", type=float, default=0.1)
     parser.add_argument("--camera-sweep", action="store_true")
     parser.add_argument(
         "--no-auto-bake-upload",

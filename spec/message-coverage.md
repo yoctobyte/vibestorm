@@ -44,7 +44,7 @@ status reflects the **weakest** one and the note says which is which.
 | `AgentMovementComplete` | simulator confirms movement completion | P0 | verified | semantic parse; observed 2026-08-14 |
 | `RegionHandshake` | simulator sends region/session metadata | P0 | verified | semantic parse; observed 2026-08-14, and now also triggers the parcel-properties request |
 | `RegionHandshakeReply` | acknowledge region handshake | P0 | verified | outbound builder |
-| `AgentUpdate` | steady-state agent control/update traffic | P0 | verified | periodic send path; ~70 sent per 90 s session |
+| `AgentUpdate` | steady-state agent control/update traffic | P0 | verified | periodic send path; ~70 sent per 90 s session; client-side turn integration and walking verified live |
 | `StartPingCheck` | ping/health mechanism | P0 | verified | semantic parse; observed 2026-08-14 |
 | `CompletePingCheck` | ping response | P0 | verified | semantic parse and outbound builder |
 | `PacketAck` | explicit ACK transport support | P0 | verified | explicit outbound ACK support; observed both directions |

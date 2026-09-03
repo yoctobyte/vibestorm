@@ -170,6 +170,7 @@ class HUDTests(unittest.TestCase):
             )
         )
 
+        hud.inventory_window.show()
         hud.update(0.016, scene)
 
         self.assertIn("Test Asset", hud.inventory_text.html_text)
@@ -199,3 +200,134 @@ class ViewerAppScaleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HUDRefreshCostTests(unittest.TestCase):
+    """The 2D HUD used to rebuild its text widgets on every frame.
+
+    Measured against a synthetic scene, that cost 48 ms of a 60 ms frame --
+    ``UITextBox.set_text`` alone is ~41 ms for eight chat lines -- so the map
+    viewer ran at single-digit fps regardless of how little the world moved.
+    These tests pin the two things that fixed it: refreshes are throttled, and
+    each widget is only written when its text actually changed.
+    """
+
+    def setUp(self) -> None:
+        try:
+            import pygame
+            import pygame_gui  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - optional viewer extra
+            self.skipTest(f"viewer dependencies unavailable: {exc}")
+        self.pygame = pygame
+        pygame.init()
+        pygame.display.set_mode((640, 480))
+
+    def tearDown(self) -> None:
+        self.pygame.quit()
+
+    def _hud(self):
+        from vibestorm.viewer.hud import HUD
+
+        return HUD((640, 480), on_chat_submit=lambda _text: None)
+
+    def _scene(self):
+        from vibestorm.viewer.scene import Scene
+
+        scene = Scene()
+        scene.region_name = "Vibestorm Test"
+        scene.parcel_name = "Sandbox"
+        scene.avatar_position = (128.0, 128.0, 25.0)
+        return scene
+
+    @staticmethod
+    def _count_set_text(widget) -> list[str]:
+        """Record every ``set_text`` the HUD issues to ``widget``."""
+        calls: list[str] = []
+        original = widget.set_text
+
+        def recording(text, *args, **kwargs):
+            calls.append(text)
+            return original(text, *args, **kwargs)
+
+        widget.set_text = recording
+        return calls
+
+    def test_unchanged_scene_stops_writing_the_status_bar(self) -> None:
+        from vibestorm.viewer.hud import STATUS_REFRESH_INTERVAL_S
+
+        hud = self._hud()
+        scene = self._scene()
+        hud.update(STATUS_REFRESH_INTERVAL_S, scene)  # prime the change guards
+
+        calls = self._count_set_text(hud.status_left)
+        for _ in range(5):
+            hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+
+        self.assertEqual(calls, [], "a still scene should not rewrite the status bar")
+
+    def test_moving_avatar_still_updates_the_status_bar(self) -> None:
+        from vibestorm.viewer.hud import STATUS_REFRESH_INTERVAL_S
+
+        hud = self._hud()
+        scene = self._scene()
+        hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+
+        calls = self._count_set_text(hud.status_left)
+        scene.avatar_position = (129.0, 128.0, 25.0)
+        hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("129.0", calls[0])
+
+    def test_refresh_is_throttled_between_intervals(self) -> None:
+        from vibestorm.viewer.hud import STATUS_REFRESH_INTERVAL_S
+
+        hud = self._hud()
+        scene = self._scene()
+        hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+
+        calls = self._count_set_text(hud.status_left)
+        step = STATUS_REFRESH_INTERVAL_S / 4.0
+        for i in range(3):
+            scene.avatar_position = (130.0 + i, 128.0, 25.0)
+            hud.update(step, scene)
+        self.assertEqual(calls, [], "sub-interval frames must not touch the widget")
+
+        scene.avatar_position = (200.0, 128.0, 25.0)
+        hud.update(step, scene)
+        self.assertEqual(len(calls), 1, "crossing the interval must refresh once")
+        self.assertIn("200.0", calls[0])
+
+    def test_hidden_chat_window_skips_the_ticker_but_catches_up(self) -> None:
+        from vibestorm.viewer.hud import STATUS_REFRESH_INTERVAL_S
+        from vibestorm.viewer.scene import ChatLine
+
+        hud = self._hud()
+        scene = self._scene()
+        hud.chat_window.hide()
+        hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+
+        calls = self._count_set_text(hud.ticker)
+        scene.chat_lines.append(ChatLine(kind="local", sender="Res", message="hello"))
+        hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+        self.assertEqual(calls, [], "chat arriving behind a closed window is free")
+
+        hud.chat_window.show()
+        hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+        self.assertEqual(len(calls), 1, "reopening must show what arrived while hidden")
+        self.assertIn("hello", calls[0])
+
+    def test_hidden_inventory_window_skips_its_refresh(self) -> None:
+        from vibestorm.viewer.hud import STATUS_REFRESH_INTERVAL_S
+
+        hud = self._hud()
+        scene = self._scene()
+        # The inventory window is hidden at build time and stays that way until
+        # the menu opens it, so its HTML should never be built on a normal frame.
+        self.assertFalse(hud.inventory_window.visible)
+
+        calls = self._count_set_text(hud.inventory_text)
+        for _ in range(5):
+            hud.update(STATUS_REFRESH_INTERVAL_S, scene)
+
+        self.assertEqual(calls, [])

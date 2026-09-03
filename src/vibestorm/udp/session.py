@@ -61,6 +61,7 @@ from vibestorm.event_queue.events import (
 )
 from vibestorm.fixtures.unknowns_db import DEFAULT_UNKNOWNS_DB_PATH, UnknownsDatabase
 from vibestorm.login.models import LoginBootstrap
+from vibestorm.udp.control_flags import AgentControlFlags
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import (
     DEFAULT_AVATAR_BAKE_INDICES,
@@ -108,6 +109,7 @@ from vibestorm.udp.messages import (
     encode_transfer_request,
     encode_update_task_inventory,
     encode_use_circuit_code,
+    packed_quaternion_yaw,
     parse_agent_alert_message,
     parse_agent_cached_texture_response,
     parse_agent_movement_complete,
@@ -144,6 +146,7 @@ from vibestorm.udp.messages import (
     parse_transfer_info,
     parse_transfer_packet,
     parse_update_create_inventory_item,
+    yaw_to_packed_quaternion,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.template import (
@@ -195,6 +198,7 @@ class SessionConfig:
     duration_seconds: float = 60.0
     receive_timeout_seconds: float = 0.25
     agent_update_interval_seconds: float = 1.0
+    turn_rate_degrees_per_second: float = 90.0
     camera_sweep: bool = False
     camera_sweep_radius: float = 12.0
     camera_sweep_period_seconds: float = 24.0
@@ -339,6 +343,7 @@ class LiveCircuitSession:
     camera_up_axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
     base_camera_center: tuple[float, float, float] | None = None
     agent_control_flags: int = 0
+    force_agent_update: bool = False
     body_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
     head_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
     agent_state: int = 0
@@ -1106,7 +1111,10 @@ class LiveCircuitSession:
         if self.last_agent_update_at is None:
             self.last_agent_update_at = now
             return []
-        if now - self.last_agent_update_at < self.config.agent_update_interval_seconds:
+        if (
+            not self.force_agent_update
+            and now - self.last_agent_update_at < self.config.agent_update_interval_seconds
+        ):
             packets = self._drain_throttle_packets(now)
             packets.extend(self._drain_appearance_packets(now))
             packets.extend(self._drain_test_cube_packets(now))
@@ -1115,7 +1123,9 @@ class LiveCircuitSession:
             packets.extend(self._drain_properties_requests(now))
             return packets
 
+        self._apply_turn_flags(now - self.last_agent_update_at)
         self.last_agent_update_at = now
+        self.force_agent_update = False
         packets = self._drain_throttle_packets(now)
         packets.extend(self._drain_appearance_packets(now))
         packets.extend(self._drain_test_cube_packets(now))
@@ -1175,9 +1185,36 @@ class LiveCircuitSession:
             events=tuple(self.events),
         )
 
+    def _apply_turn_flags(self, elapsed_seconds: float) -> None:
+        """Advance the avatar's facing while a turn key is held.
+
+        The simulator does not turn the avatar in response to the turn control
+        bits -- holding AGENT_CONTROL_TURN_LEFT against OpenSim for eight
+        seconds left the reported yaw at exactly 0, while a yawed BodyRotation
+        took effect on the very next AgentUpdate and walking then followed the
+        new facing. The client owns its rotation; the bits only drive the turn
+        animation. See ``tools/verify_avatar_turn.py``.
+        """
+        if elapsed_seconds <= 0.0:
+            return
+        direction = 0
+        if self.agent_control_flags & int(AgentControlFlags.TURN_LEFT):
+            direction += 1
+        if self.agent_control_flags & int(AgentControlFlags.TURN_RIGHT):
+            direction -= 1
+        if direction == 0:
+            return
+        rate = math.radians(self.config.turn_rate_degrees_per_second)
+        yaw = packed_quaternion_yaw(self.body_rotation) + direction * rate * elapsed_seconds
+        self.body_rotation = yaw_to_packed_quaternion(yaw)
+        # Keys turn the whole avatar, so the head follows the body.
+        self.head_rotation = self.body_rotation
+
     def set_control_flags(self, flags: int) -> None:
         if not 0 <= int(flags) <= 0xFFFFFFFF:
             raise ValueError("control_flags must fit in U32")
+        if int(flags) != self.agent_control_flags:
+            self.force_agent_update = True
         self.agent_control_flags = int(flags)
 
     def add_control_flags(self, flags: int) -> None:
@@ -1187,10 +1224,13 @@ class LiveCircuitSession:
         self.set_control_flags(self.agent_control_flags & ~int(flags))
 
     def clear_control_flags(self) -> None:
+        if self.agent_control_flags:
+            self.force_agent_update = True
         self.agent_control_flags = 0
 
     def set_body_rotation(self, rotation: tuple[float, float, float]) -> None:
         self.body_rotation = (float(rotation[0]), float(rotation[1]), float(rotation[2]))
+        self.force_agent_update = True
 
     def set_head_rotation(self, rotation: tuple[float, float, float]) -> None:
         self.head_rotation = (float(rotation[0]), float(rotation[1]), float(rotation[2]))

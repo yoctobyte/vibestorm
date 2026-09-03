@@ -307,13 +307,40 @@ class UnknownsDatabase:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection: sqlite3.Connection | None = None
         with self._connect() as connection:
             self._ensure_schema(connection)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        """The single long-lived connection every write and read shares.
+
+        This used to open a fresh connection per call, in rollback-journal mode
+        with fully durable commits. Every inbound message is recorded, so the
+        session paid a connect plus an fdatasync per packet: measured at 10.2 ms
+        each, a ceiling of about 98 inbound messages a second for the whole
+        client, spent blocking the event loop. Spinning the avatar produces more
+        traffic than that and the session simply stopped responding.
+
+        WAL plus synchronous=NORMAL keeps the writes durable across a process
+        crash -- only a host power failure can lose the tail of the log -- which
+        is the right trade for a protocol-observation record.
+        """
+        if self._connection is None:
+            connection = sqlite3.connect(self.path)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            # Prefer waiting briefly over raising when another process is mid-write;
+            # the suite runs sessions and tools against one file.
+            connection.execute("PRAGMA busy_timeout=5000")
+            self._connection = connection
+        return self._connection
+
+    def close(self) -> None:
+        """Release the shared connection. Safe to call more than once."""
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
 
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript(SCHEMA)

@@ -18,6 +18,12 @@ if TYPE_CHECKING:
 
 
 CHAT_TICKER_LINES = 8
+
+# Rebuilding the status bar and chat ticker means pygame_gui re-lays-out and
+# re-renders their text, which measured at 48 ms of a 60 ms frame -- the HUD,
+# not the map, was what made the 2D viewer crawl. The readouts are a position
+# and a few counters, so four refreshes a second still reads as live.
+STATUS_REFRESH_INTERVAL_S = 0.25
 BASE_MENU_HEIGHT = 30
 BASE_STATUS_HEIGHT = 24
 DEFAULT_HELP_TEXT = """Vibestorm 2D movement
@@ -73,6 +79,10 @@ class HUD:
         self._open_menu: str | None = None
         self._last_chat_container_size: tuple[int, int] | None = None
         self._last_inventory_text: str | None = None
+        self._last_ticker_html: str | None = None
+        self._last_status_left: str | None = None
+        self._last_status_right: str | None = None
+        self._status_accum_s = STATUS_REFRESH_INTERVAL_S
         self.quit_requested = False
 
         manager_kwargs: dict = {}
@@ -493,8 +503,11 @@ class HUD:
 
     def update(self, time_delta_s: float, scene: Scene | None = None) -> None:
         if scene is not None:
-            self._refresh_ticker(scene)
-            self._refresh_status(scene)
+            self._status_accum_s += max(time_delta_s, 0.0)
+            if self._status_accum_s >= STATUS_REFRESH_INTERVAL_S:
+                self._status_accum_s = 0.0
+                self._refresh_ticker(scene)
+                self._refresh_status(scene)
         self._layout_chat_window_if_needed()
         self.manager.update(time_delta_s)
 
@@ -557,6 +570,10 @@ class HUD:
             element.kill()
         self._last_chat_container_size = None
         self._last_inventory_text = None
+        self._last_ticker_html = None
+        self._last_status_left = None
+        self._last_status_right = None
+        self._status_accum_s = STATUS_REFRESH_INTERVAL_S
         self._build_widgets()
 
     # ----------------------------------------------------------- refresh
@@ -581,6 +598,8 @@ class HUD:
         self._last_chat_container_size = (cw, ch)
 
     def _refresh_ticker(self, scene: Scene) -> None:
+        if not getattr(self.chat_window, "visible", True):
+            return
         # Take last N chat lines, format with kind-colored prefix.
         lines: deque = scene.chat_lines
         recent = list(lines)[-CHAT_TICKER_LINES:]
@@ -591,6 +610,9 @@ class HUD:
             message = _html_escape(line.message)
             rows.append(f"<font color='{color}'>{sender}</font>: {message}")
         html = "<br>".join(rows) if rows else "<i>no chat yet</i>"
+        if html == self._last_ticker_html:
+            return
+        self._last_ticker_html = html
         try:
             self.ticker.set_text(html)
         except Exception:  # pragma: no cover  - pygame_gui internal hiccups don't crash the viewer
@@ -614,11 +636,18 @@ class HUD:
         avatars = len(scene.avatar_markers)
         chat = len(scene.chat_lines)
         tile = "map=ready" if scene.map_tile_path is not None else "map=pending"
-        self.status_left.set_text(left)
-        self.status_right.set_text(f"{tile} objects={objects} avatars={avatars} chat={chat}")
+        if left != self._last_status_left:
+            self._last_status_left = left
+            self.status_left.set_text(left)
+        right = f"{tile} objects={objects} avatars={avatars} chat={chat}"
+        if right != self._last_status_right:
+            self._last_status_right = right
+            self.status_right.set_text(right)
         self._refresh_inventory(scene)
 
     def _refresh_inventory(self, scene: Scene) -> None:
+        if not getattr(self.inventory_window, "visible", True):
+            return
         html = _inventory_snapshot_html(scene.inventory_snapshot)
         if html == self._last_inventory_text:
             return
@@ -706,4 +735,4 @@ def _folder_display_name(folder: object) -> str:
     return str(folder_id) if folder_id is not None else "Folder"
 
 
-__all__ = ["HUD", "CHAT_TICKER_LINES", "DEFAULT_HELP_TEXT"]
+__all__ = ["HUD", "CHAT_TICKER_LINES", "DEFAULT_HELP_TEXT", "STATUS_REFRESH_INTERVAL_S"]

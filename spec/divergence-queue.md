@@ -83,3 +83,14 @@ Moved to the docs project; listed so a later session does not re-queue them.
   u8 count before the first entry. Worth stating because a decoder written to
   run to the end of the body round-trips against its own synthetic packets and
   is never contradicted by a real one — see the point above. (2026-09-02)
+
+- The turn control bits do not turn the avatar. Holding
+  `AGENT_CONTROL_TURN_LEFT` against OpenSim for eight seconds left the reported
+  yaw at exactly 0.00 degrees, while a yawed `BodyRotation` took effect on the
+  next `AgentUpdate` and walking then followed the new facing (~12 m per six
+  seconds on all four compass legs). The client owns its rotation; the bits
+  drive the turn animation only. `tools/verify_avatar_turn.py`. (2026-09-03)
+- `AgentUpdate`'s `BodyRotation` is a packed quaternion -- x, y and z on the
+  wire, with w recovered as the non-negative root -- so it can only carry a yaw
+  in [-pi, pi]. A yaw accumulated past half a turn has to be wrapped before
+  packing or it comes back mirrored. (2026-09-03)

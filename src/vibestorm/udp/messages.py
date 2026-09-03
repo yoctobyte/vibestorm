@@ -930,6 +930,29 @@ def _unpack_clamped_quaternion(data: bytes, offset: int) -> tuple[float, float, 
     return (qx, qy, qz, qw)
 
 
+def packed_quaternion_yaw(rotation: tuple[float, float, float]) -> float:
+    """Yaw in radians from AgentUpdate's three-float quaternion.
+
+    The wire form carries only x, y and z; w is recovered as the non-negative
+    root, which is why a packed rotation can only express a yaw in [-pi, pi].
+    """
+    x, y, z = rotation
+    w_squared = 1.0 - (x * x + y * y + z * z)
+    w = math.sqrt(w_squared) if w_squared > 0.0 else 0.0
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def yaw_to_packed_quaternion(yaw_radians: float) -> tuple[float, float, float]:
+    """The three-float wire form of a rotation about Z.
+
+    The yaw is wrapped into [-pi, pi] first: outside that range the implied w
+    would be negative, which the packed form cannot represent, and the rotation
+    would come back mirrored.
+    """
+    yaw = math.remainder(yaw_radians, 2.0 * math.pi)
+    return (0.0, 0.0, math.sin(yaw / 2.0))
+
+
 def infer_object_update_label(entry: ObjectUpdateEntry) -> str | None:
     if "FirstName" in entry.name_values or "LastName" in entry.name_values:
         first = entry.name_values.get("FirstName", "").strip()

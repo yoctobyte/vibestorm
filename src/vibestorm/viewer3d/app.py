@@ -198,8 +198,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--last")
     parser.add_argument("--password")
     parser.add_argument("--start", default="last")
-    parser.add_argument("--agent-update-interval", type=float, default=1.0)
+    # 10 Hz, as an interactive viewer needs: at the old 1 Hz default a keypress
+    # waited up to a second to reach the simulator, and releasing it waited
+    # another second to stop.
+    parser.add_argument("--agent-update-interval", type=float, default=0.1)
     parser.add_argument("--camera-sweep", action="store_true")
+    parser.add_argument(
+        "--camera",
+        choices=("avatar_behind", "avatar_eye", "sim"),
+        default="avatar_behind",
+        help="Camera to start in. The default follows the avatar; 'sim' frames the region.",
+    )
     parser.add_argument(
         "--no-auto-bake-upload",
         action="store_true",
@@ -902,7 +911,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
     left_click_start_time: float | None = None
     right_click_start_pos: tuple[int, int] | None = None
     right_click_start_time: float | None = None
-    active_camera_preset: CameraPreset = "sim"
+    active_camera_preset: CameraPreset = args.camera
 
     def apply_camera_preset(preset: CameraPreset) -> None:
         nonlocal active_camera_preset

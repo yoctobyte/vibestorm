@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-02
+Last updated: 2026-09-03
 
 ## The Owner's Priorities
 
@@ -20,17 +20,50 @@ missing code.
 
 ### Where each stands
 
-**A -- substantially improved 2026-09-02, not finished.** The viewer crashed on
+**A -- substantially improved, still short of smooth.** The viewer crashed on
 the first `AvatarAnimation`, which arrives within seconds of any local session,
 so in practice it never survived a minute. Fixed in 395a58c. It now runs
 indefinitely against local OpenSim and draws terrain, water, 32 prims and the
 avatar nametag. The terrain debug wireframe was also on by default and made a
 working world look broken; it is off now.
 
-Still open: framerate. The offscreen check reports ~7 fps, but that is llvmpipe
-under Xvfb and says nothing about real hardware. **Needs a run on the owner's
-GPU before anyone optimises anything** -- measuring the software rasteriser
-would send the work in the wrong direction.
+Three separate things were making it slow, and all three are fixed:
+
+1. **The HUD rebuilt its text every frame.** `pygame_gui`'s `UITextBox.set_text`
+   costs ~41 ms for eight lines of chat and ~48 ms for eighteen; both viewers
+   paid it 60 times a second for text that had not changed. The 2D viewer spent
+   48 ms of a 60 ms frame there while the map itself took 5.7 ms -- that was the
+   owner's 2 fps. Refreshes are now throttled to 4 Hz and each widget is written
+   only when its text actually differs; hidden windows cost nothing at all.
+2. **Every inbound message did a durable sqlite commit on the event loop.**
+   `UnknownsDatabase` opened a fresh connection and fdatasync'd per packet:
+   10.2 ms each, a ceiling of ~98 inbound messages a second for the entire
+   client. One shared WAL connection makes it 0.083 ms, a 123x improvement --
+   and, incidentally, took the test suite from 460 s to 53 s by removing the
+   lock contention it had been causing between tests.
+3. **The viewers sent `AgentUpdate` at 1 Hz.** A keypress waited up to a second
+   to reach the simulator and its release waited another. Now 10 Hz, plus an
+   immediate send whenever the control flags or rotation change.
+
+Under llvmpipe on Xvfb the frame budget is now 59.6 ms (16.8 fps), of which
+42 ms is `render_gl` and the HUD composite -- real GPU work that a real GPU
+should do far faster. **Still needs a run on the owner's hardware**: the
+remaining cost is rasterisation, and measuring the software rasteriser says
+nothing useful about it.
+
+Also fixed under A: the viewer started in the `sim` camera preset, a 190 m
+region overview that does not follow the avatar, so neither walking nor turning
+was visible at all. It now starts behind the avatar; `--camera sim` and F1 still
+give the overview.
+
+**Turning was broken outright, and is fixed.** The cursor keys were mapped to
+`AGENT_CONTROL_TURN_LEFT`/`TURN_RIGHT` and those bits reached the wire, but the
+simulator does not turn the avatar in response to them -- holding TURN_LEFT for
+eight seconds left the reported yaw at exactly 0.00. The client owns its own
+rotation. `LiveCircuitSession` now integrates the turn bits into the
+`BodyRotation` it sends, at `turn_rate_degrees_per_second` (default 90). Walking
+follows the new facing: ~12 m per six-second leg on all four compass headings.
+`tools/verify_avatar_turn.py` is the live check.
 
 **B -- launcher done, unverified.** `run.sh` now defaults SL sessions to
 `home` rather than `last`. Nothing about this has been exercised against the
