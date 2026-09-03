@@ -45,11 +45,37 @@ Three separate things were making it slow, and all three are fixed:
    to reach the simulator and its release waited another. Now 10 Hz, plus an
    immediate send whenever the control flags or rotation change.
 
-Under llvmpipe on Xvfb the frame budget is now 59.6 ms (16.8 fps), of which
-42 ms is `render_gl` and the HUD composite -- real GPU work that a real GPU
-should do far faster. **Still needs a run on the owner's hardware**: the
-remaining cost is rasterisation, and measuring the software rasteriser says
-nothing useful about it.
+Measured on the owner's hardware (GTX 1660 SUPER, NVIDIA 580, local OpenSim):
+**14 fps before, 40 fps after** -- 71 ms a frame down to 24.8 ms. The GL context
+was never the problem; it is hardware NVIDIA GL on all three SDL video drivers.
+What made it resolution-dependent, and so look like software rendering, was
+per-frame full-screen CPU work:
+
+4. **Two full-screen surfaces were converted and uploaded every frame.**
+   `pygame.image.tobytes(surface, "RGBA")` copies and converts the whole
+   surface on the CPU -- 11.2 ms at 1920x1080, and it ran twice. The pixels are
+   already in a layout GL can read, so the compositor now hands them over
+   directly and swizzles in the shader. 4.5x on the compositing path at every
+   resolution.
+5. **The world surface was pure waste in 3D mode.** `PerspectiveRenderer.render`
+   fills it with one flat sky colour; that was then converted and uploaded as a
+   full-screen texture every frame to say what a GL clear says for free. A
+   renderer can now return `world_background()` and the frame loop skips the
+   surface entirely. `composite_world` went from ~12 ms to 0.1 ms.
+6. **The 3D HUD's chat ticker was never throttled** the way the 2D one was --
+   6.1 ms of a 30.7 ms frame, every frame. Same treatment: 4 Hz, change guards,
+   and a skip when the chat window is closed.
+
+The remaining 24.8 ms is `hud_update` 7.8, `hud_draw` 6.0,
+`composite_hud_flip` 5.2, `render_gl` 5.0. **The 3D pass itself is now the
+smallest item.** The next real win is dirty-tracking the HUD: `hud_draw` plus
+the HUD upload is 11 ms a frame spent redrawing a surface that changes a few
+times a second. It was not attempted here because a stale HUD is a worse bug
+than a slow one, and detecting "nothing changed" through pygame_gui (hover,
+focus, the text cursor blink) needs care.
+
+Worth knowing: the diagnostics panel is open by default in 3D mode and costs
+~3 ms a frame amortised, refreshing once a second. Closing it buys that back.
 
 Also fixed under A: the viewer started in the `sim` camera preset, a 190 m
 region overview that does not follow the avatar, so neither walking nor turning

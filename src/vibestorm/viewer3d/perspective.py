@@ -748,6 +748,17 @@ class PerspectiveRenderer:
     def update(self, dt: float, scene: Scene) -> None:
         del dt, scene
 
+    def world_background(self) -> tuple[float, float, float, float] | None:
+        """The 3D pass draws everything; the backdrop is one flat colour.
+
+        Painting that colour onto a fullscreen surface, converting it and
+        uploading it as a texture cost about 23 ms a frame at 1920x1080 -- to
+        say what a GL clear says for nothing. The frame loop clears to this
+        instead and skips the world surface entirely.
+        """
+        red, green, blue = SKY_COLOR
+        return (red / 255.0, green / 255.0, blue / 255.0, 1.0)
+
     def render(self, surface: pygame.Surface, scene: Scene) -> None:
         """Fill the world surface with sky.
 

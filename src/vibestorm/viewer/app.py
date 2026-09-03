@@ -23,7 +23,7 @@ from vibestorm.login.client import LoginClient, LoginError
 from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.session import SessionConfig, run_live_session
-from vibestorm.udp.world_client import WorldClient
+from vibestorm.udp.world_client import WorldClient, WorldClientError
 from vibestorm.viewer.camera import Camera
 from vibestorm.viewer.hud import HUD
 from vibestorm.viewer.input import handle_event
@@ -191,7 +191,13 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     continue
                 try:
                     intent = handle_event(event, camera, client.bus)
-                except BusError as exc:
+                except (BusError, WorldClientError) as exc:
+                    # A movement key pressed while the circuit is coming up or
+                    # tearing down reaches a WorldClient with no current session,
+                    # which raises WorldClientError -- a RuntimeError, not a
+                    # BusError, so it went straight past this handler and killed
+                    # the viewer. Input arriving at any moment is normal; dying
+                    # from it is not.
                     scene.apply_chat_alert(
                         ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
                     )

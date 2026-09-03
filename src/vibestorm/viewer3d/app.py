@@ -77,7 +77,7 @@ from vibestorm.login.client import LoginError
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import DEFAULT_SCRIPT_ASSET_ID
 from vibestorm.udp.session import SessionConfig, run_live_session
-from vibestorm.udp.world_client import WorldClient
+from vibestorm.udp.world_client import WorldClient, WorldClientError
 from vibestorm.viewer3d.camera import Camera, CameraPreset
 from vibestorm.viewer3d.gl_compositor import GLCompositor
 from vibestorm.viewer3d.hud import HUD, ObjectAssetSelection
@@ -957,7 +957,13 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     continue
                 try:
                     intent = handle_event(event, camera, client.bus)
-                except BusError as exc:
+                except (BusError, WorldClientError) as exc:
+                    # A movement key pressed while the circuit is coming up or
+                    # tearing down reaches a WorldClient with no current session,
+                    # which raises WorldClientError -- a RuntimeError, not a
+                    # BusError, so it went straight past this handler and killed
+                    # the viewer. Input arriving at any moment is normal; dying
+                    # from it is not.
                     scene.apply_chat_alert(
                         ChatAlert(region_handle=client.current_handle or 0, message=str(exc))
                     )
@@ -1017,7 +1023,11 @@ async def run_viewer(args: argparse.Namespace) -> int:
             _m1 = _t()
             renderer.update(dt, scene)
             _m2 = _t()
-            renderer.render(world_surface, scene)
+            # A renderer with a flat backdrop skips the world surface: see
+            # ViewerRenderer.world_background.
+            background = renderer.world_background()
+            if background is None:
+                renderer.render(world_surface, scene)
             _m3 = _t()
             hud_surface.fill((0, 0, 0, 0))
             hud.update(dt, scene, client.world_view())
@@ -1025,8 +1035,9 @@ async def run_viewer(args: argparse.Namespace) -> int:
             hud.draw(hud_surface)
             _m5 = _t()
 
-            compositor.clear((0.0, 0.0, 0.0, 1.0))
-            composite_world(compositor, world_surface)
+            compositor.clear(background or (0.0, 0.0, 0.0, 1.0))
+            if background is None:
+                composite_world(compositor, world_surface)
             _m6 = _t()
             aspect = screen_size[0] / max(1, screen_size[1])
             renderer.render_gl(scene, aspect=aspect)

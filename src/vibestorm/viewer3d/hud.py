@@ -42,6 +42,12 @@ RENDER_MODE_3D = "3d"
 #: Once a second is how often a person can read a number anyway.
 DIAGNOSTICS_REFRESH_INTERVAL_S = 1.0
 
+# The chat ticker and status bar have the same problem the diagnostics panel
+# had, just smaller: rebuilding them means a full pygame_gui text re-parse and
+# re-render. Measured on a GTX 1660 SUPER, the ticker alone cost 6.1 ms of a
+# 30.7 ms frame, every frame, for text that changes when someone speaks.
+STATUS_REFRESH_INTERVAL_S = 0.25
+
 RENDER_MODE_LABELS: dict[str, str] = {
     RENDER_MODE_2D: "2D Map",
     RENDER_MODE_3D: "3D",
@@ -173,6 +179,10 @@ class HUD:
             None
         )
         self._last_heightmap_status: str | None = None
+        self._last_ticker_html: str | None = None
+        self._last_status_left: str | None = None
+        self._last_status_right: str | None = None
+        self._status_accum_s: float = STATUS_REFRESH_INTERVAL_S
         self._diagnostics_accum_s: float = DIAGNOSTICS_REFRESH_INTERVAL_S
         self._render_setting_values: dict[str, object] = {
             "render_terrain": True,
@@ -444,6 +454,9 @@ class HUD:
         if mode not in RENDER_MODE_LABELS:
             return
         self.render_mode = mode
+        # The status bar names the active mode, and a click is a direct answer
+        # to the user -- it should not wait out the refresh interval.
+        self._status_accum_s = STATUS_REFRESH_INTERVAL_S
         if self.on_render_mode_change is not None:
             self.on_render_mode_change(mode)
 
@@ -1030,8 +1043,11 @@ class HUD:
                 instant_fps if self._last_fps <= 0.0 else self._last_fps * 0.85 + instant_fps * 0.15
             )
         if scene is not None:
-            self._refresh_ticker(scene)
-            self._refresh_status(scene)
+            self._status_accum_s += max(time_delta_s, 0.0)
+            if self._status_accum_s >= STATUS_REFRESH_INTERVAL_S:
+                self._status_accum_s = 0.0
+                self._refresh_ticker(scene)
+                self._refresh_status(scene)
             # The diagnostics panel is telemetry for a human to read, and
             # rebuilding it costs a full pygame_gui text re-parse and re-render.
             # It cannot rely on its own content guard, because the fps line it
@@ -1282,6 +1298,8 @@ class HUD:
             print(f"[viewer3d] object_inventory.hud_update_error {exc!r}", flush=True)
 
     def _refresh_ticker(self, scene: Scene) -> None:
+        if not getattr(self.chat_window, "visible", True):
+            return
         # Take last N chat lines, format with kind-colored prefix.
         lines: deque = scene.chat_lines
         recent = list(lines)[-CHAT_TICKER_LINES:]
@@ -1300,6 +1318,11 @@ class HUD:
             typing = ", ".join(_html_escape(name) for name in scene.typing_senders)
             rows.append(f"<i>{typing} is typing…</i>")
         html = "<br>".join(rows) if rows else "<i>no chat yet</i>"
+        # Returning before the guard is updated means a reopened window still
+        # catches up on whatever arrived while it was closed.
+        if html == self._last_ticker_html:
+            return
+        self._last_ticker_html = html
         try:
             self.ticker.set_text(html)
         except Exception:  # pragma: no cover  - pygame_gui internal hiccups don't crash the viewer
@@ -1324,10 +1347,13 @@ class HUD:
         chat = len(scene.chat_lines)
         tile = "map=ready" if scene.map_tile_path is not None else "map=pending"
         mode_label = RENDER_MODE_LABELS.get(self.render_mode, self.render_mode)
-        self.status_left.set_text(left)
-        self.status_right.set_text(
-            f"mode={mode_label} {tile} objects={objects} avatars={avatars} chat={chat}"
-        )
+        if left != self._last_status_left:
+            self._last_status_left = left
+            self.status_left.set_text(left)
+        right = f"mode={mode_label} {tile} objects={objects} avatars={avatars} chat={chat}"
+        if right != self._last_status_right:
+            self._last_status_right = right
+            self.status_right.set_text(right)
         self._refresh_inventory(scene)
 
     def _refresh_diagnostics(self, scene: Scene) -> None:
@@ -2781,4 +2807,5 @@ __all__ = [
     "heightmap_debug_surface",
     "inspector_rows",
     "inventory_snapshot_rows",
+    "STATUS_REFRESH_INTERVAL_S",
 ]

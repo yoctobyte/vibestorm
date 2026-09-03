@@ -248,3 +248,95 @@ class GLCompositorAccessorTests(_GLTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GLCompositorZeroCopyUploadTests(_GLTestBase):
+    """Uploading straight from pygame's memory must not permute the channels.
+
+    ``pygame.image.tobytes(surface, "RGBA")`` converted and copied the whole
+    surface on the CPU every frame -- 11.2 ms at 1920x1080, twice per frame.
+    The bytes are already in a layout GL can read, so the compositor hands
+    them over as-is and swizzles in the shader. The colours below are
+    deliberately asymmetric: a red/blue swap is exactly what this can get
+    wrong, and any symmetric colour would hide it.
+    """
+
+    def _draw(self, surface, *, alpha: bool):
+        from vibestorm.viewer3d.gl_compositor import GLCompositor
+
+        compositor = GLCompositor(self.ctx)
+        try:
+            compositor.upload_surface("probe", surface)
+            self.ctx.clear(0.0, 0.0, 0.0, 1.0)
+            compositor.draw("probe", alpha=alpha)
+            return self.read_pixel(8, 8)
+        finally:
+            compositor.release()
+
+    def test_alpha_surface_keeps_its_channels(self) -> None:
+        import pygame
+
+        from vibestorm.viewer3d.gl_compositor import _is_bgra_in_memory
+
+        surface = pygame.Surface(self.FBO_SIZE, pygame.SRCALPHA)
+        surface.fill((200, 120, 40, 255))
+        self.assertTrue(
+            _is_bgra_in_memory(surface),
+            "an SRCALPHA surface should take the zero-copy path on this host",
+        )
+
+        r, g, b, a = self._draw(surface, alpha=True)
+        self.assertEqual((r, g, b), (200, 120, 40))
+        self.assertEqual(a, 255)
+
+    def test_every_channel_is_distinguishable(self) -> None:
+        import pygame
+
+        # Pure red and pure blue in turn: a swizzle bug turns one into the
+        # other, which a single mixed colour could still coincidentally pass.
+        for colour in ((255, 0, 0, 255), (0, 0, 255, 255), (0, 255, 0, 255)):
+            with self.subTest(colour=colour):
+                surface = pygame.Surface(self.FBO_SIZE, pygame.SRCALPHA)
+                surface.fill(colour)
+                self.assertEqual(self._draw(surface, alpha=True), colour)
+
+    def test_converted_fallback_agrees_with_the_fast_path(self) -> None:
+        import pygame
+
+        from vibestorm.viewer3d.gl_compositor import _is_bgra_in_memory
+
+        # A surface without an alpha mask does not qualify for the fast path,
+        # and must still come out with the same colours.
+        opaque = pygame.Surface(self.FBO_SIZE)
+        opaque.fill((200, 120, 40))
+        self.assertFalse(_is_bgra_in_memory(opaque))
+
+        alpha_surface = pygame.Surface(self.FBO_SIZE, pygame.SRCALPHA)
+        alpha_surface.fill((200, 120, 40, 255))
+
+        slow = self._draw(opaque, alpha=False)
+        fast = self._draw(alpha_surface, alpha=False)
+        self.assertEqual(slow[:3], (200, 120, 40))
+        self.assertEqual(slow[:3], fast[:3])
+
+    def test_switching_a_name_between_layouts_updates_the_swizzle(self) -> None:
+        import pygame
+
+        # The flag is per-texture-name and must follow the last upload, not
+        # stick from the first one.
+        from vibestorm.viewer3d.gl_compositor import GLCompositor
+
+        fast = pygame.Surface(self.FBO_SIZE, pygame.SRCALPHA)
+        fast.fill((10, 90, 210, 255))
+        slow = pygame.Surface(self.FBO_SIZE)
+        slow.fill((10, 90, 210))
+
+        compositor = GLCompositor(self.ctx)
+        try:
+            for surface in (fast, slow, fast):
+                compositor.upload_surface("probe", surface)
+                self.ctx.clear(0.0, 0.0, 0.0, 1.0)
+                compositor.draw("probe", alpha=False)
+                self.assertEqual(self.read_pixel(8, 8)[:3], (10, 90, 210))
+        finally:
+            compositor.release()

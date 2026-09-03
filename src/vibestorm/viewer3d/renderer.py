@@ -33,8 +33,14 @@ class ViewerRenderer(Protocol):
     both, or neither. ``render`` runs every frame; ``render_gl`` runs
     after the world surface is uploaded as a textured quad and before
     the HUD overlay.
+
+    ``world_background`` lets a renderer opt out of the world surface
+    entirely. Returning a colour says "my background is this flat colour",
+    and the frame loop clears to it instead of filling, converting and
+    uploading a fullscreen surface to say the same thing.
     """
 
+    def world_background(self) -> tuple[float, float, float, float] | None: ...
     def update(self, dt: float, scene: Scene) -> None: ...
     def render(self, surface: pygame.Surface, scene: Scene) -> None: ...
     def render_gl(self, scene: Scene, *, aspect: float) -> None: ...
@@ -47,6 +53,10 @@ class TopDownRenderer:
 
     def __init__(self, camera: Camera) -> None:
         self.camera = camera
+
+    def world_background(self) -> tuple[float, float, float, float] | None:
+        """The map view draws real content, so the world surface is needed."""
+        return None
 
     def update(self, dt: float, scene: Scene) -> None:
         # Top-down rendering is stateless across frames; nothing to update.
