@@ -30,6 +30,18 @@ BASE_MENU_HEIGHT = 30
 BASE_STATUS_HEIGHT = 24
 RENDER_MODE_2D = "2d-map"
 RENDER_MODE_3D = "3d"
+#: How often the diagnostics panel is rebuilt, in seconds.
+#:
+#: `UITextBox.set_text` costs ~48ms for this panel's 18 lines -- measured in
+#: isolation, with no Vibestorm code involved and the manager's sprite count
+#: flat, so it is pygame_gui's own cost and not a leak to be hunted. The
+#: panel's content guard cannot help, because the fps line it opens with
+#: changes almost every frame. So the panel reporting the framerate was the
+#: largest single thing lowering it: ~64ms of a 139ms frame.
+#:
+#: Once a second is how often a person can read a number anyway.
+DIAGNOSTICS_REFRESH_INTERVAL_S = 1.0
+
 RENDER_MODE_LABELS: dict[str, str] = {
     RENDER_MODE_2D: "2D Map",
     RENDER_MODE_3D: "3D",
@@ -160,6 +172,8 @@ class HUD:
         self._last_heightmap_signature: tuple[int, int, int, float | None, float | None] | None = (
             None
         )
+        self._last_heightmap_status: str | None = None
+        self._diagnostics_accum_s: float = DIAGNOSTICS_REFRESH_INTERVAL_S
         self._render_setting_values: dict[str, object] = {
             "render_terrain": True,
             "render_terrain_lines": False,
@@ -1018,7 +1032,16 @@ class HUD:
         if scene is not None:
             self._refresh_ticker(scene)
             self._refresh_status(scene)
-            self._refresh_diagnostics(scene)
+            # The diagnostics panel is telemetry for a human to read, and
+            # rebuilding it costs a full pygame_gui text re-parse and re-render.
+            # It cannot rely on its own content guard, because the fps line it
+            # opens with changes almost every frame -- so the panel that reports
+            # the framerate was the single largest thing lowering it, at ~64ms
+            # of a 139ms frame. A few updates a second is plenty to read.
+            self._diagnostics_accum_s += max(time_delta_s, 0.0)
+            if self._diagnostics_accum_s >= DIAGNOSTICS_REFRESH_INTERVAL_S:
+                self._diagnostics_accum_s = 0.0
+                self._refresh_diagnostics(scene)
             self._refresh_heightmap(scene)
             self._refresh_render_settings_from_scene(scene)
             self._refresh_inspector(scene, world_view)
@@ -1308,6 +1331,11 @@ class HUD:
         self._refresh_inventory(scene)
 
     def _refresh_diagnostics(self, scene: Scene) -> None:
+        # A hidden panel still costs the full rebuild, and this one is the most
+        # expensive widget in the HUD, so closing it should actually buy the
+        # frames back.
+        if not getattr(self.diagnostics_window, "visible", True):
+            return
         mode_label = RENDER_MODE_LABELS.get(self.render_mode, self.render_mode)
         objects = len(scene.object_entities)
         avatars = len(scene.avatar_entities)
@@ -1400,6 +1428,9 @@ class HUD:
             pass
 
     def _refresh_heightmap(self, scene: Scene) -> None:
+        # Hidden by default, and it was costing ~9ms a frame while invisible.
+        if not getattr(self.heightmap_window, "visible", True):
+            return
         terrain = scene.terrain_heightmap
         if terrain is None:
             signature = None
@@ -1430,10 +1461,15 @@ class HUD:
             except Exception:  # pragma: no cover
                 pass
             self._last_heightmap_signature = signature
-        try:
-            self.heightmap_status.set_text(status)
-        except Exception:  # pragma: no cover
-            pass
+        # Guarded for the same reason as the image above: an unconditional
+        # set_text re-renders the widget every frame whether or not the string
+        # moved, which was costing ~9ms a frame on its own.
+        if status != self._last_heightmap_status:
+            self._last_heightmap_status = status
+            try:
+                self.heightmap_status.set_text(status)
+            except Exception:  # pragma: no cover
+                pass
 
     def _refresh_render_settings_from_scene(self, scene: Scene) -> None:
         values: dict[str, object] = {

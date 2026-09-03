@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -237,6 +238,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="UI scale factor. Defaults to auto based on desktop size.",
     )
     return parser
+
+
+class _PhaseStats:
+    """Temporary per-phase frame timing, enabled by VIBESTORM_PROFILE_FRAMES."""
+
+    def __init__(self, report_every: int = 60) -> None:
+        self.report_every = report_every
+        self.n = 0
+        self.totals: dict[str, float] = {}
+
+    def add(self, **phases: float) -> None:
+        self.n += 1
+        for k, v in phases.items():
+            self.totals[k] = self.totals.get(k, 0.0) + v
+        if self.n % self.report_every == 0:
+            total = sum(self.totals.values())
+            parts = " ".join(
+                f"{k}={self.totals[k] / self.n * 1000:.1f}ms"
+                for k in sorted(self.totals, key=lambda x: -self.totals[x])
+            )
+            print(
+                f"PHASE frames={self.n} avg_total={total / self.n * 1000:.1f}ms "
+                f"({self.n / max(total, 1e-9):.1f} fps if unbounded) {parts}",
+                flush=True,
+            )
+
+
+_PHASE_STATS = _PhaseStats() if os.environ.get("VIBESTORM_PROFILE_FRAMES") else None
 
 
 async def run_viewer(args: argparse.Namespace) -> int:
@@ -972,20 +1001,41 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     camera.set_screen_size(screen_size)
                     hud.resize(screen_size)
 
+            _t = time.perf_counter
+            _m0 = _t()
             scene.refresh_from_world_view(client.world_view())
             refresh_avatar_camera_preset()
+            _m1 = _t()
             renderer.update(dt, scene)
+            _m2 = _t()
             renderer.render(world_surface, scene)
+            _m3 = _t()
             hud_surface.fill((0, 0, 0, 0))
             hud.update(dt, scene, client.world_view())
+            _m4 = _t()
             hud.draw(hud_surface)
+            _m5 = _t()
 
             compositor.clear((0.0, 0.0, 0.0, 1.0))
             composite_world(compositor, world_surface)
+            _m6 = _t()
             aspect = screen_size[0] / max(1, screen_size[1])
             renderer.render_gl(scene, aspect=aspect)
+            _m7 = _t()
             composite_hud(compositor, hud_surface)
             pygame.display.flip()
+            _m8 = _t()
+            if _PHASE_STATS is not None:
+                _PHASE_STATS.add(
+                    scene_refresh=_m1 - _m0,
+                    renderer_update=_m2 - _m1,
+                    renderer_render_sw=_m3 - _m2,
+                    hud_update=_m4 - _m3,
+                    hud_draw=_m5 - _m4,
+                    composite_world=_m6 - _m5,
+                    render_gl=_m7 - _m6,
+                    composite_hud_flip=_m8 - _m7,
+                )
             await asyncio.sleep(0)
     finally:
         stop_event.set()

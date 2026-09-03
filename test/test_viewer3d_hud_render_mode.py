@@ -226,10 +226,90 @@ class RenderModeMenuTests(unittest.TestCase):
         scene.terrain_heightmap = RegionHeightmap(width=2, height=2, samples=[2.0, 4.0, 6.0, 8.0])
         scene.terrain_heightmap.patch_keys.add((0, 0))
 
+        # The window is hidden by default and a hidden panel is not refreshed,
+        # so open it the way the menu does. Rebuilding an invisible widget cost
+        # ~9ms a frame, which is the point of the guard being there.
+        hud.heightmap_window.show()
         hud.update(0.016, scene)
 
         self.assertIn("live 2x2 patches=1", hud.heightmap_status.text)
         self.assertIn("min=2.00 max=8.00", hud.heightmap_status.text)
+
+    def test_diagnostics_panel_is_rebuilt_on_an_interval_not_per_frame(self) -> None:
+        """`UITextBox.set_text` costs ~48ms for this panel, so per-frame is fatal.
+
+        Its own content guard cannot help: the fps line changes almost every
+        frame, so the text is never equal to last frame's.
+        """
+        from vibestorm.viewer3d.hud import DIAGNOSTICS_REFRESH_INTERVAL_S, HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+        scene = Scene()
+        calls = []
+        original = hud._refresh_diagnostics
+        hud._refresh_diagnostics = lambda s: (calls.append(1), original(s))[1]
+
+        # A second's worth of 60fps frames must not be a second's worth of
+        # rebuilds. The first frame is allowed one, to populate the panel.
+        for _ in range(60):
+            hud.update(1.0 / 60.0, scene)
+
+        self.assertLessEqual(
+            len(calls), 3, f"rebuilt {len(calls)} times in 60 frames; the throttle is not holding"
+        )
+        self.assertGreaterEqual(len(calls), 1, "the panel must populate at all")
+        self.assertLessEqual(DIAGNOSTICS_REFRESH_INTERVAL_S, 2.0, "still readable as telemetry")
+
+    def test_a_hidden_diagnostics_window_is_not_refreshed(self) -> None:
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+        scene = Scene()
+        hud.diagnostics_window.hide()
+        calls = []
+        original = hud._refresh_diagnostics
+        hud._refresh_diagnostics = lambda s: (calls.append(1), original(s))[1]
+
+        for _ in range(60):
+            hud.update(1.0, scene)  # every frame is past the interval
+
+        # It may be *called*, but it must not do the expensive work; the text
+        # staying at its placeholder is how that shows.
+        self.assertIn("pending", hud.diagnostics_text.html_text.lower())
+
+    def test_a_hidden_heightmap_window_is_not_refreshed(self) -> None:
+        """The guard that makes the panel free while closed."""
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+        from vibestorm.world.terrain import RegionHeightmap
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+        scene = Scene()
+        scene.terrain_heightmap = RegionHeightmap(width=2, height=2, samples=[2.0, 4.0, 6.0, 8.0])
+        scene.terrain_heightmap.patch_keys.add((0, 0))
+
+        hud.update(0.016, scene)  # window still hidden
+
+        self.assertIn("heightmap: none", hud.heightmap_status.text)
+
+        # ...and opening it catches up on the next frame, so nothing is lost.
+        hud.heightmap_window.show()
+        hud.update(0.016, scene)
+        self.assertIn("live 2x2 patches=1", hud.heightmap_status.text)
 
     def test_render_settings_menu_opens_window(self) -> None:
         from vibestorm.viewer3d.hud import HUD
