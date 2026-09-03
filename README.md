@@ -87,6 +87,21 @@ vibestorm --help
 - `./run.sh viewer`
 - `./run.sh viewer3d`
 
+## Launching The Viewer
+
+```bash
+./gui.sh              # 3D viewer against the local OpenSim
+./gui.sh sl           # Second Life, at your home location
+./gui.sh opengrid     # OSgrid
+./gui.sh local --2d   # the 2D bird's-eye viewer
+```
+
+`gui.sh` only ever opens a viewer window and stays open until you close it.
+The grid launchers (`local.sh`, `opengrid.sh`, `sl.sh`) default to the
+`session` command instead -- a headless, time-limited protocol run -- so
+`./local.sh` on its own gives you no window and exits by itself. Use
+`./local.sh session` when that is what you want.
+
 `session-run` is the most complete workflow today. It logs in, establishes the UDP circuit, runs
 a bounded session loop, updates normalized world state, and can optionally capture selected inbound
 messages for later fixture work.

@@ -436,6 +436,18 @@ viewer_python_runner() {
   fi
 }
 
+# The 3D viewer needs moderngl, which is in the `viewer3d` extra and not in
+# `viewer`. Running it under the 2D extra works only on a machine that happens
+# to have moderngl installed for some other reason, and fails on a clean
+# checkout with "No module named moderngl".
+viewer3d_python_runner() {
+  if command -v uv >/dev/null 2>&1; then
+    uv run --extra viewer3d --python python3 "$@"
+  else
+    PYTHONPATH=src python3 "$@"
+  fi
+}
+
 # The suite is the push gate, so it must not quietly shrink when the optional
 # dependencies are absent. Without the dev extra, 137 viewer and GL tests skip
 # themselves and the two Pillow-backed J2K tests error outright -- a fresh
@@ -512,7 +524,7 @@ do_viewer() {
 }
 
 do_viewer3d() {
-  viewer_python_runner -m vibestorm.viewer3d.app \
+  viewer3d_python_runner -m vibestorm.viewer3d.app \
     "${cli_base_args[@]}" \
     --agent-update-interval "$AGENT_UPDATE_INTERVAL" \
     "${viewer_args[@]}" \
