@@ -291,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-fps",
         type=float,
-        default=20.0,
+        default=60.0,
         help="Frame-rate cap for the viewer loop. Use 0 to disable.",
     )
     parser.add_argument(
@@ -308,6 +308,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
+    parser.add_argument(
+        "--hidden",
+        action="store_true",
+        help=(
+            "Open the window hidden. Screenshots and --diagnostics still work, "
+            "so a run can be measured on the real GPU without a window appearing "
+            "on anyone's desktop -- which Xvfb cannot do, because it has no GPU "
+            "and falls back to a software rasteriser."
+        ),
+    )
     parser.add_argument(
         "--ui-scale",
         type=float,
@@ -366,6 +376,8 @@ async def run_viewer(args: argparse.Namespace) -> int:
         max(480, min(requested_h, max(480, desktop_h - 120))),
     )
     display_flags = pygame.OPENGL | pygame.DOUBLEBUF | pygame.RESIZABLE
+    if getattr(args, "hidden", False):
+        display_flags |= pygame.HIDDEN
     pygame.display.set_mode(screen_size, display_flags)
     ctx = moderngl.create_context()
     ctx.viewport = (0, 0, *screen_size)

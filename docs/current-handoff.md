@@ -162,6 +162,36 @@ Still open under A: **prim textures are the only thing textured** -- terrain,
 water and sky are all shader-generated, which looks right but means a region
 with custom ground textures still gets this client's blend of them.
 
+**A -- the framerate, answered (2026-09-05).** The owner reported "we have
+around 14fps, that raises to 20fps if I shrink the window. this strongly
+suggests that the desktop application uses software rendering as well." It does
+not. Measured on the real GPU with the new `--hidden` flag, which opens the
+window hidden so a run can be profiled without a window appearing on anyone's
+desktop -- Xvfb cannot answer this question, because it has no GPU and falls
+back to llvmpipe:
+
+    hidden window on the real display:  NVIDIA GeForce GTX 1660 SUPER
+    under Xvfb:                         llvmpipe (Mesa)
+
+Two separate causes, both fixed:
+
+1. **The frame cap was 20.** `--max-fps` defaulted to 20.0, set back in May
+   with the first terrain pass and never revisited. The "20 fps" in the report
+   was not a measurement of anything -- it was the ceiling. It is 60 now.
+2. **The diagnostics panel cost more than the cap's whole budget.** With it
+   open the frame was 23.1 ms; closed, 10.8. `UITextBox.set_text` on its
+   eighteen lines measured **73 ms**, and its first line is the framerate, so
+   it paid that every second: the panel opened to find out why the viewer was
+   slow was itself dropping four frames a second. Drawn by hand instead
+   (`viewer3d/text_panel.py`, the same move the chat ticker made) the frame is
+   **10.1 ms with the panel open** -- level with having it shut.
+
+That also explains the window-size effect, which never fitted the software-
+rendering theory: the HUD surface work scales with area, so a smaller window
+made the per-frame cost small enough to actually reach the cap.
+
+Sustained over 70 s against local OpenSim: 1320 frames before, 3780 after.
+
 **A -- the earlier pass (2026-09-03).** The viewer crashed on
 the first `AvatarAnimation`, which arrives within seconds of any local session,
 so in practice it never survived a minute. Fixed in 395a58c. It now runs

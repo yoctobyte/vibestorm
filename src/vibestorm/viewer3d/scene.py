@@ -19,20 +19,20 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from vibestorm.viewer3d.avatar_pose import AvatarMotion, advance_all, pose_for_motion
-from vibestorm.world.extra_params import DecodedExtraParams, decode_extra_params
-from vibestorm.world.parcel_overlay import (
-    ParcelOverlay,
-    ParcelOverlayDecodeError,
-    decode_parcel_bitmap,
-    decode_parcel_overlay,
-)
 from vibestorm.world.chat_types import (
     CHAT_TYPE_SAY,
     CHAT_TYPE_START_TYPING,
     chat_type_name,
     is_typing_notification,
 )
+from vibestorm.world.extra_params import DecodedExtraParams, decode_extra_params
 from vibestorm.world.land_flags import DecodedFlags, decode_parcel_flags
+from vibestorm.world.parcel_overlay import (
+    ParcelOverlay,
+    ParcelOverlayDecodeError,
+    decode_parcel_bitmap,
+    decode_parcel_overlay,
+)
 from vibestorm.world.physics_shape import PhysicsProperties, physics_properties_from_event
 from vibestorm.world.sim_stats import summarize_sim_stats
 from vibestorm.world.sound_flags import decode_sound_flags

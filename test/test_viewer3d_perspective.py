@@ -161,7 +161,13 @@ class Viewer3DParserTests(unittest.TestCase):
         )
 
         self.assertEqual(args.render_mode, "3d")
-        self.assertEqual(args.max_fps, 20.0)
+        # 60, not the 20 it shipped with. The cap was set when the renderer
+        # was much slower, and it outlived the reason: the owner reported "we
+        # have around 14fps, that raises to 20fps if I shrink the window" and
+        # concluded the viewer was on a software rasteriser. It was not -- 20
+        # was the cap, and the window size mattered because the HUD work above
+        # it was what kept the loop from reaching even that.
+        self.assertEqual(args.max_fps, 60.0)
         self.assertEqual(args.debug_terrain, "off")
         self.assertEqual(args.terrain_z_scale, 1.0)
 

@@ -17,6 +17,7 @@ from uuid import UUID
 
 from vibestorm.sync.naming import file_name_for_item, safe_filename
 from vibestorm.viewer3d.chat_ticker import TickerEntry, draw_ticker
+from vibestorm.viewer3d.text_panel import PANEL_PADDING, draw_rows, panel_height, wrap_lines
 from vibestorm.world.asset_types import ASSET_TYPE_BY_NAME, asset_type_to_int
 from vibestorm.world.attachments import describe_attachment
 from vibestorm.world.prim_attributes import click_action_name, prim_material_name
@@ -176,7 +177,11 @@ class HUD:
         self.show_diagnostics = bool(show_diagnostics)
         self.help_text = help_text
         self._last_fps = 0.0
-        self._last_diagnostics_html: str | None = None
+        self._last_diagnostics_html: tuple | None = None
+        #: The readout as plain lines, in the order they are drawn. Public
+        #: because the panel is a picture now: this is the only way to read
+        #: back what it says, and what the tests assert against.
+        self.diagnostics_lines: tuple[str, ...] = ("Diagnostics pending.",)
         self._open_menu: str | None = None
         self._last_chat_container_size: tuple[int, int] | None = None
         self._last_inventory_signature: tuple[tuple[object, ...], ...] | None = None
@@ -199,6 +204,11 @@ class HUD:
         self._last_status_right: str | None = None
         self._status_accum_s: float = STATUS_REFRESH_INTERVAL_S
         self._diagnostics_accum_s: float = DIAGNOSTICS_REFRESH_INTERVAL_S
+        # Wrapping asks the font for every word's width, and only two of the
+        # panel's lines change between refreshes. Keyed by (line, width) and
+        # dropped whenever the width does.
+        self._diagnostics_wrap_cache: dict[tuple[str, int], list[str]] = {}
+        self._diagnostics_wrap_width: int = -1
         # Redraw bookkeeping. Starts forced so the very first frame produces a
         # texture for the compositor to draw.
         self._redraw_accum_s: float = 0.0
@@ -531,6 +541,7 @@ class HUD:
             UIHorizontalSlider,
             UIImage,
             UILabel,
+            UIScrollingContainer,
             UISelectionList,
             UITextBox,
             UITextEntryLine,
@@ -849,18 +860,39 @@ class HUD:
             window_display_title="Diagnostics",
             resizable=True,
         )
-        self.diagnostics_text = UITextBox(
-            html_text="Diagnostics pending.",
-            relative_rect=pygame.Rect(self._s(8), self._s(8), self._s(350), self._s(230)),
+        # Drawn by hand, for the reason the chat ticker is: pygame_gui's text
+        # layout is roughly quadratic in line count, and one `set_text` on this
+        # panel's eighteen lines measured 73 ms against a live session. Its
+        # first line is the framerate, so it rebuilt every second -- the panel
+        # you open to find out why the viewer is slow was dropping four frames
+        # a second to tell you. See vibestorm.viewer3d.text_panel.
+        #
+        # The scrolling container is what keeps the scrollbar the text box came
+        # with: the surface is drawn as tall as the content needs and the
+        # container scrolls it, rather than the content being cropped.
+        self._diagnostics_scroll = UIScrollingContainer(
+            relative_rect=pygame.Rect(self._s(8), self._s(8), self._s(360), self._s(240)),
             manager=self.manager,
             container=self.diagnostics_window.get_container(),
+            allow_scroll_x=False,
         )
-        # Closed unless asked for. `UITextBox.set_text` costs 49 ms for this
-        # panel's eighteen lines -- pygame_gui's layout is roughly quadratic in
-        # line count -- and the panel's first line is the framerate, so it
-        # rebuilt every second and dropped three frames doing it. The number it
-        # existed to show is in the status bar now; `--diagnostics`, or Debug ->
-        # Diagnostics, brings the panel back.
+        self._diagnostics_surface = pygame.Surface((1, 1), pygame.SRCALPHA).convert_alpha()
+        self.diagnostics_image = UIImage(
+            relative_rect=pygame.Rect(0, 0, 1, 1),
+            image_surface=self._diagnostics_surface,
+            manager=self.manager,
+            container=self._diagnostics_scroll,
+        )
+        self._diagnostics_font = self.manager.get_theme().get_font(["text_box"])
+        self._diagnostics_background = tuple(
+            self.manager.get_theme().get_colour("dark_bg", ["text_box"])
+        )[:3]
+        self._diagnostics_colour = tuple(
+            self.manager.get_theme().get_colour("normal_text", ["text_box"])
+        )[:3]
+        # Closed unless asked for: the panel is telemetry, and the number it
+        # existed to show is in the status bar. `--diagnostics`, or Debug ->
+        # Diagnostics, brings it back.
         if not self.show_diagnostics:
             self.diagnostics_window.hide()
 
@@ -1256,7 +1288,8 @@ class HUD:
             self.asset_viewer_text,
             self.asset_viewer_image,
             self.asset_viewer_status,
-            self.diagnostics_text,
+            self.diagnostics_image,
+            self._diagnostics_scroll,
             self.heightmap_image,
             self.heightmap_status,
         ):
@@ -1582,37 +1615,77 @@ class HUD:
             relation = "under" if z < scene.water_height else "above"
             water_text = f"water: level={scene.water_height:.1f} avatar_z={z:.1f} {relation}"
 
-        html = "<br>".join(
-            _html_escape(line)
-            for line in (
-                f"fps: {self._last_fps:.1f}",
-                f"mode: {mode_label}",
-                f"region: {scene.region_name or scene.region_handle or '(none)'}",
-                # Client fps alone cannot tell a slow viewer from a slow
-                # region; this line is the other half of that comparison.
-                f"sim: {scene.sim_health or '(no stats yet)'}",
-                f"parcel flags: {scene.parcel_flags.describe() if scene.parcel_flags else '(none received)'}",
-                f"neighbours: {len(scene.neighbour_regions) or 'none announced'}",
-                f"map: {map_path}",
-                terrain_text,
-                height_text,
-                patch_text,
-                sample_text,
-                layer_text,
-                coeff_text,
-                water_text,
-                f"objects: {objects}",
-                f"avatars: {avatars}",
-                f"textures: {len(textures)}",
-                f"chat: {len(scene.chat_lines)}",
-            )
+        # Plain strings now, not HTML: nothing escapes and nothing parses them.
+        # The panel is drawn with the font directly.
+        parcel_flags = (
+            scene.parcel_flags.describe() if scene.parcel_flags else "(none received)"
         )
-        if html == self._last_diagnostics_html:
+        lines = (
+            f"fps: {self._last_fps:.1f}",
+            f"mode: {mode_label}",
+            f"region: {scene.region_name or scene.region_handle or '(none)'}",
+            # Client fps alone cannot tell a slow viewer from a slow region;
+            # this line is the other half of that comparison.
+            f"sim: {scene.sim_health or '(no stats yet)'}",
+            f"parcel flags: {parcel_flags}",
+            f"neighbours: {len(scene.neighbour_regions) or 'none announced'}",
+            f"map: {map_path}",
+            terrain_text,
+            height_text,
+            patch_text,
+            sample_text,
+            layer_text,
+            coeff_text,
+            water_text,
+            f"objects: {objects}",
+            f"avatars: {avatars}",
+            f"textures: {len(textures)}",
+            f"chat: {len(scene.chat_lines)}",
+        )
+        self.diagnostics_lines = lines
+        self._draw_diagnostics(lines)
+
+    def _draw_diagnostics(self, lines: tuple[str, ...]) -> None:
+        """Paint the readout, sized so the container can scroll it."""
+        pygame = self._pygame
+        width = max(1, self._diagnostics_scroll.get_container().get_size()[0])
+        line_height = self._diagnostics_font.get_point_size() + self._s(6)
+        # The signature stands in for the drawn pixels: same lines and same
+        # width means the same picture. Without it the panel would redraw on
+        # every refresh even when nothing it reports had moved.
+        signature = (lines, width, line_height)
+        if signature == self._last_diagnostics_html:
             return
-        self._last_diagnostics_html = html
+        self._last_diagnostics_html = signature
         try:
-            self.diagnostics_text.set_text(html)
-        except Exception:  # pragma: no cover
+            if width != self._diagnostics_wrap_width:
+                self._diagnostics_wrap_width = width
+                self._diagnostics_wrap_cache = {}
+            rows = wrap_lines(
+                lines,
+                font=self._diagnostics_font,
+                max_width=max(1, width - PANEL_PADDING * 2),
+                cache=self._diagnostics_wrap_cache,
+            )
+            height = panel_height(len(rows), line_height=line_height)
+            if self._diagnostics_surface.get_size() != (width, height):
+                self._diagnostics_surface = pygame.Surface(
+                    (width, height), pygame.SRCALPHA
+                ).convert_alpha()
+                self.diagnostics_image.set_dimensions((width, height))
+                self._diagnostics_scroll.set_scrollable_area_dimensions((width, height))
+            draw_rows(
+                self._diagnostics_surface,
+                rows,
+                font=self._diagnostics_font,
+                colour=self._diagnostics_colour,
+                background=self._diagnostics_background,
+                line_height=line_height,
+            )
+            self.diagnostics_image.set_image(
+                self._diagnostics_surface, image_is_alpha_premultiplied=True
+            )
+        except Exception:  # pragma: no cover - a drawing hiccup must not kill the viewer
             pass
 
     def _refresh_heightmap(self, scene: Scene) -> None:

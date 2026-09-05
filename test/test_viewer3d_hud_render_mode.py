@@ -188,7 +188,7 @@ class RenderModeMenuTests(unittest.TestCase):
 
         hud.update(0.05, scene)
 
-        text = hud.diagnostics_text.html_text
+        text = "\n".join(hud.diagnostics_lines)
         self.assertIn("fps:", text)
         self.assertIn("terrain: synthetic 2x2 patches=1 rev=0 zscale=4.00", text)
         self.assertIn("height: min=1.00 max=4.00 mean=2.50", text)
@@ -215,7 +215,7 @@ class RenderModeMenuTests(unittest.TestCase):
 
         hud.update(0.05, scene)
 
-        text = hud.diagnostics_text.html_text
+        text = "\n".join(hud.diagnostics_lines)
         # Client fps and sim fps have to be separately visible; that pairing is
         # the whole reason this line exists.
         self.assertIn("fps:", text)
@@ -321,7 +321,7 @@ class RenderModeMenuTests(unittest.TestCase):
 
         # It may be *called*, but it must not do the expensive work; the text
         # staying at its placeholder is how that shows.
-        self.assertIn("pending", hud.diagnostics_text.html_text.lower())
+        self.assertIn("pending", "\n".join(hud.diagnostics_lines).lower())
 
     def test_a_hidden_heightmap_window_is_not_refreshed(self) -> None:
         """The guard that makes the panel free while closed."""
