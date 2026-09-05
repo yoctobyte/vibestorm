@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-05 (third pass)
+Last updated: 2026-09-06 (fifth pass)
 
 ## The Owner's Priorities
 
@@ -81,6 +81,123 @@ on anyone's desktop. Two things the screenshots showed:
 
 The sky was a flat colour and is now a gradient with the sun drawn into it
 (`render_sky` toggles it).
+
+**A -- the fifth pass (2026-09-06): a region-sized world, in a frame.**
+Everything before this was measured on the local test region, which holds
+about thirty prims. A Second Life mainland region holds thousands, mostly in
+linksets, and two new benchmarks say what that costs:
+`tools/bench_scene_refresh.py` builds regions of a given size and times
+`Scene.refresh_from_world_view`; `tools/bench_render_frame.py` draws one into
+an off-screen framebuffer through a standalone GL context, so it opens no
+window. At 15,000 prims the answer was **699 ms to derive the scene and 283 ms
+to draw it** -- one frame a second, before anything else in the loop.
+
+Almost none of the drawing was the GPU. The draw calls and the fence together
+came to 5 ms of that 283 ms frame; the rest was Python, and all of it was work
+being repeated.
+
+*The scene was rebuilt from nothing every frame.* Every prim in view got its
+extra params decoded, its shape classified and a twenty-field frozen dataclass
+constructed, sixty times a second, for a world in which a couple of dozen
+objects had moved. `WorldView` never edits an object in place -- every update
+puts a *new* frozen instance in the dict -- so `is` is an exact answer to "did
+this prim change?", and an unchanged prim now keeps the entity it had. A child
+also has to be rebuilt when its *parent* moved, which the cached placement
+carries. Composing linkset children moved ahead of building the entities, too,
+so a child is constructed once with the transform it ends up with rather than
+being rebuilt by `dataclasses.replace` afterwards.
+
+*The parent resolve then recomposed every linkset every frame to arrive back
+at last frame's answer.* `resolve_world_transforms` now takes the ids whose own
+transform is unchanged and the answer it gave last time, and carries those
+across **as the same tuple** -- which is what lets the entity cache go on
+recognising a still child by identity. The subtlety is that "unchanged" is
+about a prim's *own* transform, and a child that did not move is somewhere else
+entirely if its root did, so the composing tracks which world transforms
+actually changed, seeded with the roots and grown outward.
+
+*A prim was drawn six times.* A cube is six meshes so a `TextureEntry` can put
+a different texture on each side, and each of those passes walked every prim in
+the region again -- rebuilding the same nineteen floats of model matrix and
+tint per prim per face. Those are packed once now and kept beside the entity.
+And most prims do not need the split at all: `face_texture_ids` empty means
+every face resolves to the default, which is the ordinary box in-world, and
+those go down the whole-mesh path in one draw call.
+
+                                    before    after
+    scene, 1000 single prims         23.0 ms    1.7 ms
+    scene, 15000 in linksets        698.9 ms   35.5 ms
+    frame, 1000 prims                17.3 ms    1.2 ms
+    frame, 15000 prims              283.2 ms   15.9 ms
+
+A still 15,000-prim region went from about one frame a second to about twenty,
+and the local region measures 317 fps unbounded with `VIBESTORM_PROFILE_FRAMES`.
+What is left at that size is the scene refresh's walk over every object, which
+is the part that cannot be skipped without a change signal on `WorldView`
+itself; the largest single phase in the running viewer is now `hud_update` at
+1.4 ms.
+
+The shortcut that could be seen is checked by being looked at: the same
+uniformly textured cube, cylinder and prism are rendered both ways and the
+framebuffers compared pixel for pixel, with the prim turned off every axis so a
+symmetric silhouette cannot pass by accident.
+
+**A -- textures stopped crawling (2026-09-06).** `Texture.filter` is
+`(minification, magnification)` and every world texture set the first half to
+`LINEAR`, so a texture was point-sampled however small it was on screen. The
+terrain textures made it plain: they already called `build_mipmaps()` and then
+set a filter that never consults one, so the memory bought nothing. Object
+textures and the region map tile built none at all.
+
+Mipmaps alone then over-correct, and the ground is where that shows -- a
+surface seen along itself is squashed hard in one direction and a level coarse
+enough for that axis throws away everything across the other. Anisotropic
+filtering is the answer to exactly that, and the GPU spends it only where the
+squash is. The benchmark is unchanged at every region size.
+
+Both are measured rather than eyeballed, on a receding textured slab: how much
+neighbouring pixels disagree must *drop* far away when mipmaps arrive (a third,
+here), must *not* drop close up, and must come back up when anisotropy is added
+-- the last two quantities being the same measurement, separable only because
+the minification filter is a mipmap filter in both frames, so a pixel cannot be
+a random texel and what is left is detail.
+
+**A -- an attachment is a child of the avatar, watched rather than assumed
+(2026-09-06).** `viewer3d/linkset.py` had said so since the linkset fix and
+nothing had ever looked. `ObjectAttach` (Low 112) and `ObjectDetach` (Low 113)
+are encoded now, and `tools/verify_attachment_frame.py` rezzes a prim, wears
+it, and reads back what the simulator says:
+
+    prim parent_id=176204259 (avatar local=176204259)
+    prim position now (0.0, 0.0, 0.0)
+    magnitude 0.00 m  ->  PARENT-RELATIVE
+    scene draws it at (128.0, 128.0, 25.94)
+    the avatar is at (128.0, 128.0, 25.94)
+
+So the composition already in the viewer draws attachments correctly, and the
+docstring cites the observation instead of asserting it. The attachment point
+is passed through as a number and nothing here claims to know the simulator's
+numbering; 0 asks for the object's default.
+
+**A -- a killed linkset used to leave its children behind (2026-09-06).**
+Found while making the probes clean up after themselves. Linking two rezzed
+prims and taking the root away produced exactly one `KillObject`, naming the
+root and *not* the child:
+
+    KillObject events since link:
+        local_ids=176204334
+    root 176204334: gone
+    child 176204335: STILL IN WORLD VIEW
+
+`apply_kill_object` removed only what it was told, so the child stayed in the
+world view for the rest of the session -- and a session walking a real region
+would keep a phantom prim for every linkset that ever left view, plus a
+`local_id_to_full_id` entry pointing a reusable local id at a prim that is
+gone. A killed object's descendants now go with it, to any depth. The exception
+is an avatar: sitting is parenting, so a seated avatar looks exactly like a
+linkset child here, and deleting a chair does not delete whoever was sitting in
+it. A prim attached to an avatar that leaves *does* go, so the exception is the
+avatar itself, not everything under one.
 
 **A -- the third pass (2026-09-05): the avatar, and the normal transform.**
 Avatars were seven merged boxes in one flat yellow. Two separate things made
@@ -454,13 +571,24 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    type from the CLI; the viewer's "save all text assets" button still only
    saves text. Small, and only worth doing if the owner works from the window
    rather than the shell.
-3. **A's remaining win: nothing but prims is textured.** Terrain, water and
-   sky are shader-generated, so a region with custom ground textures gets this
-   client's blend of them rather than its own. Next after that, in order of
-   what a person would notice: the gait covers walking and standing but sitting
-   still reads as standing, and attachments are not drawn at all.
-   (HUD dirty-tracking and the walk cycle, which used to be this entry, are
-   done -- see "A -- the fourth pass".)
+3. **A's remaining win: water and sky are this client's, not the region's.**
+   Terrain now textures from the region's own `TerrainDetail` UUIDs, but water
+   colour and the sky come out of the shaders regardless of where you are, so
+   every region looks like the same weather. That is not a UDP message:
+   `RegionHandshake` carries terrain textures, heights and a water *height* and
+   nothing about colour, so it means an environment capability and an LLSD
+   settings document. It is the largest remaining visual gap and the most work
+   of anything on this list.
+   (The gait, sitting, attachments, linkset placement, the frame cost at
+   region scale and texture filtering, which used to be this entry in various
+   forms, are done -- see the fourth and fifth passes.)
+4. **A's next unknown is memory, not speed.** `_prune_object_textures` bounds
+   the uploaded set by what the region references, which is right -- nothing
+   visible is ever evicted -- but nothing bounds how much a region can
+   reference. A mainland region with a few thousand distinct 512x512 textures
+   is gigabytes of VRAM, and there is no budget, no eviction and no resolution
+   cap. Nothing has observed it, because the local region has a handful of
+   textures; it wants a real grid to measure before it is worth building.
 
 **The local test prim `d7f47f7e-4328-4d17-a665-19feaec7b1e9` now carries
 several `vibestorm-sync-*`, `e2e-sync-*` and `verify-note-*` items** left by
@@ -468,22 +596,34 @@ probes, including a genuine name collision (`vibestorm-sync-88338` and
 `vibestorm-sync-88338.lsl`) that the verify tool reports as a conflict every
 run. `tools/clean_test_prim.py` removes them.
 
-**Stray prims are left in the test region.** Two at (130, 128, 27.1) and
-(134, 128, 27.1) -- `d20cbafb-d79e-4771-84cf-25f7090fe69b` and
-`f09bb2a0-d56d-4b83-b2c3-cd781bd89740`, the linkset made to observe what frame
-a child's position is in -- plus one 0.5 m cube per run of
-`verify_seated_avatar.py`, which needs something to sit on. `tools/delete_prims.py` cannot remove them, and
-neither can anything else here: **this OpenSim build has no handler for
-`ObjectDelete`**. Its own log answers every attempt with
+**The test region is clean again, and the probes now clear up after
+themselves.** `ObjectDelete` is still unhandled by this OpenSim build -- its
+own log answers every attempt with
 
     WARN [CLIENT]: ignoring unhandled packet ObjectDelete
 
-That is worth knowing for its own sake, and it is worth knowing how it was
-nearly missed. Three prims *did* disappear around the first runs of the tool,
-which read as three successful deletes and one stubborn refusal, and that is
-what was committed. They had vanished on their own. The simulator's log is what
-said otherwise, and the lesson is the familiar one in a new costume: a result
-that agrees with what you just built is the one to check hardest.
+-- but there is another way, found while checking what an attachment is:
+**wear the prim, then take it off.** `ObjectDetach` takes an attachment into
+*inventory*, so the prim leaves the region. It is not the same as deleting, and
+the simulator permission-checks the wearing, so it can only ever reach prims
+the agent owns -- both of which are exactly right for a probe tidying up after
+itself. `tools/probe_support.py` does it, `verify_child_prim_frame.py` and
+`verify_seated_avatar.py` call it, and `tools/delete_prims.py --via-attachment`
+is the same route by hand. The four cubes those probes had left behind, and the
+linkset made to observe the child frame, are gone.
+
+That module also holds `wait_until_quiet`, because the other half of the mess
+was a probe calling late arrivals its own: objects stream in for tens of
+seconds after the agent lands, and a snapshot taken on arrival is not a
+snapshot of the region. One run of `verify_child_prim_frame.py` linked two
+prims from an *earlier* run that way and reported on those.
+
+It is still worth knowing how the `ObjectDelete` finding was nearly missed.
+Three prims *did* disappear around the first runs of the tool, which read as
+three successful deletes and one stubborn refusal, and that is what was
+committed. They had vanished on their own. The simulator's log is what said
+otherwise, and the lesson is the familiar one in a new costume: a result that
+agrees with what you just built is the one to check hardest.
 
 The same log turned up a real bug here. Passing a duplicate local id to
 `ObjectDelink` made OpenSim throw a `NullReferenceException` inside
