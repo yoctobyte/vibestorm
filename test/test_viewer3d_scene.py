@@ -1314,5 +1314,105 @@ class SeatedAvatarPoseTests(unittest.TestCase):
         self.assertNotEqual(scene.avatar_poses[7], sit_pose())
 
 
+class UnchangedObjectReuseTests(unittest.TestCase):
+    """A refresh rebuilds only what actually changed.
+
+    ``refresh_from_world_view`` runs once a frame and used to rebuild every
+    entity in the region every time: decoding extra params, classifying the
+    shape and constructing a twenty-field dataclass for 15,000 prims came to
+    roughly a quarter of a second a frame, in a world where a couple of dozen
+    of them had moved. ``WorldView`` never edits an object in place -- every
+    update puts a *new* frozen instance in the dict -- so object identity is an
+    exact answer to "did this prim change?".
+
+    The reuse is observable as entity identity, which is what these check. The
+    interesting failure is not "it rebuilt something it need not have"; it is
+    the opposite -- handing back a stale entity for something that moved.
+    """
+
+    def _view_with_linkset(self):
+        from vibestorm.world.models import WorldObject, WorldView
+
+        def prim(index: int, local_id: int, parent_id: int, position):
+            return WorldObject(
+                full_id=UUID(int=index), local_id=local_id, parent_id=parent_id,
+                pcode=PCODE_PRIM, material=0, click_action=0, scale=(1.0, 1.0, 1.0),
+                state=0, crc=0, update_flags=0, region_handle=0, time_dilation=0,
+                object_data_size=0, position=position, rotation=(0.0, 0.0, 0.0, 1.0),
+                variant="prim_basic", name_values={}, texture_entry_size=0,
+                texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+                ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+                default_texture_id=None,
+            )
+
+        view = WorldView()
+        # The shape observed live: a root at a region position and a child
+        # reporting its offset from it.
+        view.objects[UUID(int=1)] = prim(1, 10, 0, (130.0, 128.0, 27.0))
+        view.objects[UUID(int=2)] = prim(2, 11, 10, (4.0, 0.0, 0.0))
+        return view, prim
+
+    def test_an_untouched_object_keeps_the_entity_it_had(self) -> None:
+        view, _prim = self._view_with_linkset()
+        scene = Scene()
+
+        scene.refresh_from_world_view(view)
+        first = scene.object_entities[10]
+        scene.refresh_from_world_view(view)
+
+        self.assertIs(scene.object_entities[10], first)
+
+    def test_a_replaced_object_is_rebuilt(self) -> None:
+        # An update puts a new instance in the dict. Reusing the old entity
+        # here would freeze the prim where it was.
+        view, prim = self._view_with_linkset()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        view.objects[UUID(int=1)] = prim(1, 10, 0, (140.0, 128.0, 27.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.object_entities[10].position, (140.0, 128.0, 27.0))
+
+    def test_a_child_follows_a_parent_that_moved(self) -> None:
+        # The child's own object is untouched, so identity alone says "reuse",
+        # and the child would stay behind while its root walked off. Its
+        # position comes from the parent as much as from itself.
+        view, prim = self._view_with_linkset()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        self.assertEqual(scene.object_entities[11].position, (134.0, 128.0, 27.0))
+        child_before = view.objects[UUID(int=2)]
+
+        view.objects[UUID(int=1)] = prim(1, 10, 0, (200.0, 128.0, 27.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertIs(view.objects[UUID(int=2)], child_before)
+        self.assertEqual(scene.object_entities[11].position, (204.0, 128.0, 27.0))
+
+    def test_a_child_that_did_not_move_keeps_its_entity(self) -> None:
+        view, _prim = self._view_with_linkset()
+        scene = Scene()
+
+        scene.refresh_from_world_view(view)
+        first = scene.object_entities[11]
+        scene.refresh_from_world_view(view)
+
+        self.assertIs(scene.object_entities[11], first)
+
+    def test_an_object_that_leaves_the_region_leaves_the_cache(self) -> None:
+        # Otherwise a session that walks across a busy grid accumulates an
+        # entity for every prim it has ever seen.
+        view, _prim = self._view_with_linkset()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        del view.objects[UUID(int=2)]
+        scene.refresh_from_world_view(view)
+
+        self.assertNotIn(11, scene.object_entities)
+        self.assertEqual(set(scene._entity_cache), {10})
+
+
 if __name__ == "__main__":
     unittest.main()

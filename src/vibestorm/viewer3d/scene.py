@@ -12,8 +12,9 @@ same data.
 
 from __future__ import annotations
 
+import math
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
@@ -413,6 +414,12 @@ class Scene:
     water_alpha: float = 0.72
     object_entities: dict[int, SceneEntity] = field(default_factory=dict)
     avatar_entities: dict[int, SceneEntity] = field(default_factory=dict)
+    # Last frame's entities, each kept beside the ``WorldObject`` it was built
+    # from and the placement it was given, so an unchanged object can be handed
+    # back rather than rebuilt. See ``refresh_from_world_view``.
+    _entity_cache: dict[int, tuple[object, object, SceneEntity]] = field(
+        default_factory=dict, repr=False
+    )
     sun_phase: float | None = None
     sun_direction: tuple[float, float, float] | None = None
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
@@ -793,13 +800,62 @@ class Scene:
         )
         self.sun_direction = _as_vec3(raw_sun_direction)
 
+        objects = getattr(world_view, "objects", {})
+        terse_objects = getattr(world_view, "terse_objects", {})
+        # Empty unless something in view has a parent, so a region of
+        # unlinked prims never pays for this.
+        placed = _region_frame_transforms(objects, terse_objects)
+
         # Full ObjectUpdate-derived objects (have rich data).
-        for obj in getattr(world_view, "objects", {}).values():
+        #
+        # Rebuilding all of these every frame is what a 15,000-prim region
+        # costs: decoding extra params, classifying the shape and constructing
+        # the entity came to a quarter of a second per frame, for a world in
+        # which a couple of dozen objects had actually moved. So each entity is
+        # kept beside the ``WorldObject`` it came from. Every update replaces
+        # that object with a new instance (``WorldView`` holds frozen
+        # dataclasses and never edits one in place), so ``is`` is an exact
+        # answer to "has anything about this prim changed?" -- and a child also
+        # has to be rebuilt when its *parent* moved, which the placement
+        # carries.
+        cache = self._entity_cache
+        fresh_cache: dict[int, tuple[object, object, SceneEntity]] = {}
+        for obj in objects.values():
+            local_id = obj.local_id
+            cached = cache.get(local_id)
+            if cached is not None and cached[0] is obj:
+                # Its own data is untouched. A root is then finished -- nothing
+                # else feeds its transform -- and only a child has to check
+                # whether its parent moved underneath it.
+                was_placed = cached[1]
+                if was_placed is None or placed.get(local_id) == was_placed:
+                    entity = cached[2]
+                    fresh_cache[local_id] = cached
+                    if obj.pcode == PCODE_AVATAR:
+                        self.avatar_entities[local_id] = entity
+                    else:
+                        self.object_entities[local_id] = entity
+                    continue
+
             position = getattr(obj, "position", None)
             if position is None:
                 continue
-            scale = getattr(obj, "scale", (1.0, 1.0, 1.0))
             rot = getattr(obj, "rotation", None)
+            parent_id = int(getattr(obj, "parent_id", 0) or 0)
+            if parent_id:
+                lifted = placed.get(local_id)
+                if lifted is None:
+                    # Its parent has not arrived. Updates are not ordered, so
+                    # this happens for a frame or two routinely; the next frame
+                    # has the parent, and drawing the child at the raw
+                    # parent-relative position it reported would put it by the
+                    # region corner, which is the bug being avoided.
+                    continue
+                position, rot = lifted
+            else:
+                lifted = None
+
+            scale = getattr(obj, "scale", (1.0, 1.0, 1.0))
             yaw = _quat_to_yaw(rot)
             name = None
             properties = getattr(obj, "properties_family", None)
@@ -837,15 +893,17 @@ class Scene:
                 hover_text=getattr(obj, "hover_text", None),
                 hover_text_color=getattr(obj, "hover_text_color", None),
                 tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
-                parent_id=int(getattr(obj, "parent_id", 0) or 0),
+                parent_id=parent_id,
             )
+            fresh_cache[local_id] = (obj, lifted, entity)
             if obj.pcode == PCODE_AVATAR:
-                self.avatar_entities[obj.local_id] = entity
+                self.avatar_entities[local_id] = entity
             else:
-                self.object_entities[obj.local_id] = entity
+                self.object_entities[local_id] = entity
+        self._entity_cache = fresh_cache
 
         # Terse-only objects (no full ObjectUpdate seen yet) — render a placeholder.
-        for terse in getattr(world_view, "terse_objects", {}).values():
+        for terse in terse_objects.values():
             if terse.local_id in self.object_entities or terse.local_id in self.avatar_entities:
                 continue
             yaw = _quat_to_yaw(terse.rotation)
@@ -868,8 +926,6 @@ class Scene:
             else:
                 self.object_entities[terse.local_id] = entity
 
-        self._place_children_in_the_region_frame()
-
         sim_stats = getattr(world_view, "latest_sim_stats", None)
         if sim_stats is not None:
             self.sim_health = summarize_sim_stats(sim_stats.stats)
@@ -881,46 +937,6 @@ class Scene:
             if water_height is not None:
                 self.water_height = float(water_height)
 
-
-    def _place_children_in_the_region_frame(self) -> None:
-        """Compose every child's transform back through its parent.
-
-        A prim with a parent reports where it is *relative to that parent* --
-        observed live, see :mod:`vibestorm.viewer3d.linkset` -- so without this
-        every child of every linkset, and every attachment on every avatar,
-        is drawn a few metres from the region corner.
-
-        A child whose parent has not arrived yet is **dropped** rather than
-        drawn where the update put it. Updates are not ordered, so this happens
-        routinely for a frame or two; showing the prim in the wrong place is
-        the failure being fixed, and the next frame has the parent.
-        """
-        entities = {**self.object_entities, **self.avatar_entities}
-        if not any(entity.parent_id for entity in entities.values()):
-            return
-
-        world = resolve_world_transforms(
-            {
-                local_id: (entity.parent_id, entity.position, entity.rotation)
-                for local_id, entity in entities.items()
-            }
-        )
-        for table in (self.object_entities, self.avatar_entities):
-            for local_id in list(table):
-                entity = table[local_id]
-                if not entity.parent_id:
-                    continue
-                placed = world.get(local_id)
-                if placed is None:
-                    del table[local_id]
-                    continue
-                position, rotation = placed
-                table[local_id] = replace(
-                    entity,
-                    position=position,
-                    rotation=rotation,
-                    rotation_z_radians=_quat_to_yaw(rotation),
-                )
 
 
 def _self_avatar_position(world_view: object) -> tuple[float, float, float] | None:
@@ -943,6 +959,45 @@ def _as_vec3(value: object | None) -> tuple[float, float, float] | None:
         return None
 
 
+def _region_frame_transforms(
+    objects: dict, terse_objects: dict
+) -> dict[int, tuple[tuple[float, float, float], tuple[float, float, float, float]]]:
+    """Where everything parented actually is, in the region's frame.
+
+    A prim with a parent reports where it is *relative to that parent* --
+    observed live, see :mod:`vibestorm.viewer3d.linkset` -- so without this
+    every child of every linkset, and every attachment on every avatar, is
+    drawn a few metres from the region corner.
+
+    Returns ``{}`` when nothing in view has a parent, which is the whole of a
+    region of unlinked prims and the whole of the local test region. The
+    caller only looks anything up for a parented object, so an empty result
+    and a region with no parents are the same thing.
+
+    Terse-only objects are included as roots: ``ImprovedTerseObjectUpdate``
+    carries no parent id, and a linkset root seen only tersely is still the
+    frame its children hang off.
+    """
+    transforms: dict[int, tuple[int, tuple[float, float, float], object]] = {}
+    parented = False
+    for obj in objects.values():
+        position = getattr(obj, "position", None)
+        if position is None:
+            continue
+        parent_id = int(getattr(obj, "parent_id", 0) or 0)
+        parented = parented or bool(parent_id)
+        transforms[obj.local_id] = (parent_id, position, getattr(obj, "rotation", None))
+    if not parented:
+        # Nothing to compose, and the resolve would walk every prim in the
+        # region to say so.
+        return {}
+    for terse in terse_objects.values():
+        if terse.local_id in transforms:
+            continue
+        transforms[terse.local_id] = (0, terse.position, terse.rotation)
+    return resolve_world_transforms(transforms)  # type: ignore[arg-type]
+
+
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:
     """Project a unit quaternion onto the z axis to get yaw in radians.
 
@@ -950,8 +1005,6 @@ def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:
     Returns 0 for None or a non-finite quat — defensive default for terse
     decode edge cases.
     """
-    import math
-
     if quat is None:
         return 0.0
     try:
