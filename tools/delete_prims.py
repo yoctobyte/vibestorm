@@ -6,6 +6,21 @@ nothing took them out: ``verify_child_prim_frame.py`` has to rez two prims and
 link them to observe what frame a child's position is in, and every run of it
 adds two more.
 
+**It does not work against the local OpenSim build.** The simulator's own log
+answers every attempt with
+
+    WARN [CLIENT]: ignoring unhandled packet ObjectDelete
+
+-- there is no handler for the message at all. The encoder follows the message
+template and nothing here suggests it is wrong; the server simply does not
+implement it. Prims that vanished around the first runs of this tool vanished
+on their own, not because of it, and reading that coincidence as success is
+what this paragraph exists to stop happening twice.
+
+It is kept because Second Life does implement `ObjectDelete`, and because the
+readback below reports honestly either way: what it prints is what the region
+says afterwards.
+
 This deletes objects out of a region, so:
 
 - It **lists and exits** unless you pass ``--yes``.
@@ -158,7 +173,13 @@ async def main(argv: list[str]) -> int:
             return 0
 
         handle = client.current_handle or 0
-        linked = [obj for obj in found if obj.parent_id] + family
+        # Deduplicated by local id. A child that was both named on the command
+        # line and found as a named root's child appeared twice, and OpenSim
+        # answered the duplicate with a NullReferenceException inside
+        # SceneGraph.DelinkObjects -- a crash in the simulator, caused here.
+        linked = list(
+            {obj.local_id: obj for obj in [*(o for o in found if o.parent_id), *family]}.values()
+        )
         if linked:
             print(f"--- unlinking {len(linked)} prim(s) ---")
             client.queue_outbound_packet(

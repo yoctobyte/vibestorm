@@ -3117,6 +3117,37 @@ def encode_agent_update(
     )
 
 
+def encode_agent_request_sit(
+    agent_id: UUID,
+    session_id: UUID,
+    target_id: UUID,
+    *,
+    offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> bytes:
+    """``AgentRequestSit`` -- ask to sit on an object.
+
+    High 6, Zerocoded. Sitting is two messages: this one asks, the simulator
+    answers with ``AvatarSitResponse`` carrying where the seat actually is, and
+    :func:`encode_agent_sit` then commits to it.
+    """
+    return (
+        b"\x06"
+        + agent_id.bytes
+        + session_id.bytes
+        + target_id.bytes
+        + pack("<fff", *offset)
+    )
+
+
+def encode_agent_sit(agent_id: UUID, session_id: UUID) -> bytes:
+    """``AgentSit`` -- take the seat the simulator just offered.
+
+    High 7, Unencoded. Carries no target: it commits to whatever the preceding
+    ``AgentRequestSit`` was answered with.
+    """
+    return b"\x07" + agent_id.bytes + session_id.bytes
+
+
 def encode_object_select(agent_id: UUID, session_id: UUID, local_ids: Sequence[int]) -> bytes:
     """``ObjectSelect`` -- tell the simulator these prims are selected.
 

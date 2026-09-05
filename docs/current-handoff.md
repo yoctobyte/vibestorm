@@ -162,6 +162,24 @@ Still open under A: **prim textures are the only thing textured** -- terrain,
 water and sky are all shader-generated, which looks right but means a region
 with custom ground textures still gets this client's blend of them.
 
+**A -- and a seated avatar is a child too (2026-09-05).** Sitting reparents the
+avatar onto the seat: `tools/verify_seated_avatar.py` rezzes a prim, sits on
+it, and the avatar's `ObjectUpdate` starts reporting `parent_id` = the seat's
+local id and a position of `(-0.415, 0.0, 0.9)` -- the seat's frame, not the
+region's, exactly as for a linkset's child prims.
+
+So before the fix below, **every seated avatar in every region was drawn near
+the region corner**, not only every linked prim. The viewer now places the
+seated avatar at (129.09, 128.0, 26.12), on its seat.
+
+Sitting also needed two messages this client did not have: `AgentRequestSit`
+asks, the simulator answers with `AvatarSitResponse`, and `AgentSit` commits.
+Standing back up is the `STAND_UP` control flag, which already existed.
+
+What is still missing is the *pose*: a seated avatar is drawn standing, on the
+seat. `parent_id` is a reliable signal that an avatar is sitting, and the
+skeleton to bend is already there.
+
 **A -- linksets were drawn at the region corner (2026-09-05).** `ObjectUpdate`
 carries a `parent_id`; the 3D scene stored it and never used it, drawing every
 prim at the position the update reported. Nothing in this tree recorded what
@@ -438,13 +456,26 @@ probes, including a genuine name collision (`vibestorm-sync-88338` and
 `vibestorm-sync-88338.lsl`) that the verify tool reports as a conflict every
 run. `tools/clean_test_prim.py` removes them.
 
-**One stray prim is left in the test region**, `d20cbafb-d79e-4771-84cf-25f7090fe69b`
-at (130, 128, 27.1) -- the root of the linkset made to observe what frame a
-child's position is in. `tools/delete_prims.py` removed the other three from
-that experiment and this one is refused, silently, with or without a preceding
-`ObjectSelect`. What makes the simulator refuse is not understood; it is a
-0.5 m cube and it is left there rather than guessed at. That is also why
-`ObjectDelete` is `tested` in the ledger rather than `verified`.
+**Two stray prims are left in the test region**,
+`d20cbafb-d79e-4771-84cf-25f7090fe69b` and `f09bb2a0-d56d-4b83-b2c3-cd781bd89740`
+at (130, 128, 27.1) and (134, 128, 27.1) -- the linkset made to observe what
+frame a child's position is in. `tools/delete_prims.py` cannot remove them, and
+neither can anything else here: **this OpenSim build has no handler for
+`ObjectDelete`**. Its own log answers every attempt with
+
+    WARN [CLIENT]: ignoring unhandled packet ObjectDelete
+
+That is worth knowing for its own sake, and it is worth knowing how it was
+nearly missed. Three prims *did* disappear around the first runs of the tool,
+which read as three successful deletes and one stubborn refusal, and that is
+what was committed. They had vanished on their own. The simulator's log is what
+said otherwise, and the lesson is the familiar one in a new costume: a result
+that agrees with what you just built is the one to check hardest.
+
+The same log turned up a real bug here. Passing a duplicate local id to
+`ObjectDelink` made OpenSim throw a `NullReferenceException` inside
+`SceneGraph.DelinkObjects` -- a crash in the simulator, caused by this client.
+The tool deduplicates now.
 
 ## Environment Note (2026-09-02)
 

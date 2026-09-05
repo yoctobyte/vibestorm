@@ -95,6 +95,8 @@ from vibestorm.udp.messages import (
     encode_improved_instant_message,
     encode_logout_request,
     encode_map_block_request,
+    encode_agent_request_sit,
+    encode_agent_sit,
     encode_object_add,
     encode_object_delete,
     encode_object_delink,
@@ -1578,6 +1580,48 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "object.add",
             f"position=({x:.2f},{y:.2f},{z:.2f})",
+        )
+        return packet
+
+    def build_agent_request_sit_packet(
+        self,
+        target_id: UUID,
+        *,
+        offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        now: float | None = None,
+    ) -> bytes:
+        """Build AgentRequestSit, asking to sit on ``target_id``."""
+        packet = self._build_outbound_packet(
+            encode_agent_request_sit(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                target_id,
+                offset=offset,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="AgentRequestSit",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "agent.request_sit",
+            f"target={target_id}",
+        )
+        return packet
+
+    def build_agent_sit_packet(self, *, now: float | None = None) -> bytes:
+        """Build AgentSit, committing to the seat just offered."""
+        packet = self._build_outbound_packet(
+            encode_agent_sit(self.bootstrap.agent_id, self.bootstrap.session_id),
+            reliable=True,
+            now=now,
+            label="AgentSit",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "agent.sit",
+            "committed",
         )
         return packet
 
