@@ -34,6 +34,9 @@ reference item, not a divergence.
 | Asset formats | Library notecards are plain UTF-8 with no container, unlike viewer-written ones | `assets/notecard.py` |
 | Asset formats | A mesh decoder fills in defaults for absent data, so "field is populated" never means "the asset supplied it" | `assets/sl_mesh.py` |
 | Parcels | Parcel bitmap bit order is LSB-first at index `y * edge + x` | `world/parcel_overlay.py` |
+| Object properties | `ObjectProperties.CreationDate` is **microseconds** since the epoch; the template says only `U64`, and every other timestamp a reader meets is seconds | `udp/messages.py`, `tools/verify_object_properties.py` |
+| Object lifecycle | `KillObject` names a linkset's **root only**; the children are never listed and a client must sweep them itself, or keep a phantom prim per linkset that ever leaves view | `world/models.py`, `test/test_world_kill_object.py` |
+| Object lifecycle | OpenSim has no handler for `ObjectDelete` at all -- it logs `ignoring unhandled packet` and answers nothing, so a client cannot tell a refusal from a delete that worked. `ObjectDetach` is the way out of a region: it takes a prim into inventory | `tools/delete_prims.py`, `tools/probe_support.py` |
 
 ## Not divergences
 
