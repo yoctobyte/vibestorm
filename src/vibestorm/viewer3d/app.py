@@ -167,6 +167,29 @@ def composite_hud(compositor: GLCompositor, hud_surface: pygame.Surface) -> None
     compositor.draw("hud", alpha=True)
 
 
+def redraw_hud(compositor: GLCompositor, hud_surface: pygame.Surface, hud) -> bool:
+    """Repaint and re-upload the HUD, but only when it would look different.
+
+    Returns whether it repainted. The clear, the per-element blits and the
+    full-screen upload together cost 17 ms of a 1920x1080 frame on a GTX 1660
+    SUPER -- the upload alone is 6.4 ms -- and the HUD's content changes a few
+    times a second. The texture already on the GPU stays valid in between, so a
+    skipped frame still draws the same pixels.
+
+    The texture is checked for as well as the dirty flag: the compositor may
+    have been released and rebuilt (a resize) while the HUD believed itself
+    freshly drawn, and drawing a name that has no texture is not a thing to
+    find out about at 60 Hz.
+    """
+    if not hud.needs_redraw() and compositor.has_texture("hud"):
+        return False
+    hud_surface.fill((0, 0, 0, 0))
+    hud.draw(hud_surface)
+    compositor.upload_surface("hud", hud_surface)
+    hud.mark_drawn()
+    return True
+
+
 def composite_frame(
     compositor: GLCompositor,
     world_surface: pygame.Surface,
@@ -1040,10 +1063,9 @@ async def run_viewer(args: argparse.Namespace) -> int:
             if background is None:
                 renderer.render(world_surface, scene)
             _m3 = _t()
-            hud_surface.fill((0, 0, 0, 0))
             hud.update(dt, scene, client.world_view())
             _m4 = _t()
-            hud.draw(hud_surface)
+            redraw_hud(compositor, hud_surface, hud)
             _m5 = _t()
 
             compositor.clear(background or (0.0, 0.0, 0.0, 1.0))
@@ -1053,7 +1075,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             aspect = screen_size[0] / max(1, screen_size[1])
             renderer.render_gl(scene, aspect=aspect)
             _m7 = _t()
-            composite_hud(compositor, hud_surface)
+            compositor.draw("hud", alpha=True)
             pygame.display.flip()
             _m8 = _t()
             if _PHASE_STATS is not None:
@@ -1062,10 +1084,11 @@ async def run_viewer(args: argparse.Namespace) -> int:
                     renderer_update=_m2 - _m1,
                     renderer_render_sw=_m3 - _m2,
                     hud_update=_m4 - _m3,
-                    hud_draw=_m5 - _m4,
+                    # clear + blits + upload, or nothing when unchanged
+                    hud_redraw=_m5 - _m4,
                     composite_world=_m6 - _m5,
                     render_gl=_m7 - _m6,
-                    composite_hud_flip=_m8 - _m7,
+                    hud_quad_flip=_m8 - _m7,
                 )
             await asyncio.sleep(0)
     finally:

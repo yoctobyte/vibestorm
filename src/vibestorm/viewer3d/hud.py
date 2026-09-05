@@ -49,6 +49,15 @@ DIAGNOSTICS_REFRESH_INTERVAL_S = 1.0
 # 30.7 ms frame, every frame, for text that changes when someone speaks.
 STATUS_REFRESH_INTERVAL_S = 0.25
 
+#: How long a drawn HUD frame may be reused before it is redrawn anyway.
+#:
+#: The redraw check below is deliberately conservative, but it reads
+#: pygame_gui's state rather than owning it, so a future element that mutates
+#: its surface *in place* would go unnoticed. This bounds that: the worst a
+#: missed change can do is be half a second late, instead of never arriving.
+#: A stale HUD is a worse bug than a slow one.
+FORCED_REDRAW_INTERVAL_S = 0.5
+
 RENDER_MODE_LABELS: dict[str, str] = {
     RENDER_MODE_2D: "2D Map",
     RENDER_MODE_3D: "3D",
@@ -185,6 +194,11 @@ class HUD:
         self._last_status_right: str | None = None
         self._status_accum_s: float = STATUS_REFRESH_INTERVAL_S
         self._diagnostics_accum_s: float = DIAGNOSTICS_REFRESH_INTERVAL_S
+        # Redraw bookkeeping. Starts forced so the very first frame produces a
+        # texture for the compositor to draw.
+        self._redraw_accum_s: float = 0.0
+        self._redraw_forced: bool = True
+        self._last_visual: tuple = ()
         self._render_setting_values: dict[str, object] = {
             "render_terrain": True,
             "render_terrain_lines": False,
@@ -853,6 +867,10 @@ class HUD:
         import pygame_gui
 
         self.manager.process_events(event)
+        # Any event that reaches the UI may change how it looks -- a press
+        # state, a focus ring, a scroll. Cheaper to redraw than to reason about
+        # which ones do.
+        self._redraw_forced = True
         if event.type == pygame_gui.UI_FILE_DIALOG_PATH_PICKED and event.ui_element is self._file_dialog:
             self._handle_file_dialog_path(Path(event.text))
             return True
@@ -1064,9 +1082,61 @@ class HUD:
             self._refresh_inspector(scene, world_view)
         self._layout_chat_window_if_needed()
         self.manager.update(time_delta_s)
+        self._redraw_accum_s += max(time_delta_s, 0.0)
 
     def draw(self, surface: pygame.Surface) -> None:
         self.manager.draw_ui(surface)
+
+    def _visual_signature(self) -> tuple:
+        """A cheap stand-in for "what the next draw would produce".
+
+        ``LayeredGUIGroup.draw`` is one call: ``surface.blits(self.visible)``,
+        where each entry is ``[image, rect, area, blendmode]``. So the identity
+        of those images, where they land and how they blend *is* the draw --
+        with one exception, an element that paints into its existing surface
+        rather than making a new one. The text cursor does exactly that, which
+        is why a focused text entry is treated as always dirty below, and why
+        :data:`FORCED_REDRAW_INTERVAL_S` exists for the cases nobody predicted.
+        """
+        group = self.manager.get_sprite_group()
+        return (
+            # The group refreshes ``visible`` lazily, on its next update. While
+            # that is pending the list -- and so the draw -- is a frame behind,
+            # and the signature would agree with it and skip the frame that
+            # fixes it.
+            group.should_update_visibility,
+            tuple(
+                (id(image), rect.x, rect.y, rect.w, rect.h, blend)
+                for image, rect, _area, blend in group.visible
+            ),
+        )
+
+    def needs_redraw(self) -> bool:
+        """Whether the HUD surface has to be repainted and re-uploaded.
+
+        Repainting costs a full-screen clear, a blit per element and a
+        full-screen texture upload -- 17 ms of a 1920x1080 frame on a GTX 1660
+        SUPER, against a HUD whose content changes a few times a second.
+        """
+        if self._redraw_forced:
+            return True
+        if self._redraw_accum_s >= FORCED_REDRAW_INTERVAL_S:
+            return True
+        # A blinking text cursor is painted into the entry's existing surface,
+        # so the signature cannot see it.
+        if self.is_text_entry_focused():
+            return True
+        # Hover highlights and tooltips are driven from update(), not from an
+        # event, so an idle mouse resting on a button still animates.
+        if self.manager.get_hovering_any_element():
+            return True
+        return self._visual_signature() != self._last_visual
+
+    def mark_drawn(self) -> None:
+        """Record that the current UI state has been painted and uploaded."""
+        self._redraw_forced = False
+        self._redraw_accum_s = 0.0
+        self._last_visual = self._visual_signature()
 
     def focus_chat(self) -> None:
         self.chat_window.show()
@@ -1080,6 +1150,9 @@ class HUD:
         # Tear down + rebuild on resize. pygame_gui's set_window_resolution exists
         # but element rects are absolute, so a rebuild is the safest way.
         self.screen_size = screen_size
+        # Every element is rebuilt below and the caller reallocates the HUD
+        # surface, so nothing about the previous frame still applies.
+        self._redraw_forced = True
         self.manager.set_window_resolution(screen_size)
         for element in (
             self.menu_bar,
