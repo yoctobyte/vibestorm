@@ -436,8 +436,15 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
 several `vibestorm-sync-*`, `e2e-sync-*` and `verify-note-*` items** left by
 probes, including a genuine name collision (`vibestorm-sync-88338` and
 `vibestorm-sync-88338.lsl`) that the verify tool reports as a conflict every
-run. Nothing removes them, because no delete path exists. Clear them from a
-viewer if they get in the way.
+run. `tools/clean_test_prim.py` removes them.
+
+**One stray prim is left in the test region**, `d20cbafb-d79e-4771-84cf-25f7090fe69b`
+at (130, 128, 27.1) -- the root of the linkset made to observe what frame a
+child's position is in. `tools/delete_prims.py` removed the other three from
+that experiment and this one is refused, silently, with or without a preceding
+`ObjectSelect`. What makes the simulator refuse is not understood; it is a
+0.5 m cube and it is left there rather than guessed at. That is also why
+`ObjectDelete` is `tested` in the ledger rather than `verified`.
 
 ## Environment Note (2026-09-02)
 

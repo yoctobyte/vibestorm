@@ -110,6 +110,9 @@ writes, so this table cannot fall behind the encoders again.
 | `TransferRequest` | ask for an asset | P3 | verified | source type 2 reliable; source type 3 inconsistent — see the asset-delivery table |
 | `ObjectAdd` | rez a prim | P4 | verified | rezzed two prims into local OpenSim on 2026-09-05, at the positions asked for, to make a linkset to observe; `build_object_add_packet` |
 | `ObjectLink` | join prims into a linkset | P4 | verified | sent to make a linkset that could be observed: the child's next update reported its offset from the root rather than a region position, which is what `viewer3d/linkset.py` exists to undo. `tools/verify_child_prim_frame.py` |
+| `ObjectDelete` | remove prims from a region | P4 | tested | `tools/delete_prims.py` removed three of four probe prims from local OpenSim on 2026-09-05. The fourth -- a linkset root whose child had just been deleted -- is refused silently, with or without a preceding `ObjectSelect`, so this is not `verified`: what makes the sim refuse is not understood |
+| `ObjectDelink` | break prims out of a linkset | P4 | handled | built and sent by `tools/delete_prims.py` before deleting a root, so a delete does not take children with it. No run has yet observed a delink on its own, separately from the delete that followed it |
+| `ObjectSelect` | tell the sim which prims are selected | P4 | handled | sent before a delete because that is what a viewer does. Nothing yet depends on it and nothing has confirmed the simulator acted on it |
 
 ## Teleport Messages
 

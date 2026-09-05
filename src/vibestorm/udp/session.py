@@ -96,7 +96,10 @@ from vibestorm.udp.messages import (
     encode_logout_request,
     encode_map_block_request,
     encode_object_add,
+    encode_object_delete,
+    encode_object_delink,
     encode_object_link,
+    encode_object_select,
     encode_object_extra_params,
     encode_packet_ack,
     encode_parcel_properties_request,
@@ -1575,6 +1578,87 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "object.add",
             f"position=({x:.2f},{y:.2f},{z:.2f})",
+        )
+        return packet
+
+    def build_object_select_packet(
+        self,
+        local_ids: Sequence[int],
+        *,
+        now: float | None = None,
+    ) -> bytes:
+        """Build ObjectSelect for the given prims."""
+        ids = tuple(int(local_id) for local_id in local_ids)
+        packet = self._build_outbound_packet(
+            encode_object_select(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                ids,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="ObjectSelect",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "object.select",
+            "local_ids=" + ",".join(str(local_id) for local_id in ids),
+        )
+        return packet
+
+    def build_object_delete_packet(
+        self,
+        local_ids: Sequence[int],
+        *,
+        now: float | None = None,
+    ) -> bytes:
+        """Build ObjectDelete for the given prims.
+
+        The message's ``Force`` flag is never set from here: it exists for god
+        accounts to override the permission check, and this client is not one.
+        """
+        ids = tuple(int(local_id) for local_id in local_ids)
+        packet = self._build_outbound_packet(
+            encode_object_delete(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                ids,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="ObjectDelete",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "object.delete",
+            "local_ids=" + ",".join(str(local_id) for local_id in ids),
+        )
+        return packet
+
+    def build_object_delink_packet(
+        self,
+        local_ids: Sequence[int],
+        *,
+        now: float | None = None,
+    ) -> bytes:
+        """Build ObjectDelink, breaking the given prims out of their linkset."""
+        ids = tuple(int(local_id) for local_id in local_ids)
+        packet = self._build_outbound_packet(
+            encode_object_delink(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                ids,
+            ),
+            reliable=True,
+            now=now,
+            label="ObjectDelink",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "object.delink",
+            "local_ids=" + ",".join(str(local_id) for local_id in ids),
         )
         return packet
 

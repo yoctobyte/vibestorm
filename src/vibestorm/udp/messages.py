@@ -3117,6 +3117,85 @@ def encode_agent_update(
     )
 
 
+def encode_object_select(agent_id: UUID, session_id: UUID, local_ids: Sequence[int]) -> bytes:
+    """``ObjectSelect`` -- tell the simulator these prims are selected.
+
+    Low 110, Zerocoded. A real viewer sends this before it acts on an object,
+    and the simulator tracks the selection: it is what makes an object report
+    its properties, and what a permission check has to hand.
+    """
+    if not local_ids:
+        raise ValueError("selecting needs at least one object")
+    if len(local_ids) > 0xFF:
+        raise ValueError("object count must fit in U8")
+    for local_id in local_ids:
+        if not 0 <= local_id <= 0xFFFFFFFF:
+            raise ValueError("local id must fit in U32")
+    return (
+        b"\xFF\xFF\x00\x6E"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([len(local_ids)])
+        + b"".join(pack("<I", local_id) for local_id in local_ids)
+    )
+
+
+def encode_object_delete(
+    agent_id: UUID,
+    session_id: UUID,
+    local_ids: Sequence[int],
+    *,
+    force: bool = False,
+) -> bytes:
+    """``ObjectDelete`` -- send the given prims to the trash.
+
+    Low 89, Zerocoded, per ``message_template.msg``: AgentData carries a
+    ``Force`` bool (the template's own comment calls it "god trying to force
+    delete") and then a variable-count ``ObjectData`` block of local ids.
+
+    ``force`` defaults to off. Nothing in this project is a god account, and a
+    flag that means "override the permission check" is not one to pass by
+    accident.
+    """
+    if not local_ids:
+        raise ValueError("deleting needs at least one object")
+    if len(local_ids) > 0xFF:
+        raise ValueError("object count must fit in U8")
+    for local_id in local_ids:
+        if not 0 <= local_id <= 0xFFFFFFFF:
+            raise ValueError("local id must fit in U32")
+    return (
+        b"\xFF\xFF\x00\x59"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([1 if force else 0])
+        + bytes([len(local_ids)])
+        + b"".join(pack("<I", local_id) for local_id in local_ids)
+    )
+
+
+def encode_object_delink(agent_id: UUID, session_id: UUID, local_ids: Sequence[int]) -> bytes:
+    """``ObjectDelink`` -- break the given prims out of their linkset.
+
+    Low 116, Unencoded. The same block layout as ``ObjectLink``, which it
+    undoes.
+    """
+    if not local_ids:
+        raise ValueError("delinking needs at least one object")
+    if len(local_ids) > 0xFF:
+        raise ValueError("object count must fit in U8")
+    for local_id in local_ids:
+        if not 0 <= local_id <= 0xFFFFFFFF:
+            raise ValueError("local id must fit in U32")
+    return (
+        b"\xFF\xFF\x00\x74"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([len(local_ids)])
+        + b"".join(pack("<I", local_id) for local_id in local_ids)
+    )
+
+
 def encode_object_link(agent_id: UUID, session_id: UUID, local_ids: Sequence[int]) -> bytes:
     """``ObjectLink`` -- join the given prims into one linkset.
 
