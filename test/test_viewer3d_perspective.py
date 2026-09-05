@@ -183,3 +183,41 @@ class Viewer3DParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VoidWaterTests(unittest.TestCase):
+    """Water past the region edge.
+
+    The water plane used to be exactly the region square, 0..256. From any
+    height that showed the sea ending in a hard straight line with sky beyond
+    it, which is the one thing a horizon must never do.
+    """
+
+    def test_water_extends_past_the_region_on_every_side(self) -> None:
+        from vibestorm.viewer3d.perspective import (
+            REGION_GROUND_SIZE_M,
+            VOID_WATER_EXTENT_M,
+            _water_vertices,
+        )
+
+        vertices = _water_vertices(20.0)
+        xs = vertices[0::3]
+        ys = vertices[1::3]
+
+        self.assertEqual(min(xs), -VOID_WATER_EXTENT_M)
+        self.assertEqual(min(ys), -VOID_WATER_EXTENT_M)
+        self.assertEqual(max(xs), REGION_GROUND_SIZE_M + VOID_WATER_EXTENT_M)
+        self.assertEqual(max(ys), REGION_GROUND_SIZE_M + VOID_WATER_EXTENT_M)
+
+    def test_it_reaches_at_least_as_far_as_the_camera_can_see(self) -> None:
+        # Anything short of the far plane puts the edge back on screen, just
+        # further away.
+        from vibestorm.viewer3d.camera import DEFAULT_FAR_PLANE_M
+        from vibestorm.viewer3d.perspective import VOID_WATER_EXTENT_M
+
+        self.assertGreaterEqual(VOID_WATER_EXTENT_M, DEFAULT_FAR_PLANE_M)
+
+    def test_every_corner_sits_at_the_water_height(self) -> None:
+        from vibestorm.viewer3d.perspective import _water_vertices
+
+        self.assertEqual(set(_water_vertices(20.0)[2::3]), {20.0})

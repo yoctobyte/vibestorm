@@ -561,12 +561,25 @@ _WATER_INDICES: tuple[int, ...] = (
 )
 
 
+#: How far water extends past the region edge, in metres.
+#:
+#: The water plane used to be exactly the region: 0..256. From any height that
+#: showed the sea ending in a hard straight line with sky beyond it, which is
+#: the one thing a horizon must never do. A neighbouring region's terrain draws
+#: over this anyway, so extending it costs nothing but two triangles.
+#:
+#: Tied to the camera's far plane, since nothing past that is drawn.
+VOID_WATER_EXTENT_M: float = 1024.0
+
+
 def _water_vertices(water_height: float) -> tuple[float, ...]:
+    low = -VOID_WATER_EXTENT_M
+    high = REGION_GROUND_SIZE_M + VOID_WATER_EXTENT_M
     return (
-        0.0,                   0.0,                  water_height,
-        REGION_GROUND_SIZE_M,  0.0,                  water_height,
-        REGION_GROUND_SIZE_M,  REGION_GROUND_SIZE_M, water_height,
-        0.0,                   REGION_GROUND_SIZE_M, water_height,
+        low,   low,   water_height,
+        high,  low,   water_height,
+        high,  high,  water_height,
+        low,   high,  water_height,
     )
 
 
