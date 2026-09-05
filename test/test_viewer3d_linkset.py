@@ -182,5 +182,95 @@ class ResolveTests(unittest.TestCase):
             self.assertEqual(world[local_id], (position, rotation))
 
 
+class IncrementalResolveTests(unittest.TestCase):
+    """Re-resolving a region that mostly did not move.
+
+    Composing every child of every linkset sixty times a second is most of a
+    frame in a region of any size, and almost all of it arrives back at the
+    answer from last frame. So a caller can say which objects are still the
+    objects they were and hand back what it got then.
+
+    The reuse has to be exact, not approximate: the caller recognises an
+    unchanged child by the transform tuple being *the same object*, so these
+    check identity, not equality. And the trap is the obvious one -- a child
+    that did not move is somewhere else entirely if its root did.
+    """
+
+    #: A root and its child, the shape observed live.
+    LINKSET = {
+        1: (0, (130.0, 128.0, 27.0), IDENTITY),
+        2: (1, (4.0, 0.0, 0.0), IDENTITY),
+    }
+
+    def test_an_untouched_child_keeps_the_transform_it_had(self) -> None:
+        first = resolve_world_transforms(self.LINKSET)
+
+        again = resolve_world_transforms(
+            self.LINKSET, unchanged={1, 2}, previous=first
+        )
+
+        self.assertIs(again[2], first[2])
+
+    def test_a_child_that_did_not_move_still_follows_its_root(self) -> None:
+        # The child is genuinely untouched -- same offset, same rotation --
+        # and belongs 70 m from where it was, because its root walked off.
+        first = resolve_world_transforms(self.LINKSET)
+        moved_root = {**self.LINKSET, 1: (0, (200.0, 128.0, 27.0), IDENTITY)}
+
+        again = resolve_world_transforms(moved_root, unchanged={2}, previous=first)
+
+        _almost(self, again[2][0], (204.0, 128.0, 27.0))
+
+    def test_a_moved_root_carries_a_whole_chain(self) -> None:
+        # Stopping at the first level leaves everything below an attachment
+        # behind: the middle link is unchanged, so a check that only looks at
+        # the immediate parent finds nothing to do.
+        chain = {
+            1: (0, (100.0, 100.0, 20.0), IDENTITY),
+            2: (1, (1.0, 0.0, 0.0), IDENTITY),
+            3: (2, (0.0, 2.0, 0.0), IDENTITY),
+        }
+        first = resolve_world_transforms(chain)
+        moved_root = {**chain, 1: (0, (150.0, 100.0, 20.0), IDENTITY)}
+
+        again = resolve_world_transforms(moved_root, unchanged={2, 3}, previous=first)
+
+        _almost(self, again[3][0], (151.0, 102.0, 20.0))
+
+    def test_a_rotating_root_swings_an_unchanged_child(self) -> None:
+        # Position is not the only thing a parent contributes. A root that only
+        # turned leaves its children's own transforms untouched.
+        upright = {1: (0, (0.0, 0.0, 0.0), IDENTITY), 2: (1, (4.0, 0.0, 0.0), IDENTITY)}
+        first = resolve_world_transforms(upright)
+        turned = {1: (0, (0.0, 0.0, 0.0), YAW_90), 2: (1, (4.0, 0.0, 0.0), IDENTITY)}
+
+        again = resolve_world_transforms(turned, unchanged={2}, previous=first)
+
+        _almost(self, again[2][0], (0.0, 4.0, 0.0))
+
+    def test_an_object_the_previous_answer_never_had_is_composed(self) -> None:
+        # A caller can name an id as unchanged that the previous answer does
+        # not have -- a child dropped last frame because its parent had not
+        # arrived, or one that has only just come into view. Its root here is
+        # genuinely still, so nothing else forces the composing: taking the
+        # caller's word over the missing answer is what would drop it, and it
+        # would stay dropped for as long as it sat still.
+        settled_root = resolve_world_transforms({1: self.LINKSET[1]})
+
+        world = resolve_world_transforms(
+            self.LINKSET, unchanged={1, 2}, previous=settled_root
+        )
+
+        _almost(self, world[2][0], (134.0, 128.0, 27.0))
+
+    def test_a_root_that_moved_is_reported_where_it_moved_to(self) -> None:
+        first = resolve_world_transforms(self.LINKSET)
+        moved_root = {**self.LINKSET, 1: (0, (200.0, 128.0, 27.0), IDENTITY)}
+
+        again = resolve_world_transforms(moved_root, unchanged={2}, previous=first)
+
+        _almost(self, again[1][0], (200.0, 128.0, 27.0))
+
+
 if __name__ == "__main__":
     unittest.main()

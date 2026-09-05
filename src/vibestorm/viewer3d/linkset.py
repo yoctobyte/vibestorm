@@ -32,7 +32,7 @@ Two cases that matter as much as the arithmetic:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 
 Vec3 = tuple[float, float, float]
 Quat = tuple[float, float, float, float]
@@ -91,6 +91,9 @@ def compose(parent: Transform, child: Transform) -> Transform:
 
 def resolve_world_transforms(
     local_transforms: Mapping[int, tuple[int, Vec3, Quat | None]],
+    *,
+    unchanged: Container[int] = (),
+    previous: Mapping[int, Transform] | None = None,
 ) -> dict[int, Transform]:
     """World transforms for everything whose parents are all present.
 
@@ -100,14 +103,37 @@ def resolve_world_transforms(
     in a parent cycle -- a simulator should never send one, but a viewer that
     loops forever on a malformed update is worse than one that leaves a prim
     out.
+
+    ``unchanged`` and ``previous`` make a re-resolve cost only what moved. A
+    caller that resolves the same region every frame passes the ids whose own
+    transform is exactly what it was last time, together with the answer it got
+    then; anything in both is carried straight across, **as the same tuple**,
+    unless something above it in its linkset moved. Composing a still region of
+    15,000 prims sixty times a second is otherwise most of a frame, spent
+    arriving back where it started.
+
+    Passing neither resolves everything from scratch, which is what the two are
+    defined against: ``unchanged`` empty means every object is treated as newly
+    arrived.
     """
+    known: Mapping[int, Transform] = previous if previous is not None else {}
     resolved: dict[int, Transform] = {}
     pending: dict[int, tuple[int, Vec3, Quat]] = {}
+    # Whose *world* transform is not what it was -- which is not the same as
+    # whose own transform changed: a child that did not move is somewhere else
+    # entirely if its root did. Seeded with the roots, then grown outward as
+    # the composing goes, so a moved root carries its whole linkset.
+    moved: set[int] = set()
 
     for local_id, (parent_id, position, rotation) in local_transforms.items():
         turn = rotation if rotation is not None else IDENTITY
         if not parent_id:
-            resolved[local_id] = (position, turn)
+            was = known.get(local_id) if local_id in unchanged else None
+            if was is None:
+                moved.add(local_id)
+                resolved[local_id] = (position, turn)
+            else:
+                resolved[local_id] = was
         else:
             pending[local_id] = (parent_id, position, turn)
 
@@ -124,7 +150,12 @@ def resolve_world_transforms(
             parent = resolved.get(parent_id)
             if parent is None:
                 continue
-            resolved[local_id] = compose(parent, (position, turn))
+            was = known.get(local_id) if local_id in unchanged else None
+            if was is None or parent_id in moved:
+                moved.add(local_id)
+                resolved[local_id] = compose(parent, (position, turn))
+            else:
+                resolved[local_id] = was
             del pending[local_id]
             progressed = True
         if not progressed:

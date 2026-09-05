@@ -420,6 +420,11 @@ class Scene:
     _entity_cache: dict[int, tuple[object, object, SceneEntity]] = field(
         default_factory=dict, repr=False
     )
+    # Last frame's region-frame transforms, so a linkset nothing touched is
+    # carried across rather than recomposed. See ``_region_frame_transforms``.
+    _placement: dict[int, tuple[tuple[float, float, float], tuple[float, float, float, float]]] = (
+        field(default_factory=dict, repr=False)
+    )
     sun_phase: float | None = None
     sun_direction: tuple[float, float, float] | None = None
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
@@ -804,7 +809,10 @@ class Scene:
         terse_objects = getattr(world_view, "terse_objects", {})
         # Empty unless something in view has a parent, so a region of
         # unlinked prims never pays for this.
-        placed = _region_frame_transforms(objects, terse_objects)
+        placed = _region_frame_transforms(
+            objects, terse_objects, cache=self._entity_cache, previous=self._placement
+        )
+        self._placement = placed
 
         # Full ObjectUpdate-derived objects (have rich data).
         #
@@ -960,7 +968,11 @@ def _as_vec3(value: object | None) -> tuple[float, float, float] | None:
 
 
 def _region_frame_transforms(
-    objects: dict, terse_objects: dict
+    objects: dict,
+    terse_objects: dict,
+    *,
+    cache: dict,
+    previous: dict,
 ) -> dict[int, tuple[tuple[float, float, float], tuple[float, float, float, float]]]:
     """Where everything parented actually is, in the region's frame.
 
@@ -977,16 +989,28 @@ def _region_frame_transforms(
     Terse-only objects are included as roots: ``ImprovedTerseObjectUpdate``
     carries no parent id, and a linkset root seen only tersely is still the
     frame its children hang off.
+
+    ``cache`` is the caller's entity cache from last frame and ``previous`` the
+    answer this gave then. Between them they say which prims are still the
+    objects they were, and composing is skipped for those -- a still linkset
+    keeps the exact transform tuples it had, which is what lets the caller
+    recognise its children as unchanged in turn.
     """
     transforms: dict[int, tuple[int, tuple[float, float, float], object]] = {}
+    unchanged: set[int] = set()
     parented = False
     for obj in objects.values():
         position = getattr(obj, "position", None)
         if position is None:
             continue
+        local_id = obj.local_id
         parent_id = int(getattr(obj, "parent_id", 0) or 0)
-        parented = parented or bool(parent_id)
-        transforms[obj.local_id] = (parent_id, position, getattr(obj, "rotation", None))
+        if parent_id:
+            parented = True
+        transforms[local_id] = (parent_id, position, getattr(obj, "rotation", None))
+        was = cache.get(local_id)
+        if was is not None and was[0] is obj:
+            unchanged.add(local_id)
     if not parented:
         # Nothing to compose, and the resolve would walk every prim in the
         # region to say so.
@@ -994,8 +1018,13 @@ def _region_frame_transforms(
     for terse in terse_objects.values():
         if terse.local_id in transforms:
             continue
+        # No entry in the entity cache to compare against, so a terse-only
+        # root always counts as moved. It is a prim whose full update has not
+        # arrived; there is rarely anything hanging off one.
         transforms[terse.local_id] = (0, terse.position, terse.rotation)
-    return resolve_world_transforms(transforms)  # type: ignore[arg-type]
+    return resolve_world_transforms(  # type: ignore[arg-type]
+        transforms, unchanged=unchanged, previous=previous
+    )
 
 
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:
