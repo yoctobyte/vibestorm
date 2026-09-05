@@ -131,7 +131,9 @@ from vibestorm.udp.messages import (
     parse_chat_from_simulator,
     parse_improved_instant_message,
     parse_improved_terse_object_update,
+    parse_kick_user,
     parse_kill_object,
+    parse_logout_reply,
     parse_layer_data,
     parse_map_block_reply,
     parse_object_animation,
@@ -346,6 +348,9 @@ class LiveCircuitSession:
     last_agent_update_at: float | None = None
     last_region_name: str | None = None
     close_reason: str | None = None
+    #: Set when the simulator answers a LogoutRequest, so the shutdown drain
+    #: can stop waiting instead of sitting out its timeout.
+    logout_acknowledged: bool = False
     camera_center: tuple[float, float, float] = (128.0, 128.0, 25.0)
     camera_at_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
     camera_left_axis: tuple[float, float, float] = (0.0, 1.0, 0.0)
@@ -573,6 +578,46 @@ class LiveCircuitSession:
             self.close_reason = "simulator closed circuit"
             self._record_event(now, "session.closed", self.close_reason)
             return []
+
+        if dispatched.summary.name == "DisableSimulator":
+            # No body at all -- the message *is* the instruction. Without it
+            # the client goes on sending AgentUpdates at a simulator that has
+            # dropped it, which looks from the outside like a hang rather than
+            # a disconnection.
+            self.close_reason = "simulator disabled the circuit"
+            self._record_event(now, "session.closed", self.close_reason)
+            return []
+
+        if dispatched.summary.name == "KickUser":
+            try:
+                kick = parse_kick_user(dispatched)
+            except MessageDecodeError as exc:
+                self.close_reason = "kicked by the simulator"
+                self._record_event(now, "session.kick.decode_error", str(exc))
+                return []
+            self.close_reason = f"kicked by the simulator: {kick.reason}" if kick.reason else (
+                "kicked by the simulator"
+            )
+            # As an alert as well as a close: being thrown off is something a
+            # person needs told, and the alert path is what reaches the HUD.
+            self._record_event(now, "chat.alert", f"message={self.close_reason!r}")
+            self._record_event(now, "session.closed", self.close_reason)
+            return []
+
+        if dispatched.summary.name == "LogoutReply":
+            # The simulator agreeing the viewer may quit. Recorded rather than
+            # acted on here: it arrives during the shutdown drain, which reads
+            # it to stop waiting out its timeout.
+            try:
+                reply = parse_logout_reply(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "session.logout_reply.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self.logout_acknowledged = True
+            self._record_event(
+                now, "session.logout_reply", f"items={len(reply.item_ids)}"
+            )
+            return self._flush_transport_packets(now)
 
         if dispatched.summary.name == "ImprovedInstantMessage":
             try:
@@ -3376,6 +3421,12 @@ async def run_live_session(
 
             for packet in session.handle_incoming(payload, loop.time()):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+
+            if session.logout_acknowledged:
+                # LogoutReply is the simulator saying it is done with us, so
+                # there is nothing left to drain. Waiting out the rest of the
+                # window is time spent listening to a circuit that has closed.
+                break
 
     if event_queue_task is not None:
         event_queue_task.cancel()

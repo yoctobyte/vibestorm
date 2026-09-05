@@ -309,6 +309,34 @@ class ObjectPropertiesMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class KickUserMessage:
+    """Being thrown off, and why.
+
+    ``Reason`` is the only part a person needs; the target address is the
+    simulator telling itself where to send it. The template's own comment says
+    what usually causes one: two people logging in with the same account.
+    """
+
+    agent_id: UUID
+    session_id: UUID
+    reason: str
+
+
+@dataclass(slots=True, frozen=True)
+class LogoutReplyMessage:
+    """The simulator agreeing that the viewer may quit.
+
+    The template calls the item list "inventory items to update with new asset
+    ids", and it always has at least one entry because the block cannot have
+    none -- a null UUID when the list is really empty.
+    """
+
+    agent_id: UUID
+    session_id: UUID
+    item_ids: tuple[UUID, ...]
+
+
+@dataclass(slots=True, frozen=True)
 class ReplyTaskInventoryMessage:
     task_id: UUID
     serial: int
@@ -1839,6 +1867,49 @@ def decode_compressed_object_data(
 #: cost, the sale type and price, three aggregate-permission bytes, the
 #: category, the inventory serial, and four more UUIDs.
 _OBJECT_PROPERTIES_FIXED_BYTES = 174
+
+
+def parse_kick_user(message: MessageDispatch) -> KickUserMessage:
+    """Decode ``KickUser`` -- Low 163, Unencoded.
+
+    ``TargetBlock`` is an address the simulator uses to route the message and
+    means nothing here, so it is skipped: four bytes of IP and two of port
+    before the agent, the session and the reason.
+    """
+    if message.summary.name != "KickUser":
+        raise MessageDecodeError(f"expected KickUser, got {message.summary.name}")
+    if len(message.body) < 40:
+        raise MessageDecodeError("KickUser body is too short")
+
+    offset = 6  # TargetIP, TargetPort
+    agent_id = UUID(bytes=message.body[offset : offset + 16])
+    session_id = UUID(bytes=message.body[offset + 16 : offset + 32])
+    offset += 32
+    payload, _ = _read_variable_field(message.body, offset, 2, "KickUser.Reason")
+    return KickUserMessage(
+        agent_id=agent_id,
+        session_id=session_id,
+        reason=payload.decode("utf-8", errors="replace").rstrip("\x00"),
+    )
+
+
+def parse_logout_reply(message: MessageDispatch) -> LogoutReplyMessage:
+    """Decode ``LogoutReply`` -- Low 253, Zerocoded."""
+    if message.summary.name != "LogoutReply":
+        raise MessageDecodeError(f"expected LogoutReply, got {message.summary.name}")
+    if len(message.body) < 33:
+        raise MessageDecodeError("LogoutReply body is too short")
+
+    agent_id = UUID(bytes=message.body[0:16])
+    session_id = UUID(bytes=message.body[16:32])
+    count = message.body[32]
+    offset = 33
+    if len(message.body) < offset + count * 16:
+        raise MessageDecodeError("LogoutReply item list is truncated")
+    item_ids = tuple(
+        UUID(bytes=message.body[offset + n * 16 : offset + n * 16 + 16]) for n in range(count)
+    )
+    return LogoutReplyMessage(agent_id=agent_id, session_id=session_id, item_ids=item_ids)
 
 
 def parse_object_properties(message: MessageDispatch) -> ObjectPropertiesMessage:

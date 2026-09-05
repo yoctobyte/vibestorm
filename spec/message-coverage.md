@@ -63,6 +63,9 @@ status reflects the **weakest** one and the note says which is which.
 | `SimulatorViewerTimeMessage` | region time/environment hints | P2 | verified | drives sun phase; observed every session |
 | `SimStats` | region health telemetry | P2 | verified | 41 stat ids decoded and named from OpenSim's `StatsID` — *not* the `StatsIndex` enum beside it, which numbers the internal array and diverges from id 4 on. Surfaced as `world[sim_health]`. Live-verified 2026-08-14: every id resolved, none unknown |
 | `AlertMessage` / `AgentAlertMessage` | user-visible server alerts | P1 | handled | parsed and published as `chat.alert`; needs a sim-side alert to observe |
+| `DisableSimulator` | the simulator dropping this circuit | P1 | handled | no body at all -- the message *is* the instruction. Ends the session the way `CloseCircuit` does. Ten arrived over the recorded sessions and were ignored, which meant going on sending `AgentUpdate` at a simulator that had dropped us: from the outside a hang rather than a disconnection |
+| `KickUser` | being thrown off, and why | P1 | handled | parsed for its reason string, which is published as an alert as well as ending the session -- being kicked is something a person needs told. The `TargetBlock` address is the simulator routing the message to itself and is skipped. Ten arrived over the recorded sessions; none has been read live |
+| `LogoutReply` | the simulator agreeing we may quit | P2 | verified | observed on local OpenSim 2026-09-06: `session.logout_reply: items=1`, which is the single null entry the template describes -- the block cannot have none, so an empty list is one null UUID. The shutdown drain used to sit out a fixed 0.75 s after `LogoutRequest`; it now stops as soon as this arrives |
 | `SoundTrigger` / `AttachedSound` / `AttachedSoundGainChange` / `PreloadSound` | in-world audio | P3 | handled | typed decode plus bus events; no sound emitters in the test region |
 
 ## Phase 4 Object/World Messages
