@@ -29,6 +29,12 @@ class _StubTexture:
         self.filter = None
         self.repeat_x = True
         self.repeat_y = True
+        self.mipmapped = False
+
+    def build_mipmaps(self) -> None:
+        # World textures get these so a distant prim minifies through them
+        # rather than point-sampling one texel per pixel.
+        self.mipmapped = True
 
     def release(self) -> None:
         self.released = True
@@ -38,6 +44,7 @@ class _StubContext:
     """Just enough moderngl surface for the rasteriser and uploader."""
 
     LINEAR = "linear"
+    LINEAR_MIPMAP_LINEAR = "linear_mipmap_linear"
 
     def __init__(self) -> None:
         self.textures: list[_StubTexture] = []

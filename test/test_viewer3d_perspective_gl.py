@@ -9,6 +9,7 @@ reading pixels back. Tests skip cleanly when no GL is available
 
 import math
 import os
+import statistics
 import tempfile
 import unittest
 from pathlib import Path
@@ -2940,4 +2941,133 @@ class UniformTexturePathGLTests(_GLTestBase):
         pixel = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
 
         self.assertGreater(pixel[1], max(pixel[0], pixel[2]), f"expected the tile, got {pixel}")
+
+
+class MipmapGLTests(_GLTestBase):
+    """Distant textures must not crawl.
+
+    Without mipmaps a texture is point-sampled however small it is on screen,
+    so a tiled wall down the street or a ground texture towards the horizon
+    picks a near-random texel per pixel and shimmers as the camera moves. The
+    terrain textures here were *built* with mipmaps and never sampled one:
+    ``filter`` is ``(minification, magnification)``, and the minification half
+    was ``LINEAR``, which does not consult a mipmap at all.
+
+    The check is comparative, so it says nothing about how any particular GPU
+    filters. It renders the same receding textured slab both ways and compares
+    how much neighbouring pixels disagree: far away that must drop, and close
+    up it must not, because blurring what is right in front of the camera
+    would be its own bug.
+    """
+
+    FBO_SIZE = (256, 192)
+    TILE = UUID("aaaaaaaa-0000-0000-0000-000000000009")
+
+    def _checkerboard(self, size: int = 64, cell: int = 4) -> Path:
+        import pygame
+
+        surface = pygame.Surface((size, size))
+        for y in range(size):
+            for x in range(size):
+                shade = 255 if ((x // cell + y // cell) % 2) else 0
+                surface.set_at((x, y), (shade, shade, shade))
+        path = Path(tempfile.mkdtemp()) / "checker.png"
+        pygame.image.save(surface, str(path))
+        return path
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.render_sky = False
+        scene.texture_paths[self.TILE] = self._checkerboard()
+        # A long slab running away from the camera, so one frame holds every
+        # distance from underfoot to the vanishing point.
+        scene.object_entities[1] = SceneEntity(
+            local_id=1, pcode=9, kind="prim",
+            position=(0.0, 200.0, 0.0), scale=(60.0, 400.0, 0.1),
+            rotation=(0.0, 0.0, 0.0, 1.0), rotation_z_radians=0.0,
+            shape="cube", default_texture_id=self.TILE,
+        )
+        return scene
+
+    def _frame(self, *, mipmaps: bool) -> bytes:
+        from vibestorm.viewer3d import perspective
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D(target=(0.0, 400.0, 0.4), eye_position=(0.0, 0.0, 1.2))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        original = perspective._minify_through_mipmaps
+        if not mipmaps:
+            # What was here before: mipmaps unused, however far away.
+            perspective._minify_through_mipmaps = lambda ctx, texture: setattr(
+                texture, "filter", (ctx.LINEAR, ctx.LINEAR)
+            )
+        renderer = perspective.PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(self._scene(), aspect=self.FBO_SIZE[0] / self.FBO_SIZE[1])
+            return self.fbo.read(components=4)
+        finally:
+            perspective._minify_through_mipmaps = original
+            renderer.clear_caches()
+
+    def _row_spread(self, data: bytes, rows: range) -> float:
+        """How much neighbouring pixels disagree, averaged over some rows."""
+        width, height = self.FBO_SIZE
+        spreads = []
+        for row in rows:
+            gl_y = (height - 1) - row
+            values = [data[(gl_y * width + x) * 4] for x in range(width)]
+            spreads.append(statistics.pstdev(values))
+        return statistics.mean(spreads)
+
+    #: Rows near the vanishing line, where one screen pixel covers many texels.
+    FAR = range(96, 104, 2)
+    #: Rows well below it, a few metres in front of the camera.
+    NEAR = range(112, 124, 2)
+
+    def test_the_far_end_stops_crawling(self) -> None:
+        without = self._row_spread(self._frame(mipmaps=False), self.FAR)
+        with_mipmaps = self._row_spread(self._frame(mipmaps=True), self.FAR)
+
+        self.assertLess(
+            with_mipmaps,
+            without * 0.85,
+            f"distant pixels should disagree less: {without:.1f} -> {with_mipmaps:.1f}",
+        )
+
+    def test_the_near_end_is_left_sharp(self) -> None:
+        # Mipmaps that blurred what is right in front of the camera would trade
+        # one artefact for a worse one.
+        without = self._row_spread(self._frame(mipmaps=False), self.NEAR)
+        with_mipmaps = self._row_spread(self._frame(mipmaps=True), self.NEAR)
+
+        self.assertGreater(
+            with_mipmaps,
+            without * 0.95,
+            f"close-up pixels should be as sharp: {without:.1f} -> {with_mipmaps:.1f}",
+        )
+
+    def test_an_object_texture_minifies_through_its_mipmaps(self) -> None:
+        # The specific bug: mipmaps built, and a minification filter that never
+        # looks at one.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        renderer = PerspectiveRenderer(Camera3D(), ctx=self.ctx)
+        try:
+            scene = self._scene()
+            texture = renderer._upload_object_texture(self.ctx, scene, self.TILE)
+
+            self.assertIsNotNone(texture)
+            minification, magnification = texture.filter
+            self.assertEqual(minification, self.ctx.LINEAR_MIPMAP_LINEAR)
+            self.assertEqual(magnification, self.ctx.LINEAR)
+        finally:
+            renderer.clear_caches()
 

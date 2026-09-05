@@ -143,6 +143,25 @@ def _sculpt_asset_shape_key(sculpt_id: UUID, sculpt_type: int | None) -> str:
     return f"sculpt:{sculpt_id}:{sculpt_type or 0}"
 
 
+def _minify_through_mipmaps(ctx: moderngl.Context, texture) -> None:
+    """Give a world texture mipmaps, and a filter that actually uses them.
+
+    Without them a texture is point-sampled however small it is on screen, so
+    anything at a distance -- a brick wall down the street, a tiled ground
+    texture towards the horizon -- samples a near-random texel per pixel and
+    crawls as the camera moves. It is the most visible artefact this renderer
+    had, and it gets worse the further you can see.
+
+    The filter is ``(minification, magnification)``. Setting the first to
+    ``LINEAR`` is what was here, and it is what makes mipmaps do nothing: the
+    terrain textures were already built with them and never sampled one.
+    Magnification stays ``LINEAR`` -- there is no smaller level to blend when a
+    texture is drawn larger than it is.
+    """
+    texture.build_mipmaps()
+    texture.filter = (ctx.LINEAR_MIPMAP_LINEAR, ctx.LINEAR)
+
+
 def _has_face_textures(entity: SceneEntity) -> bool:
     """Whether this prim's faces can differ from each other.
 
@@ -2146,9 +2165,9 @@ class PerspectiveRenderer:
             if existing is not None:
                 existing.release()
             tex = ctx.texture(size, components=4, data=pixels)
-            tex.filter = (ctx.LINEAR, ctx.LINEAR)
             tex.repeat_x = False
             tex.repeat_y = False
+            _minify_through_mipmaps(ctx, tex)
             self._ground_texture = tex
         self._ground_texture_path = path
 
@@ -2207,11 +2226,10 @@ class PerspectiveRenderer:
                 components=4,
                 data=pygame.image.tobytes(surface, "RGBA"),
             )
-            texture.filter = (ctx.LINEAR, ctx.LINEAR)
             # The textures tile across the region, so wrapping is the point.
             texture.repeat_x = True
             texture.repeat_y = True
-            texture.build_mipmaps()
+            _minify_through_mipmaps(ctx, texture)
             uploaded.append(texture)
 
         self._release_terrain_textures()
@@ -2265,9 +2283,9 @@ class PerspectiveRenderer:
         if texture is not None:
             texture.release()
         texture = ctx.texture(surface.get_size(), components=4, data=pixels)
-        texture.filter = (ctx.LINEAR, ctx.LINEAR)
         texture.repeat_x = True
         texture.repeat_y = True
+        _minify_through_mipmaps(ctx, texture)
         self._object_textures[texture_id] = texture
         self._object_texture_paths[texture_id] = path
         return texture

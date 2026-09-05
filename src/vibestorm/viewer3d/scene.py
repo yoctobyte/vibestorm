@@ -450,6 +450,13 @@ class Scene:
         self.parcel_borders = ()
         self.object_entities.clear()
         self.avatar_entities.clear()
+        # The per-frame reuse caches. Both are guarded by object identity, so
+        # a new region's objects could not be served an old region's entity
+        # even if these survived -- but they are keyed by local id, which the
+        # next region reassigns from scratch, and that is the shape of bug the
+        # rest of this method exists to avoid.
+        self._entity_cache.clear()
+        self._placement.clear()
         self.texture_paths.clear()
         self.mesh_paths.clear()
         self.object_inventory_snapshots.clear()

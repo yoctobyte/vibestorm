@@ -1400,6 +1400,26 @@ class UnchangedObjectReuseTests(unittest.TestCase):
 
         self.assertIs(scene.object_entities[11], first)
 
+    def test_changing_region_empties_the_caches(self) -> None:
+        # Local ids are reassigned per region, and every other per-object
+        # table here is cleared for that reason. These are guarded by object
+        # identity as well, but leaving a region's worth of entries behind on
+        # the way out is not something to rely on being harmless.
+        from vibestorm.bus.events import RegionChanged
+
+        view, _prim = self._view_with_linkset()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        self.assertTrue(scene._entity_cache)
+        self.assertTrue(scene._placement)
+
+        scene.apply_region_changed(
+            RegionChanged(region_handle=99, region_name="Somewhere Else")
+        )
+
+        self.assertEqual(scene._entity_cache, {})
+        self.assertEqual(scene._placement, {})
+
     def test_an_object_that_leaves_the_region_leaves_the_cache(self) -> None:
         # Otherwise a session that walks across a busy grid accumulates an
         # entity for every prim it has ever seen.
