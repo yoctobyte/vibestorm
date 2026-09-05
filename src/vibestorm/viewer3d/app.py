@@ -238,6 +238,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-update-interval", type=float, default=0.1)
     parser.add_argument("--camera-sweep", action="store_true")
     parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help=(
+            "Open the diagnostics panel at startup. It rebuilds a pygame_gui "
+            "text box every second, which costs about 49 ms and drops three "
+            "frames; the framerate it reports is in the status bar either way."
+        ),
+    )
+    parser.add_argument(
         "--camera",
         choices=("avatar_behind", "avatar_eye", "sim"),
         default="avatar_behind",
@@ -895,6 +904,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         on_render_mode_change=on_render_mode_change,
         on_render_setting_change=on_render_setting_change,
         initial_render_mode=initial_mode,
+        show_diagnostics=bool(getattr(args, "diagnostics", False)),
         help_text=_load_viewer_help(),
         theme_path=Path(__file__).parent / "theme.json",
         ui_scale=ui_scale,

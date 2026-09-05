@@ -141,6 +141,7 @@ class HUD:
         on_render_mode_change: Callable[[str], None] | None = None,
         on_render_setting_change: Callable[[str, object], None] | None = None,
         initial_render_mode: str = RENDER_MODE_2D,
+        show_diagnostics: bool = False,
         help_text: str = DEFAULT_HELP_TEXT,
         theme_path: str | None = None,
         ui_scale: float = 1.0,
@@ -169,6 +170,7 @@ class HUD:
         self.render_mode: str = (
             initial_render_mode if initial_render_mode in RENDER_MODE_LABELS else RENDER_MODE_2D
         )
+        self.show_diagnostics = bool(show_diagnostics)
         self.help_text = help_text
         self._last_fps = 0.0
         self._last_diagnostics_html: str | None = None
@@ -832,7 +834,13 @@ class HUD:
             manager=self.manager,
             container=self.diagnostics_window.get_container(),
         )
-        if self.render_mode != RENDER_MODE_3D:
+        # Closed unless asked for. `UITextBox.set_text` costs 49 ms for this
+        # panel's eighteen lines -- pygame_gui's layout is roughly quadratic in
+        # line count -- and the panel's first line is the framerate, so it
+        # rebuilt every second and dropped three frames doing it. The number it
+        # existed to show is in the status bar now; `--diagnostics`, or Debug ->
+        # Diagnostics, brings the panel back.
+        if not self.show_diagnostics:
             self.diagnostics_window.hide()
 
         self.heightmap_window = UIWindow(
@@ -1424,7 +1432,13 @@ class HUD:
         if left != self._last_status_left:
             self._last_status_left = left
             self.status_left.set_text(left)
-        right = f"mode={mode_label} {tile} objects={objects} avatars={avatars} chat={chat}"
+        # fps lives here rather than only in the diagnostics panel. A UILabel
+        # rewrite is 0.74 ms; the panel's UITextBox is 49 ms, and it was open by
+        # default purely because it was the only place the number appeared.
+        right = (
+            f"fps={self._last_fps:.0f} mode={mode_label} {tile} "
+            f"objects={objects} avatars={avatars} chat={chat}"
+        )
         if right != self._last_status_right:
             self._last_status_right = right
             self.status_right.set_text(right)

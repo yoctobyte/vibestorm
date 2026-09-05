@@ -44,7 +44,41 @@ class RenderModeMenuTests(unittest.TestCase):
         )
 
         self.assertEqual(hud.render_mode, RENDER_MODE_3D)
+        # The diagnostics panel used to open with 3D mode. It costs 49 ms per
+        # rebuild and rebuilt every second because its first line is the
+        # framerate, so it was the most expensive thing in the viewer and it was
+        # on by default. The number it existed to show is in the status bar now.
+        self.assertFalse(hud.diagnostics_window.visible)
+
+    def test_diagnostics_panel_opens_when_asked_for(self) -> None:
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+            show_diagnostics=True,
+        )
+
         self.assertTrue(hud.diagnostics_window.visible)
+
+    def test_the_status_bar_carries_the_framerate(self) -> None:
+        # Closing the panel by default is only acceptable because the number
+        # moved somewhere cheap. A UILabel rewrite is 0.74 ms.
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+        )
+        scene = Scene()
+        scene.region_name = "Vibestorm Test"
+        for _ in range(4):
+            hud.update(1 / 30.0, scene)
+
+        self.assertIn("fps=", hud.status_right.text)
 
     def test_clicking_3d_button_changes_mode_and_fires_callback(self) -> None:
         from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
@@ -131,6 +165,7 @@ class RenderModeMenuTests(unittest.TestCase):
             (640, 480),
             on_chat_submit=lambda text: None,
             initial_render_mode=RENDER_MODE_3D,
+            show_diagnostics=True,
         )
         scene = Scene(region_name="TestSim", avatar_position=(1.0, 2.0, 19.0))
         scene.water_height = 6.5
@@ -174,6 +209,7 @@ class RenderModeMenuTests(unittest.TestCase):
             (640, 480),
             on_chat_submit=lambda text: None,
             initial_render_mode=RENDER_MODE_3D,
+            show_diagnostics=True,
         )
         scene = Scene(region_name="TestSim", sim_health="sim fps=12.50 agents=1")
 
