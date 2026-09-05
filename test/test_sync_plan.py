@@ -182,11 +182,22 @@ class PlanPushTests(_FolderCase):
         self.assertTrue(entry.create)
         self.assertEqual(entry.item_name, "Brand New")
 
-    def test_a_notecard_with_no_row_is_skipped_because_it_cannot_be_created(self) -> None:
+    def test_a_notecard_with_no_row_needs_the_create_capability(self) -> None:
+        # A notecard has no create-from-nothing message: it is built in agent
+        # inventory and copied in, so without that capability there is nothing
+        # the sync can do but say so.
         path = self.write("Readme.txt", "content")
         [entry] = plan_push([path], {}, state=self.state)
         self.assertEqual(entry.action, SKIP)
-        self.assertIn("only .lsl", entry.reason)
+        self.assertIn("capability", entry.reason)
+
+    def test_a_notecard_with_no_row_is_created_when_it_can_be(self) -> None:
+        path = self.write("Readme.txt", "content")
+        [entry] = plan_push([path], {}, state=self.state, can_create_notecards=True)
+        self.assertEqual(entry.action, TRANSFER)
+        self.assertTrue(entry.create)
+        self.assertEqual(entry.asset_type, 7)
+        self.assertEqual(entry.item_name, "Readme")
 
     def test_creation_can_be_disabled(self) -> None:
         path = self.write("Brand New.lsl", "content")
@@ -289,3 +300,56 @@ class SuffixInItemNameTests(_FolderCase):
             state=self.state,
         )
         self.assertEqual([entry.action for entry in entries], [CONFLICT, CONFLICT])
+
+
+class RenamedItemTests(_FolderCase):
+    """A bound file follows its row through a rename.
+
+    Found live: copying a notecard into an object that already held an item of
+    that name produced ``sync-made-1788630937 1``. Matching on the name then
+    missed the row entirely -- the sync reported a failure for a copy that had
+    succeeded, and a later push would have created a third copy.
+    """
+
+    def test_push_follows_a_renamed_row_by_its_recorded_id(self) -> None:
+        row = _row(name="Greeter")
+        self.track("Greeter.lsl", "original", row)
+        path = self.write("Greeter.lsl", "edited")
+
+        renamed = Row(
+            name="Greeter 1",
+            asset_type=row.asset_type,
+            item_id=row.item_id,
+            asset_id=row.asset_id,
+        )
+        [entry] = plan_push([path], {renamed.name: renamed}, state=self.state)
+
+        self.assertEqual(entry.action, TRANSFER)
+        self.assertFalse(entry.create, "a rename must not spawn a second row")
+        self.assertEqual(entry.item_id, str(row.item_id))
+
+    def test_pull_writes_a_renamed_row_back_to_its_own_file(self) -> None:
+        row = _row(name="Greeter")
+        self.write("Greeter.lsl", "same")
+        self.track("Greeter.lsl", "same", row)
+
+        renamed = Row(
+            name="Greeter 1", asset_type=row.asset_type, item_id=row.item_id, asset_id=uuid4()
+        )
+        [entry] = plan_pull([renamed], folder=self.folder, state=self.state)
+
+        self.assertEqual(entry.action, TRANSFER)
+        self.assertEqual(
+            entry.file_name, "Greeter.lsl", "it must update the file it came from"
+        )
+
+    def test_a_bound_file_is_not_accused_of_colliding_with_itself(self) -> None:
+        # "Greeter" is bound to Greeter.lsl. A second item genuinely called
+        # "Greeter.lsl" would otherwise be read as a collision for both.
+        bound = _row(name="Greeter")
+        self.write("Greeter.lsl", "same")
+        self.track("Greeter.lsl", "same", bound)
+        path = self.folder / "Greeter.lsl"
+
+        [entry] = plan_push([path], {bound.name: bound}, state=self.state)
+        self.assertNotEqual(entry.action, CONFLICT)

@@ -85,11 +85,12 @@ def plan_pull(
     ``asset_id`` and a numeric ``asset_type``.
     """
     items = list(items)
-    collisions = colliding_file_names(
-        [item for item in items if item.asset_type in TEXT_ASSET_TYPES],
-        name_of=lambda row: row.name or "",
-        asset_type_of=lambda row: row.asset_type,
-    )
+    collisions = _colliding_pull_names(items, state)
+    tracked_names = {
+        record.item_id: record.file_name
+        for record in state.items.values()
+        if record.item_id
+    }
     entries: list[PullEntry] = []
     for item in items:
         asset_type = item.asset_type
@@ -108,7 +109,13 @@ def plan_pull(
             )
             continue
 
-        file_name = file_name_for_item(name, asset_type)
+        # Once a file and a row are bound, the binding outranks the name. An
+        # item renamed in world -- which the simulator does on its own when a
+        # copied name collides, turning "foo" into "foo 1" -- must keep
+        # updating the file it came from rather than start a second one.
+        file_name = tracked_names.get(_str_or_none(item.item_id) or "") or file_name_for_item(
+            name, asset_type
+        )
         path = folder / file_name
 
         if file_name.lower() in collisions:
@@ -174,6 +181,7 @@ def plan_push(
     *,
     state: SyncState,
     can_create: bool = True,
+    can_create_notecards: bool = False,
 ) -> list[PushEntry]:
     """What to send from the folder into the object.
 
@@ -184,12 +192,34 @@ def plan_push(
 
     uploadable = [path for path in files if upload_kind_for_path(path) is not None]
     ignored = [path for path in files if upload_kind_for_path(path) is None]
-    matched, unmatched = match_files_to_rows(
-        uploadable,
-        rows_by_name.values(),
+    rows = list(rows_by_name.values())
+    rows_by_item_id = {
+        str(getattr(row, "item_id", None)): row
+        for row in rows
+        if getattr(row, "item_id", None) is not None
+    }
+
+    # A file already bound to a row goes to that row, whatever either is
+    # called now. Name matching only ever needs to *establish* a binding.
+    matched: list[tuple[Path, object]] = []
+    unbound: list[Path] = []
+    bound_rows: set[int] = set()
+    for path in sorted(uploadable):
+        record = state.by_file_name(path.name)
+        row = rows_by_item_id.get(record.item_id) if record and record.item_id else None
+        if row is None:
+            unbound.append(path)
+            continue
+        matched.append((path, row))
+        bound_rows.add(id(row))
+
+    by_name_matched, unmatched = match_files_to_rows(
+        unbound,
+        [row for row in rows if id(row) not in bound_rows],
         name_of=lambda row: getattr(row, "name", "") or "",
         asset_type_of=lambda row: getattr(row, "asset_type", 0) or 0,
     )
+    matched.extend(by_name_matched)
 
     entries: list[PushEntry] = []
     for path in sorted(ignored):
@@ -210,7 +240,13 @@ def plan_push(
     )
     for path, row in matched:
         file_name = path.name
-        if file_name.lower() in collisions:
+        record_for_path = state.by_file_name(file_name)
+        already_bound = bool(
+            record_for_path
+            and record_for_path.item_id
+            and record_for_path.item_id == _str_or_none(getattr(row, "item_id", None))
+        )
+        if not already_bound and file_name.lower() in collisions:
             entries.append(
                 PushEntry(
                     path=path,
@@ -264,7 +300,14 @@ def plan_push(
 
     for path in sorted(unmatched):
         kind = upload_kind_for_path(path)
-        if kind is not None and kind[0] == "lsltext" and can_create:
+        asset_kind = kind[0] if kind is not None else None
+        # A script row is made with RezScript; a notecard has no
+        # create-from-nothing message and has to be built in agent inventory
+        # and copied in, which needs a capability the caller may not have.
+        allowed = (asset_kind == "lsltext" and can_create) or (
+            asset_kind == "notecard" and can_create_notecards
+        )
+        if allowed:
             entries.append(
                 PushEntry(
                     path=path,
@@ -273,24 +316,45 @@ def plan_push(
                     action=TRANSFER,
                     reason="no row yet; creating one",
                     create=True,
-                    asset_type=10,
+                    asset_type=10 if asset_kind == "lsltext" else 7,
                 )
             )
+            continue
+        if asset_kind == "lsltext":
+            reason = "no matching inventory item and creating script rows is disabled"
+        elif asset_kind == "notecard":
+            reason = "no matching inventory item and no capability to create a notecard"
         else:
-            entries.append(
-                PushEntry(
-                    path=path,
-                    file_name=path.name,
-                    item_name=safe_filename(path.stem),
-                    action=SKIP,
-                    reason=(
-                        "no matching inventory item, and only .lsl rows can be created"
-                        if kind is None or kind[0] != "lsltext"
-                        else "no matching inventory item and creating rows is disabled"
-                    ),
-                )
+            reason = "no matching inventory item, and this type cannot be created"
+        entries.append(
+            PushEntry(
+                path=path,
+                file_name=path.name,
+                item_name=safe_filename(path.stem),
+                action=SKIP,
+                reason=reason,
             )
+        )
     return entries
+
+
+def _colliding_pull_names(items, state: SyncState) -> set[str]:
+    """File names more than one row would write, honouring existing bindings.
+
+    Computed from the names pull will *actually* use, so a row already bound to
+    a file is not accused of colliding with the name it would otherwise have
+    been given.
+    """
+    tracked = {record.item_id: record.file_name for record in state.items.values() if record.item_id}
+    seen: dict[str, int] = {}
+    for item in items:
+        if item.asset_type not in TEXT_ASSET_TYPES:
+            continue
+        item_id = _str_or_none(item.item_id) or ""
+        name = tracked.get(item_id) or file_name_for_item(item.name or "", item.asset_type)
+        key = name.lower()
+        seen[key] = seen.get(key, 0) + 1
+    return {name for name, count in seen.items() if count > 1}
 
 
 def _str_or_none(value) -> str | None:

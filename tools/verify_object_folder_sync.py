@@ -14,7 +14,10 @@ The properties it checks, in order:
 3. **An edit reaches the object.** Push it, then pull into a *fresh* folder and
    compare -- reading back through the sim rather than trusting the upload's
    own report.
-4. **Pushing twice uploads once.** A push that fails to record the asset id the
+4. **A notecard can be created from nothing.** Two hops -- agent inventory, then
+   a copy into the object -- and the copy may come back under a different name
+   if it collides, which must not read as a failure or produce a second row.
+5. **Pushing twice uploads once.** A push that fails to record the asset id the
    sim assigned looks exactly like an in-world edit on the next run.
 """
 
@@ -86,8 +89,12 @@ async def main() -> int:
             return 1
         print(f"object in view local_id={local_id}")
 
-        script_cap, notecard_cap = await resolve_sync_caps(client.current)
-        print(f"caps script={bool(script_cap)} notecard={bool(notecard_cap)}")
+        caps = await resolve_sync_caps(client.current)
+        script_cap, notecard_cap = caps.script, caps.notecard
+        print(
+            f"caps script={bool(script_cap)} notecard={bool(notecard_cap)} "
+            f"notecard-create={caps.can_create_notecards}"
+        )
         if not script_cap:
             print("FAIL: no script task capability")
             return 1
@@ -160,7 +167,48 @@ async def main() -> int:
             else:
                 print(f"    the sim served the edited script back, marker {marker} present")
 
-            print("--- 4. push again ---")
+            print("--- 4. create a notecard from a file with no row ---")
+            if not caps.can_create_notecards:
+                print("    skipped: no UpdateNotecardAgentInventory capability")
+            else:
+                note_name = f"verify-note-{os.getpid()}"
+                note_text = f"written by verify_object_folder_sync, pid {os.getpid()}"
+                (folder / f"{note_name}.txt").write_text(note_text)
+                made = await push_folder_to_object(
+                    client,
+                    client.current,
+                    handle=client.current_handle or 0,
+                    task_id=TASK_ID,
+                    local_id=local_id,
+                    folder=folder,
+                    script_cap=script_cap,
+                    notecard_cap=notecard_cap,
+                    notecard_agent_cap=caps.notecard_agent,
+                    agent_folder_id=bootstrap.inventory_root_folder_id,
+                )
+                print(f"    {made.summary()}")
+                for name, reason in made.failed:
+                    print(f"    failed: {name}: {reason}")
+                if f"{note_name}.txt" not in made.created:
+                    failures.append("the notecard row was not created")
+                else:
+                    repeat = await push_folder_to_object(
+                        client,
+                        client.current,
+                        handle=client.current_handle or 0,
+                        task_id=TASK_ID,
+                        local_id=local_id,
+                        folder=folder,
+                        script_cap=script_cap,
+                        notecard_cap=notecard_cap,
+                        notecard_agent_cap=caps.notecard_agent,
+                        agent_folder_id=bootstrap.inventory_root_folder_id,
+                    )
+                    print(f"    repeat push: {repeat.summary()}")
+                    if repeat.created:
+                        failures.append("pushing again created a second notecard")
+
+            print("--- 5. push again ---")
             again = await push_folder_to_object(
                 client,
                 client.current,

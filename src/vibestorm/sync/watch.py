@@ -65,6 +65,8 @@ async def watch_folder(
     folder: Path,
     script_cap: str | None,
     notecard_cap: str | None = None,
+    notecard_agent_cap: str | None = None,
+    agent_folder_id: UUID | None = None,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     stop_event: asyncio.Event | None = None,
     on_progress: Progress | None = None,
@@ -95,6 +97,8 @@ async def watch_folder(
                 folder=folder,
                 script_cap=script_cap,
                 notecard_cap=notecard_cap,
+                notecard_agent_cap=notecard_agent_cap,
+                agent_folder_id=agent_folder_id,
                 on_progress=on_progress,
             )
             if on_outcome is not None:

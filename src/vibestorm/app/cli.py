@@ -1564,12 +1564,13 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                 if outcome.failed:
                     status = 1
 
-            script_cap = notecard_cap = None
+            caps = None
             if do_push:
-                script_cap, notecard_cap = await resolve_sync_caps(client.current)
+                caps = await resolve_sync_caps(client.current)
                 print(
-                    f"caps script={'yes' if script_cap else 'no'} "
-                    f"notecard={'yes' if notecard_cap else 'no'}",
+                    f"caps script={'yes' if caps.script else 'no'} "
+                    f"notecard={'yes' if caps.notecard else 'no'} "
+                    f"notecard-create={'yes' if caps.can_create_notecards else 'no'}",
                     flush=True,
                 )
 
@@ -1581,8 +1582,10 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                     task_id=task_id,
                     local_id=local_id,
                     folder=folder,
-                    script_cap=script_cap,
-                    notecard_cap=notecard_cap,
+                    script_cap=caps.script,
+                    notecard_cap=caps.notecard,
+                    notecard_agent_cap=caps.notecard_agent,
+                    agent_folder_id=bootstrap.inventory_root_folder_id,
                     on_progress=progress,
                 )
                 _print_sync_outcome("push", outcome)
@@ -1602,8 +1605,10 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                     task_id=task_id,
                     local_id=local_id,
                     folder=folder,
-                    script_cap=script_cap,
-                    notecard_cap=notecard_cap,
+                    script_cap=caps.script,
+                    notecard_cap=caps.notecard,
+                    notecard_agent_cap=caps.notecard_agent,
+                    agent_folder_id=bootstrap.inventory_root_folder_id,
                     poll_seconds=args.poll_seconds,
                     stop_event=stop_event,
                     on_progress=progress,

@@ -22,6 +22,7 @@ from vibestorm.caps.task_inventory_upload_client import (
     TaskInventoryUploadError,
 )
 from vibestorm.sync.naming import TEXT_ASSET_TYPES
+from vibestorm.sync.notecards import NotecardCreateError, create_task_notecard
 from vibestorm.sync.plan import CONFLICT, SKIP, TRANSFER, plan_pull, plan_push
 from vibestorm.sync.state import SyncState, SyncedItem, content_digest
 from vibestorm.sync.task_inventory import (
@@ -37,9 +38,25 @@ from vibestorm.world.object_inventory import ObjectInventorySnapshot
 #: Capability names for filling in a task inventory row, current first.
 SCRIPT_TASK_CAP_NAMES = ["UpdateScriptTask", "UpdateScriptTaskInventory"]
 NOTECARD_TASK_CAP_NAME = "UpdateNotecardTaskInventory"
+#: Filling in a notecard that lives in *agent* inventory. Needed to create one
+#: inside an object, because that route goes through agent inventory first.
+NOTECARD_AGENT_CAP_NAME = "UpdateNotecardAgentInventory"
 
 NOTECARD_ASSET_TYPE = 7
 SCRIPT_ASSET_TYPE = 10
+
+
+@dataclass(slots=True, frozen=True)
+class SyncCaps:
+    """The capabilities a push needs, and what each one unlocks."""
+
+    script: str | None = None
+    notecard: str | None = None
+    notecard_agent: str | None = None
+
+    @property
+    def can_create_notecards(self) -> bool:
+        return bool(self.notecard_agent)
 
 
 @dataclass(slots=True, frozen=True)
@@ -134,20 +151,19 @@ def _encode_for_upload(data: bytes, asset_type: int) -> bytes:
     return data
 
 
-async def resolve_sync_caps(
-    session: object,
-    *,
-    timeout: float = 10.0,
-) -> tuple[str | None, str | None]:
-    """``(script cap, notecard cap)`` for filling in task inventory rows."""
+async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCaps:
+    """The capabilities a sync can use against this session."""
     caps = await CapabilityClient(timeout_seconds=timeout).resolve_seed_caps(
         session.bootstrap.seed_capability,  # type: ignore[attr-defined]
-        [*SCRIPT_TASK_CAP_NAMES, NOTECARD_TASK_CAP_NAME],
+        [*SCRIPT_TASK_CAP_NAMES, NOTECARD_TASK_CAP_NAME, NOTECARD_AGENT_CAP_NAME],
         udp_listen_port=session.caps_udp_listen_port,  # type: ignore[attr-defined]
         user_agent="Vibestorm",
     )
-    script_cap = next((caps[name] for name in SCRIPT_TASK_CAP_NAMES if caps.get(name)), None)
-    return script_cap, caps.get(NOTECARD_TASK_CAP_NAME) or None
+    return SyncCaps(
+        script=next((caps[name] for name in SCRIPT_TASK_CAP_NAMES if caps.get(name)), None),
+        notecard=caps.get(NOTECARD_TASK_CAP_NAME) or None,
+        notecard_agent=caps.get(NOTECARD_AGENT_CAP_NAME) or None,
+    )
 
 
 # ------------------------------------------------------------------- pull
@@ -246,10 +262,17 @@ async def push_folder_to_object(
     folder: Path,
     script_cap: str | None,
     notecard_cap: str | None = None,
+    notecard_agent_cap: str | None = None,
+    agent_folder_id: UUID | None = None,
     can_create: bool = True,
     on_progress: Progress | None = None,
 ) -> SyncOutcome:
-    """Send the folder's changed files onto the object's rows."""
+    """Send the folder's changed files onto the object's rows.
+
+    ``notecard_agent_cap`` and ``agent_folder_id`` together enable *creating* a
+    notecard row: the only route in is to build one in agent inventory and copy
+    it across, so without them an unmatched notecard can only be reported.
+    """
     outcome = SyncOutcome()
     if not folder.is_dir():
         outcome.failed.append((str(folder), "folder not found"))
@@ -263,30 +286,78 @@ async def push_folder_to_object(
     rows = [row for row in rows_from_snapshot(snapshot) if row.asset_type in TEXT_ASSET_TYPES]
 
     files = [path for path in sorted(folder.iterdir()) if path.is_file() and path.name[0] != "."]
+    can_create_notecards = bool(notecard_agent_cap and agent_folder_id)
     entries = plan_push(
-        files, {row.name: row for row in rows}, state=state, can_create=can_create and bool(script_cap)
+        files,
+        {row.name: row for row in rows},
+        state=state,
+        can_create=can_create and bool(script_cap),
+        can_create_notecards=can_create and can_create_notecards,
     )
 
     to_create = [entry for entry in entries if entry.action == TRANSFER and entry.create]
     created_by_name: dict[str, object] = {}
-    if to_create:
+    touched_notecards: list[tuple[str, str, int]] = []
+    scripts_to_create = [e for e in to_create if e.asset_type == SCRIPT_ASSET_TYPE]
+    notecards_to_create = [e for e in to_create if e.asset_type == NOTECARD_ASSET_TYPE]
+
+    if scripts_to_create:
         created, create_skipped = await create_task_script_rows(
             client,
             session,
             handle=handle,
             task_id=task_id,
             local_id=local_id,
-            names=[entry.item_name for entry in to_create],
+            names=[entry.item_name for entry in scripts_to_create],
             on_progress=on_progress,
         )
         created_by_name = {row.name: row for row in created}
         for name, reason in create_skipped:
             outcome.skipped.append((name, reason))
 
+    # Notecards are made one at a time: each is a create in agent inventory,
+    # an upload against it, and a copy into the object, and the copy is what
+    # gives the row its content -- so unlike a script there is nothing left to
+    # upload afterwards.
+    notecards_done: set[str] = set()
+    for entry in notecards_to_create:
+        try:
+            made = await create_task_notecard(
+                client,
+                session,
+                handle=handle,
+                local_id=local_id,
+                folder_id=agent_folder_id,
+                name=entry.item_name,
+                text=entry.path.read_text(encoding="utf-8", errors="replace"),
+                update_url=notecard_agent_cap,
+                on_progress=on_progress,
+            )
+        except (NotecardCreateError, OSError) as exc:
+            outcome.failed.append((entry.file_name, str(exc)))
+            notecards_done.add(entry.file_name)
+            continue
+        if made is None:
+            outcome.failed.append(
+                (entry.file_name, "the notecard did not appear in the object")
+            )
+        else:
+            _item_id, assigned_name = made
+            # Record the name the object actually used, not the one asked for:
+            # a copy whose name collides comes back as "foo 1", and the state
+            # is what keeps the file bound to that row afterwards.
+            outcome.created.append(entry.file_name)
+            touched_notecards.append(
+                (entry.file_name, assigned_name, NOTECARD_ASSET_TYPE)
+            )
+        notecards_done.add(entry.file_name)
+
     uploader = TaskInventoryUploadClient(timeout_seconds=20.0)
-    touched: list[tuple[str, str, int]] = []  # (file name, item name, asset type)
+    touched: list[tuple[str, str, int]] = list(touched_notecards)
 
     for entry in entries:
+        if entry.file_name in notecards_done:
+            continue
         if entry.action == CONFLICT:
             outcome.conflicts.append((entry.file_name, entry.reason))
             continue
@@ -413,9 +484,11 @@ def _compile_error(result: object) -> str:
 
 
 __all__ = [
+    "NOTECARD_AGENT_CAP_NAME",
     "NOTECARD_TASK_CAP_NAME",
     "SCRIPT_TASK_CAP_NAMES",
     "InventoryRow",
+    "SyncCaps",
     "SyncOutcome",
     "pull_object_to_folder",
     "push_folder_to_object",
