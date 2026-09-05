@@ -1052,6 +1052,19 @@ def main() -> int:
             if dispatch.summary.name == "RegionHandshake":
                 parsed = parse_region_handshake(dispatch)
                 line += f" sim_name={parsed.sim_name!r} flags={parsed.region_flags}"
+                # The ground textures and the elevation band each covers. A
+                # region that names none sends zeroes, which is a real answer
+                # and not the same as a field we failed to read.
+                line += "\n    terrain detail=" + ",".join(
+                    str(u) for u in parsed.terrain_detail
+                )
+                line += "\n    terrain base  =" + ",".join(
+                    str(u) for u in parsed.terrain_base
+                )
+                line += (
+                    f"\n    start={parsed.terrain_start_height} "
+                    f"range={parsed.terrain_height_range}"
+                )
             elif dispatch.summary.name == "AgentMovementComplete":
                 parsed = parse_agent_movement_complete(dispatch)
                 line += f" region_handle={parsed.region_handle} position={parsed.position}"

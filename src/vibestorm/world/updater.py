@@ -50,6 +50,9 @@ class WorldUpdater:
             grid_y=region_y // 256,
             water_height=handshake.water_height,
             region_flags=handshake.region_flags,
+            terrain_detail=handshake.terrain_detail,
+            terrain_start_height=handshake.terrain_start_height,
+            terrain_height_range=handshake.terrain_height_range,
         )
         return WorldUpdateEvent(
             kind="handshake.region",

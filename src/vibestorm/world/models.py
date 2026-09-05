@@ -32,6 +32,18 @@ class RegionInfo:
     # RegionHandshake's flag word. Kept raw here; world/land_flags.py names the
     # bits LSL exposes and reports the rest as unknown.
     region_flags: int = 0
+    #: The region's four ground textures, and the elevation band each covers.
+    #: A region that names none sends zero UUIDs, which is a real answer.
+    #: ``start_height`` and ``height_range`` are per region corner, in the
+    #: template's 00, 01, 10, 11 order -- (x=0,y=0), (0,1), (1,0), (1,1).
+    terrain_detail: tuple[UUID, UUID, UUID, UUID] = (
+        UUID(int=0),
+        UUID(int=0),
+        UUID(int=0),
+        UUID(int=0),
+    )
+    terrain_start_height: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    terrain_height_range: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 
 @dataclass(slots=True, frozen=True)
@@ -202,13 +214,20 @@ class WorldView:
         grid_y: int,
         water_height: float | None = None,
         region_flags: int = 0,
+        terrain_detail: tuple[UUID, UUID, UUID, UUID] | None = None,
+        terrain_start_height: tuple[float, float, float, float] | None = None,
+        terrain_height_range: tuple[float, float, float, float] | None = None,
     ) -> None:
+        defaults = RegionInfo(name=name, grid_x=grid_x, grid_y=grid_y)
         self.region = RegionInfo(
             name=name,
             grid_x=grid_x,
             grid_y=grid_y,
             water_height=water_height,
             region_flags=region_flags,
+            terrain_detail=terrain_detail or defaults.terrain_detail,
+            terrain_start_height=terrain_start_height or defaults.terrain_start_height,
+            terrain_height_range=terrain_height_range or defaults.terrain_height_range,
         )
 
     def apply_sim_stats(self, message: SimStatsMessage) -> None:

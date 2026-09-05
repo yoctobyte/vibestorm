@@ -3206,6 +3206,17 @@ async def _fetch_and_cache_region_map(
 
 
 def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
+    # The region's ground textures come first. They cover every square metre
+    # the camera can see, so fetching them behind a queue of prim textures
+    # means the ground is the last thing to look right.
+    region = session.world_view.region
+    if region is not None:
+        for texture_id in region.terrain_detail:
+            if texture_id.int == 0:
+                continue
+            if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
+                continue
+            return texture_id
     for obj in session.world_view.objects.values():
         texture_ids = [obj.default_texture_id]
         if obj.texture_entry is not None:

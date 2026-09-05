@@ -268,6 +268,91 @@ void main() {
 }
 """
 
+#: How many times a ground texture repeats across the region.
+#:
+#: Nothing in ``RegionHandshake`` carries this -- it names the textures and the
+#: elevation bands, and nothing else -- so this is a visual choice, not a value
+#: read off the wire. Sixteen puts one tile every 16 m, which keeps the ground
+#: detailed at walking distance without turning into noise from the air.
+TERRAIN_TEXTURE_REPEATS: float = 16.0
+
+_TERRAIN_TEXTURE_VERTEX_SHADER = """
+#version 330
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+
+in vec3 in_pos;
+in vec2 in_uv;
+
+out vec2 v_region_uv;
+out vec3 v_world_pos;
+
+void main() {
+    v_region_uv = in_uv;
+    v_world_pos = in_pos;
+    gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+}
+"""
+
+_TERRAIN_TEXTURE_FRAGMENT_SHADER = """
+#version 330
+
+uniform sampler2D u_tex0;
+uniform sampler2D u_tex1;
+uniform sampler2D u_tex2;
+uniform sampler2D u_tex3;
+// Per region corner, in the message template's 00, 01, 10, 11 order.
+uniform vec4 u_start_height;
+uniform vec4 u_height_range;
+uniform float u_repeats;
+uniform vec3 u_sun_dir;
+uniform float u_ambient_light;
+uniform float u_diffuse_light;
+
+in vec2 v_region_uv;
+in vec3 v_world_pos;
+
+out vec4 frag_color;
+
+void main() {
+    // The band a fragment falls in is set by its height against a start and
+    // range that themselves vary across the region: the four values are its
+    // corners, bilinearly interpolated.
+    float sx = clamp(v_region_uv.x, 0.0, 1.0);
+    float sy = clamp(v_region_uv.y, 0.0, 1.0);
+    float start = mix(
+        mix(u_start_height.x, u_start_height.z, sx),
+        mix(u_start_height.y, u_start_height.w, sx),
+        sy
+    );
+    float range = mix(
+        mix(u_height_range.x, u_height_range.z, sx),
+        mix(u_height_range.y, u_height_range.w, sx),
+        sy
+    );
+    float band = clamp((v_world_pos.z - start) / max(abs(range), 0.01), 0.0, 1.0) * 3.0;
+
+    vec2 uv = v_region_uv * u_repeats;
+    vec3 rgb = texture(u_tex0, uv).rgb;
+    rgb = mix(rgb, texture(u_tex1, uv).rgb, clamp(band, 0.0, 1.0));
+    rgb = mix(rgb, texture(u_tex2, uv).rgb, clamp(band - 1.0, 0.0, 1.0));
+    rgb = mix(rgb, texture(u_tex3, uv).rgb, clamp(band - 2.0, 0.0, 1.0));
+
+    // Same trick the flat fill uses: the mesh carries no normals, so take them
+    // from the derivatives of the interpolated world position.
+    vec3 dx = dFdx(v_world_pos);
+    vec3 dy = dFdy(v_world_pos);
+    vec3 normal = normalize(cross(dx, dy));
+    if (normal.z < 0.0) {
+        normal = -normal;
+    }
+    float diffuse = max(dot(normal, normalize(u_sun_dir)), 0.0);
+    float light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
+    frag_color = vec4(rgb * light, 1.0);
+}
+"""
+
 _TERRAIN_LINE_VERTEX_SHADER = """
 #version 330
 
@@ -714,6 +799,10 @@ class PerspectiveRenderer:
         self._terrain_ibo = None  # type: moderngl.Buffer | None
         self._terrain_fill_program = None  # type: moderngl.Program | None
         self._terrain_fill_vao = None  # type: moderngl.VertexArray | None
+        self._terrain_texture_program = None  # type: moderngl.Program | None
+        self._terrain_texture_vao = None  # type: moderngl.VertexArray | None
+        self._terrain_textures: list[object] = []
+        self._terrain_texture_paths: tuple[Path | None, ...] = ()
         self._terrain_vao = None  # type: moderngl.VertexArray | None
         self._terrain_line_program = None  # type: moderngl.Program | None
         self._parcel_border_vbo = None  # type: moderngl.Buffer | None
@@ -819,7 +908,18 @@ class PerspectiveRenderer:
             else:
                 self._release_terrain_mesh()
             if scene.render_terrain and self._terrain_vao is not None:
-                if self._ground_texture is not None and self._ground_texture_path is not None:
+                # The region's own ground textures first. The map tile below is
+                # a 256x256 overview of the whole region -- one pixel per metre,
+                # with the objects already drawn into it -- so stretching it
+                # over the terrain magnified its object dots into blurry black
+                # patches on the ground. It is the fallback, not the intent.
+                if self._upload_terrain_textures(ctx, scene) and (
+                    self._terrain_texture_vao is not None
+                ):
+                    self._render_terrain_textured(
+                        view_data, proj_data, scene, sun_direction=sun_direction
+                    )
+                elif self._ground_texture is not None and self._ground_texture_path is not None:
                     assert self._ground_program is not None
                     self._ground_program["u_view"].write(view_data)
                     self._ground_program["u_proj"].write(proj_data)
@@ -1018,6 +1118,7 @@ class PerspectiveRenderer:
             texture.release()
         self._object_textures.clear()
         self._object_texture_paths.clear()
+        self._release_terrain_textures()
         self._release_parcel_borders()
         for resource in (
             self._instance_vbo,
@@ -1181,6 +1282,14 @@ class PerspectiveRenderer:
             vertex_shader=_TERRAIN_LINE_VERTEX_SHADER,
             fragment_shader=_TERRAIN_FILL_FRAGMENT_SHADER,
         )
+        self._terrain_texture_program = ctx.program(
+            vertex_shader=_TERRAIN_TEXTURE_VERTEX_SHADER,
+            fragment_shader=_TERRAIN_TEXTURE_FRAGMENT_SHADER,
+        )
+        for index in range(4):
+            name = f"u_tex{index}"
+            if name in self._terrain_texture_program:
+                self._terrain_texture_program[name].value = index
 
         self._water_program = ctx.program(
             vertex_shader=_WATER_VERTEX_SHADER,
@@ -1732,6 +1841,72 @@ class PerspectiveRenderer:
             self._ground_texture = tex
         self._ground_texture_path = path
 
+    def _upload_terrain_textures(self, ctx: moderngl.Context, scene: Scene) -> bool:
+        """Upload the region's four ground textures. True when all four are up.
+
+        All four or none: the shader blends between adjacent bands, so a
+        missing one would not leave a gap in a corner of the region -- it would
+        put a black stripe across every elevation that names it. Falling back
+        to the flat fill until the set is complete looks like loading; a black
+        stripe looks like a bug.
+        """
+        paths = tuple(scene.terrain_texture_paths)
+        if len(paths) != 4 or any(path is None for path in paths):
+            return False
+        if paths == self._terrain_texture_paths and len(self._terrain_textures) == 4:
+            return True
+
+        import pygame
+
+        uploaded = []
+        for path in paths:
+            try:
+                surface = pygame.image.load(str(path))
+            except (pygame.error, FileNotFoundError, OSError):
+                for texture in uploaded:
+                    texture.release()
+                return False
+            texture = ctx.texture(
+                surface.get_size(),
+                components=4,
+                data=pygame.image.tobytes(surface, "RGBA"),
+            )
+            texture.filter = (ctx.LINEAR, ctx.LINEAR)
+            # The textures tile across the region, so wrapping is the point.
+            texture.repeat_x = True
+            texture.repeat_y = True
+            texture.build_mipmaps()
+            uploaded.append(texture)
+
+        self._release_terrain_textures()
+        self._terrain_textures = uploaded
+        self._terrain_texture_paths = paths
+        return True
+
+    def _release_terrain_textures(self) -> None:
+        for texture in self._terrain_textures:
+            texture.release()
+        self._terrain_textures = []
+        self._terrain_texture_paths = ()
+
+    def _render_terrain_textured(
+        self, view_data: bytes, proj_data: bytes, scene: Scene, *, sun_direction
+    ) -> None:
+        program = self._terrain_texture_program
+        assert program is not None
+        program["u_view"].write(view_data)
+        program["u_proj"].write(proj_data)
+        program["u_start_height"].value = tuple(scene.terrain_start_height)
+        program["u_height_range"].value = tuple(scene.terrain_height_range)
+        program["u_repeats"].value = TERRAIN_TEXTURE_REPEATS
+        program["u_sun_dir"].value = sun_direction
+        program["u_ambient_light"].value = AMBIENT_LIGHT
+        program["u_diffuse_light"].value = DIFFUSE_LIGHT
+        for index, texture in enumerate(self._terrain_textures):
+            texture.use(location=index)
+        assert self._terrain_texture_vao is not None
+        self._terrain_texture_vao.render()
+
     def _upload_object_texture(
         self, ctx: moderngl.Context, scene: Scene, texture_id: UUID
     ) -> object | None:
@@ -1799,6 +1974,13 @@ class PerspectiveRenderer:
                 index_buffer=self._terrain_ibo,
                 index_element_size=4,
             )
+        if self._terrain_texture_program is not None:
+            self._terrain_texture_vao = ctx.vertex_array(
+                self._terrain_texture_program,
+                [(self._terrain_vbo, "3f 2f", "in_pos", "in_uv")],
+                index_buffer=self._terrain_ibo,
+                index_element_size=4,
+            )
         if self._terrain_line_program is not None:
             self._terrain_line_ibo = ctx.buffer(
                 struct.pack(f"{len(line_indices)}I", *line_indices)
@@ -1821,6 +2003,7 @@ class PerspectiveRenderer:
             self._terrain_vao,
             self._terrain_ibo,
             self._terrain_fill_vao,
+            self._terrain_texture_vao,
             self._terrain_line_vao,
             self._terrain_line_ibo,
             self._terrain_vbo,

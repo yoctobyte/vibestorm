@@ -107,6 +107,12 @@ class AvatarAppearanceMessage:
     attachments: tuple[tuple[UUID, int], ...]
 
 
+#: Four zero UUIDs. A region that names no ground textures is a real case --
+#: OpenSim regions configured with defaults send zeroes -- and it has to be
+#: distinguishable from "we did not read the field".
+_NO_TERRAIN_TEXTURES = (UUID(int=0), UUID(int=0), UUID(int=0), UUID(int=0))
+
+
 @dataclass(slots=True, frozen=True)
 class RegionHandshakeMessage:
     region_flags: int
@@ -118,6 +124,14 @@ class RegionHandshakeMessage:
     billable_factor: float
     cache_id: UUID
     region_id: UUID
+    #: The four ground textures and the elevation band each covers. SL blends
+    #: them per region corner: ``start_height`` is where a texture begins and
+    #: ``height_range`` how far it fades, indexed 00, 01, 10, 11 for the
+    #: south-west, north-west, south-east and north-east corners.
+    terrain_base: tuple[UUID, UUID, UUID, UUID] = _NO_TERRAIN_TEXTURES
+    terrain_detail: tuple[UUID, UUID, UUID, UUID] = _NO_TERRAIN_TEXTURES
+    terrain_start_height: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    terrain_height_range: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 
 @dataclass(slots=True, frozen=True)
@@ -1245,7 +1259,11 @@ def parse_region_handshake(message: MessageDispatch) -> RegionHandshakeMessage:
     offset += 8
     cache_id = UUID(bytes=body[offset : offset + 16])
     offset += 16
-    offset += 16 * 8
+    terrain_uuids = []
+    for _ in range(8):
+        terrain_uuids.append(UUID(bytes=body[offset : offset + 16]))
+        offset += 16
+    heights = unpack_from("<8f", body, offset)
     offset += 4 * 8
     region_id = UUID(bytes=body[offset : offset + 16])
     return RegionHandshakeMessage(
@@ -1258,6 +1276,10 @@ def parse_region_handshake(message: MessageDispatch) -> RegionHandshakeMessage:
         billable_factor=billable_factor,
         cache_id=cache_id,
         region_id=region_id,
+        terrain_base=tuple(terrain_uuids[0:4]),
+        terrain_detail=tuple(terrain_uuids[4:8]),
+        terrain_start_height=heights[0:4],
+        terrain_height_range=heights[4:8],
     )
 
 

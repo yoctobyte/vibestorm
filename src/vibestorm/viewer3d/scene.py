@@ -370,6 +370,17 @@ class Scene:
     inventory_snapshot: InventoryFetchSnapshot | None = None
     object_inventory_snapshots: dict[int, ObjectInventorySnapshot] = field(default_factory=dict)
     terrain_heightmap: RegionHeightmap | None = None
+    #: The region's four ground textures, once their bytes have been cached,
+    #: and the elevation band each covers. All four have to be present before
+    #: the blend means anything, so the renderer checks for a full set.
+    terrain_texture_paths: tuple[Path | None, Path | None, Path | None, Path | None] = (
+        None,
+        None,
+        None,
+        None,
+    )
+    terrain_start_height: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    terrain_height_range: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     debug_terrain_source: str | None = None
     terrain_z_scale: float = 1.0
     render_terrain: bool = True
@@ -708,6 +719,19 @@ class Scene:
             return
 
         self.avatar_position = _self_avatar_position(world_view)
+
+        region = getattr(world_view, "region", None)
+        if region is not None:
+            self.terrain_texture_paths = tuple(  # type: ignore[assignment]
+                self.texture_paths.get(texture_id)
+                for texture_id in getattr(region, "terrain_detail", ())
+            ) or (None, None, None, None)
+            self.terrain_start_height = getattr(
+                region, "terrain_start_height", self.terrain_start_height
+            )
+            self.terrain_height_range = getattr(
+                region, "terrain_height_range", self.terrain_height_range
+            )
 
         time_snapshot = getattr(world_view, "latest_time", None)
         self.sun_phase = (

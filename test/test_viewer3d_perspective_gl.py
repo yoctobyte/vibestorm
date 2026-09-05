@@ -2288,3 +2288,115 @@ class LargeRegionTextureGLTests(_GLTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TerrainTextureUploadTests(_GLTestBase):
+    """The region's four ground textures go up together or not at all.
+
+    The shader blends between adjacent elevation bands, so a missing texture
+    does not leave a gap in one corner of the region: it puts a black stripe
+    across every elevation that names it. Falling back to the flat fill until
+    the set is complete looks like loading; a black stripe looks like a bug.
+    """
+
+    def _png(self, directory: Path, name: str, color: tuple[int, int, int]) -> Path:
+        import pygame
+
+        surface = pygame.Surface((4, 4))
+        surface.fill(color)
+        path = directory / name
+        pygame.image.save(surface, str(path))
+        return path
+
+    def _renderer(self):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        return PerspectiveRenderer(Camera3D(), ctx=self.ctx)
+
+    def _scene(self, paths):
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene()
+        scene.terrain_texture_paths = paths
+        scene.terrain_start_height = (10.0, 10.0, 10.0, 10.0)
+        scene.terrain_height_range = (60.0, 60.0, 60.0, 60.0)
+        return scene
+
+    def test_the_shader_compiles(self) -> None:
+        renderer = self._renderer()
+        try:
+            self.assertIsNotNone(renderer._terrain_texture_program)
+        finally:
+            renderer.clear_caches()
+
+    def test_a_full_set_uploads(self) -> None:
+        renderer = self._renderer()
+        try:
+            with tempfile.TemporaryDirectory() as raw:
+                directory = Path(raw)
+                paths = tuple(
+                    self._png(directory, f"t{index}.png", (index * 40, 100, 60))
+                    for index in range(4)
+                )
+                self.assertTrue(
+                    renderer._upload_terrain_textures(self.ctx, self._scene(paths))
+                )
+                self.assertEqual(len(renderer._terrain_textures), 4)
+        finally:
+            renderer.clear_caches()
+
+    def test_a_partial_set_uploads_nothing(self) -> None:
+        renderer = self._renderer()
+        try:
+            with tempfile.TemporaryDirectory() as raw:
+                directory = Path(raw)
+                paths = (
+                    self._png(directory, "t0.png", (200, 100, 60)),
+                    self._png(directory, "t1.png", (100, 200, 60)),
+                    None,
+                    None,
+                )
+                self.assertFalse(
+                    renderer._upload_terrain_textures(self.ctx, self._scene(paths))
+                )
+                self.assertEqual(renderer._terrain_textures, [])
+        finally:
+            renderer.clear_caches()
+
+    def test_an_unchanged_set_is_not_re_uploaded(self) -> None:
+        # This runs every frame. Re-decoding four PNGs at 60 Hz would cost more
+        # than the map tile it replaced.
+        renderer = self._renderer()
+        try:
+            with tempfile.TemporaryDirectory() as raw:
+                directory = Path(raw)
+                paths = tuple(
+                    self._png(directory, f"t{index}.png", (index * 40, 100, 60))
+                    for index in range(4)
+                )
+                scene = self._scene(paths)
+                self.assertTrue(renderer._upload_terrain_textures(self.ctx, scene))
+                first = list(renderer._terrain_textures)
+                self.assertTrue(renderer._upload_terrain_textures(self.ctx, scene))
+                self.assertEqual(renderer._terrain_textures, first)
+        finally:
+            renderer.clear_caches()
+
+    def test_the_textures_repeat(self) -> None:
+        # They tile across the region; clamping would stretch one copy over
+        # 256 m, which is the map-tile problem again in a different costume.
+        renderer = self._renderer()
+        try:
+            with tempfile.TemporaryDirectory() as raw:
+                directory = Path(raw)
+                paths = tuple(
+                    self._png(directory, f"t{index}.png", (index * 40, 100, 60))
+                    for index in range(4)
+                )
+                renderer._upload_terrain_textures(self.ctx, self._scene(paths))
+                for texture in renderer._terrain_textures:
+                    self.assertTrue(texture.repeat_x)
+                    self.assertTrue(texture.repeat_y)
+        finally:
+            renderer.clear_caches()

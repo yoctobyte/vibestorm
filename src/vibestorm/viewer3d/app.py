@@ -167,6 +167,24 @@ def composite_hud(compositor: GLCompositor, hud_surface: pygame.Surface) -> None
     compositor.draw("hud", alpha=True)
 
 
+def save_screenshot(ctx, size: tuple[int, int], path: Path) -> None:
+    """Write the current framebuffer to a PNG.
+
+    Read back through GL rather than from pygame: in an OPENGL display the
+    surface pygame hands out is not the one the driver drew into, so saving it
+    produces a black image and a confident report that it worked.
+
+    GL's origin is bottom-left, so the rows come back upside down.
+    """
+    import pygame
+
+    width, height = size
+    raw = ctx.screen.read(components=3, alignment=1)
+    surface = pygame.image.frombytes(raw, (width, height), "RGB", True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pygame.image.save(surface, str(path))
+
+
 def redraw_hud(compositor: GLCompositor, hud_surface: pygame.Surface, hud) -> bool:
     """Repaint and re-upload the HUD, but only when it would look different.
 
@@ -237,6 +255,25 @@ def build_parser() -> argparse.ArgumentParser:
     # another second to stop.
     parser.add_argument("--agent-update-interval", type=float, default=0.1)
     parser.add_argument("--camera-sweep", action="store_true")
+    parser.add_argument(
+        "--screenshot",
+        metavar="PATH",
+        help=(
+            "Write one PNG of the rendered frame and exit. Runs happily under "
+            "Xvfb, so it is the way to see what the viewer draws without "
+            "opening a window on anyone's desktop."
+        ),
+    )
+    parser.add_argument(
+        "--screenshot-after",
+        type=float,
+        default=25.0,
+        help=(
+            "Seconds to let the region load before the screenshot. Terrain, "
+            "object updates and textures all arrive over several seconds, so a "
+            "shot taken too early is a picture of a loading screen."
+        ),
+    )
     parser.add_argument(
         "--diagnostics",
         action="store_true",
@@ -987,9 +1024,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
             else:
                 camera.set_avatar_eye(avatar.position, avatar.rotation)
 
+    screenshot_path = Path(args.screenshot) if getattr(args, "screenshot", None) else None
+    elapsed_s = 0.0
     try:
         while running and not session_task.done():
             dt = clock.tick(frame_cap) / 1000.0
+            elapsed_s += dt
             for event in pygame.event.get():
                 consumed_by_ui = hud.process_event(event)
                 if hud.quit_requested:
@@ -1088,6 +1128,10 @@ async def run_viewer(args: argparse.Namespace) -> int:
             compositor.draw("hud", alpha=True)
             pygame.display.flip()
             _m8 = _t()
+            if screenshot_path is not None and elapsed_s >= args.screenshot_after:
+                save_screenshot(ctx, screen_size, screenshot_path)
+                print(f"screenshot={screenshot_path}", flush=True)
+                running = False
             if _PHASE_STATS is not None:
                 _PHASE_STATS.add(
                     scene_refresh=_m1 - _m0,
