@@ -54,6 +54,29 @@ class HUDRefreshCostTests(unittest.TestCase):
         widget.set_text = recording
         return calls
 
+    def _record_ticker(self) -> list[str]:
+        """Every ticker repaint, as the text it drew.
+
+        The ticker is a hand-drawn `UIImage` rather than a `UITextBox`, so
+        there is no `set_text` to watch and a surface tells the reader nothing.
+        Watching the draw call and recording its entries says the same thing
+        the old assertions did.
+        """
+        from vibestorm.viewer3d import hud as hud_module
+
+        calls: list[str] = []
+        original = hud_module.draw_ticker
+
+        def recording(surface, entries, **kwargs):
+            calls.append(
+                " | ".join(f"{e.sender}: {e.message}" for e in entries)
+            )
+            return original(surface, entries, **kwargs)
+
+        hud_module.draw_ticker = recording
+        self.addCleanup(setattr, hud_module, "draw_ticker", original)
+        return calls
+
     def test_a_still_scene_stops_rewriting_the_status_bar(self) -> None:
         from vibestorm.viewer3d.hud import STATUS_REFRESH_INTERVAL_S
 
@@ -116,7 +139,7 @@ class HUDRefreshCostTests(unittest.TestCase):
         scene.chat_lines.append(ChatLine(kind="local", sender="Res", message="hello"))
         hud.update(STATUS_REFRESH_INTERVAL_S, scene)
 
-        calls = self._record(hud.ticker)
+        calls = self._record_ticker()
         for _ in range(5):
             hud.update(STATUS_REFRESH_INTERVAL_S, scene)
         self.assertEqual(calls, [], "unchanged chat must not be re-rendered")
@@ -130,7 +153,7 @@ class HUDRefreshCostTests(unittest.TestCase):
         hud.chat_window.hide()
         hud.update(STATUS_REFRESH_INTERVAL_S, scene)
 
-        calls = self._record(hud.ticker)
+        calls = self._record_ticker()
         scene.chat_lines.append(ChatLine(kind="local", sender="Res", message="hello"))
         hud.update(STATUS_REFRESH_INTERVAL_S, scene)
         self.assertEqual(calls, [])

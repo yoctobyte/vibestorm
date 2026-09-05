@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from vibestorm.viewer3d.chat_ticker import TickerEntry, draw_ticker
 from vibestorm.world.asset_types import ASSET_TYPE_BY_NAME, asset_type_to_int
 from vibestorm.world.attachments import describe_attachment
 from vibestorm.world.prim_attributes import click_action_name, prim_material_name
@@ -245,6 +246,7 @@ class HUD:
         import pygame
         from pygame_gui.elements import (
             UIButton,
+            UIImage,
             UILabel,
             UIPanel,
             UITextBox,
@@ -392,12 +394,21 @@ class HUD:
         )
 
         container = self.chat_window.get_container()
-        self.ticker = UITextBox(
-            html_text="",
+        # Drawn by hand rather than through a UITextBox: pygame_gui's text
+        # layout is roughly quadratic in line count, so rebuilding these eight
+        # lines cost 23.5 ms and it rebuilt whenever anyone spoke. See
+        # vibestorm.viewer3d.chat_ticker.
+        self._ticker_surface = pygame.Surface((1, 1), pygame.SRCALPHA).convert_alpha()
+        self.ticker = UIImage(
             relative_rect=pygame.Rect(0, 0, 1, 1),
+            image_surface=self._ticker_surface,
             manager=self.manager,
             container=container,
         )
+        self._ticker_font = self.manager.get_theme().get_font(["text_box"])
+        self._ticker_background = tuple(
+            self.manager.get_theme().get_colour("dark_bg", ["text_box"])
+        )[:3]
         self.chat_input = UITextEntryLine(
             relative_rect=pygame.Rect(0, 0, 1, 1),
             manager=self.manager,
@@ -1286,6 +1297,15 @@ class HUD:
         ticker_h = max(1, ch - margin * 2 - input_h - gap)
         self.ticker.set_relative_position((margin, margin))
         self.ticker.set_dimensions((content_w, ticker_h))
+        if self._ticker_surface.get_size() != (content_w, ticker_h):
+            # Converted up front so UIImage's own convert_alpha is a copy
+            # rather than a format conversion of a full-window surface.
+            self._ticker_surface = self._pygame.Surface(
+                (content_w, ticker_h), self._pygame.SRCALPHA
+            ).convert_alpha()
+            # Force the next refresh: the guard below compares content, and the
+            # content has not changed -- the box it has to fit in has.
+            self._last_ticker_html = None
         self.chat_input.set_relative_position((margin, margin + ticker_h + gap))
         self.chat_input.set_dimensions((content_w, input_h))
         self._last_chat_container_size = (cw, ch)
@@ -1394,32 +1414,73 @@ class HUD:
     def _refresh_ticker(self, scene: Scene) -> None:
         if not getattr(self.chat_window, "visible", True):
             return
-        # Take last N chat lines, format with kind-colored prefix.
         lines: deque = scene.chat_lines
         recent = list(lines)[-CHAT_TICKER_LINES:]
-        rows = []
+        entries: list[TickerEntry] = []
         for line in recent:
-            color = _kind_color_html(line.kind)
-            sender = _html_escape(line.sender)
-            message = _html_escape(line.message)
+            sender = line.sender
             # A whisper and a shout carry very different meaning in-world, and
             # the two look identical without this.
             delivery = line.delivery()
             if delivery is not None:
-                sender = f"{sender} ({_html_escape(delivery)})"
-            rows.append(f"<font color='{color}'>{sender}</font>: {message}")
+                sender = f"{sender} ({delivery})"
+            entries.append(
+                TickerEntry(
+                    sender=sender,
+                    message=line.message,
+                    sender_colour=_kind_colour(line.kind),
+                )
+            )
         if scene.typing_senders:
-            typing = ", ".join(_html_escape(name) for name in scene.typing_senders)
-            rows.append(f"<i>{typing} is typing…</i>")
-        html = "<br>".join(rows) if rows else "<i>no chat yet</i>"
+            typing = ", ".join(scene.typing_senders)
+            entries.append(
+                TickerEntry(
+                    sender="",
+                    message=f"{typing} is typing...",
+                    sender_colour=_TICKER_MUTED,
+                    body_colour=_TICKER_MUTED,
+                )
+            )
+        if not entries:
+            entries.append(
+                TickerEntry(
+                    sender="",
+                    message="no chat yet",
+                    sender_colour=_TICKER_MUTED,
+                    body_colour=_TICKER_MUTED,
+                )
+            )
+
+        # The signature stands in for the drawn pixels: same entries and same
+        # box means the same picture, and redrawing costs a blit per row plus
+        # an upload.
+        signature = (
+            self._ticker_surface.get_size(),
+            tuple(
+                (entry.sender, entry.message, entry.sender_colour, entry.body_colour)
+                for entry in entries
+            ),
+        )
         # Returning before the guard is updated means a reopened window still
         # catches up on whatever arrived while it was closed.
-        if html == self._last_ticker_html:
+        if signature == self._last_ticker_html:
             return
-        self._last_ticker_html = html
+        self._last_ticker_html = signature
         try:
-            self.ticker.set_text(html)
-        except Exception:  # pragma: no cover  - pygame_gui internal hiccups don't crash the viewer
+            draw_ticker(
+                self._ticker_surface,
+                entries,
+                font=self._ticker_font,
+                background=self._ticker_background,
+                line_height=self._ticker_font.get_point_size() + self._s(6),
+            )
+            # The surface is opaque and the text was blitted premultiplied, so
+            # it already is what UIImage would otherwise spend a full-surface
+            # pass converting it into.
+            self.ticker.set_image(
+                self._ticker_surface, image_is_alpha_premultiplied=True
+            )
+        except Exception:  # pragma: no cover - a drawing hiccup must not kill the viewer
             pass
 
     def _refresh_status(self, scene: Scene) -> None:
@@ -2226,12 +2287,24 @@ class HUD:
 
 
 def _kind_color_html(kind: str) -> str:
-    return {
-        "local": "#dddddd",
-        "im": "#a0d0ff",
-        "alert": "#ffa080",
-        "outbound": "#80ffa0",
-    }.get(kind, "#aaaaaa")
+    red, green, blue = _kind_colour(kind)
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+#: Sender colour per chat kind. The ticker draws with the font directly now, so
+#: these are RGB rather than the markup the text box wanted; `_kind_color_html`
+#: still derives the old string for anything that renders as HTML.
+_KIND_COLOURS: dict[str, tuple[int, int, int]] = {
+    "local": (0xDD, 0xDD, 0xDD),
+    "im": (0xA0, 0xD0, 0xFF),
+    "alert": (0xFF, 0xA0, 0x80),
+    "outbound": (0x80, 0xFF, 0xA0),
+}
+_TICKER_MUTED: tuple[int, int, int] = (0x99, 0x99, 0x99)
+
+
+def _kind_colour(kind: str) -> tuple[int, int, int]:
+    return _KIND_COLOURS.get(kind, (0xAA, 0xAA, 0xAA))
 
 
 # The table itself lives in vibestorm.world.asset_types, where a headless
