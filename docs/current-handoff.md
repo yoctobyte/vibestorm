@@ -50,9 +50,16 @@ costs 1.3 ms, eight cost 23.5 ms, eighteen cost 49 ms. Markup is not the cause
 -- the same eight lines without it cost 20.7 ms -- and rendering them by hand
 with `pygame.font.render` costs 0.74 ms, thirty-two times faster.
 `append_html_text` is 9 ms, so even appending one line pays most of a rebuild.
-**The chat ticker is the last caller, and is the remaining hitch: 23.5 ms
-whenever chat changes.** A hand-rendered text surface behind a `UIImage` is the
-fix if it becomes worth doing.
+
+The chat ticker was the last caller, at 23.5 ms whenever anyone spoke, and it
+is now drawn by hand into a `UIImage` at 3.8 ms -- `viewer3d/chat_ticker.py`,
+which imports no pygame_gui and takes the font as anything with `size` and
+`render_premul`, so it draws in the HUD's own typeface and its wrapping is
+testable against a stub. Two thirds of what remained after the first cut was
+`UIImage.set_image` running `convert_alpha` *and* `premul_alpha`; the surface
+is opaque with premultiplied text, so the second pass is skipped.
+
+**No known hitch is left in the frame.**
 
 *The world looks like a world now.* `--screenshot PATH` was added first,
 because none of this was visible without it -- it reads the framebuffer back
@@ -72,9 +79,10 @@ on anyone's desktop. Two things the screenshots showed:
 2. **Water ended at the region edge**, so the sea met the sky in a hard
    straight line. It now reaches the far plane.
 
-Still open under A, in order of what a person would notice: the sky is a flat
-colour with no horizon gradient and no sun; the avatar is a stick figure; and
-the chat ticker hitch above.
+The sky was a flat colour and is now a gradient with the sun drawn into it
+(`render_sky` toggles it). Still open under A, in order of what a person would
+notice: **the avatar is a stick figure**, and the 2D map HUD has not had the
+dirty-tracking or ticker treatment the 3D one has.
 
 **A -- the earlier pass (2026-09-03).** The viewer crashed on
 the first `AvatarAnimation`, which arrives within seconds of any local session,
