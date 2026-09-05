@@ -30,6 +30,7 @@ class _StubTexture:
         self.repeat_x = True
         self.repeat_y = True
         self.mipmapped = False
+        self.anisotropy = 0.0
 
     def build_mipmaps(self) -> None:
         # World textures get these so a distant prim minifies through them
@@ -45,6 +46,7 @@ class _StubContext:
 
     LINEAR = "linear"
     LINEAR_MIPMAP_LINEAR = "linear_mipmap_linear"
+    max_anisotropy = 16.0
 
     def __init__(self) -> None:
         self.textures: list[_StubTexture] = []

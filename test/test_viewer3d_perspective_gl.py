@@ -2993,7 +2993,14 @@ class MipmapGLTests(_GLTestBase):
         )
         return scene
 
-    def _frame(self, *, mipmaps: bool) -> bytes:
+    def _frame(self, *, filtering: str = "shipped") -> bytes:
+        """One frame of the slab, filtered the shipped way or a poorer one.
+
+        ``"none"`` is what was here before -- mipmaps unused, however far
+        away. ``"isotropic"`` samples them but takes one sample per pixel, so
+        a grazing surface drops to a level coarse enough for its squashed axis
+        and loses everything across the other one.
+        """
         from vibestorm.viewer3d import perspective
         from vibestorm.viewer3d.camera import Camera3D
 
@@ -3002,11 +3009,19 @@ class MipmapGLTests(_GLTestBase):
         camera.screen_size = self.FBO_SIZE
 
         original = perspective._minify_through_mipmaps
-        if not mipmaps:
-            # What was here before: mipmaps unused, however far away.
+        if filtering == "none":
             perspective._minify_through_mipmaps = lambda ctx, texture: setattr(
                 texture, "filter", (ctx.LINEAR, ctx.LINEAR)
             )
+        elif filtering == "isotropic":
+
+            def isotropic(ctx, texture) -> None:
+                texture.build_mipmaps()
+                texture.filter = (ctx.LINEAR_MIPMAP_LINEAR, ctx.LINEAR)
+
+            perspective._minify_through_mipmaps = isotropic
+        elif filtering != "shipped":
+            raise ValueError(filtering)
         renderer = perspective.PerspectiveRenderer(camera, ctx=self.ctx)
         try:
             self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
@@ -3032,8 +3047,8 @@ class MipmapGLTests(_GLTestBase):
     NEAR = range(112, 124, 2)
 
     def test_the_far_end_stops_crawling(self) -> None:
-        without = self._row_spread(self._frame(mipmaps=False), self.FAR)
-        with_mipmaps = self._row_spread(self._frame(mipmaps=True), self.FAR)
+        without = self._row_spread(self._frame(filtering="none"), self.FAR)
+        with_mipmaps = self._row_spread(self._frame(filtering="isotropic"), self.FAR)
 
         self.assertLess(
             with_mipmaps,
@@ -3044,14 +3059,53 @@ class MipmapGLTests(_GLTestBase):
     def test_the_near_end_is_left_sharp(self) -> None:
         # Mipmaps that blurred what is right in front of the camera would trade
         # one artefact for a worse one.
-        without = self._row_spread(self._frame(mipmaps=False), self.NEAR)
-        with_mipmaps = self._row_spread(self._frame(mipmaps=True), self.NEAR)
+        without = self._row_spread(self._frame(filtering="none"), self.NEAR)
+        with_mipmaps = self._row_spread(self._frame(filtering="shipped"), self.NEAR)
 
         self.assertGreater(
             with_mipmaps,
             without * 0.95,
             f"close-up pixels should be as sharp: {without:.1f} -> {with_mipmaps:.1f}",
         )
+
+    def test_anisotropy_gets_back_the_detail_mipmaps_throw_away(self) -> None:
+        """The other half of the trade, and why mipmaps alone are not enough.
+
+        A surface seen along itself is squashed hard in one direction and
+        barely at all in the other. One sample per pixel forces a level coarse
+        enough for the squashed axis, which throws away everything across the
+        other -- ground that goes to mush a few metres out. Several samples
+        along the squashed direction is exactly what anisotropic filtering is.
+
+        Detail is measured as neighbouring pixels disagreeing, the same
+        quantity as the aliasing above, and the two are only telling apart
+        because the minification filter is a mipmap filter in *both* frames
+        here: within that family a pixel cannot be a random texel, so what is
+        left is detail.
+        """
+        isotropic = self._row_spread(self._frame(filtering="isotropic"), self.FAR)
+        shipped = self._row_spread(self._frame(filtering="shipped"), self.FAR)
+
+        self.assertGreater(
+            shipped,
+            isotropic * 1.05,
+            f"the far ground should keep more detail: {isotropic:.1f} -> {shipped:.1f}",
+        )
+
+    def test_a_world_texture_asks_for_anisotropy(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import MAX_ANISOTROPY, PerspectiveRenderer
+
+        renderer = PerspectiveRenderer(Camera3D(), ctx=self.ctx)
+        try:
+            texture = renderer._upload_object_texture(self.ctx, self._scene(), self.TILE)
+
+            self.assertIsNotNone(texture)
+            self.assertEqual(
+                texture.anisotropy, min(MAX_ANISOTROPY, self.ctx.max_anisotropy)
+            )
+        finally:
+            renderer.clear_caches()
 
     def test_an_object_texture_minifies_through_its_mipmaps(self) -> None:
         # The specific bug: mipmaps built, and a minification filter that never

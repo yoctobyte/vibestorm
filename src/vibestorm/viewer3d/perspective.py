@@ -157,9 +157,19 @@ def _minify_through_mipmaps(ctx: moderngl.Context, texture) -> None:
     terrain textures were already built with them and never sampled one.
     Magnification stays ``LINEAR`` -- there is no smaller level to blend when a
     texture is drawn larger than it is.
+
+    Mipmaps alone then over-correct, and the ground is where it shows: a
+    surface seen at a grazing angle is squashed in one direction and not the
+    other, and a mipmap level small enough to stop the crawl along the squashed
+    axis throws away everything across it, so the ground goes to mush a few
+    metres out. Anisotropic filtering is the answer to exactly that -- it takes
+    several samples along the squashed direction instead of dropping to a
+    coarser level -- and the GPU decides how many, up to what is asked for
+    here, so it costs nothing on a surface facing the camera.
     """
     texture.build_mipmaps()
     texture.filter = (ctx.LINEAR_MIPMAP_LINEAR, ctx.LINEAR)
+    texture.anisotropy = min(MAX_ANISOTROPY, ctx.max_anisotropy)
 
 
 def _has_face_textures(entity: SceneEntity) -> bool:
@@ -193,6 +203,14 @@ def _single_face_index(shape_key: str) -> int | None:
     if shape_key in ("sphere", "torus", "tube", "ring") or shape_key.startswith("sculpt:"):
         return 0
     return None
+
+#: How far to push anisotropic filtering on world textures. 16 is what
+#: current hardware offers and what this asks for; the driver clamps to its
+#: own maximum, and the GPU only spends it on surfaces steep enough to need
+#: it. Ground textures are the reason: seen along the surface they are
+#: squashed hard in one direction, and isotropic mipmapping answers that by
+#: blurring both.
+MAX_ANISOTROPY: float = 16.0
 
 DEFAULT_SUN_DIRECTION: tuple[float, float, float] = (0.35, -0.55, 0.76)
 AMBIENT_LIGHT: float = 0.78
