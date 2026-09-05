@@ -1752,6 +1752,199 @@ class AvatarNameTagGLTests(_GLTestBase):
         self.assertGreater(self._whitish(self._render(scene)), 0)
 
 
+class NormalTransformGLTests(_GLTestBase):
+    """A normal does not transform like a position under a non-uniform scale.
+
+    Multiplying it by the model matrix is the common shortcut, and it is
+    exactly right for a uniform scale and for every axis-aligned face of a box
+    -- which is most of what a test suite reaches for, and why this went
+    unnoticed. It is wrong for any normal that is not along an axis, and SL
+    prims are stretched constantly.
+
+    The discriminator is a sphere squashed flat: a disc, whose top surface
+    faces almost straight up everywhere. Correctly transformed, its normals
+    stay near +Z, so a ring of samples around the disc shades evenly whatever
+    the sun is doing. Multiplied by the model matrix, the flattened axis
+    shrinks the normal's Z and the wide axes exaggerate its X and Y, tipping
+    every normal outwards -- and the same ring runs from bright on the sunlit
+    side to dark on the other. Measured: a spread of 6 out of 255 against 67.
+    """
+
+    FBO_SIZE = (128, 128)
+
+    def _disc_ring(self, radius: int) -> list[int]:
+        import math
+
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.render_sky = False
+        # Low and to one side, so a normal tipped outwards is unmistakable.
+        scene.sun_direction = (1.0, 0.0, 0.35)
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=(0.0, 0.0, 0.0),
+            scale=(4.0, 4.0, 0.2),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape="sphere",
+            tint=(220, 220, 220),
+        )
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), eye_position=(0.2, 0.2, 7.0))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = self.fbo.read(components=3)
+            width, _height = self.FBO_SIZE
+            centre = 64
+            samples = []
+            for step in range(12):
+                angle = step * math.pi / 6.0
+                x = int(centre + radius * math.cos(angle))
+                y = int(centre + radius * math.sin(angle))
+                samples.append(data[(y * width + x) * 3])
+            return samples
+        finally:
+            renderer.clear_caches()
+
+    def test_a_flattened_sphere_shades_evenly_across_its_face(self) -> None:
+        for radius in (12, 20):
+            with self.subTest(radius=radius):
+                ring = self._disc_ring(radius)
+                self.assertTrue(all(value > 0 for value in ring), f"disc not drawn: {ring}")
+                self.assertLess(
+                    max(ring) - min(ring),
+                    12,
+                    "the flattened sphere is lit from the side, so normals "
+                    f"went through the model matrix rather than its inverse "
+                    f"transpose: {ring}",
+                )
+
+
+class AvatarPaletteGLTests(_GLTestBase):
+    """The avatar's palette has to survive the whole trip to the screen.
+
+    Everything between the part table and the pixel can fail quietly. If the
+    mesh's UVs are not uploaded the shader falls back to its generated
+    coordinates, which sweep the full 0..1 range and scatter every palette
+    entry over the whole figure; if the palette texture is not bound the
+    figure comes out in one flat instance tint, which is exactly what the old
+    placeholder looked like. Neither shows up as an error, and only the second
+    looks obviously wrong.
+
+    So this checks *where* each colour lands: hair and skin at the top,
+    shirt across the chest, trousers down the shin, shoes at the ground.
+    Comparing hue rather than value, because the sun scales a colour and
+    leaves the ratio between its channels alone.
+    """
+
+    FBO_SIZE = (128, 128)
+
+    #: (x, y) in the framebuffer's own bottom-up rows, and the palette entry
+    #: that body part is made of. Taken from the middle of each region, with
+    #: several rows of the same colour above and below.
+    LANDMARKS = (
+        ((64, 84), "skin"),
+        ((64, 70), "shirt"),
+        ((60, 48), "trousers"),
+        ((60, 28), "shoes"),
+    )
+
+    @staticmethod
+    def _hue(pixel) -> tuple[float, ...]:
+        total = sum(pixel) or 1
+        return tuple(channel / total for channel in pixel)
+
+    def _render_avatar(self) -> bytes:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.render_sky = False
+        scene.avatar_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=47,
+            kind="avatar",
+            position=(0.0, 0.0, 0.0),
+            scale=(0.45, 0.60, 1.90),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=None,
+            tint=(255, 200, 80),
+        )
+
+        camera = Camera3D(target=(0.0, 0.0, 0.15), eye_position=(3.2, 0.0, 0.35))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self.fbo.read(components=3)
+        finally:
+            renderer.clear_caches()
+
+    def _pixel(self, data: bytes, x: int, y: int) -> tuple[int, int, int]:
+        width, _height = self.FBO_SIZE
+        offset = (y * width + x) * 3
+        return tuple(data[offset : offset + 3])
+
+    def test_each_body_part_is_painted_from_its_own_palette_entry(self) -> None:
+        from vibestorm.viewer3d.avatar_mesh import PALETTE
+
+        colours = dict(PALETTE)
+        data = self._render_avatar()
+
+        for (x, y), region in self.LANDMARKS:
+            pixel = self._pixel(data, x, y)
+            self.assertTrue(any(pixel), f"nothing drawn at the {region} landmark")
+            drift = max(
+                abs(a - b)
+                for a, b in zip(self._hue(pixel), self._hue(colours[region]))
+            )
+            self.assertLess(
+                drift,
+                0.02,
+                f"the {region} landmark came out {pixel}, not a shade of "
+                f"{colours[region]}",
+            )
+
+    def test_the_instance_tint_does_not_paint_the_avatar(self) -> None:
+        # The entity's tint is the 2D map's marker colour and is the same for
+        # every avatar in the region. Reaching the 3D figure would overwrite
+        # the palette with one flat colour. Skin is the near miss that a
+        # simple "reddish pixel" check trips over; by hue it is well clear.
+        data = self._render_avatar()
+        width, height = self.FBO_SIZE
+        marker = self._hue((255, 200, 80))
+
+        tinted = 0
+        for y in range(height):
+            for x in range(width):
+                pixel = self._pixel(data, x, y)
+                if not any(pixel):
+                    continue
+                if max(abs(a - b) for a, b in zip(self._hue(pixel), marker)) < 0.02:
+                    tinted += 1
+
+        self.assertEqual(tinted, 0, "the marker tint is painting the avatar")
+
+
 class AuthoredNormalGLTests(_GLTestBase):
     """The renderer must upload authored normals, not fall back to position.
 
@@ -1840,12 +2033,23 @@ class AuthoredNormalGLTests(_GLTestBase):
         finally:
             renderer.clear_caches()
 
-    def test_avatar_torso_face_shades_uniformly(self) -> None:
+    def test_avatar_torso_facet_shades_uniformly(self) -> None:
         # The avatar renders through _shape_meshes rather than the per-face
-        # buffers, so it covers the other upload site. Its boxes sit away from
-        # the origin, which makes the position fallback especially wrong.
+        # buffers, so it covers the other upload site. Its parts sit away from
+        # the origin, which makes the position fallback especially wrong: it
+        # gives every vertex a normal pointing away from the figure's centre,
+        # so a merged mesh smears into one smooth plank.
+        #
+        # The band runs *down* one facet of the torso rather than across the
+        # chest. The torso is an eight-sided tube, so a horizontal band crosses
+        # a facet edge and a step there is correct, not a bug; a vertical band
+        # stays on one facet, where every pixel shares one authored normal.
+        # Keep it inside the chest -- the surrounding pixels are the same
+        # colour for a dozen rows in each direction, so a small change to the
+        # figure's proportions will not silently move it onto the background.
         width, height = self.FBO_SIZE
-        band = [(x, height // 2 + 8) for x in range(width // 2 - 6, width // 2 + 7, 3)]
+        column = width // 2 - 6
+        band = [(column, y) for y in range(height // 2 + 2, height // 2 + 15, 3)]
 
         samples = self._render_avatar_face_on(band)
 

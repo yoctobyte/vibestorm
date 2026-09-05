@@ -184,7 +184,17 @@ void main() {
     // real attribute changed nothing for them while letting decoded mesh
     // assets supply true normals.
     vec3 local_normal = normalize(in_normal);
-    vec3 world_normal = normalize(mat3(in_model) * local_normal);
+    // A normal does not transform like a position under a non-uniform scale.
+    // Multiplying by the model matrix leans every normal on a stretched prim
+    // -- and SL prims are stretched constantly, a 4 x 0.5 x 0.1 slab being
+    // entirely ordinary -- towards the long axis, so a flat wall shades as a
+    // curve. The inverse transpose is the correct transform; the guard is for
+    // a degenerate scale, where inverse() would hand back infinities and
+    // normalize() would turn them into a NaN colour.
+    mat3 model3 = mat3(in_model);
+    float det = determinant(model3);
+    mat3 normal_matrix = abs(det) > 1e-12 ? transpose(inverse(model3)) : model3;
+    vec3 world_normal = normalize(normal_matrix * local_normal);
     float diffuse = max(dot(world_normal, normalize(u_sun_dir)), 0.0);
     v_light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
     v_tint = in_tint;
@@ -869,6 +879,11 @@ class PerspectiveRenderer:
         # Shape keys whose buffers carry authored TexCoord0 data. Everything
         # else falls back to position-generated coordinates in the shader.
         self._mesh_uv_shape_keys: set[str] = set()
+        # A few-texel strip of skin, hair and clothing colours. The avatar
+        # figure has no in-world texture to wear -- an avatar's TextureEntry
+        # names body textures laid out for a mesh this tree does not have --
+        # so its parts index into this instead of sharing one instance tint.
+        self._avatar_palette: moderngl.Texture | None = None
         self._mesh_asset_paths: dict[UUID, Path] = {}
         self._sculpt_asset_paths: dict[tuple[UUID, int | None], Path] = {}
         self._instance_capacity = 0
@@ -1060,6 +1075,14 @@ class PerspectiveRenderer:
                         if texture_id is not None
                         else None
                     )
+                    if shape_key == "avatar":
+                        # Unconditionally, not as a fallback: an avatar's
+                        # TextureEntry names skin and clothing layers baked for
+                        # the SL avatar mesh's UV layout, and this figure has a
+                        # different one. Stretching a face texture over a box
+                        # torso looks worse than a flat colour, which is what
+                        # made the palette worth having.
+                        texture = self._avatar_palette
                     if texture is not None:
                         self._program["u_use_texture"].value = True
                         texture.use(location=0)
@@ -1207,6 +1230,9 @@ class PerspectiveRenderer:
         for shape_key in list(self._mesh_face_meshes):
             self._release_mesh_face_meshes(shape_key)
         self._mesh_uv_shape_keys.clear()
+        if self._avatar_palette is not None:
+            self._avatar_palette.release()
+            self._avatar_palette = None
         for texture in self._object_textures.values():
             texture.release()
         self._object_textures.clear()
@@ -1284,7 +1310,9 @@ class PerspectiveRenderer:
     # -------------------------------------------------------------- helpers
 
     def _setup_gl(self, ctx: moderngl.Context) -> None:
-        from vibestorm.viewer3d import meshes
+        import moderngl
+
+        from vibestorm.viewer3d import avatar_mesh, meshes
 
         self._program = ctx.program(
             vertex_shader=_VERTEX_SHADER,
@@ -1298,6 +1326,12 @@ class PerspectiveRenderer:
             dynamic=True,
         )
 
+        palette_size, palette_data = avatar_mesh.palette_texture()
+        self._avatar_palette = ctx.texture(palette_size, 3, palette_data)
+        # Nearest, and never mipmapped: the strip is one texel per body
+        # region, so any filtering at all blends a shirt into a hand.
+        self._avatar_palette.filter = (moderngl.NEAREST, moderngl.NEAREST)
+
         shape_authors = {
             "cube": meshes.cube_mesh,
             "sphere": meshes.sphere_mesh,
@@ -1310,7 +1344,12 @@ class PerspectiveRenderer:
         }
         for shape_key, author in shape_authors.items():
             verts, indices = author()
-            packed = _interleave_vertex_attributes(verts, meshes.shape_normals(shape_key))
+            shape_uvs = meshes.shape_uvs(shape_key)
+            if shape_uvs is not None:
+                self._mesh_uv_shape_keys.add(shape_key)
+            packed = _interleave_vertex_attributes(
+                verts, meshes.shape_normals(shape_key), shape_uvs
+            )
             vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
             ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
             vao = ctx.vertex_array(

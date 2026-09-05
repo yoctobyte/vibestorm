@@ -521,13 +521,13 @@ def shape_face_indices(shape_key: str) -> dict[int, tuple[int, ...]] | None:
 
 
 def avatar_placeholder_mesh() -> tuple[tuple[float, ...], tuple[int, ...]]:
-    """Simple human-like avatar placeholder facing local +X.
+    """The humanoid figure avatars are drawn as, facing local +X.
 
-    Built from merged box parts in a unit-ish local frame. The renderer
-    applies the avatar ObjectUpdate scale/rotation, so this only needs a
-    recognizable silhouette and a clear facing direction.
+    The geometry lives in :mod:`vibestorm.viewer3d.avatar_mesh`, which is
+    imported lazily because that module borrows :func:`box_geometry` from this
+    one. The renderer applies the avatar's ``ObjectUpdate`` scale on top.
     """
-    verts, _normals, indices = _avatar_geometry()
+    verts, _normals, _uvs, indices = _avatar_geometry()
     return verts, indices
 
 
@@ -535,38 +535,30 @@ def avatar_placeholder_normals() -> tuple[float, ...]:
     return _avatar_geometry()[1]
 
 
-#: Body coordinates normalized to roughly fit inside [-0.5, 0.5]; the renderer
-#: multiplies by the avatar's ObjectUpdate scale, typically ~0.45 x 0.6 x 1.9 m.
-_AVATAR_PARTS: tuple[tuple[tuple[float, float, float], tuple[float, float, float]], ...] = (
-    ((0.0, 0.0, 0.05), (0.34, 0.46, 0.56)),      # torso
-    ((0.12, 0.0, 0.43), (0.30, 0.30, 0.26)),     # head, slightly forward
-    ((0.0, -0.33, 0.02), (0.18, 0.16, 0.52)),    # left arm
-    ((0.0, 0.33, 0.02), (0.18, 0.16, 0.52)),     # right arm
-    ((0.0, -0.12, -0.42), (0.18, 0.17, 0.48)),   # left leg
-    ((0.0, 0.12, -0.42), (0.18, 0.17, 0.48)),    # right leg
-    ((0.31, 0.0, 0.44), (0.08, 0.12, 0.08)),     # nose/facing marker
-)
+def avatar_placeholder_uvs() -> tuple[float, ...]:
+    """Per-vertex palette coordinates; see ``avatar_mesh.palette_texture``."""
+    return _avatar_geometry()[2]
 
 
-def _avatar_geometry() -> tuple[tuple[float, ...], tuple[float, ...], tuple[int, ...]]:
-    """Merged flat-shaded boxes.
+def _avatar_geometry() -> tuple[
+    tuple[float, ...], tuple[float, ...], tuple[float, ...], tuple[int, ...]
+]:
+    from vibestorm.viewer3d.avatar_mesh import avatar_geometry
 
-    This is the mesh that made the normals bug obvious: its parts sit *away*
-    from the origin, so a position-derived normal points away from the
-    avatar's centre rather than out of each box face, and every part shades
-    into one smooth plank.
+    return avatar_geometry()
+
+
+def shape_uvs(shape_key: str) -> tuple[float, ...] | None:
+    """Authored texture coordinates for a built-in shape, or ``None``.
+
+    Only the avatar has any: primitives are textured through the fragment
+    shader's position-and-normal projection, which is what SL's own face
+    mapping approximates, while the avatar needs each body part to land on its
+    own palette texel and so has to say where.
     """
-    vertices: list[float] = []
-    normals: list[float] = []
-    indices: list[int] = []
-    for center, size in _AVATAR_PARTS:
-        part_verts, part_normals, part_indices = box_geometry(
-            center, size, base_index=len(vertices) // 3
-        )
-        vertices.extend(part_verts)
-        normals.extend(part_normals)
-        indices.extend(part_indices)
-    return tuple(vertices), tuple(normals), tuple(indices)
+    if shape_key == "avatar":
+        return avatar_placeholder_uvs()
+    return None
 
 
 def shape_normals(shape_key: str) -> tuple[float, ...] | None:
@@ -597,6 +589,7 @@ __all__ = [
     "SL_FACE_COUNTS",
     "avatar_placeholder_mesh",
     "avatar_placeholder_normals",
+    "avatar_placeholder_uvs",
     "box_geometry",
     "cube_face_indices",
     "cube_mesh",
@@ -611,6 +604,7 @@ __all__ = [
     "ring_normals",
     "shape_face_indices",
     "shape_normals",
+    "shape_uvs",
     "sphere_mesh",
     "sphere_normals",
     "torus_mesh",

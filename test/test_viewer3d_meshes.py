@@ -6,6 +6,7 @@ helper. The actual GL upload + per-shape dispatch lands in step 7b
 and is tested via a real GL context.
 """
 
+import math
 import unittest
 
 
@@ -331,20 +332,39 @@ class ShapeNormalTests(unittest.TestCase):
         )
 
     def test_avatar_parts_do_not_share_one_radial_gradient(self) -> None:
-        # Position-derived normals on the avatar all point away from its
-        # centre. Authored ones are the six box-face directions and nothing
-        # else, whatever part they belong to.
-        from vibestorm.viewer3d.meshes import avatar_placeholder_normals
+        # The renderer's fallback normal is normalize(position), which on a
+        # merged figure points every vertex away from the figure's centre and
+        # smears the whole thing into one smooth plank. The tell is a normal
+        # that points *back* towards the centre -- the inside of a thigh, the
+        # sole of a shoe, the underside of a chin -- which the fallback can
+        # never produce, for any mesh, at any vertex.
+        from vibestorm.viewer3d.meshes import avatar_placeholder_mesh, avatar_placeholder_normals
 
+        verts, _indices = avatar_placeholder_mesh()
         normals = avatar_placeholder_normals()
-        distinct = {
-            tuple(round(c, 6) for c in normals[i : i + 3])
-            for i in range(0, len(normals), 3)
-        }
+        self.assertEqual(len(normals), len(verts))
 
-        self.assertEqual(len(distinct), 6)
-        for normal in distinct:
-            self.assertEqual(len([c for c in normal if abs(c) > 1e-6]), 1)
+        inward = 0
+        counted = 0
+        for index in range(0, len(verts), 3):
+            position = verts[index : index + 3]
+            length = math.sqrt(sum(c * c for c in position))
+            if length < 1e-9:
+                continue
+            counted += 1
+            radial = sum(
+                position[axis] * normals[index + axis] for axis in range(3)
+            ) / length
+            if radial < 0.0:
+                inward += 1
+
+        self.assertGreater(counted, 100)
+        self.assertGreater(
+            inward / counted,
+            0.25,
+            "hardly any avatar normal faces inward, which is what the "
+            "position fallback would produce",
+        )
 
     def test_prism_side_normals_point_out_of_their_faces(self) -> None:
         from vibestorm.viewer3d.meshes import prism_mesh
