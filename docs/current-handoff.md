@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-05
+Last updated: 2026-09-05 (second pass)
 
 ## The Owner's Priorities
 
@@ -20,7 +20,63 @@ missing code.
 
 ### Where each stands
 
-**A -- substantially improved, still short of smooth.** The viewer crashed on
+**A -- 2026-09-05: the frame is no longer the problem, and the world looks
+right.** Two more rounds since the note below, both driven by measurement
+rather than guesswork.
+
+*The HUD stopped repainting every frame.* It was repainted and re-uploaded 60
+times a second for content that changes a few times a second. On a GTX 1660
+SUPER at 1920x1080, measured with a hidden window and a real GL context, that
+path cost 6.3 ms a frame -- the full-screen texture upload alone was 2.2 ms.
+`redraw_hud` now reuses the texture already on the GPU: 0.9 ms, about 7x, and
+in the running viewer the phase went 6.0 ms to 0.5 ms.
+
+The check is layered, because a stale HUD is a far worse bug than a slow one.
+`LayeredGUIGroup.draw` is one call over `[image, rect, area, blendmode]`
+entries, so watching those *is* watching the draw rather than proxying for it;
+a pending visibility rebuild counts as changed; any event, a focused text entry
+(the cursor blinks by painting into an existing surface) and a hovered element
+all force a repaint; and every 0.5 s it repaints regardless, so a case nobody
+predicted is half a second late instead of never arriving.
+
+*The diagnostics panel was the most expensive thing in the viewer, and it was
+on by default.* It is now closed unless `--diagnostics` asks for it, and the
+framerate it existed to show moved to the status bar. `hud_update` went 7.6 ms
+to 3.7 ms.
+
+The measurement that explains every expensive widget in this HUD, and is worth
+keeping: **`UITextBox`'s layout is roughly quadratic in line count.** One line
+costs 1.3 ms, eight cost 23.5 ms, eighteen cost 49 ms. Markup is not the cause
+-- the same eight lines without it cost 20.7 ms -- and rendering them by hand
+with `pygame.font.render` costs 0.74 ms, thirty-two times faster.
+`append_html_text` is 9 ms, so even appending one line pays most of a rebuild.
+**The chat ticker is the last caller, and is the remaining hitch: 23.5 ms
+whenever chat changes.** A hand-rendered text surface behind a `UIImage` is the
+fix if it becomes worth doing.
+
+*The world looks like a world now.* `--screenshot PATH` was added first,
+because none of this was visible without it -- it reads the framebuffer back
+through GL (in an OPENGL display the surface pygame hands out is not the one
+the driver drew into, so saving that gives a black image and a confident report
+that it worked) and runs under Xvfb, so looking at a frame never needs a window
+on anyone's desktop. Two things the screenshots showed:
+
+1. **Terrain was textured with the region map tile** -- the 256x256 world-map
+   overview, one pixel per metre, with the objects already painted into it.
+   Stretched over 256 m, its few dark object pixels became large blurry black
+   patches on the ground. `RegionHandshake` names four real ground textures and
+   the elevation band each covers, and the parser had been skipping exactly
+   those bytes to reach `RegionID` beyond them. It reads them now, they join
+   the texture queue ahead of prim textures, and a shader blends the four by
+   height with the per-corner bands interpolated across the region.
+2. **Water ended at the region edge**, so the sea met the sky in a hard
+   straight line. It now reaches the far plane.
+
+Still open under A, in order of what a person would notice: the sky is a flat
+colour with no horizon gradient and no sun; the avatar is a stick figure; and
+the chat ticker hitch above.
+
+**A -- the earlier pass (2026-09-03).** The viewer crashed on
 the first `AvatarAnimation`, which arrives within seconds of any local session,
 so in practice it never survived a minute. Fixed in 395a58c. It now runs
 indefinitely against local OpenSim and draws terrain, water, 32 prims and the
