@@ -108,3 +108,17 @@ Moved to the docs project; listed so a later session does not re-queue them.
   does not stop -- it creates a *second* row beside the one it pulled from.
   Two items can also legitimately claim one file name (`notes` and
   `notes.lsl`), which no folder can represent. (2026-09-05)
+
+- `UpdateTaskInventory` copying an item into a prim may **rename** it. When the
+  prim already holds an item by that name the copy arrives as `<name> 1`, and
+  nothing in the reply says so -- the assigned name is only recoverable by
+  diffing the task inventory's item ids across the copy. A sync that trusts the
+  name it asked for finds no matching row on the next run and creates a second
+  item. (2026-09-05)
+- There is no message that creates a notecard row inside a prim.
+  `Scene.UpdateTaskInventory` rejects a zero item id, and an unknown one it
+  looks up in *agent* inventory and copies in, so the only route is two hops:
+  create it in agent inventory (`CreateInventoryItem` +
+  `UpdateNotecardAgentInventory`), then copy it in. Scripts are the exception,
+  not the rule -- `RezScript` has no counterpart for any other asset type.
+  (2026-09-05)

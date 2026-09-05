@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-03
+Last updated: 2026-09-05
 
 ## The Owner's Priorities
 
@@ -100,34 +100,38 @@ live grid, because that needs the owner's SL credentials. Treat as untested.
 depends on the asset types: text assets are covered; textures, sounds and
 animations inside an object have not been checked as a batch export.
 
-**D -- done for scripts, live-verified 2026-09-02.** Sync used to match files
-only against rows that already existed and skip the rest. It now creates the
-missing rows: unmatched `.lsl` files go through `RezScript`, and the contents
-upload onto the new row. `tools/verify_folder_sync.py` drives the shipped code
-paths against local OpenSim and confirms the whole chain -- row created,
-`compiled=True`, and the row's asset id moved off `Constants.DefaultScriptID`,
-which is what distinguishes "the upload landed" from "a row exists".
+**D -- done, live-verified 2026-09-05.** Both asset kinds now go in.
 
-Not done for **notecards**, but both halves are now proven and only need
-joining. There is no create-from-nothing message for a notecard inside a prim:
-`Scene.UpdateTaskInventory` rejects a zero item id, and an unknown one it looks
-up in *agent* inventory and copies in. So the route is two hops:
+*Scripts* were closed on 2026-09-02: unmatched `.lsl` files go through
+`RezScript` to make the row, then the contents upload onto it.
+`tools/verify_folder_sync.py` confirms row created, `compiled=True`, and the
+row's asset id moved off `Constants.DefaultScriptID` -- which is what separates
+"the upload landed" from "a row exists".
 
-1. Create the notecard in agent inventory. Already works -- `CreateInventoryItem`
-   then `UpdateNotecardAgentInventory`, verified 2026-08-15. It currently lives
-   in `cli.upload_notecard`, which builds **its own** `WorldClient`, so it is a
-   standalone command rather than something the viewer's sync can call. Making
-   it usable against an already-running session is the work.
-2. Copy it into the prim with `UpdateTaskInventory`. Live-verified 2026-09-02 by
-   `tools/verify_drop_item.py` -- a notecard went from agent inventory into a
-   prim we own, 2 rows to 3.
+*Notecards* were closed on 2026-09-05. There is no create-from-nothing message
+for a notecard inside a prim: `Scene.UpdateTaskInventory` rejects a zero item
+id, and an unknown one it looks up in *agent* inventory and copies in. So the
+route is two hops, and `sync/notecards.py` now does both:
 
-Until those join, an unmatched `.txt`/`.nc` is skipped with a reason that says
-why rather than the old generic message.
+1. `CreateInventoryItem`, then `UpdateNotecardAgentInventory` to give it text.
+2. `UpdateTaskInventory` to copy that item into the prim.
 
-One trap on hop 2: the sim *removes* a no-copy item from agent inventory,
-because copying it in is a move. Items created full-perm are unaffected, but a
-sync that drops user-supplied items must not assume otherwise.
+Two traps on hop 2, both found live and neither visible in the message
+template:
+
+- **The copy may be renamed.** If the prim already holds an item by that name,
+  the copy arrives as `<name> 1`. Nothing in the reply says so.
+  `copy_item_into_object` diffs the inventory item ids across the copy and
+  returns the name the sim actually assigned. Trusting the requested name meant
+  the next push found no matching row and made a *second* notecard.
+- **A no-copy item is moved, not copied.** The sim removes it from agent
+  inventory. Items we create full-perm are unaffected, but a sync that drops
+  user-supplied items must not assume otherwise.
+
+That rename is why names are no longer the primary key. Both planners consult
+the recorded bindings in `.vibestorm-sync.json` first and fall back to names
+only for rows they have never seen, so a rename in world -- by us or by anyone
+-- moves the binding instead of spawning a duplicate.
 
 A framing trap worth recording, because it cost a debugging round: a message
 encoder returns a bare body, and `WorldClient.queue_outbound_packet` expects a
@@ -136,28 +140,60 @@ straight in produces no error anywhere; the sim silently drops it and logs
 nothing, which reads exactly like a permissions denial. Always go through the
 session's `build_*_packet`.
 
-The GUI path has not been exercised -- the verification drove
-`_create_task_script_rows` and the capability directly, the same way the
-2026-08-15 object-sync verify ran headless. Pressing Upload in the viewer is
-still untested.
+The GUI path has not been exercised -- verification drives the shipped sync
+engine headlessly. Pressing Upload in the viewer is still untested, and the
+viewer's own sync closure predates `vibestorm.sync` and could now delegate to
+it.
 
-**E -- one-shot sync exists, loop does not.** Folder to object works and is
-live-verified. There is no watch, no re-sync on change, and no object-to-folder
-direction beyond the initial download. With D's create in place, E is now
-mostly a matter of *when* to re-run the sync rather than what it does.
+**E -- delivered, live-verified 2026-09-05.** `vibestorm.sync` is a package
+now, and `sync-object` on the CLI drives it:
+
+    ./run.sh tester sync-object --object <uuid> --folder ./work --pull
+    ./run.sh tester sync-object --object <uuid> --folder ./work --push
+    ./run.sh tester sync-object --object <uuid> --folder ./work --watch
+
+- **Pull** writes the object's contents to disk and records what it wrote.
+- **Push** uploads what changed, creates rows for files that have none, and
+  reports a *conflict* rather than guessing when two items want the same file
+  name (`notes` and `notes.lsl` both want `notes.lsl`) or when an untracked
+  file would be overwritten.
+- **Watch** polls at 2 s, and requires a file to hold the same digest for two
+  ticks before uploading it, so a half-written save never reaches the sim.
+
+`.vibestorm-sync.json` in the folder holds the bindings and the last-synced
+digest per item; a wrong `task_id` or a version bump discards it rather than
+acting on stale state. `tools/verify_object_folder_sync.py` proves the five
+properties that matter against the local sim: pull writes real bytes, pull
+then push is a no-op, an edit reaches the object and reads back *through the
+sim*, a notecard can be created from nothing, and pushing twice uploads once.
+
+Scope limits still stand: no deletes, no recursive folders, no automatic
+conflict resolution -- a conflict is reported and skipped.
 
 ### Concrete next step
 
-Either close the notecard half of D by finding how a viewer creates a notecard
-inside a prim (`UpdateTaskInventory` is the likely path -- it is registered in
-`LLClientView` and not yet read), or start E's watch loop on top of the sync
-that now works. Keep the existing scope limits -- no deletes, no conflict
-resolution, no recursive folders.
+C, D and E are closed for text assets. What is left, in the owner's own order:
+
+1. **B is still untested.** The launcher defaults SL to `home`, but nothing has
+   touched the live grid -- that needs the owner's credentials. Everything else
+   is guesswork until someone logs in.
+2. **C's remaining half: non-text assets.** Textures, sounds and animations
+   inside an object have never been exported as a batch. This may be less work
+   than it looks: `AssetDataReady` was never published for HTTP fetches at all
+   (fixed 2026-09-04), so every non-UDP asset silently returned `None`. Try it
+   before assuming it needs new code.
+3. **A's remaining win: dirty-track the HUD.** `hud_draw` 6.0 ms plus the HUD
+   upload 5.2 ms is 11 ms of a 24.8 ms frame spent redrawing a surface that
+   changes a few times a second. Not attempted yet because a stale HUD is a
+   worse bug than a slow one, and detecting "nothing changed" through
+   pygame_gui (hover, focus, cursor blink) needs care.
 
 **The local test prim `d7f47f7e-4328-4d17-a665-19feaec7b1e9` now carries
-several `vibestorm-sync-*` and `e2e-sync-*` scripts** left by probes and the
-end-to-end check. Nothing removes them, because no delete path exists. Clear
-them from a viewer if they get in the way.
+several `vibestorm-sync-*`, `e2e-sync-*` and `verify-note-*` items** left by
+probes, including a genuine name collision (`vibestorm-sync-88338` and
+`vibestorm-sync-88338.lsl`) that the verify tool reports as a conflict every
+run. Nothing removes them, because no delete path exists. Clear them from a
+viewer if they get in the way.
 
 ## Environment Note (2026-09-02)
 
