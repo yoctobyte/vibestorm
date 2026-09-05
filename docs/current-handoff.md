@@ -116,11 +116,51 @@ The 2D map viewer also got the hand-drawn chat ticker (it repaints the whole
 screen every frame, so there was nothing for dirty-tracking to save) and a
 `--screenshot` flag of its own.
 
-Still open under A, in order of what a person would notice: **avatars do not
-move their limbs** -- there is no skeleton, so `AvatarAnimation` arrives and
-nothing can be done with it; and **prim textures are the only thing textured**
--- terrain, water and sky are all shader-generated, which looks right but means
-a region with custom ground textures still gets this client's blend of them.
+**A -- the fourth pass (2026-09-05): the walk.**
+The figure now has a nine-bone skeleton -- two arms, two forearms, two thighs,
+two shins, and a root -- and each bone is one instanced draw of its own vertex
+buffer, so the cost is nine draws for the whole region rather than nine per
+avatar.
+
+What poses it is not an animation asset. An SL animation is keyframe data
+against a skeleton that ships inside viewers, and `AvatarAnimation` names what
+is playing only as UUIDs whose meaning comes from a table this project has no
+source for. Acting on them would be guessing, and a wrong guess looks exactly
+like a bug. So the gait is *derived*: from where each avatar has been, frame
+after frame. That works for every avatar in the region, including one running a
+custom animation this client could never have decoded, and it is honest about
+being this client's own idea of walking.
+
+Two things in `viewer3d/avatar_pose.py` are load-bearing:
+
+- **The stride advances with distance, not with time.** A foot plants at the
+  same point in the cycle however irregularly the updates arrive, so a stutter
+  in the network is not a stutter in the walk. Live: 9.12 cycles for 13.67 m,
+  against 9.12 expected.
+- **Speed is measured between *moves*, not between frames.** Positions arrive
+  as events at the simulator's rate; the viewer samples once a frame, so most
+  frames see the same position twice. Dividing "did not move" by a frame time
+  made the reading alternate between zero and several times the truth -- the
+  first live run measured a 9.28 m/s peak on a 1.9 m/s walk, which is every
+  avatar in the region breaking into a sprint between packets. Measuring across
+  the interval since the last actual move puts that at 2.57.
+
+A stop is a gap in the stream long enough to mean stopped (0.35 s) rather than
+merely late, which is also what absorbs a correction snap: halting, the sim
+moved the avatar 0.46 m in one 50 ms sample, and the stillness that follows
+zeroes it before the second is out. `tools/verify_avatar_gait.py` is the live
+check -- stand, walk, stop -- and it drives the derivation off the sim's own
+position stream at whatever cadence the sim chooses.
+
+Deliberately not attempted: a hip sink measured from the actual sole corners
+keeps the feet on the ground through the swing (drift under 2 mm across a
+stride) -- the obvious `1 - cos` formula over-corrects by 6.5 cm, because the
+shoe reaches forward of the ankle and the loss depends on which way the leg is
+swinging.
+
+Still open under A: **prim textures are the only thing textured** -- terrain,
+water and sky are all shader-generated, which looks right but means a region
+with custom ground textures still gets this client's blend of them.
 
 **A -- the earlier pass (2026-09-03).** The viewer crashed on
 the first `AvatarAnimation`, which arrives within seconds of any local session,
@@ -197,10 +237,27 @@ follows the new facing: ~12 m per six-second leg on all four compass headings.
 `home` rather than `last`. Nothing about this has been exercised against the
 live grid, because that needs the owner's SL credentials. Treat as untested.
 
-**C -- partly there.** Object task inventory downloads to
-`local/asset-downloads/<task-id>/`. Whether "all internals" is satisfied
-depends on the asset types: text assets are covered; textures, sounds and
-animations inside an object have not been checked as a batch export.
+**C -- done for the CLI, live-verified 2026-09-05.** Object task inventory
+downloads to `local/asset-downloads/<task-id>/`, and
+
+    ./run.sh tester sync-object --object <uuid> --folder ./work --pull --all-assets
+
+now brings out the types sync cannot author as well -- textures, wearables,
+animations, sounds. They come out **read-only**: push refuses to send one back,
+because nothing here knows how to build one and a round trip that silently
+truncates an asset is worse than no round trip. Each type's suffix is backed by
+bytes OpenSim actually wrote rather than by what the extension "ought" to be;
+an unverified type gets its own *name* (`.sound`, `.object`) instead of a
+guess, because a wrong `.ogg` invites a tool to fail confusingly later.
+
+`tools/verify_binary_export.py` is the check: it drops a body part and a
+texture into the test prim, pulls with and without the flag, compares the files
+byte for byte against what `fetch_task_asset` serves, and asserts the push
+refuses both. Off by default, so a folder someone is watching does not fill up
+with binaries on the next pull.
+
+Still text-only: the *viewer's* "save all text assets" button. The CLI is the
+complete path.
 
 **D -- done, live-verified 2026-09-05.** Both asset kinds now go in.
 
@@ -302,17 +359,17 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
 1. **B is still untested.** The launcher defaults SL to `home`, but nothing has
    touched the live grid -- that needs the owner's credentials. Everything else
    is guesswork until someone logs in.
-2. **C's remaining half: non-text assets.** Textures, sounds and animations
-   inside an object have never been exported as a batch. This may be less work
-   than it looks: `AssetDataReady` was never published for HTTP fetches at all
-   (fixed 2026-09-04), so every non-UDP asset silently returned `None`. Try it
-   before assuming it needs new code.
-3. **A's remaining win: avatars do not animate.** `AvatarAnimation` arrives
-   within seconds of any session and there is nothing to apply it to -- the
-   figure has no skeleton, only merged parts in one buffer. Walking, sitting
-   and typing all look identical. This is the largest remaining gap in "a
-   reasonable visualization", and the largest piece of work under A.
-   (HUD dirty-tracking, which used to be this entry, is done.)
+2. **C's last gap is the GUI, not the protocol.** `--all-assets` covers every
+   type from the CLI; the viewer's "save all text assets" button still only
+   saves text. Small, and only worth doing if the owner works from the window
+   rather than the shell.
+3. **A's remaining win: nothing but prims is textured.** Terrain, water and
+   sky are shader-generated, so a region with custom ground textures gets this
+   client's blend of them rather than its own. Next after that, in order of
+   what a person would notice: the gait covers walking and standing but sitting
+   still reads as standing, and attachments are not drawn at all.
+   (HUD dirty-tracking and the walk cycle, which used to be this entry, are
+   done -- see "A -- the fourth pass".)
 
 **The local test prim `d7f47f7e-4328-4d17-a665-19feaec7b1e9` now carries
 several `vibestorm-sync-*`, `e2e-sync-*` and `verify-note-*` items** left by

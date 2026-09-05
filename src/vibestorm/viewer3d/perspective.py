@@ -79,6 +79,11 @@ _SHAPE_ALIASES: dict[str, str] = {
     "avatar": "avatar",
 }
 
+#: Avatars do not go through ``_shape_meshes``. They are drawn from one buffer
+#: per bone so a limb can move on its own, which a single merged mesh cannot
+#: do: an instanced draw carries one matrix, and one matrix is one pose.
+_AVATAR_SHAPE_KEY: str = "avatar"
+
 
 def _interleave_vertex_attributes(
     vertices: tuple[float, ...] | list[float],
@@ -884,6 +889,8 @@ class PerspectiveRenderer:
         # names body textures laid out for a mesh this tree does not have --
         # so its parts index into this instead of sharing one instance tint.
         self._avatar_palette: moderngl.Texture | None = None
+        #: One index buffer per bone of the avatar figure, keyed by bone name.
+        self._avatar_bone_meshes: dict[str, _ShapeMesh] = {}
         self._mesh_asset_paths: dict[UUID, Path] = {}
         self._sculpt_asset_paths: dict[tuple[UUID, int | None], Path] = {}
         self._instance_capacity = 0
@@ -997,6 +1004,7 @@ class PerspectiveRenderer:
         self._upload_scene_mesh_assets(ctx, scene)
         self._upload_scene_sculpt_assets(ctx, scene)
         shape_groups = self._group_entities_by_shape(scene)
+        avatar_entities = shape_groups.pop(_AVATAR_SHAPE_KEY, [])
         # Multi-face prims bypass the (shape, texture) grouping: their texture
         # is chosen per SL face, so grouping them by a single texture up front
         # would only split each shape into redundant passes.
@@ -1049,6 +1057,10 @@ class PerspectiveRenderer:
             if scene.render_parcel_borders:
                 self._upload_parcel_borders(ctx, scene)
                 self._render_parcel_borders(ctx, view_data, proj_data)
+
+            if scene.render_objects and avatar_entities:
+                self._render_avatars(ctx, scene, avatar_entities, view_data, proj_data,
+                                     sun_direction=sun_direction)
 
             if scene.render_objects and (groups or face_shape_groups):
                 self._program["u_view"].write(view_data)
@@ -1233,6 +1245,11 @@ class PerspectiveRenderer:
         if self._avatar_palette is not None:
             self._avatar_palette.release()
             self._avatar_palette = None
+        for mesh in self._avatar_bone_meshes.values():
+            mesh.vao.release()
+            mesh.ibo.release()
+            mesh.vbo.release()
+        self._avatar_bone_meshes.clear()
         for texture in self._object_textures.values():
             texture.release()
         self._object_textures.clear()
@@ -1332,6 +1349,25 @@ class PerspectiveRenderer:
         # region, so any filtering at all blends a shirt into a hand.
         self._avatar_palette.filter = (moderngl.NEAREST, moderngl.NEAREST)
 
+        for bone_name, bone_mesh in avatar_mesh.avatar_bone_meshes().items():
+            packed = _interleave_vertex_attributes(
+                bone_mesh.vertices, bone_mesh.normals, bone_mesh.uvs
+            )
+            vbo = ctx.buffer(struct.pack(f"{len(packed)}f", *packed))
+            ibo = ctx.buffer(struct.pack(f"{len(bone_mesh.indices)}I", *bone_mesh.indices))
+            vao = ctx.vertex_array(
+                self._program,
+                [
+                    (vbo, "3f 3f 2f", "in_pos", "in_normal", "in_mesh_uv"),
+                    (self._instance_vbo, "16f 3f /i", "in_model", "in_tint"),
+                ],
+                index_buffer=ibo,
+                index_element_size=4,
+            )
+            self._avatar_bone_meshes[bone_name] = _ShapeMesh(
+                vbo=vbo, ibo=ibo, vao=vao, index_count=len(bone_mesh.indices)
+            )
+
         shape_authors = {
             "cube": meshes.cube_mesh,
             "sphere": meshes.sphere_mesh,
@@ -1340,7 +1376,6 @@ class PerspectiveRenderer:
             "tube": meshes.tube_mesh,
             "ring": meshes.ring_mesh,
             "prism": meshes.prism_mesh,
-            "avatar": meshes.avatar_placeholder_mesh,
         }
         for shape_key, author in shape_authors.items():
             verts, indices = author()
@@ -1690,7 +1725,7 @@ class PerspectiveRenderer:
                 continue
             raw = "avatar" if entity.kind == "avatar" else entity.shape
             shape_key = _SHAPE_ALIASES.get(raw, raw) if raw is not None else _DEFAULT_SHAPE_KEY
-            if shape_key not in self._shape_meshes:
+            if shape_key not in self._shape_meshes and shape_key != _AVATAR_SHAPE_KEY:
                 shape_key = _DEFAULT_SHAPE_KEY
             groups.setdefault(shape_key, []).append(entity)
         return groups
@@ -1912,6 +1947,73 @@ class PerspectiveRenderer:
                     self._program["u_use_texture"].value = False
                 self._upload_instances_for(ctx, face_entities)
                 mesh.vao.render(instances=len(face_entities))
+
+    def _render_avatars(
+        self,
+        ctx: moderngl.Context,
+        scene: Scene,
+        entities: list[SceneEntity],
+        view_data: bytes,
+        proj_data: bytes,
+        *,
+        sun_direction: tuple[float, float, float],
+    ) -> None:
+        """Draw every avatar, one instanced pass per bone.
+
+        Nine draws for the whole region rather than nine per avatar: each pass
+        renders one bone across every avatar at once, with that avatar's own
+        pose folded into its instance matrix. The cost does not grow with how
+        many people are standing about.
+
+        Colour comes from the palette texture unconditionally, never from the
+        instance tint and never from the avatar's own ``TextureEntry`` -- see
+        ``avatar_mesh`` for why.
+        """
+        from vibestorm.viewer3d import avatar_mesh
+
+        assert self._program is not None
+        if not self._avatar_bone_meshes or self._avatar_palette is None:
+            return
+
+        self._program["u_view"].write(view_data)
+        self._program["u_proj"].write(proj_data)
+        self._program["u_sun_dir"].value = sun_direction
+        self._program["u_ambient_light"].value = AMBIENT_LIGHT
+        self._program["u_diffuse_light"].value = DIFFUSE_LIGHT
+        self._program["u_use_mesh_uv"].value = True
+        self._program["u_use_texture"].value = True
+        if "u_texture" in self._program:
+            self._program["u_texture"].value = 0
+        self._avatar_palette.use(location=0)
+
+        poses = [avatar_mesh.bone_matrices(self._pose_for(scene, entity)) for entity in entities]
+        for bone_name, mesh in self._avatar_bone_meshes.items():
+            floats: list[float] = []
+            for entity, bones in zip(entities, poses, strict=True):
+                bone = bones.get(bone_name)
+                if bone is None:
+                    continue
+                quat = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
+                model = model_matrix(entity.position, entity.scale, quat)
+                floats.extend(avatar_mesh.multiply_4x4(model, bone))
+                floats.extend((1.0, 1.0, 1.0))
+            if not floats:
+                continue
+            count = len(floats) // _FLOATS_PER_INSTANCE
+            if count > self._instance_capacity:
+                self._grow_instance_buffer(ctx, count)
+            data = struct.pack(f"{len(floats)}f", *floats)
+            assert self._instance_vbo is not None
+            self._instance_vbo.orphan(size=len(data))
+            self._instance_vbo.write(data)
+            mesh.vao.render(instances=count)
+
+    def _pose_for(self, scene: Scene, entity: SceneEntity) -> dict[str, float]:
+        """The bone pitches this avatar should be drawn with, or an empty rest pose."""
+        poses = getattr(scene, "avatar_poses", None)
+        if not poses:
+            return {}
+        return poses.get(entity.local_id) or {}
 
     def _upload_instances_for(
         self, ctx: moderngl.Context, entities: list[SceneEntity]

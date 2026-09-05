@@ -66,6 +66,8 @@ class AvatarPart:
     #: narrow towards the ankle or wrist the way a limb does.
     taper: float = 1.0
     sides: int = 8
+    #: Which bone carries this part. Everything not on a limb rides the root.
+    bone: str = "root"
 
 
 #: Roughly seven and a half heads tall, which is the proportion that reads as
@@ -85,20 +87,54 @@ AVATAR_PARTS: tuple[AvatarPart, ...] = (
     AvatarPart("shirt", "tube", (0.0, 0.0, 0.330), (0.250, 0.380, 0.560), taper=0.80),
     AvatarPart("trousers", "tube", (0.0, 0.0, -0.020), (0.230, 0.330, 0.160), taper=0.95),
     # Arms, left (+Y) then right, shoulder to hand.
-    AvatarPart("shirt", "tube", (0.0, 0.235, 0.420), (0.115, 0.115, 0.290), taper=0.85),
-    AvatarPart("skin", "tube", (0.0, 0.243, 0.150), (0.098, 0.098, 0.260), taper=0.85),
-    AvatarPart("skin", "box", (0.0, 0.247, -0.040), (0.055, 0.090, 0.130)),
-    AvatarPart("shirt", "tube", (0.0, -0.235, 0.420), (0.115, 0.115, 0.290), taper=0.85),
-    AvatarPart("skin", "tube", (0.0, -0.243, 0.150), (0.098, 0.098, 0.260), taper=0.85),
-    AvatarPart("skin", "box", (0.0, -0.247, -0.040), (0.055, 0.090, 0.130)),
+    AvatarPart("shirt", "tube", (0.0, 0.235, 0.420), (0.115, 0.115, 0.290), taper=0.85, bone="arm_l"),
+    AvatarPart("skin", "tube", (0.0, 0.243, 0.150), (0.098, 0.098, 0.260), taper=0.85, bone="forearm_l"),
+    AvatarPart("skin", "box", (0.0, 0.247, -0.040), (0.055, 0.090, 0.130), bone="forearm_l"),
+    AvatarPart("shirt", "tube", (0.0, -0.235, 0.420), (0.115, 0.115, 0.290), taper=0.85, bone="arm_r"),
+    AvatarPart("skin", "tube", (0.0, -0.243, 0.150), (0.098, 0.098, 0.260), taper=0.85, bone="forearm_r"),
+    AvatarPart("skin", "box", (0.0, -0.247, -0.040), (0.055, 0.090, 0.130), bone="forearm_r"),
     # Legs, left then right, hip to shoe. Shoes sit forward of the ankle.
-    AvatarPart("trousers", "tube", (0.0, 0.090, -0.245), (0.190, 0.190, 0.450), taper=0.78),
-    AvatarPart("trousers", "tube", (0.0, 0.090, -0.665), (0.148, 0.148, 0.390), taper=0.80),
-    AvatarPart("shoes", "box", (0.035, 0.090, -0.910), (0.230, 0.110, 0.080)),
-    AvatarPart("trousers", "tube", (0.0, -0.090, -0.245), (0.190, 0.190, 0.450), taper=0.78),
-    AvatarPart("trousers", "tube", (0.0, -0.090, -0.665), (0.148, 0.148, 0.390), taper=0.80),
-    AvatarPart("shoes", "box", (0.035, -0.090, -0.910), (0.230, 0.110, 0.080)),
+    AvatarPart("trousers", "tube", (0.0, 0.090, -0.245), (0.190, 0.190, 0.450), taper=0.78, bone="leg_l"),
+    AvatarPart("trousers", "tube", (0.0, 0.090, -0.665), (0.148, 0.148, 0.390), taper=0.80, bone="shin_l"),
+    AvatarPart("shoes", "box", (0.035, 0.090, -0.910), (0.230, 0.110, 0.080), bone="shin_l"),
+    AvatarPart("trousers", "tube", (0.0, -0.090, -0.245), (0.190, 0.190, 0.450), taper=0.78, bone="leg_r"),
+    AvatarPart("trousers", "tube", (0.0, -0.090, -0.665), (0.148, 0.148, 0.390), taper=0.80, bone="shin_r"),
+    AvatarPart("shoes", "box", (0.035, -0.090, -0.910), (0.230, 0.110, 0.080), bone="shin_r"),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class AvatarBone:
+    """A joint the figure can rotate about, in metres, in the figure's frame."""
+
+    name: str
+    parent: str | None
+    pivot: tuple[float, float, float]
+
+
+#: Nine bones, parents before children so one forward pass composes them. Each
+#: pivot is the *top* of the parts it carries -- a shoulder is the top of the
+#: upper arm, a knee the top of the shin -- so rotating a bone swings its limb
+#: from the joint rather than about the limb's own middle.
+#:
+#: Deliberately shallow. There is no spine, no ankle and no wrist, because
+#: nothing this client can obtain would drive them: SL animation assets are
+#: keyframes against a skeleton this tree does not have, and the poses here are
+#: derived from where the avatar has moved. A joint nothing can articulate is
+#: cost with no picture behind it.
+AVATAR_BONES: tuple[AvatarBone, ...] = (
+    AvatarBone("root", None, (0.0, 0.0, 0.0)),
+    AvatarBone("arm_l", "root", (0.0, 0.235, 0.565)),
+    AvatarBone("forearm_l", "arm_l", (0.0, 0.243, 0.280)),
+    AvatarBone("arm_r", "root", (0.0, -0.235, 0.565)),
+    AvatarBone("forearm_r", "arm_r", (0.0, -0.243, 0.280)),
+    AvatarBone("leg_l", "root", (0.0, 0.090, -0.020)),
+    AvatarBone("shin_l", "leg_l", (0.0, 0.090, -0.470)),
+    AvatarBone("leg_r", "root", (0.0, -0.090, -0.020)),
+    AvatarBone("shin_r", "leg_r", (0.0, -0.090, -0.470)),
+)
+
+_BONE_BY_NAME: dict[str, AvatarBone] = {bone.name: bone for bone in AVATAR_BONES}
 
 
 class _Builder:
@@ -279,6 +315,221 @@ def _add_ellipsoid(
 _ADDERS = {"box": _add_box, "tube": _add_tube, "ellipsoid": _add_ellipsoid}
 
 
+@dataclass(frozen=True, slots=True)
+class BoneMesh:
+    """One bone's geometry, in **metres, relative to that bone's pivot**.
+
+    Relative to the pivot because that is what makes a rotation a rotation:
+    ``R * v`` swings the limb about its joint. Absolute coordinates would swing
+    it about the figure's navel.
+
+    In metres because a rotation in the mesh's own non-uniformly scaled space
+    is a shear, not a rotation. The scale is folded into the matrix the
+    renderer hands the shader instead -- see :func:`bone_matrices`.
+    """
+
+    vertices: tuple[float, ...]
+    normals: tuple[float, ...]
+    uvs: tuple[float, ...]
+    indices: tuple[int, ...]
+
+
+@lru_cache(maxsize=1)
+def avatar_bone_meshes() -> dict[str, BoneMesh]:
+    """One :class:`BoneMesh` per bone that carries at least one part."""
+    meshes: dict[str, BoneMesh] = {}
+    for bone in AVATAR_BONES:
+        parts = [part for part in AVATAR_PARTS if part.bone == bone.name]
+        if not parts:
+            continue
+        builder = _Builder()
+        for part in parts:
+            _ADDERS[part.kind](builder, part, palette_uv(part.region))
+        px, py, pz = bone.pivot
+        relative: list[float] = []
+        for index in range(0, len(builder.vertices), 3):
+            relative.append(builder.vertices[index] - px)
+            relative.append(builder.vertices[index + 1] - py)
+            relative.append(builder.vertices[index + 2] - pz)
+        meshes[bone.name] = BoneMesh(
+            vertices=tuple(relative),
+            normals=tuple(builder.normals),
+            uvs=tuple(builder.uvs),
+            indices=tuple(builder.indices),
+        )
+    return meshes
+
+
+def multiply_4x4(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, ...]:
+    """Column-major 4x4 product ``a * b``, matching ``model_matrix``'s layout.
+
+    Public because the renderer needs it for exactly one thing -- putting an
+    avatar's model matrix in front of each of its bone matrices -- and a
+    second copy over there would be a second place to get the column order
+    wrong.
+
+    Written out rather than looped. This runs per bone per avatar per frame,
+    and the obvious triple loop with a generator ``sum`` measured 40 us a
+    call -- a dozen avatars walking about would have cost more of the frame
+    than drawing them.
+    """
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15 = a
+    out = []
+    for column in range(4):
+        base = column * 4
+        b0, b1, b2, b3 = b[base], b[base + 1], b[base + 2], b[base + 3]
+        out.append(a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3)
+        out.append(a1 * b0 + a5 * b1 + a9 * b2 + a13 * b3)
+        out.append(a2 * b0 + a6 * b1 + a10 * b2 + a14 * b3)
+        out.append(a3 * b0 + a7 * b1 + a11 * b2 + a15 * b3)
+    return tuple(out)
+
+
+def _translation(x: float, y: float, z: float) -> tuple[float, ...]:
+    return (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, x, y, z, 1.0)
+
+
+def _pitch_at(offset: tuple[float, float, float], radians: float) -> tuple[float, ...]:
+    """``translate(offset) * rotate_about_y(radians)``, built directly.
+
+    Pitch is the only axis a limb here needs. +Y is the avatar's left and +X
+    is forward, so a positive angle tips the *top* of a bone forward and
+    swings the far end -- the foot, the hand -- back. Composing the two as a
+    matrix product would be a third of the work in this module for a result
+    that is just the rotation with the offset in its last column.
+    """
+    c, s = math.cos(radians), math.sin(radians)
+    return (
+        c, 0.0, -s, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        s, 0.0, c, 0.0,
+        offset[0], offset[1], offset[2], 1.0,
+    )
+
+
+_NOMINAL_TO_MESH: tuple[float, ...] = (
+    1.0 / AVATAR_NOMINAL_SCALE[0], 0.0, 0.0, 0.0,
+    0.0, 1.0 / AVATAR_NOMINAL_SCALE[1], 0.0, 0.0,
+    0.0, 0.0, 1.0 / AVATAR_NOMINAL_SCALE[2], 0.0,
+    0.0, 0.0, 0.0, 1.0,
+)
+
+
+@lru_cache(maxsize=1)
+def _ground_probes() -> tuple[tuple[str, tuple[float, float, float]], ...]:
+    """The points that can touch the ground: the corners of each sole.
+
+    Derived from the part table rather than written down, so a shoe that moves
+    or changes size cannot leave a stale constant behind. Only the front and
+    back edges matter -- ``y`` does not affect height under a pitch -- so this
+    is four points, not a mesh.
+    """
+    probes: list[tuple[str, tuple[float, float, float]]] = []
+    for part in AVATAR_PARTS:
+        if part.region != "shoes":
+            continue
+        cx, cy, cz = part.center
+        hx, hz = part.size[0] / 2.0, part.size[2] / 2.0
+        probes.append((part.bone, (cx - hx, cy, cz - hz)))
+        probes.append((part.bone, (cx + hx, cy, cz - hz)))
+    return tuple(probes)
+
+
+def _lowest_sole(composed: dict[str, tuple[float, ...]]) -> float:
+    """Height of the lowest sole corner under a set of composed bone matrices."""
+    lowest = None
+    for bone_name, point in _ground_probes():
+        pivot = _BONE_BY_NAME[bone_name].pivot
+        x = point[0] - pivot[0]
+        y = point[1] - pivot[1]
+        z = point[2] - pivot[2]
+        matrix = composed[bone_name]
+        height = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14]
+        lowest = height if lowest is None else min(lowest, height)
+    assert lowest is not None
+    return lowest
+
+
+@lru_cache(maxsize=1)
+def _rest_sole_height() -> float:
+    """Where the soles sit with no pose applied: the height to hold them at."""
+    rest = {bone.name: _translation(*bone.pivot) for bone in AVATAR_BONES}
+    return _lowest_sole(rest)
+
+
+#: Angles are rounded to this many decimals before the cache is consulted.
+#: Three decimals is a fifth of a degree, which moves a fingertip by a tenth of
+#: a millimetre; what it buys is that an avatar standing still -- the common
+#: case, in any region with people in it -- recomputes nothing at all.
+_POSE_PRECISION = 3
+
+
+def bone_matrices(pose: dict[str, float] | None = None) -> dict[str, tuple[float, ...]]:
+    """Per-bone matrices to post-multiply onto an avatar's model matrix.
+
+    ``pose`` gives each bone a pitch in radians about its own pivot; anything
+    absent is at rest. The result maps a :class:`BoneMesh`'s metre-space
+    vertices into the space the renderer's model matrix expects, so the shader
+    sees ``model * bone * vertex``.
+
+    With an empty pose every bone comes back as a plain translation to its
+    pivot, which reassembles exactly the figure :func:`avatar_geometry` builds
+    -- that equivalence is what makes "the rig changed nothing" checkable.
+    """
+    pose = pose or {}
+    return _bone_matrices_cached(
+        tuple(
+            round(pose.get(bone.name, 0.0), _POSE_PRECISION) for bone in AVATAR_BONES
+        )
+    )
+
+
+@lru_cache(maxsize=256)
+def _bone_matrices_cached(angles: tuple[float, ...]) -> dict[str, tuple[float, ...]]:
+    composed: dict[str, tuple[float, ...]] = {}
+    for bone, angle in zip(AVATAR_BONES, angles, strict=True):
+        parent_pivot = (
+            _BONE_BY_NAME[bone.parent].pivot if bone.parent is not None else (0.0, 0.0, 0.0)
+        )
+        local = _pitch_at(
+            (
+                bone.pivot[0] - parent_pivot[0],
+                bone.pivot[1] - parent_pivot[1],
+                bone.pivot[2] - parent_pivot[2],
+            ),
+            angle,
+        )
+        if bone.parent is None:
+            composed[bone.name] = local
+        else:
+            composed[bone.name] = multiply_4x4(composed[bone.parent], local)
+
+    # A leg swung forward or back reaches less far down than a straight one,
+    # and a bent knee less again. Leave the hips where they were and the whole
+    # figure lifts off the ground at each extreme of the stride and settles
+    # back in the middle -- a bob in the wrong direction, with both feet in the
+    # air at the moment one of them should be planted. Measure the rise from
+    # the soles themselves rather than from an arm-length approximation: the
+    # shoe reaches forward of the ankle, so how much a leg loses depends on
+    # which way it swung.
+    drop = _lowest_sole(composed) - _rest_sole_height()
+
+    # Sinking the root is a pure translation, and pre-multiplying a column-
+    # major matrix by one only touches its last column; likewise the metre-to-
+    # mesh conversion is diagonal, so it only scales rows. Both are written out
+    # rather than run through _multiply, which halves the work per bone.
+    dx, dy, dz = (1.0 / value for value in AVATAR_NOMINAL_SCALE)
+    return {
+        name: (
+            m[0] * dx, m[1] * dy, m[2] * dz, m[3],
+            m[4] * dx, m[5] * dy, m[6] * dz, m[7],
+            m[8] * dx, m[9] * dy, m[10] * dz, m[11],
+            m[12] * dx, m[13] * dy, (m[14] - drop) * dz, m[15],
+        )
+        for name, m in composed.items()
+    }
+
+
 @lru_cache(maxsize=1)
 def avatar_geometry() -> tuple[
     tuple[float, ...], tuple[float, ...], tuple[float, ...], tuple[int, ...]
@@ -322,8 +573,13 @@ __all__ = [
     "AVATAR_NOMINAL_SCALE",
     "AVATAR_PARTS",
     "PALETTE",
+    "AvatarBone",
     "AvatarPart",
+    "BoneMesh",
+    "avatar_bone_meshes",
     "avatar_geometry",
+    "bone_matrices",
+    "multiply_4x4",
     "palette_texture",
     "palette_uv",
 ]

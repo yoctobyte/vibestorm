@@ -205,6 +205,143 @@ class AvatarPaletteTests(unittest.TestCase):
             self.assertLess(texel, width)
 
 
+class AvatarRigTests(unittest.TestCase):
+    """The skeleton the limbs swing on.
+
+    The invariant that matters most is that the rig **changes nothing at
+    rest**: nine buffers reassembled by nine matrices have to land exactly
+    where one merged buffer did, or every avatar in the world is subtly
+    dismembered and no test of the pose would notice.
+    """
+
+    def _rigged_vertices(self, pose=None):
+        from vibestorm.viewer3d.avatar_mesh import (
+            AVATAR_BONES,
+            avatar_bone_meshes,
+            bone_matrices,
+        )
+
+        matrices = bone_matrices(pose)
+        meshes = avatar_bone_meshes()
+        points = []
+        for bone in AVATAR_BONES:
+            mesh = meshes.get(bone.name)
+            if mesh is None:
+                continue
+            m = matrices[bone.name]
+            for index in range(0, len(mesh.vertices), 3):
+                x, y, z = mesh.vertices[index : index + 3]
+                points.append(
+                    tuple(
+                        m[0 * 4 + row] * x
+                        + m[1 * 4 + row] * y
+                        + m[2 * 4 + row] * z
+                        + m[3 * 4 + row]
+                        for row in range(3)
+                    )
+                )
+        return points
+
+    def test_the_rig_at_rest_is_the_figure_exactly(self) -> None:
+        rigged = sorted(self._rigged_vertices())
+        merged_flat = avatar_geometry()[0]
+        merged = sorted(
+            tuple(merged_flat[i : i + 3]) for i in range(0, len(merged_flat), 3)
+        )
+
+        self.assertEqual(len(rigged), len(merged))
+        worst = max(
+            max(abs(a - b) for a, b in zip(point, other))
+            for point, other in zip(rigged, merged)
+        )
+        self.assertLess(worst, 1e-9, "the rig does not reassemble the figure")
+
+    def test_every_part_rides_a_bone_that_exists(self) -> None:
+        from vibestorm.viewer3d.avatar_mesh import AVATAR_BONES
+
+        known = {bone.name for bone in AVATAR_BONES}
+        for part in AVATAR_PARTS:
+            self.assertIn(part.bone, known)
+
+    def test_every_bone_carries_at_least_one_part(self) -> None:
+        # A bone with nothing on it is a joint that costs a draw call and
+        # moves nothing.
+        from vibestorm.viewer3d.avatar_mesh import AVATAR_BONES, avatar_bone_meshes
+
+        self.assertEqual(
+            {bone.name for bone in AVATAR_BONES}, set(avatar_bone_meshes())
+        )
+
+    def test_parents_come_before_their_children(self) -> None:
+        # bone_matrices composes in one forward pass, so a child listed first
+        # would be multiplied by a parent matrix that does not exist yet.
+        from vibestorm.viewer3d.avatar_mesh import AVATAR_BONES
+
+        seen: set[str] = set()
+        for bone in AVATAR_BONES:
+            if bone.parent is not None:
+                self.assertIn(bone.parent, seen, f"{bone.name} precedes {bone.parent}")
+            seen.add(bone.name)
+
+    def test_bending_a_knee_moves_the_foot_and_not_the_head(self) -> None:
+        # The whole point of the hierarchy: a bone's rotation reaches its
+        # children and nothing else.
+        rest = self._rigged_vertices()
+        bent = self._rigged_vertices({"shin_l": -0.8})
+
+        moved = [
+            (before, after)
+            for before, after in zip(rest, bent)
+            if max(abs(a - b) for a, b in zip(before, after)) > 1e-6
+        ]
+
+        self.assertTrue(moved, "bending the knee moved nothing")
+        for before, _after in moved:
+            self.assertLess(before[2], 0.0, "something above the waist moved")
+            self.assertGreater(before[1], 0.0, "the right leg moved with the left")
+
+    def test_a_swung_leg_keeps_its_sole_on_the_ground(self) -> None:
+        # A leg swung forward reaches less far down than a straight one, so
+        # without the matching drop at the hips the figure lifts off the
+        # ground at each extreme of the stride and settles in the middle.
+        from vibestorm.viewer3d.avatar_mesh import AVATAR_NOMINAL_SCALE
+
+        standing = min(point[2] for point in self._rigged_vertices())
+        striding = min(
+            point[2] for point in self._rigged_vertices({"leg_l": 0.45, "leg_r": -0.45})
+        )
+
+        drift_m = abs(striding - standing) * AVATAR_NOMINAL_SCALE[2]
+        self.assertLess(drift_m, 0.002, f"the feet drift {drift_m:.3f} m off the ground")
+
+    def test_the_soles_stay_put_through_a_whole_stride(self) -> None:
+        # One pose could be right by luck. The correction is measured from the
+        # soles, and the shoe reaches forward of the ankle, so how much a leg
+        # loses depends on which way it swung -- an arm-length approximation
+        # is right at one phase and out by centimetres at the others.
+        import math
+
+        from vibestorm.viewer3d.avatar_mesh import AVATAR_NOMINAL_SCALE
+        from vibestorm.viewer3d.avatar_pose import AvatarMotion, pose_for_motion
+
+        standing = min(point[2] for point in self._rigged_vertices())
+        for step in range(16):
+            phase = 2.0 * math.pi * step / 16.0
+            pose = pose_for_motion(
+                AvatarMotion(position=(0.0, 0.0, 0.0), speed_mps=3.2, gait_phase=phase)
+            )
+            lowest = min(point[2] for point in self._rigged_vertices(pose))
+            drift_m = abs(lowest - standing) * AVATAR_NOMINAL_SCALE[2]
+            with self.subTest(phase=round(phase, 3)):
+                self.assertLess(drift_m, 0.002, f"the feet drift {drift_m:.3f} m")
+
+    def test_the_hips_do_not_move_when_nobody_is_walking(self) -> None:
+        from vibestorm.viewer3d.avatar_mesh import bone_matrices
+
+        self.assertEqual(bone_matrices({})["root"][14], 0.0)
+        self.assertEqual(bone_matrices({"forearm_l": -0.2})["root"][14], 0.0)
+
+
 class MeshModuleHandoffTests(unittest.TestCase):
     """``meshes`` is what the renderer asks; this module is what answers."""
 

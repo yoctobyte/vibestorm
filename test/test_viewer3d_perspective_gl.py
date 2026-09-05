@@ -78,9 +78,15 @@ class PerspectiveRendererGLTests(_GLTestBase):
             # Step 7b ships the full primitive library — every shape
             # has its own VBO/IBO/VAO bound against the shared
             # instance buffer.
-            for key in ("cube", "sphere", "cylinder", "torus", "prism", "avatar"):
+            for key in ("cube", "sphere", "cylinder", "torus", "prism"):
                 mesh = renderer._shape_meshes.get(key)
                 self.assertIsNotNone(mesh, f"missing GL mesh for {key!r}")
+            # Avatars are not in _shape_meshes: they get one buffer per bone
+            # so a limb can move without the rest of the figure.
+            for bone in ("root", "arm_l", "shin_r"):
+                self.assertIsNotNone(
+                    renderer._avatar_bone_meshes.get(bone), f"missing bone mesh {bone!r}"
+                )
                 self.assertGreater(mesh.index_count, 0)
         finally:
             renderer.clear_caches()
@@ -1750,6 +1756,124 @@ class AvatarNameTagGLTests(_GLTestBase):
         scene.render_hover_text = False
 
         self.assertGreater(self._whitish(self._render(scene)), 0)
+
+
+class AvatarPoseGLTests(_GLTestBase):
+    """The gait has to survive the trip from a pose dict to the framebuffer.
+
+    Between the two are nine per-bone buffers, nine composed matrices and one
+    instance upload per bone across every avatar in the region. A mistake
+    anywhere in that -- a bone drawn at rest, an instance matrix landing on
+    the wrong avatar -- still renders an avatar-shaped avatar, which is why
+    these look at pixels rather than at matrices.
+    """
+
+    FBO_SIZE = (160, 160)
+
+    def _render(self, avatars, poses) -> bytes:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.render_sky = False
+        for local_id, position in avatars:
+            scene.avatar_entities[local_id] = SceneEntity(
+                local_id=local_id,
+                pcode=47,
+                kind="avatar",
+                position=position,
+                scale=(0.45, 0.60, 1.90),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape=None,
+                tint=(255, 200, 80),
+            )
+        scene.avatar_poses = poses
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), eye_position=(0.6, -4.5, 0.3))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self.fbo.read(components=3)
+        finally:
+            renderer.clear_caches()
+
+    def _drawn_columns(self, data: bytes, rows: range) -> set[int]:
+        width, _height = self.FBO_SIZE
+        columns = set()
+        for y in rows:
+            for x in range(width):
+                offset = (y * width + x) * 3
+                if any(data[offset : offset + 3]):
+                    columns.add(x)
+        return columns
+
+    @staticmethod
+    def _mid_stride():
+        import math
+
+        from vibestorm.viewer3d.avatar_pose import AvatarMotion, pose_for_motion
+
+        return pose_for_motion(
+            AvatarMotion(position=(0.0, 0.0, 0.0), speed_mps=3.2, gait_phase=math.pi / 2.0)
+        )
+
+    def test_a_walking_avatar_stands_with_its_feet_apart(self) -> None:
+        # The bottom quarter of the figure is legs and shoes. Standing, they
+        # are together; mid-stride they are not, and by a lot -- measured 8
+        # pixels against 37 at this size.
+        standing = self._render([(1, (0.0, 0.0, 0.0))], {})
+        walking = self._render([(1, (0.0, 0.0, 0.0))], {1: self._mid_stride()})
+
+        feet = range(50, 65)
+        together = self._drawn_columns(standing, feet)
+        apart = self._drawn_columns(walking, feet)
+
+        self.assertTrue(together, "the standing figure did not draw")
+        self.assertGreater(
+            max(apart) - min(apart),
+            2 * (max(together) - min(together)),
+            "the walking figure's feet are no further apart than a standing one's",
+        )
+
+    def test_one_avatar_s_pose_does_not_reach_another(self) -> None:
+        # Every bone is drawn as one instanced pass over *all* avatars, with
+        # each avatar's pose folded into its own instance matrix. Getting the
+        # ordering wrong there would put one person's stride on somebody else
+        # -- and with one avatar on screen, nothing would ever show it.
+        # The camera looks along +Y, so +X is screen right: one avatar to each
+        # side, and the still one keeps the right half to itself.
+        alone = self._render([(1, (1.6, 0.0, 0.0))], {})
+        beside_a_walker = self._render(
+            [(1, (1.6, 0.0, 0.0)), (2, (-1.6, 0.0, 0.0))],
+            {2: self._mid_stride()},
+        )
+
+        width, height = self.FBO_SIZE
+        differing = sum(
+            1
+            for y in range(height)
+            for x in range(width // 2, width)
+            if alone[(y * width + x) * 3 : (y * width + x) * 3 + 3]
+            != beside_a_walker[(y * width + x) * 3 : (y * width + x) * 3 + 3]
+        )
+
+        drawn = sum(
+            1
+            for y in range(height)
+            for x in range(width // 2, width)
+            if any(alone[(y * width + x) * 3 : (y * width + x) * 3 + 3])
+        )
+
+        self.assertGreater(drawn, 200, "the still avatar is not in the half being compared")
+        self.assertEqual(differing, 0, "the walker's pose moved the avatar standing still")
 
 
 class NormalTransformGLTests(_GLTestBase):

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
+from vibestorm.viewer3d.avatar_pose import AvatarMotion, advance_all, pose_for_motion
 from vibestorm.world.extra_params import DecodedExtraParams, decode_extra_params
 from vibestorm.world.parcel_overlay import (
     ParcelOverlay,
@@ -352,6 +353,11 @@ class Scene:
     # message replaces whatever was there, which is how a sim stops an anim or
     # clears a sound. A trailing log would show a stopped animation forever.
     avatar_animations: dict[UUID, tuple[UUID, ...]] = field(default_factory=dict)
+    # How each avatar has been moving, and the pose that follows from it.
+    # Keyed by local_id, like the entities themselves. The renderer reads
+    # ``avatar_poses``; nothing else should need ``avatar_motion``.
+    avatar_motion: dict[int, AvatarMotion] = field(default_factory=dict)
+    avatar_poses: dict[int, dict[str, float]] = field(default_factory=dict)
     object_animations: dict[UUID, tuple[UUID, ...]] = field(default_factory=dict)
     attached_sounds: dict[UUID, "AttachedSoundState"] = field(default_factory=dict)
     # Physics material per object local_id. Keyed by local_id rather than UUID
@@ -435,6 +441,10 @@ class Scene:
         self.attached_sounds.clear()
         self.object_animations.clear()
         self.avatar_animations.clear()
+        # Local ids are per region session, so a stride belonging to whoever
+        # was local_id 42 over there must not carry over to whoever it is here.
+        self.avatar_motion.clear()
+        self.avatar_poses.clear()
         self.recent_sound_triggers.clear()
         # Whoever was mid-sentence in the old region is not typing here.
         self.typing_senders.clear()
@@ -707,6 +717,23 @@ class Scene:
             return
 
     # ---- WorldView snapshot ----------------------------------------------
+
+    def advance_avatar_poses(self, dt_seconds: float) -> None:
+        """Fold this frame's avatar positions into their gaits.
+
+        Called once per frame, after ``refresh_from_world_view`` has put the
+        current positions in ``avatar_entities``. Split out rather than folded
+        into the refresh because it is the one part that needs to know how much
+        time passed, and because a test can then step it deliberately.
+        """
+        positions = {
+            local_id: entity.position for local_id, entity in self.avatar_entities.items()
+        }
+        self.avatar_motion = advance_all(self.avatar_motion, positions, dt_seconds)
+        self.avatar_poses = {
+            local_id: pose_for_motion(motion)
+            for local_id, motion in self.avatar_motion.items()
+        }
 
     def refresh_from_world_view(self, world_view: object | None) -> None:
         """Re-derive entities from the current WorldView. Called once per frame.

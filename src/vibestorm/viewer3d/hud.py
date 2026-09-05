@@ -249,7 +249,6 @@ class HUD:
             UIImage,
             UILabel,
             UIPanel,
-            UITextBox,
             UITextEntryLine,
             UIWindow,
         )

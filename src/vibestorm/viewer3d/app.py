@@ -987,6 +987,9 @@ async def run_viewer(args: argparse.Namespace) -> int:
             _t = time.perf_counter
             _m0 = _t()
             scene.refresh_from_world_view(client.world_view())
+            # After the refresh: the gait is derived from how far each avatar
+            # moved since the last frame, so it needs this frame's positions.
+            scene.advance_avatar_poses(dt)
             refresh_avatar_camera_preset()
             _m1 = _t()
             renderer.update(dt, scene)
