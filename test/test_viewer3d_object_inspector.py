@@ -283,7 +283,9 @@ class ObjectInspectorTests(unittest.TestCase):
             (640, 480),
             on_chat_submit=lambda text: None,
             on_save_asset=lambda selection, path: saved.append((selection, path)),
-            on_save_object_text_assets=lambda selections, path: saved_all.append((selections, path)),
+            on_sync_object_to_folder=lambda task_id, local_id, path: saved_all.append(
+                (task_id, local_id, path)
+            ),
         )
         scene = Scene()
         scene.object_entities[7] = SceneEntity(
@@ -333,7 +335,7 @@ class ObjectInspectorTests(unittest.TestCase):
         )
 
         self.assertTrue(hud.inspector_save_asset_button.is_enabled)
-        self.assertTrue(hud.inspector_save_all_text_button.is_enabled)
+        self.assertTrue(hud.inspector_save_all_button.is_enabled)
         hud.process_event(
             self.pygame.event.Event(
                 self.pygame_gui.UI_BUTTON_PRESSED,
@@ -350,7 +352,7 @@ class ObjectInspectorTests(unittest.TestCase):
         hud.process_event(
             self.pygame.event.Event(
                 self.pygame_gui.UI_BUTTON_PRESSED,
-                {"ui_element": hud.inspector_save_all_text_button},
+                {"ui_element": hud.inspector_save_all_button},
             )
         )
         self.assertIsNotNone(hud._file_dialog)
@@ -363,9 +365,69 @@ class ObjectInspectorTests(unittest.TestCase):
 
         self.assertEqual([selection.item_name for selection, _path in saved], ["Main Script"])
         self.assertEqual([path for _selection, path in saved], [Path("/tmp/Main Script.lsl")])
-        saved_all_selections, saved_all_path = saved_all[0]
-        self.assertEqual([selection.asset_id for selection in saved_all_selections], [asset_id])
-        self.assertEqual(saved_all_path, Path("/tmp/object-scripts"))
+        # "Save All" hands the engine the object and the folder, and nothing
+        # else. It used to hand over the text rows the panel happened to be
+        # showing; the engine re-reads the inventory itself, which is how the
+        # button reaches rows the panel never listed.
+        self.assertEqual(saved_all, [(task_id, 7, Path("/tmp/object-scripts"))])
+
+    def test_save_all_is_offered_on_an_object_holding_nothing_this_client_authors(self) -> None:
+        # The button used to be greyed out unless the object held a script or
+        # a notecard, because it saved those and nothing else -- so a prim
+        # full of textures said the viewer could not save them, months after
+        # ``--all-assets`` could. It now goes through the same sync engine,
+        # which writes every type, so the only precondition is that the
+        # inventory has come back.
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+        from vibestorm.world.object_inventory import parse_task_inventory_text
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_sync_object_to_folder=lambda task_id, local_id, path: None,
+        )
+        scene = Scene()
+        scene.object_entities[9] = SceneEntity(
+            local_id=9,
+            pcode=9,
+            kind="prim",
+            position=(1.0, 2.0, 3.0),
+            scale=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            name="Texture Box",
+            shape="cube",
+        )
+        task_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+        scene.object_inventory_snapshots[9] = parse_task_inventory_text(
+            "inv_item 0\n{\n"
+            " item_id eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\n"
+            " asset_id ffffffff-ffff-4fff-8fff-ffffffffffff\n"
+            " type texture\n"
+            " inv_type texture\n"
+            " name Wall Panel|\n"
+            "}\n",
+            local_id=9,
+            task_id=task_id,
+            serial=1,
+            filename="task.inv",
+        )
+        hud.register_inventory_snapshot_for_view(scene.object_inventory_snapshots[9])
+        hud.inspector_window.show()
+        hud.update(0.016, scene, None)
+
+        object_row = next(
+            row["text"] for row in hud.inspector_list.item_list if "Texture Box" in row["text"]
+        )
+        hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": hud.inspector_list, "text": object_row},
+            )
+        )
+
+        self.assertTrue(hud.inspector_save_all_button.is_enabled)
 
     def test_selected_object_task_context_returns_none_without_inventory(self) -> None:
         from vibestorm.viewer3d.hud import HUD

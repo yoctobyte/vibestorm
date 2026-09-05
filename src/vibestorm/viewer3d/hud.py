@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from vibestorm.sync.naming import file_name_for_item, safe_filename
 from vibestorm.viewer3d.chat_ticker import TickerEntry, draw_ticker
 from vibestorm.world.asset_types import ASSET_TYPE_BY_NAME, asset_type_to_int
 from vibestorm.world.attachments import describe_attachment
@@ -110,6 +111,7 @@ class FileDialogAction:
     selection: ObjectAssetSelection | None = None
     selections: tuple[ObjectAssetSelection, ...] = ()
     task_id: UUID | None = None
+    local_id: int | None = None
     object_asset_rows: tuple[tuple[str, ObjectAssetSelection], ...] = ()
 
 
@@ -134,7 +136,7 @@ class HUD:
         on_object_inventory_request: Callable[[int], None] | None = None,
         on_view_asset: Callable[[UUID, int, UUID | None, UUID | None], None] | None = None,
         on_save_asset: Callable[[ObjectAssetSelection, Path | None], None] | None = None,
-        on_save_object_text_assets: Callable[[tuple[ObjectAssetSelection, ...], Path | None], None]
+        on_sync_object_to_folder: Callable[[UUID, int, Path | None], None]
         | None = None,
         on_upload_files: Callable[[Path | None], None] | None = None,
         on_upload_object_files: Callable[[UUID, dict[str, ObjectAssetSelection], Path | None], None]
@@ -163,7 +165,7 @@ class HUD:
         self.on_object_inventory_request = on_object_inventory_request
         self.on_view_asset = on_view_asset
         self.on_save_asset = on_save_asset
-        self.on_save_object_text_assets = on_save_object_text_assets
+        self.on_sync_object_to_folder = on_sync_object_to_folder
         self.on_upload_files = on_upload_files
         self.on_upload_object_files = on_upload_object_files
         self.on_render_mode_change = on_render_mode_change
@@ -760,13 +762,13 @@ class HUD:
             container=insp_container,
         )
         self.inspector_save_asset_button.disable()
-        self.inspector_save_all_text_button = UIButton(
+        self.inspector_save_all_button = UIButton(
             relative_rect=pygame.Rect(self._s(415), self._s(302), self._s(120), self._s(28)),
-            text="Save Text",
+            text="Save All",
             manager=self.manager,
             container=insp_container,
         )
-        self.inspector_save_all_text_button.disable()
+        self.inspector_save_all_button.disable()
         self.inspector_upload_files_button = UIButton(
             relative_rect=pygame.Rect(self._s(545), self._s(302), self._s(85), self._s(28)),
             text="Upload File",
@@ -1010,8 +1012,8 @@ class HUD:
             if event.ui_element is self.inspector_save_asset_button:
                 self._save_selected_asset()
                 return True
-            if event.ui_element is self.inspector_save_all_text_button:
-                self._save_selected_object_text_assets()
+            if event.ui_element is self.inspector_save_all_button:
+                self._sync_selected_object_to_folder()
                 return True
             if event.ui_element is self.inspector_upload_files_button:
                 self._open_upload_file_dialog()
@@ -1246,7 +1248,7 @@ class HUD:
             self.inspector_load_inventory_button,
             self.inspector_view_asset_button,
             self.inspector_save_asset_button,
-            self.inspector_save_all_text_button,
+            self.inspector_save_all_button,
             self.inspector_upload_files_button,
             self.inspector_upload_folder_button,
             self.inspector_inventory,
@@ -1372,8 +1374,8 @@ class HUD:
         upload_w = max(self._s(88), right_w - save_w - save_all_w - gap * 2)
         self.inspector_save_asset_button.set_relative_position((rx, action_y))
         self.inspector_save_asset_button.set_dimensions((save_w, action_h))
-        self.inspector_save_all_text_button.set_relative_position((rx + save_w + gap, action_y))
-        self.inspector_save_all_text_button.set_dimensions((save_all_w, action_h))
+        self.inspector_save_all_button.set_relative_position((rx + save_w + gap, action_y))
+        self.inspector_save_all_button.set_dimensions((save_all_w, action_h))
         self.inspector_upload_files_button.set_relative_position(
             (rx + save_w + gap + save_all_w + gap, action_y)
         )
@@ -1807,16 +1809,21 @@ class HUD:
                 self.inspector_load_inventory_button.disable()
                 self.inspector_view_asset_button.disable()
                 self.inspector_save_asset_button.disable()
-                self.inspector_save_all_text_button.disable()
+                self.inspector_save_all_button.disable()
             else:
                 self.inspector_load_inventory_button.enable()
                 # Item buttons stay disabled until user selects an item in the inventory list.
                 self.inspector_view_asset_button.disable()
                 self.inspector_save_asset_button.disable()
-                if self.on_save_object_text_assets is not None and self._text_asset_rows_for_local_id(local_id):
-                    self.inspector_save_all_text_button.enable()
+                # Enabled on any object whose inventory has come back, not
+                # only one holding a script or a notecard: the engine writes
+                # every type, and a button greyed out over a prim full of
+                # textures says the viewer cannot save them when it can.
+                has_inventory = self._selected_object_task_context() is not None
+                if self.on_sync_object_to_folder is not None and has_inventory:
+                    self.inspector_save_all_button.enable()
                 else:
-                    self.inspector_save_all_text_button.disable()
+                    self.inspector_save_all_button.disable()
             if self.on_upload_files is not None:
                 self.inspector_upload_files_button.enable()
                 self.inspector_upload_folder_button.enable()
@@ -1878,15 +1885,14 @@ class HUD:
             return
         self._open_save_item_dialog(selection)
 
-    def _save_selected_object_text_assets(self) -> None:
-        if self.on_save_object_text_assets is None:
+    def _sync_selected_object_to_folder(self) -> None:
+        if self.on_sync_object_to_folder is None:
             return
         local_id = self._selected_local_id()
-        if local_id is None:
+        context = self._selected_object_task_context()
+        if local_id is None or context is None:
             return
-        selections = tuple(self._text_asset_rows_for_local_id(local_id))
-        if selections:
-            self._open_save_all_text_dialog(selections)
+        self._open_sync_pull_dialog(context[0], local_id)
 
     def _open_save_item_dialog(self, selection: ObjectAssetSelection) -> None:
         initial_path = _default_download_path_for_selection(selection)
@@ -1898,12 +1904,13 @@ class HUD:
             allow_picking_directories=False,
         )
 
-    def _open_save_all_text_dialog(self, selections: tuple[ObjectAssetSelection, ...]) -> None:
-        initial_path = _default_download_dir_for_selections(selections)
+    def _open_sync_pull_dialog(self, task_id: UUID, local_id: int) -> None:
+        # The same folder Upload offers, so a pull and the push that follows
+        # it are the same round trip rather than two unrelated ones.
         self._open_file_dialog(
-            FileDialogAction(kind="save_text", selections=selections),
-            title="Save Object Text Assets",
-            initial_path=initial_path,
+            FileDialogAction(kind="sync_pull", task_id=task_id, local_id=local_id),
+            title="Save Object Contents",
+            initial_path=Path(f"local/asset-downloads/{_safe_task_label(task_id)}"),
             allow_existing_files_only=True,
             allow_picking_directories=True,
         )
@@ -2018,8 +2025,13 @@ class HUD:
         if action.kind == "save_item" and self.on_save_asset is not None and action.selection is not None:
             self.on_save_asset(action.selection, path)
             return
-        if action.kind == "save_text" and self.on_save_object_text_assets is not None:
-            self.on_save_object_text_assets(action.selections, path)
+        if (
+            action.kind == "sync_pull"
+            and self.on_sync_object_to_folder is not None
+            and action.task_id is not None
+            and action.local_id is not None
+        ):
+            self.on_sync_object_to_folder(action.task_id, action.local_id, path)
             return
         if action.kind == "upload_path" and self.on_upload_files is not None:
             self.on_upload_files(path)
@@ -2133,13 +2145,6 @@ class HUD:
             item_name=item_name,
             task_id=task_id,
             item_id=item_id,
-        )
-
-    def _text_asset_rows_for_local_id(self, local_id: int) -> tuple[ObjectAssetSelection, ...]:
-        return tuple(
-            selection
-            for selection in self._inspector_asset_rows_by_local_id.get(local_id, {}).values()
-            if selection.asset_type in (7, 10) and selection.asset_id.int != 0
         )
 
     def show_asset_data(
@@ -2313,12 +2318,13 @@ _asset_type_string_to_int = asset_type_to_int
 
 
 def _default_download_path_for_selection(selection: ObjectAssetSelection) -> Path:
+    # Through the shipped rule, not a second copy of it: "Save Item" has to
+    # offer the name a full sync would write, or one item comes back as two
+    # files and the push that follows creates a second inventory row.
     directory = _default_download_dir_for_selections((selection,))
-    name = _safe_filename(selection.item_name or str(selection.asset_id))
-    suffix = _asset_file_suffix(selection.asset_type)
-    if not name.lower().endswith(suffix):
-        name = f"{name}{suffix}"
-    return directory / name
+    return directory / file_name_for_item(
+        selection.item_name or str(selection.asset_id), selection.asset_type
+    )
 
 
 def _default_download_dir_for_selections(selections: tuple[ObjectAssetSelection, ...]) -> Path:
@@ -2327,20 +2333,9 @@ def _default_download_dir_for_selections(selections: tuple[ObjectAssetSelection,
     return Path("local/asset-downloads") / object_label
 
 
-def _asset_file_suffix(asset_type: int) -> str:
-    if asset_type == 10:
-        return ".lsl"
-    if asset_type == 7:
-        return ".txt"
-    if asset_type == 0:
-        return ".j2k"
-    return ".bin"
 
 
-def _safe_filename(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in value.strip())
-    cleaned = cleaned.strip(" .")
-    return cleaned or "unnamed"
+_safe_filename = safe_filename
 
 
 def _safe_task_label(task_id: UUID) -> str:

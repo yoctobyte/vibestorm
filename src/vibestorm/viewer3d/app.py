@@ -70,16 +70,19 @@ from vibestorm.caps.inventory_client import (
     snapshot_with_loaded_empty_folder,
 )
 from vibestorm.login.client import LoginError
-from vibestorm.udp.dispatch import MessageDispatcher
-from vibestorm.udp.session import SessionConfig, run_live_session
-from vibestorm.udp.world_client import WorldClient, WorldClientError
-from vibestorm.sync.engine import push_folder_to_object, resolve_sync_caps
+from vibestorm.sync.engine import (
+    pull_object_to_folder,
+    push_folder_to_object,
+    resolve_sync_caps,
+)
 from vibestorm.sync.naming import (
-    TEXT_ASSET_TYPES,
     asset_file_suffix,
     safe_filename,
     upload_kind_for_path,
 )
+from vibestorm.udp.dispatch import MessageDispatcher
+from vibestorm.udp.session import SessionConfig, run_live_session
+from vibestorm.udp.world_client import WorldClient, WorldClientError
 from vibestorm.viewer3d.camera import Camera, CameraPreset
 from vibestorm.viewer3d.gl_compositor import GLCompositor
 from vibestorm.viewer3d.hud import HUD, ObjectAssetSelection
@@ -573,28 +576,55 @@ async def run_viewer(args: argparse.Namespace) -> int:
             selection.item_id,
         )
 
-    def on_save_object_text_assets(
-        selections: tuple[ObjectAssetSelection, ...],
-        target_dir: Path | None = None,
+    def on_sync_object_to_folder(task_id: UUID, local_id: int, path: Path | None = None) -> None:
+        asyncio.create_task(sync_object_to_folder(task_id, local_id, path))
+
+    async def sync_object_to_folder(
+        task_id: UUID,
+        local_id: int,
+        path: Path | None,
     ) -> None:
-        queued = 0
-        for selection in selections:
-            if selection.asset_type not in TEXT_ASSET_TYPES or selection.asset_id.int == 0:
-                continue
-            queue_asset_save(selection, target_dir=target_dir)
-            on_view_asset(
-                selection.asset_id,
-                selection.asset_type,
-                selection.task_id,
-                selection.item_id,
-            )
-            queued += 1
-        scene.apply_chat_alert(
-            ChatAlert(
-                region_handle=client.current_handle or 0,
-                message=f"Queued {queued} object text asset download(s).",
-            )
+        """Write an object's whole contents to a folder, through the engine.
+
+        This used to queue the *text* rows the inspector panel happened to be
+        showing through the asset viewer, one at a time. Everything else in
+        the object -- textures, sounds, animations, body parts -- had no way
+        out of the window at all, though ``--all-assets`` had covered them
+        from the CLI for weeks.
+
+        Going through :func:`pull_object_to_folder` closes that and three
+        smaller gaps with it: the engine re-reads the inventory itself rather
+        than trusting the panel, it records the bindings a later push needs,
+        and it names the files by the one shared rule, so pushing the folder
+        back updates the rows it came from instead of creating new ones.
+        """
+        session = client.current
+        handle = client.current_handle or 0
+
+        def report(message: str) -> None:
+            scene.apply_chat_alert(ChatAlert(region_handle=handle, message=f"Sync: {message}"))
+
+        if session is None:
+            report("not connected.")
+            return
+
+        folder = sync_folder_for_task(task_id, path)
+        outcome = await pull_object_to_folder(
+            client,
+            task_id=task_id,
+            local_id=local_id,
+            folder=folder,
+            # Everything, not only what this client can author. The rest comes
+            # out read-only -- push refuses to send it back -- which is what
+            # makes "save all" safe to mean all.
+            include_binary=True,
+            on_progress=report,
         )
+        for name, reason in outcome.conflicts:
+            report(f"conflict on {name}: {reason}")
+        for name, reason in outcome.failed:
+            report(f"{name} failed: {reason}")
+        report(f"saved to {folder}: {outcome.summary()}")
 
     def queue_asset_save(
         selection: ObjectAssetSelection,
@@ -819,7 +849,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
         on_object_inventory_request=on_object_inventory_request,
         on_view_asset=on_view_asset,
         on_save_asset=on_save_asset,
-        on_save_object_text_assets=on_save_object_text_assets,
+        on_sync_object_to_folder=on_sync_object_to_folder,
         on_upload_files=on_upload_files,
         on_upload_object_files=on_upload_object_files,
         on_render_mode_change=on_render_mode_change,
