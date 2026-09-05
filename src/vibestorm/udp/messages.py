@@ -3525,6 +3525,37 @@ def encode_update_task_inventory(
     )
 
 
+def encode_remove_task_inventory(
+    agent_id: UUID,
+    session_id: UUID,
+    *,
+    object_local_id: int,
+    item_id: UUID,
+) -> bytes:
+    """Encode RemoveTaskInventory (Low/287, Zerocoded) to delete one prim item.
+
+    ``item_id`` is the **task** inventory item id -- the one an object
+    inventory listing reports -- not the agent inventory id a copy came from.
+    The two differ for every item that was copied in.
+
+    This deletes. There is no undo and no confirmation in the protocol: the row
+    is gone on the next inventory read, and the asset behind it survives only
+    if something else still references it.
+    """
+    if not 0 <= int(object_local_id) <= 0xFFFFFFFF:
+        raise ValueError("object_local_id must fit in U32")
+    if item_id.int == 0:
+        raise ValueError("item_id must not be zero")
+    return (
+        b"\xFF\xFF\x01\x1F"
+        + agent_id.bytes
+        + session_id.bytes
+        # InventoryData
+        + pack("<I", int(object_local_id))
+        + item_id.bytes
+    )
+
+
 def encode_rez_script(
     agent_id: UUID,
     session_id: UUID,

@@ -111,8 +111,32 @@ async def main() -> int:
                 print(f"    conflict: {name}: {reason}")
             scripts = sorted(folder.glob("*.lsl"))
             if not scripts:
-                print("FAIL: pull produced no scripts to work with")
-                return 1
+                # A clean prim is the normal starting state, not a failure. Make
+                # the script this run needs, then re-pull so what follows is
+                # working from what the simulator actually holds rather than
+                # from the file we just wrote.
+                seed = f"verify-sync-{os.getpid()}"
+                print(f"    no scripts in the prim; creating {seed}.lsl")
+                (folder / f"{seed}.lsl").write_text("default { state_entry() { } }\n")
+                made = await push_folder_to_object(
+                    client,
+                    client.current,
+                    handle=client.current_handle or 0,
+                    task_id=TASK_ID,
+                    local_id=local_id,
+                    folder=folder,
+                    script_cap=script_cap,
+                    notecard_cap=notecard_cap,
+                )
+                print(f"    {made.summary()}")
+                pulled = await pull_object_to_folder(
+                    client, task_id=TASK_ID, local_id=local_id, folder=folder
+                )
+                print(f"    re-pull: {pulled.summary()}")
+                scripts = sorted(folder.glob("*.lsl"))
+                if not scripts:
+                    print("FAIL: could not create a script to work with")
+                    return 1
             target = scripts[0]
             print(f"    working on {target.name} ({target.stat().st_size} bytes)")
 

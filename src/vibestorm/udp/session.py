@@ -107,6 +107,7 @@ from vibestorm.udp.messages import (
     encode_rez_script,
     encode_teleport_location_request,
     encode_transfer_request,
+    encode_remove_task_inventory,
     encode_update_task_inventory,
     encode_use_circuit_code,
     packed_quaternion_yaw,
@@ -1483,6 +1484,37 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "task_inventory.update_task_inventory",
             f"local_id={int(local_id)} item={item_id} name={name!r}",
+        )
+        return packet
+
+    def build_remove_task_inventory_packet(
+        self,
+        *,
+        local_id: int,
+        item_id: UUID,
+        now: float | None = None,
+    ) -> bytes:
+        """Build RemoveTaskInventory to delete one row from a prim.
+
+        ``item_id`` is the task inventory id, which is not the agent inventory
+        id the item may have been copied from.
+        """
+        packet = self._build_outbound_packet(
+            encode_remove_task_inventory(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                object_local_id=int(local_id),
+                item_id=item_id,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="RemoveTaskInventory",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "task_inventory.remove_task_inventory",
+            f"local_id={int(local_id)} item={item_id}",
         )
         return packet
 
