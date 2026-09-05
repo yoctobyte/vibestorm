@@ -98,11 +98,13 @@ from vibestorm.udp.messages import (
     encode_agent_request_sit,
     encode_agent_sit,
     encode_object_add,
+    encode_object_attach,
     encode_object_delete,
     encode_object_delink,
+    encode_object_detach,
+    encode_object_extra_params,
     encode_object_link,
     encode_object_select,
-    encode_object_extra_params,
     encode_packet_ack,
     encode_parcel_properties_request,
     encode_region_handshake_reply,
@@ -1727,6 +1729,61 @@ class LiveCircuitSession:
         self._record_event(
             now if now is not None else (self.started_at or 0.0),
             "object.link",
+            "local_ids=" + ",".join(str(local_id) for local_id in ids),
+        )
+        return packet
+
+    def build_object_attach_packet(
+        self,
+        local_ids: Sequence[int],
+        *,
+        attachment_point: int = 0,
+        rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        now: float | None = None,
+    ) -> bytes:
+        """Build ObjectAttach, wearing the given in-world prims."""
+        ids = tuple(int(local_id) for local_id in local_ids)
+        packet = self._build_outbound_packet(
+            encode_object_attach(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                ids,
+                attachment_point=attachment_point,
+                rotation=rotation,
+            ),
+            reliable=True,
+            now=now,
+            label="ObjectAttach",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "object.attach",
+            f"point={attachment_point} local_ids="
+            + ",".join(str(local_id) for local_id in ids),
+        )
+        return packet
+
+    def build_object_detach_packet(
+        self,
+        local_ids: Sequence[int],
+        *,
+        now: float | None = None,
+    ) -> bytes:
+        """Build ObjectDetach, taking the given attachments off."""
+        ids = tuple(int(local_id) for local_id in local_ids)
+        packet = self._build_outbound_packet(
+            encode_object_detach(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                ids,
+            ),
+            reliable=True,
+            now=now,
+            label="ObjectDetach",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "object.detach",
             "local_ids=" + ",".join(str(local_id) for local_id in ids),
         )
         return packet

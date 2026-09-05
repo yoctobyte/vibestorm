@@ -10,8 +10,13 @@ reported
 
 -- exactly its offset from the root. The viewer drew every prim at whatever the
 update said, so every child of every linkset landed a few metres from the region
-corner instead of beside its root. Attachments are the same shape of thing: an
-attached prim is a child of the avatar.
+corner instead of beside its root.
+
+Attachments are the same shape of thing, and that was checked rather than
+assumed: ``tools/verify_attachment_frame.py`` rezzes a prim, wears it, and
+watches the simulator reparent it onto the avatar and start reporting its
+position in the avatar's frame. A seated avatar is the third of the same shape
+-- see ``tools/verify_seated_avatar.py``.
 
 So each child has to be composed back through its parent:
 

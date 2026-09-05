@@ -3253,6 +3253,80 @@ def encode_object_link(agent_id: UUID, session_id: UUID, local_ids: Sequence[int
     )
 
 
+def encode_object_attach(
+    agent_id: UUID,
+    session_id: UUID,
+    local_ids: Sequence[int],
+    *,
+    attachment_point: int = 0,
+    rotation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> bytes:
+    """``ObjectAttach`` -- wear an in-world prim on the avatar.
+
+    Low 112, Zerocoded: AgentData carries the attachment point, then a
+    variable-count ``ObjectData`` block of ``(ObjectLocalID, Rotation)``.
+
+    ``attachment_point`` is the simulator's own numbering and this encoder puts
+    no meaning on it. 0 asks for the object's default, which is what a viewer
+    sends for "wear". The high bit is the simulator's "add rather than replace"
+    flag; passing a number is the caller's business, and
+    ``tools/verify_attachment_frame.py`` is how one finds out what a given
+    number does, by watching where the prim lands.
+
+    ``rotation`` is an ``LLQuaternion``, which on the wire is only x, y and z
+    -- w is recovered as the non-negative root, so it can express no rotation
+    past half a turn. The default is no rotation at all.
+    """
+    if not local_ids:
+        raise ValueError("attaching needs at least one object")
+    if len(local_ids) > 0xFF:
+        raise ValueError("object count must fit in U8")
+    if not 0 <= attachment_point <= 0xFF:
+        raise ValueError("attachment point must fit in U8")
+    for local_id in local_ids:
+        if not 0 <= local_id <= 0xFFFFFFFF:
+            raise ValueError("local id must fit in U32")
+    return (
+        b"\xFF\xFF\x00\x70"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([attachment_point])
+        + bytes([len(local_ids)])
+        + b"".join(
+            pack("<I", local_id) + pack("<fff", *rotation) for local_id in local_ids
+        )
+    )
+
+
+def encode_object_detach(
+    agent_id: UUID, session_id: UUID, local_ids: Sequence[int]
+) -> bytes:
+    """``ObjectDetach`` -- take an attachment off, back into inventory.
+
+    Low 113, Unencoded. AgentData, then a variable-count ``ObjectData`` block
+    of nothing but ``ObjectLocalID`` -- the same shape as ``ObjectDelink``.
+
+    This is the way back from ``encode_object_attach``, and the reason a live
+    probe can attach something without leaving it worn: the local OpenSim build
+    has no handler for ``ObjectDelete``, so a prim that cannot be detached
+    cannot be got rid of either.
+    """
+    if not local_ids:
+        raise ValueError("detaching needs at least one object")
+    if len(local_ids) > 0xFF:
+        raise ValueError("object count must fit in U8")
+    for local_id in local_ids:
+        if not 0 <= local_id <= 0xFFFFFFFF:
+            raise ValueError("local id must fit in U32")
+    return (
+        b"\xFF\xFF\x00\x71"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([len(local_ids)])
+        + b"".join(pack("<I", local_id) for local_id in local_ids)
+    )
+
+
 def encode_use_circuit_code(code: int, session_id: UUID, agent_id: UUID) -> bytes:
     if not 0 <= code <= 0xFFFFFFFF:
         raise ValueError("code must fit in U32")
