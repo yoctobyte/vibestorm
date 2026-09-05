@@ -145,6 +145,7 @@ from vibestorm.udp.messages import (
     parse_parcel_overlay,
     parse_parcel_properties,
     parse_preload_sound,
+    parse_rebake_avatar_textures,
     parse_region_handshake,
     parse_reply_task_inventory,
     parse_send_xfer_packet,
@@ -366,6 +367,10 @@ class LiveCircuitSession:
     wearables_request_sent: bool = False
     cached_texture_request_sent: bool = False
     appearance_sent: bool = False
+    #: How many times the simulator has asked for a rebake. Added to the
+    #: AgentSetAppearance serial so a re-sent appearance is never mistaken
+    #: for the stale one the simulator already rejected.
+    appearance_rebakes: int = 0
     logout_sent: bool = False
     wearables_update: AgentWearablesUpdateMessage | None = None
     latest_avatar_appearance: AvatarAppearanceMessage | None = None
@@ -616,6 +621,27 @@ class LiveCircuitSession:
             self.logout_acknowledged = True
             self._record_event(
                 now, "session.logout_reply", f"items={len(reply.item_ids)}"
+            )
+            return self._flush_transport_packets(now)
+
+        if dispatched.summary.name == "RebakeAvatarTextures":
+            # The simulator could not find a baked texture this client claimed
+            # to have, so the avatar is a cloud to everyone else until it is
+            # told otherwise. There is no rasterizer here to bake a fresh one
+            # with, so what this does is assert the appearance it already has,
+            # under a higher serial -- which is the fix when the asset exists
+            # and only the simulator's cache entry went missing.
+            try:
+                rebake = parse_rebake_avatar_textures(dispatched)
+            except MessageDecodeError as exc:
+                self._record_event(now, "appearance.rebake.decode_error", str(exc))
+                return self._flush_transport_packets(now)
+            self.appearance_rebakes += 1
+            self.appearance_sent = False
+            self._record_event(
+                now,
+                "appearance.rebake_requested",
+                f"texture={rebake.texture_id} attempt={self.appearance_rebakes}",
             )
             return self._flush_transport_packets(now)
 
@@ -2165,13 +2191,14 @@ class LiveCircuitSession:
             serial_num = baked.serial_num
             size = baked.size
             cache_items = baked.wearable_cache_items
+            serial_num += self.appearance_rebakes
             self._record_event(now, "appearance.baked_override", f"serial={serial_num} te={len(texture_entry)} vp={len(visual_params)} bakes={len(cache_items)}")
         else:
             bootstrap_appearance = self.bootstrap.initial_packed_appearance
             serial_candidates = [self.wearables_update.serial_num, 1]
             if bootstrap_appearance is not None and bootstrap_appearance.serial_num is not None:
                 serial_candidates.append(bootstrap_appearance.serial_num)
-            serial_num = max(serial_candidates)
+            serial_num = max(serial_candidates) + self.appearance_rebakes
             source_appearance = self.latest_self_avatar_appearance
             texture_entry = (
                 source_appearance.texture_entry

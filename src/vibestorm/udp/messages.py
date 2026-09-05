@@ -337,6 +337,23 @@ class LogoutReplyMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class RebakeAvatarTexturesMessage:
+    """The simulator asking for a baked avatar texture it cannot find.
+
+    OpenSim sends this when an ``AgentSetAppearance`` named a baked texture id
+    whose asset is not in its store, which happens when the viewer offered a
+    cache entry for a bake it never uploaded. Ignoring it is not free: to
+    everyone else in the region the avatar stays a cloud until something else
+    provokes a new appearance.
+
+    ``TextureID`` names *which* bake went missing, so a viewer that can bake
+    can re-bake just that one.
+    """
+
+    texture_id: UUID
+
+
+@dataclass(slots=True, frozen=True)
 class ReplyTaskInventoryMessage:
     task_id: UUID
     serial: int
@@ -1910,6 +1927,17 @@ def parse_logout_reply(message: MessageDispatch) -> LogoutReplyMessage:
         UUID(bytes=message.body[offset + n * 16 : offset + n * 16 + 16]) for n in range(count)
     )
     return LogoutReplyMessage(agent_id=agent_id, session_id=session_id, item_ids=item_ids)
+
+
+def parse_rebake_avatar_textures(message: MessageDispatch) -> RebakeAvatarTexturesMessage:
+    """Decode ``RebakeAvatarTextures`` -- Low 87, one UUID and nothing else."""
+    if message.summary.name != "RebakeAvatarTextures":
+        raise MessageDecodeError(
+            f"expected RebakeAvatarTextures, got {message.summary.name}"
+        )
+    if len(message.body) < 16:
+        raise MessageDecodeError("RebakeAvatarTextures body is too short")
+    return RebakeAvatarTexturesMessage(texture_id=UUID(bytes=message.body[0:16]))
 
 
 def parse_object_properties(message: MessageDispatch) -> ObjectPropertiesMessage:
