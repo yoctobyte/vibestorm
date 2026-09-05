@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-05 (second pass)
+Last updated: 2026-09-05 (third pass)
 
 ## The Owner's Priorities
 
@@ -80,9 +80,47 @@ on anyone's desktop. Two things the screenshots showed:
    straight line. It now reaches the far plane.
 
 The sky was a flat colour and is now a gradient with the sun drawn into it
-(`render_sky` toggles it). Still open under A, in order of what a person would
-notice: **the avatar is a stick figure**, and the 2D map HUD has not had the
-dirty-tracking or ticker treatment the 3D one has.
+(`render_sky` toggles it).
+
+**A -- the third pass (2026-09-05): the avatar, and the normal transform.**
+Avatars were seven merged boxes in one flat yellow. Two separate things made
+them look like that, and both were about the space the mesh was authored in.
+
+The mesh is multiplied by the avatar's `ObjectUpdate` scale, roughly
+`0.45 x 0.60 x 1.90`, so anything written as a cube in the mesh's own space
+comes out four times taller than it is deep -- which is how the placeholder
+ended up with a half-metre head. `viewer3d/avatar_mesh.py` writes parts in
+**metres** and divides by that nominal scale on the way in, so the numbers in
+the table mean what they say.
+
+And a figure drawn as one instance can only carry one tint. Each part now
+points its vertices at one texel of a six-entry palette strip -- skin, hair,
+shirt, trousers, shoes, eyes -- which costs one small texture and no extra draw
+calls. The instance tint is deliberately bypassed for avatars: it is the 2D
+map's marker colour and is identical for everyone in the region.
+
+Nineteen parts: an ellipsoid head under a hair cap set back from the face,
+eight-sided tapered tubes for trunk and limbs, boxes for hands and shoes. The
+nose and eyes exist because a bare ellipsoid head looks the same coming and
+going.
+
+*A real shader bug came out of it.* `mat3(in_model) * normal` is exactly right
+for a uniform scale and for every axis-aligned box face -- which is most of
+what a test reaches for, and why it survived -- and wrong for every other
+normal under a non-uniform scale, which SL prims are constantly. It goes
+through the inverse transpose now. The test squashes a sphere into a disc and
+samples a ring around its face: correct, it shades evenly whatever the sun is
+doing; before, the ring ran bright to dark across a spread of 67 out of 255.
+
+The 2D map viewer also got the hand-drawn chat ticker (it repaints the whole
+screen every frame, so there was nothing for dirty-tracking to save) and a
+`--screenshot` flag of its own.
+
+Still open under A, in order of what a person would notice: **avatars do not
+move their limbs** -- there is no skeleton, so `AvatarAnimation` arrives and
+nothing can be done with it; and **prim textures are the only thing textured**
+-- terrain, water and sky are all shader-generated, which looks right but means
+a region with custom ground textures still gets this client's blend of them.
 
 **A -- the earlier pass (2026-09-03).** The viewer crashed on
 the first `AvatarAnimation`, which arrives within seconds of any local session,
@@ -204,10 +242,33 @@ straight in produces no error anywhere; the sim silently drops it and logs
 nothing, which reads exactly like a permissions denial. Always go through the
 session's `build_*_packet`.
 
-The GUI path has not been exercised -- verification drives the shipped sync
-engine headlessly. Pressing Upload in the viewer is still untested, and the
-viewer's own sync closure predates `vibestorm.sync` and could now delegate to
-it.
+**The viewer's Upload button now goes through that engine (2026-09-05).** It
+used to be ~180 lines of its own -- its own name matching, its own row
+creation, its own upload loop, its own copy of the script capability names --
+which meant a bug fixed in the engine stayed broken in the button and a green
+suite said nothing about it. It resolves caps and calls `push_folder_to_object`
+now, reporting progress as chat alerts, and inherits everything the engine was
+verified on.
+
+Moving the tests to where the code went turned up three bugs, all of the quiet
+kind:
+
+- `match_files_to_rows` could hand one inventory row to **two** files. The
+  lookups are case-insensitive and sanitising collapses distinct names, so
+  `Greeter.lsl` and `greeter.lsl` both claimed one row: each uploaded over the
+  other and both were reported as successes.
+- A sync folder that did not exist resolved to its **parent**, so one typo in a
+  folder name pushed whatever the folder above happened to hold into the
+  object.
+- `first_resolved` -- which picks `UpdateScriptTask` over the legacy
+  `UpdateScriptTaskInventory` -- had four tests and, once the viewer's copy
+  went, no reachable caller. It is a real function in the engine again.
+
+What is still not exercised is the *button press itself*: reaching it needs a
+window and a live simulator together. Everything behind it is verified
+headlessly, and the one piece of judgement left in the closure -- deciding
+which folder a chosen path means -- is a module-level `sync_folder_for_task`
+with its own tests.
 
 **E -- delivered, live-verified 2026-09-05.** `vibestorm.sync` is a package
 now, and `sync-object` on the CLI drives it:
@@ -246,11 +307,12 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    than it looks: `AssetDataReady` was never published for HTTP fetches at all
    (fixed 2026-09-04), so every non-UDP asset silently returned `None`. Try it
    before assuming it needs new code.
-3. **A's remaining win: dirty-track the HUD.** `hud_draw` 6.0 ms plus the HUD
-   upload 5.2 ms is 11 ms of a 24.8 ms frame spent redrawing a surface that
-   changes a few times a second. Not attempted yet because a stale HUD is a
-   worse bug than a slow one, and detecting "nothing changed" through
-   pygame_gui (hover, focus, cursor blink) needs care.
+3. **A's remaining win: avatars do not animate.** `AvatarAnimation` arrives
+   within seconds of any session and there is nothing to apply it to -- the
+   figure has no skeleton, only merged parts in one buffer. Walking, sitting
+   and typing all look identical. This is the largest remaining gap in "a
+   reasonable visualization", and the largest piece of work under A.
+   (HUD dirty-tracking, which used to be this entry, is done.)
 
 **The local test prim `d7f47f7e-4328-4d17-a665-19feaec7b1e9` now carries
 several `vibestorm-sync-*`, `e2e-sync-*` and `verify-note-*` items** left by
