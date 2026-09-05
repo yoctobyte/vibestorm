@@ -8,7 +8,7 @@ import math
 import random
 import socket
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,6 +96,7 @@ from vibestorm.udp.messages import (
     encode_logout_request,
     encode_map_block_request,
     encode_object_add,
+    encode_object_link,
     encode_object_extra_params,
     encode_packet_ack,
     encode_parcel_properties_request,
@@ -1540,6 +1541,65 @@ class LiveCircuitSession:
             now if now is not None else (self.started_at or 0.0),
             "task_inventory.request",
             f"local_id={int(local_id)} pending={len(self.pending_task_inventory_requests)}",
+        )
+        return packet
+
+    def build_object_add_packet(
+        self,
+        *,
+        position: tuple[float, float, float],
+        scale: tuple[float, float, float] = (0.5, 0.5, 0.5),
+        now: float | None = None,
+    ) -> bytes:
+        """Build ObjectAdd for one prim rezzed at ``position``.
+
+        The ray is dropped five metres onto the spot with ``bypass_raycast``
+        set, which is how the spot is chosen rather than a surface under the
+        cursor.
+        """
+        x, y, z = position
+        packet = self._build_outbound_packet(
+            encode_object_add(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                ray_start=(x, y, z + 5.0),
+                ray_end=(x, y, z),
+                scale=scale,
+            ),
+            reliable=True,
+            zerocoded=True,
+            now=now,
+            label="ObjectAdd",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "object.add",
+            f"position=({x:.2f},{y:.2f},{z:.2f})",
+        )
+        return packet
+
+    def build_object_link_packet(
+        self,
+        local_ids: Sequence[int],
+        *,
+        now: float | None = None,
+    ) -> bytes:
+        """Build ObjectLink joining the given prims into one linkset."""
+        ids = tuple(int(local_id) for local_id in local_ids)
+        packet = self._build_outbound_packet(
+            encode_object_link(
+                self.bootstrap.agent_id,
+                self.bootstrap.session_id,
+                ids,
+            ),
+            reliable=True,
+            now=now,
+            label="ObjectLink",
+        )
+        self._record_event(
+            now if now is not None else (self.started_at or 0.0),
+            "object.link",
+            "local_ids=" + ",".join(str(local_id) for local_id in ids),
         )
         return packet
 

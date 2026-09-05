@@ -13,12 +13,13 @@ same data.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from vibestorm.viewer3d.avatar_pose import AvatarMotion, advance_all, pose_for_motion
+from vibestorm.viewer3d.linkset import resolve_world_transforms
 from vibestorm.world.chat_types import (
     CHAT_TYPE_SAY,
     CHAT_TYPE_START_TYPING,
@@ -297,6 +298,9 @@ class SceneEntity:
     local_id: int
     pcode: int
     kind: EntityKind
+    #: Region coordinates. The *update* reports a child's position in its
+    #: parent's frame; by the time an entity exists that has been composed
+    #: back through the parent, so everything here is in one frame.
     position: tuple[float, float, float]
     scale: tuple[float, float, float]
     rotation: tuple[float, float, float, float] | None  # quat (x, y, z, w)
@@ -312,6 +316,9 @@ class SceneEntity:
     hover_text: str | None = None
     hover_text_color: tuple[int, int, int, int] | None = None
     tint: tuple[int, int, int] = DEFAULT_MARKER_COLOR
+    #: 0 for a root. Kept after composition because the inspector and the
+    #: sync path both address objects by their root.
+    parent_id: int = 0
 
     @property
     def color(self) -> tuple[int, int, int]:
@@ -814,6 +821,7 @@ class Scene:
                 hover_text=getattr(obj, "hover_text", None),
                 hover_text_color=getattr(obj, "hover_text_color", None),
                 tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
+                parent_id=int(getattr(obj, "parent_id", 0) or 0),
             )
             if obj.pcode == PCODE_AVATAR:
                 self.avatar_entities[obj.local_id] = entity
@@ -844,6 +852,8 @@ class Scene:
             else:
                 self.object_entities[terse.local_id] = entity
 
+        self._place_children_in_the_region_frame()
+
         sim_stats = getattr(world_view, "latest_sim_stats", None)
         if sim_stats is not None:
             self.sim_health = summarize_sim_stats(sim_stats.stats)
@@ -854,6 +864,47 @@ class Scene:
             water_height = getattr(world_view.region, "water_height", None)
             if water_height is not None:
                 self.water_height = float(water_height)
+
+
+    def _place_children_in_the_region_frame(self) -> None:
+        """Compose every child's transform back through its parent.
+
+        A prim with a parent reports where it is *relative to that parent* --
+        observed live, see :mod:`vibestorm.viewer3d.linkset` -- so without this
+        every child of every linkset, and every attachment on every avatar,
+        is drawn a few metres from the region corner.
+
+        A child whose parent has not arrived yet is **dropped** rather than
+        drawn where the update put it. Updates are not ordered, so this happens
+        routinely for a frame or two; showing the prim in the wrong place is
+        the failure being fixed, and the next frame has the parent.
+        """
+        entities = {**self.object_entities, **self.avatar_entities}
+        if not any(entity.parent_id for entity in entities.values()):
+            return
+
+        world = resolve_world_transforms(
+            {
+                local_id: (entity.parent_id, entity.position, entity.rotation)
+                for local_id, entity in entities.items()
+            }
+        )
+        for table in (self.object_entities, self.avatar_entities):
+            for local_id in list(table):
+                entity = table[local_id]
+                if not entity.parent_id:
+                    continue
+                placed = world.get(local_id)
+                if placed is None:
+                    del table[local_id]
+                    continue
+                position, rotation = placed
+                table[local_id] = replace(
+                    entity,
+                    position=position,
+                    rotation=rotation,
+                    rotation_z_radians=_quat_to_yaw(rotation),
+                )
 
 
 def _self_avatar_position(world_view: object) -> tuple[float, float, float] | None:

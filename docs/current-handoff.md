@@ -162,6 +162,37 @@ Still open under A: **prim textures are the only thing textured** -- terrain,
 water and sky are all shader-generated, which looks right but means a region
 with custom ground textures still gets this client's blend of them.
 
+**A -- linksets were drawn at the region corner (2026-09-05).** `ObjectUpdate`
+carries a `parent_id`; the 3D scene stored it and never used it, drawing every
+prim at the position the update reported. Nothing in this tree recorded what
+frame that position is in, and no viewer source may be consulted to find out,
+so it was observed instead.
+
+The local test region contains no linksets, so `tools/verify_child_prim_frame.py`
+makes one: it rezzes two prims 4 m apart, links them with the new `ObjectLink`,
+and reads back what the simulator then says about the child.
+
+    before link:  (134.0, 128.0, 27.121)     -- a region position
+    after  link:  (  4.0,   0.0,  0.000)     -- its offset from the root
+
+**A child's position is in its parent's frame.** Every child of every linkset,
+and every attachment on every avatar, was being drawn a few metres from the
+region corner. It never showed locally because the test region is 30-odd
+single prims -- and it would have been the first thing wrong on the main grid,
+where almost nothing is a single prim.
+
+`viewer3d/linkset.py` composes each child back through its parent
+(`world = parent_position + parent_rotation * child_position`, rotations
+multiplied), working outward from the roots so an attachment's own children
+resolve too, and leaving out a child whose parent has not arrived yet rather
+than drawing it in the wrong place for a frame. Verified live: the linked child
+reports (4, 0, 0), its root sits at (130, 128, 27.121), and the scene now
+places it at (134, 128, 27.121).
+
+Two things fell out of it. `ObjectAdd` moves from `handled` to `verified` --
+it had never been confirmed to rez anything. And the client can now link
+objects, which it could not before.
+
 **A -- the framerate, answered (2026-09-05).** The owner reported "we have
 around 14fps, that raises to 20fps if I shrink the window. this strongly
 suggests that the desktop application uses software rendering as well." It does

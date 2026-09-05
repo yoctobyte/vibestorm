@@ -108,7 +108,8 @@ writes, so this table cannot fall behind the encoders again.
 | `MapBlockRequest` | ask for region map blocks | P2 | verified | answered by `MapBlockReply`; observed 2026-08-14 |
 | `RequestTaskInventory` / `RequestXfer` / `ConfirmXferPacket` | read an object's inventory | P3 | verified | the xfer handshake behind the object inspector |
 | `TransferRequest` | ask for an asset | P3 | verified | source type 2 reliable; source type 3 inconsistent — see the asset-delivery table |
-| `ObjectAdd` | rez a prim | P4 | handled | built and sent behind the off-by-default `spawn_test_cube` session flag; no confirmed live rez, and confirming one writes an object into someone's region |
+| `ObjectAdd` | rez a prim | P4 | verified | rezzed two prims into local OpenSim on 2026-09-05, at the positions asked for, to make a linkset to observe; `build_object_add_packet` |
+| `ObjectLink` | join prims into a linkset | P4 | verified | sent to make a linkset that could be observed: the child's next update reported its offset from the root rather than a region position, which is what `viewer3d/linkset.py` exists to undo. `tools/verify_child_prim_frame.py` |
 
 ## Teleport Messages
 

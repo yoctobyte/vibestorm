@@ -3117,6 +3117,32 @@ def encode_agent_update(
     )
 
 
+def encode_object_link(agent_id: UUID, session_id: UUID, local_ids: Sequence[int]) -> bytes:
+    """``ObjectLink`` -- join the given prims into one linkset.
+
+    Low 115, Unencoded, per ``message_template.msg``: AgentData, then a
+    variable-count ``ObjectData`` block of nothing but ``ObjectLocalID``.
+
+    Which of the ids becomes the root is the simulator's decision, not this
+    encoder's, and nothing here assumes an answer: the caller reads it back off
+    the ``ObjectUpdate`` that follows.
+    """
+    if not local_ids:
+        raise ValueError("linking needs at least one object")
+    if len(local_ids) > 0xFF:
+        raise ValueError("object count must fit in U8")
+    for local_id in local_ids:
+        if not 0 <= local_id <= 0xFFFFFFFF:
+            raise ValueError("local id must fit in U32")
+    return (
+        b"\xFF\xFF\x00\x73"
+        + agent_id.bytes
+        + session_id.bytes
+        + bytes([len(local_ids)])
+        + b"".join(pack("<I", local_id) for local_id in local_ids)
+    )
+
+
 def encode_use_circuit_code(code: int, session_id: UUID, agent_id: UUID) -> bytes:
     if not 0 <= code <= 0xFFFFFFFF:
         raise ValueError("code must fit in U32")
