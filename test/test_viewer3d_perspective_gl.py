@@ -100,9 +100,32 @@ class PerspectiveRendererGLTests(_GLTestBase):
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
             self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
-            renderer.render_gl(Scene(), aspect=1.0)
+            # Sky off: this asserts on what the *world* pass drew, and the sky
+            # quad now paints every pixel the world does not cover.
+            scene = Scene()
+            scene.render_sky = False
+            renderer.render_gl(scene, aspect=1.0)
             r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
             self.assertEqual((r, g, b), (0, 0, 0))
+        finally:
+            renderer.clear_caches()
+
+    def test_the_sky_fills_what_the_world_does_not(self) -> None:
+        # The other half of the same claim: with the sky on, that pixel is no
+        # longer the clear colour, and it is not black either.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = Camera3D(target=(-100.0, -100.0, 5.0), distance=5.0, yaw=0.0, pitch=0.0)
+        camera.set_mode("orbit")
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(Scene(), aspect=1.0)
+            r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+            self.assertNotEqual((r, g, b), (0, 0, 0))
+            self.assertGreater(b, r, "sky should be bluer than it is red")
         finally:
             renderer.clear_caches()
 
@@ -280,7 +303,10 @@ class PerspectiveRendererGroundTests(_GLTestBase):
         renderer = PerspectiveRenderer(self._ground_test_camera(), ctx=self.ctx)
         try:
             self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
-            renderer.render_gl(Scene(), aspect=1.0)
+            # Sky off: this asserts on what the *world* pass drew.
+            scene = Scene()
+            scene.render_sky = False
+            renderer.render_gl(scene, aspect=1.0)
 
             r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
             self.assertEqual((r, g, b), (0, 0, 0))
@@ -516,6 +542,9 @@ class PerspectiveRendererWaterTests(_GLTestBase):
         try:
             self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
             scene = Scene()
+            # Sky off: the arithmetic below is water over the *clear* colour,
+            # and the sky quad would be behind the water instead.
+            scene.render_sky = False
             renderer.render_gl(scene, aspect=1.0)
 
             r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
@@ -545,6 +574,7 @@ class PerspectiveRendererWaterTests(_GLTestBase):
         )
         camera.set_mode("orbit")
         scene = Scene(water_alpha=0.9)
+        scene.render_sky = False  # water over the clear colour, not over sky
 
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
@@ -573,6 +603,7 @@ class PerspectiveRendererWaterTests(_GLTestBase):
         )
         camera.set_mode("orbit")
         scene = Scene(render_water=False)
+        scene.render_sky = False  # asserts on what the world pass drew
 
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
@@ -2398,5 +2429,94 @@ class TerrainTextureUploadTests(_GLTestBase):
                 for texture in renderer._terrain_textures:
                     self.assertTrue(texture.repeat_x)
                     self.assertTrue(texture.repeat_y)
+        finally:
+            renderer.clear_caches()
+
+
+class SkyGLTests(_GLTestBase):
+    """The sky gradient and the sun.
+
+    The sky was one flat fill the compositor cleared to, which read as a blue
+    wall rather than as air. It is now a gradient with the sun drawn into it,
+    both from the view ray, so there is nothing to see unless the shader is
+    actually running.
+    """
+
+    def _camera(self, pitch: float = 0.0, yaw: float = 0.0):
+        from vibestorm.viewer3d.camera import Camera3D
+
+        # Off the region corner, so no ground or water is in shot.
+        camera = Camera3D(target=(-400.0, -400.0, 60.0), distance=5.0, yaw=yaw, pitch=pitch)
+        camera.set_mode("orbit")
+        return camera
+
+    def _render(self, camera, scene=None):
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene if scene is not None else Scene(), aspect=1.0)
+            return self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+        finally:
+            renderer.clear_caches()
+
+    def test_the_sky_is_bluer_higher_up(self) -> None:
+        # The whole point of a gradient. Looking up must not give the same
+        # pixel as looking at the horizon.
+        horizon = self._render(self._camera(pitch=0.0))
+        overhead = self._render(self._camera(pitch=-math.pi / 2 + 0.2))
+
+        self.assertNotEqual(horizon[:3], overhead[:3])
+        self.assertGreater(
+            horizon[0], overhead[0], "the horizon should be the paler end"
+        )
+
+    def test_the_sun_brightens_the_pixel_it_is_in(self) -> None:
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = self._camera(pitch=0.0, yaw=0.0)
+        # The direction the camera looks, so the sun lands dead centre. An
+        # orbit camera at yaw 0 and pitch 0 looks along -X.
+        toward = Scene()
+        toward.sun_direction = (-1.0, 0.0, 0.0)
+        away = Scene()
+        away.sun_direction = (1.0, 0.0, 0.0)
+
+        lit = self._render(camera, toward)
+        unlit = self._render(camera, away)
+
+        self.assertGreater(
+            sum(lit[:3]), sum(unlit[:3]), "the sun should brighten what it is in"
+        )
+
+    def test_turning_the_sky_off_leaves_the_clear_colour(self) -> None:
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene()
+        scene.render_sky = False
+        self.assertEqual(self._render(self._camera(), scene)[:3], (0, 0, 0))
+
+    def test_the_sky_never_occludes_the_world(self) -> None:
+        # It draws first with the depth test off, which GL also takes as "do
+        # not write depth". If it wrote depth at the far plane, distant
+        # geometry would vanish behind an empty sky.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = Camera3D(
+            target=(128.0, 128.0, 0.0), distance=200.0, yaw=0.0, pitch=math.pi / 2 - 0.1
+        )
+        camera.set_mode("orbit")
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(Scene(), aspect=1.0)
+            r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+            # Water is under this camera; if the sky had occluded it the pixel
+            # would be the sky gradient, which is markedly less blue-dominant.
+            self.assertGreater(b, max(r, g), "water should still be drawn")
         finally:
             renderer.clear_caches()

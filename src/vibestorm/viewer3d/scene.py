@@ -391,6 +391,7 @@ class Scene:
     render_terrain_lines: bool = False
     render_water: bool = True
     render_objects: bool = True
+    render_sky: bool = True
     water_alpha: float = 0.72
     object_entities: dict[int, SceneEntity] = field(default_factory=dict)
     avatar_entities: dict[int, SceneEntity] = field(default_factory=dict)

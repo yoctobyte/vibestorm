@@ -522,6 +522,80 @@ _LABEL_QUAD: tuple[float, ...] = (
 _LABEL_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 
 
+#: Sky colours: near the horizon, and at the zenith.
+#:
+#: A flat fill was what the compositor cleared to, and it read as a blue wall
+#: rather than as air. Nothing in the protocol carries a sky palette -- the
+#: windlight settings asset is LLSD *notation*, which this tree does not parse
+#: and OpenSim itself only regex-scrapes -- so these are chosen to sit either
+#: side of the old flat value rather than derived from anything on the wire.
+SKY_HORIZON_COLOR: tuple[float, float, float] = (0.62, 0.74, 0.86)
+SKY_ZENITH_COLOR: tuple[float, float, float] = (0.16, 0.36, 0.62)
+
+_SKY_VERTEX_SHADER = """
+#version 330
+
+uniform mat4 u_view;
+uniform mat4 u_proj;
+
+in vec2 in_ndc;
+
+out vec3 v_ray;
+
+void main() {
+    // The view ray for this corner, recovered by unprojecting the near and far
+    // planes. Done here rather than per fragment: four inversions a frame
+    // instead of two million, and the direction interpolates correctly across
+    // the quad.
+    mat4 inv = inverse(u_proj * u_view);
+    vec4 near = inv * vec4(in_ndc, -1.0, 1.0);
+    vec4 far = inv * vec4(in_ndc, 1.0, 1.0);
+    v_ray = (far.xyz / far.w) - (near.xyz / near.w);
+    // Just inside the far plane, so anything in the world draws over it.
+    gl_Position = vec4(in_ndc, 0.999999, 1.0);
+}
+"""
+
+_SKY_FRAGMENT_SHADER = """
+#version 330
+
+uniform vec3 u_horizon;
+uniform vec3 u_zenith;
+uniform vec3 u_sun_dir;
+
+in vec3 v_ray;
+
+out vec4 frag_color;
+
+void main() {
+    vec3 dir = normalize(v_ray);
+    // Z is up. Below the horizon keeps the horizon colour: the water plane
+    // covers it, and a second gradient there would show through the sea.
+    float height = clamp(dir.z, 0.0, 1.0);
+    vec3 rgb = mix(u_horizon, u_zenith, sqrt(height));
+
+    // The sun, and the haze around it. Both are pure falloff on the angle to
+    // the light direction the simulator gives us -- no disc geometry, so it
+    // costs one dot product.
+    float alignment = max(dot(dir, normalize(u_sun_dir)), 0.0);
+    rgb += vec3(1.0, 0.95, 0.80) * pow(alignment, 900.0);
+    rgb += vec3(1.0, 0.90, 0.72) * pow(alignment, 18.0) * 0.28;
+
+    frag_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+}
+"""
+
+#: A quad in clip space. Two triangles rather than the usual oversized single
+#: triangle, because the ray is interpolated across it and a triangle reaching
+#: outside the frustum extrapolates the corners.
+_SKY_VERTICES: tuple[float, ...] = (
+    -1.0, -1.0,
+     1.0, -1.0,
+     1.0,  1.0,
+    -1.0,  1.0,
+)
+_SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
+
 _WATER_VERTEX_SHADER = """
 #version 330
 
@@ -812,6 +886,10 @@ class PerspectiveRenderer:
         self._terrain_ibo = None  # type: moderngl.Buffer | None
         self._terrain_fill_program = None  # type: moderngl.Program | None
         self._terrain_fill_vao = None  # type: moderngl.VertexArray | None
+        self._sky_program = None  # type: moderngl.Program | None
+        self._sky_vao = None  # type: moderngl.VertexArray | None
+        self._sky_vbo = None  # type: moderngl.Buffer | None
+        self._sky_ibo = None  # type: moderngl.Buffer | None
         self._terrain_texture_program = None  # type: moderngl.Program | None
         self._terrain_texture_vao = None  # type: moderngl.VertexArray | None
         self._terrain_textures: list[object] = []
@@ -916,6 +994,8 @@ class PerspectiveRenderer:
 
         ctx.enable(ctx.DEPTH_TEST)
         try:
+            if scene.render_sky:
+                self._render_sky(ctx, view_data, proj_data, sun_direction=sun_direction)
             if scene.render_terrain:
                 self._upload_terrain_mesh(ctx, scene)
             else:
@@ -1132,6 +1212,12 @@ class PerspectiveRenderer:
         self._object_textures.clear()
         self._object_texture_paths.clear()
         self._release_terrain_textures()
+        for resource in (self._sky_vao, self._sky_ibo, self._sky_vbo):
+            if resource is not None:
+                resource.release()
+        self._sky_vao = None
+        self._sky_ibo = None
+        self._sky_vbo = None
         self._release_parcel_borders()
         for resource in (
             self._instance_vbo,
@@ -1303,6 +1389,19 @@ class PerspectiveRenderer:
             name = f"u_tex{index}"
             if name in self._terrain_texture_program:
                 self._terrain_texture_program[name].value = index
+
+        self._sky_program = ctx.program(
+            vertex_shader=_SKY_VERTEX_SHADER,
+            fragment_shader=_SKY_FRAGMENT_SHADER,
+        )
+        self._sky_vbo = ctx.buffer(struct.pack(f"{len(_SKY_VERTICES)}f", *_SKY_VERTICES))
+        self._sky_ibo = ctx.buffer(struct.pack(f"{len(_SKY_INDICES)}I", *_SKY_INDICES))
+        self._sky_vao = ctx.vertex_array(
+            self._sky_program,
+            [(self._sky_vbo, "2f", "in_ndc")],
+            index_buffer=self._sky_ibo,
+            index_element_size=4,
+        )
 
         self._water_program = ctx.program(
             vertex_shader=_WATER_VERTEX_SHADER,
@@ -1853,6 +1952,31 @@ class PerspectiveRenderer:
             tex.repeat_y = False
             self._ground_texture = tex
         self._ground_texture_path = path
+
+    def _render_sky(
+        self, ctx: moderngl.Context, view_data: bytes, proj_data: bytes, *, sun_direction
+    ) -> None:
+        """Paint the sky before anything else in the frame.
+
+        Drawn with the depth test off, which GL also takes as "do not write
+        depth", so the quad covers every pixel and occludes nothing after it.
+        It runs first, so the frame no longer needs a colour clear either.
+
+        moderngl 5.12 has no `depth_mask` on the context, hence the enable and
+        disable rather than the more obvious mask.
+        """
+        if self._sky_program is None or self._sky_vao is None:
+            return
+        self._sky_program["u_view"].write(view_data)
+        self._sky_program["u_proj"].write(proj_data)
+        self._sky_program["u_horizon"].value = SKY_HORIZON_COLOR
+        self._sky_program["u_zenith"].value = SKY_ZENITH_COLOR
+        self._sky_program["u_sun_dir"].value = sun_direction
+        ctx.disable(ctx.DEPTH_TEST)
+        try:
+            self._sky_vao.render()
+        finally:
+            ctx.enable(ctx.DEPTH_TEST)
 
     def _upload_terrain_textures(self, ctx: moderngl.Context, scene: Scene) -> bool:
         """Upload the region's four ground textures. True when all four are up.
