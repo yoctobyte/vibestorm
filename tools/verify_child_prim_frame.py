@@ -20,7 +20,9 @@ parent-relative and the viewer has a real bug.
     set -a; . local/vibestorm-login.env; set +a
     .venv/bin/python tools/verify_child_prim_frame.py
 
-It leaves the linkset behind: nothing here can delete an object.
+It takes the linkset away again afterwards, by wearing each prim and taking it
+off -- ``ObjectDelete`` goes unhandled on this simulator. See
+``tools/prim_cleanup.py``. Anything it cannot remove it names.
 """
 
 import asyncio
@@ -28,6 +30,8 @@ import math
 import os
 import platform
 from pathlib import Path
+
+from probe_support import take_prim_away, wait_until_quiet
 
 from vibestorm.login.client import LoginClient
 from vibestorm.login.models import LoginCredentials, LoginRequest
@@ -73,13 +77,15 @@ async def main() -> int:
         run_live_session(
             bootstrap,
             MessageDispatcher.from_repo_root(Path.cwd()),
-            config=SessionConfig(duration_seconds=180.0),
+            config=SessionConfig(duration_seconds=420.0),
             world_client=client,
             stop_event=stop,
         )
     )
 
     failures: list[str] = []
+    #: Everything this run rezzed, so the cleanup can take it away again.
+    rezzed_ids: list[object] = []
     try:
         for _ in range(60):
             await asyncio.sleep(0.5)
@@ -96,6 +102,13 @@ async def main() -> int:
             print("FAIL: cannot see my own avatar, so there is nowhere to rez")
             return 1
         base_x, base_y, base_z = me.position
+        # Not the moment we land: objects stream in for tens of seconds after
+        # that, and a snapshot taken early calls every late arrival a prim
+        # this run rezzed. One run linked two prims from an earlier run that
+        # way and reported on those.
+        settled = await wait_until_quiet(client)
+        print(f"    region settled at {settled} objects")
+        session = client.current
         known = {obj.local_id for obj in session.world_view.objects.values()}
 
         print("--- 1. rez two prims a known distance apart ---")
@@ -126,6 +139,7 @@ async def main() -> int:
             print("FAIL: both spots matched the same prim")
             return 1
         before = {obj.local_id: obj.position for obj in rezzed}
+        rezzed_ids = [obj.full_id for obj in rezzed]
         apart = math.dist(rezzed[0].position[:2], rezzed[1].position[:2])
         print(f"    linking {[obj.local_id for obj in rezzed]}, {apart:.2f} m apart")
         if apart < SEPARATION_M / 2.0:
@@ -174,6 +188,18 @@ async def main() -> int:
                 "flat treatment of every prim is already right."
             )
     finally:
+        # Take both prims away rather than leaving another linkset behind.
+        # Roots first: a linkset is worn whole, so taking the root away takes
+        # its child with it, and a child cannot be worn on its own. A prim
+        # already gone reports gone rather than failing.
+        def parent_of(object_id) -> int:
+            current = client.current
+            obj = current.world_view.objects.get(object_id) if current is not None else None
+            return obj.parent_id if obj is not None else 0
+
+        for object_id in sorted(rezzed_ids, key=parent_of):
+            if not await take_prim_away(client, client.current_handle or 0, object_id):
+                print(f"    left behind -- {object_id}")
         stop.set()
         try:
             await asyncio.wait_for(task, timeout=10.0)

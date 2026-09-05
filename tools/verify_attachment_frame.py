@@ -41,6 +41,8 @@ import platform
 import sys
 from pathlib import Path
 
+from probe_support import wait_until_quiet
+
 from vibestorm.login.client import LoginClient
 from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
@@ -96,7 +98,7 @@ async def main(argv: list[str]) -> int:
         run_live_session(
             bootstrap,
             MessageDispatcher.from_repo_root(Path.cwd()),
-            config=SessionConfig(duration_seconds=240.0),
+            config=SessionConfig(duration_seconds=420.0),
             world_client=client,
             stop_event=stop,
         )
@@ -123,6 +125,9 @@ async def main(argv: list[str]) -> int:
         print(f"    avatar local={me.local_id} at {tuple(round(c, 2) for c in me.position)}")
 
         print("--- 1. rez something to wear ---")
+        settled = await wait_until_quiet(client)
+        print(f"    region settled at {settled} objects")
+        session = client.current
         known = {obj.local_id for obj in session.world_view.objects.values()}
         spot = (me.position[0] + 1.5, me.position[1], me.position[2] + 1.0)
         client.queue_outbound_packet(handle, session.build_object_add_packet(position=spot))

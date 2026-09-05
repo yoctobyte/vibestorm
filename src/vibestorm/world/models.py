@@ -22,6 +22,10 @@ from vibestorm.world.sim_stats import NamedSimStat, name_sim_stats
 from vibestorm.world.texture_anim import TextureAnimation
 from vibestorm.world.texture_entry import TextureEntry, parse_texture_entry
 
+#: An avatar's pcode, from the ObjectUpdate PCode field. Named here because a
+#: seated avatar is a child of its seat and must not be swept away with it.
+PCODE_AVATAR = 47
+
 
 @dataclass(slots=True, frozen=True)
 class RegionInfo:
@@ -402,7 +406,33 @@ class WorldView:
             )
 
     def apply_kill_object(self, message: KillObjectMessage) -> None:
-        for local_id in message.local_ids:
+        """Remove the named objects, and everything hanging off them.
+
+        A linkset's children are never named. Observed live: rezzing two prims,
+        linking them and then taking the root away produced exactly one
+        ``KillObject``, carrying the root's local id and nothing else, while
+        the child stayed in the world view for the rest of the session. A
+        client that removes only what it is told accumulates a phantom prim for
+        every linkset that ever leaves view -- which, walking a real region, is
+        most of them.
+
+        An avatar is the exception. A seated avatar is a child of its seat, and
+        an avatar whose seat is deleted stands up rather than ceasing to exist;
+        dropping it here would make whoever was sitting on it vanish.
+        """
+        doomed = set(message.local_ids)
+        children: dict[int, list[int]] = {}
+        for obj in self.objects.values():
+            if obj.parent_id and obj.pcode != PCODE_AVATAR:
+                children.setdefault(obj.parent_id, []).append(obj.local_id)
+        pending = list(doomed)
+        while pending:
+            for child in children.get(pending.pop(), ()):
+                if child not in doomed:
+                    doomed.add(child)
+                    pending.append(child)
+
+        for local_id in doomed:
             full_id = self.local_id_to_full_id.pop(local_id, None)
             if full_id is not None:
                 self.objects.pop(full_id, None)

@@ -19,10 +19,9 @@ Three questions, in order:
    parents, so the seated avatar should be drawn on the seat, not at the
    region corner.
 
-It rezzes its own seat, sits, looks, and stands. It *tries* to take the seat
-away afterwards and cannot: the local OpenSim build has no handler for
-``ObjectDelete`` (see ``tools/delete_prims.py``), so every run leaves one
-0.5 m cube behind and says so.
+It rezzes its own seat, sits, looks, stands, and takes the seat away again --
+by wearing it and taking it off, since ``ObjectDelete`` goes unhandled here.
+See ``tools/prim_cleanup.py``. If that fails it says so and names the prim.
 
     set -a; . local/vibestorm-login.env; set +a
     .venv/bin/python tools/verify_seated_avatar.py
@@ -33,6 +32,8 @@ import math
 import os
 import platform
 from pathlib import Path
+
+from probe_support import take_prim_away, wait_until_quiet
 
 from vibestorm.bus.commands import AddControlFlags, ClearControlFlags
 from vibestorm.login.client import LoginClient
@@ -78,7 +79,7 @@ async def main() -> int:
         run_live_session(
             bootstrap,
             MessageDispatcher.from_repo_root(Path.cwd()),
-            config=SessionConfig(duration_seconds=240.0),
+            config=SessionConfig(duration_seconds=420.0),
             world_client=client,
             stop_event=stop,
         )
@@ -106,6 +107,9 @@ async def main() -> int:
         print(f"    standing at {tuple(round(c, 2) for c in standing_at)}")
 
         print("--- 1. rez something to sit on ---")
+        settled = await wait_until_quiet(client)
+        print(f"    region settled at {settled} objects")
+        session = client.current
         known = {obj.local_id for obj in session.world_view.objects.values()}
         spot = (standing_at[0] + 1.5, standing_at[1], standing_at[2])
         client.queue_outbound_packet(handle, session.build_object_add_packet(position=spot))
@@ -201,21 +205,11 @@ async def main() -> int:
     finally:
         # Take the seat away again rather than leaving another cube behind.
         if seat_id is not None and client.current is not None:
-            session = client.current
-            seat = session.world_view.objects.get(seat_id)
-            if seat is not None:
-                client.queue_outbound_packet(
-                    client.current_handle or 0,
-                    session.build_object_delete_packet([seat.local_id]),
-                )
-                await asyncio.sleep(6.0)
-                gone = seat_id not in (client.current.world_view.objects if client.current else {})
-                if gone:
-                    print("    seat removed")
-                else:
-                    # Expected against OpenSim, which does not implement
-                    # ObjectDelete. Named so it can be cleared by hand.
-                    print(f"    seat left behind (ObjectDelete is unhandled here) -- {seat_id}")
+            if await take_prim_away(client, client.current_handle or 0, seat_id):
+                print("    seat removed")
+            else:
+                # Named so it can be cleared by hand.
+                print(f"    seat left behind -- {seat_id}")
         stop.set()
         try:
             await asyncio.wait_for(task, timeout=10.0)

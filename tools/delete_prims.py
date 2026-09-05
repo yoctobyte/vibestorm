@@ -6,8 +6,8 @@ nothing took them out: ``verify_child_prim_frame.py`` has to rez two prims and
 link them to observe what frame a child's position is in, and every run of it
 adds two more.
 
-**It does not work against the local OpenSim build.** The simulator's own log
-answers every attempt with
+**`ObjectDelete` does not work against the local OpenSim build.** The
+simulator's own log answers every attempt with
 
     WARN [CLIENT]: ignoring unhandled packet ObjectDelete
 
@@ -17,9 +17,16 @@ implement it. Prims that vanished around the first runs of this tool vanished
 on their own, not because of it, and reading that coincidence as success is
 what this paragraph exists to stop happening twice.
 
-It is kept because Second Life does implement `ObjectDelete`, and because the
-readback below reports honestly either way: what it prints is what the region
-says afterwards.
+So there is a second route, ``--via-attachment``, found while checking what an
+attachment is (``tools/verify_attachment_frame.py``): **wear the prim, then
+take it off.** ``ObjectDetach`` takes an attachment *into inventory*, and the
+prim leaves the region. That is a real difference from deleting and this tool
+does not pretend otherwise -- the prim ends up in the agent's inventory, not in
+the trash. It is also permission-checked by the simulator, which will not let
+an agent wear a prim it does not own, so it cannot reach anyone else's things.
+
+``ObjectDelete`` is still tried first: it is the message that means what is
+being asked for, and Second Life implements it.
 
 This deletes objects out of a region, so:
 
@@ -42,6 +49,7 @@ children with it, which is more than was asked for.
     set -a; . local/vibestorm-login.env; set +a
     .venv/bin/python tools/delete_prims.py <uuid> [<uuid> ...]         # list only
     .venv/bin/python tools/delete_prims.py <uuid> [<uuid> ...] --yes   # remove
+    .venv/bin/python tools/delete_prims.py <uuid> --yes --via-attachment
 """
 
 import argparse
@@ -66,6 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes",
         action="store_true",
         help="actually delete. Without it this lists what it would do and stops.",
+    )
+    parser.add_argument(
+        "--via-attachment",
+        action="store_true",
+        help=(
+            "for anything ObjectDelete leaves behind, wear it and take it off. "
+            "That moves the prim into the agent's inventory rather than deleting "
+            "it, and only works on prims the agent may wear -- which is to say, "
+            "its own."
+        ),
     )
     parser.add_argument(
         "--settle-seconds",
@@ -112,7 +130,7 @@ async def main(argv: list[str]) -> int:
         run_live_session(
             bootstrap,
             MessageDispatcher.from_repo_root(Path.cwd()),
-            config=SessionConfig(duration_seconds=180.0),
+            config=SessionConfig(duration_seconds=420.0),
             world_client=client,
             stop_event=stop,
         )
@@ -223,6 +241,61 @@ async def main(argv: list[str]) -> int:
         still_there = [
             object_id for object_id in wanted if object_id in session.world_view.objects
         ]
+
+        if still_there and args.via_attachment:
+            print(f"--- wearing and removing {len(still_there)} prim(s) ---")
+            print("    these end up in the agent's inventory, not deleted")
+            for object_id in list(still_there):
+                obj = session.world_view.objects.get(object_id)
+                if obj is None:
+                    continue
+                client.queue_outbound_packet(
+                    handle, session.build_object_attach_packet([obj.local_id])
+                )
+                # Wait for the reparent before detaching: detaching something
+                # that is not on yet does nothing, and the failure looks
+                # exactly like the simulator refusing. Generous, because it
+                # cannot tell those two apart and being impatient reports the
+                # wrong one -- a prim once called "not ours" here turned out
+                # to have gone on after the poll gave up, and was in inventory
+                # by the next run.
+                waited = 0.0
+                while waited < args.settle_seconds * 4.0:
+                    current = client.current
+                    worn = current.world_view.objects.get(object_id) if current else None
+                    if worn is not None and worn.parent_id:
+                        break
+                    await asyncio.sleep(1.0)
+                    waited += 1.0
+                current = client.current
+                worn = current.world_view.objects.get(object_id) if current else None
+                if worn is None or not worn.parent_id:
+                    print(
+                        f"  no parent reported in {args.settle_seconds * 4.0:.0f}s: "
+                        f"{object_id}\n"
+                        "    either the simulator refused it -- which is what it does "
+                        "with someone else's prim -- or it is still catching up. "
+                        "Re-run to tell which."
+                    )
+                    continue
+                session = current
+                client.queue_outbound_packet(
+                    handle, session.build_object_detach_packet([worn.local_id])
+                )
+                waited = 0.0
+                while waited < args.settle_seconds * 2.0:
+                    current = client.current
+                    if current is not None and object_id not in current.world_view.objects:
+                        break
+                    await asyncio.sleep(1.0)
+                    waited += 1.0
+                session = client.current
+                if object_id not in session.world_view.objects:
+                    print(f"  into inventory: {object_id}")
+                    still_there.remove(object_id)
+                else:
+                    print(f"  worn but would not come off: {object_id}")
+
         gone = len(wanted) - len(still_there)
         print(f"\n{gone}/{len(wanted)} gone from the region's view")
         for object_id in still_there:
