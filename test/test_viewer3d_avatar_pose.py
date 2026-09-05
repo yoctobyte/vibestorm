@@ -22,6 +22,7 @@ from vibestorm.viewer3d.avatar_pose import (
     advance_all,
     advance_motion,
     pose_for_motion,
+    sit_pose,
 )
 
 ORIGIN = (0.0, 0.0, 0.0)
@@ -228,15 +229,66 @@ class PoseTests(unittest.TestCase):
         self.assertLess(pose["leg_l"] * pose["arm_l"], 0.0)
         self.assertLess(pose["leg_r"] * pose["arm_r"], 0.0)
 
-    def test_a_knee_only_ever_bends_one_way(self) -> None:
+    def test_bending_a_knee_moves_that_foot_backwards(self) -> None:
+        # Through the skeleton, not the numbers, because the numbers are what
+        # went wrong. This test replaces one that asserted the shin angle was
+        # never positive -- which was the bug written down: the bend fired on
+        # the leg swung *forward*, and it bent the knee the wrong way, so the
+        # ankle finished in front of the knee. Two sign errors that hid each
+        # other, and an assertion that agreed with both.
+        #
+        # What a knee actually does is unambiguous and is what this measures:
+        # bending it swings the foot backwards, never forwards. Comparing the
+        # posed foot against the same thigh with a straight knee takes the
+        # thigh's own angle out of the answer.
+        from vibestorm.viewer3d.avatar_mesh import bone_matrices
+
+        def ankle_x(pose: dict[str, float], side: str) -> float:
+            bones = bone_matrices(pose)
+            matrix = bones[f"shin_{side}"]
+            # Straight down the shin from the knee, in mesh units.
+            return matrix[0] * 0.0 + matrix[8] * -0.45 + matrix[12]
+
+        bent_at_all = False
         for step in range(24):
             phase = 2.0 * math.pi * step / 24.0
             pose = pose_for_motion(
                 AvatarMotion(position=ORIGIN, speed_mps=3.0, gait_phase=phase)
             )
-            with self.subTest(phase=round(phase, 3)):
-                self.assertLessEqual(pose["shin_l"], 1e-9)
-                self.assertLessEqual(pose["shin_r"], 1e-9)
+            for side in ("l", "r"):
+                straight = dict(pose)
+                straight[f"shin_{side}"] = 0.0
+                with self.subTest(phase=round(phase, 3), side=side):
+                    bend = pose[f"shin_{side}"]
+                    if abs(bend) > 1e-9:
+                        bent_at_all = True
+                        self.assertLess(
+                            ankle_x(pose, side),
+                            ankle_x(straight, side),
+                            "bending the knee moved the foot forwards",
+                        )
+
+        self.assertTrue(bent_at_all, "no knee bent anywhere in the stride")
+
+    def test_the_knee_bends_on_the_leg_that_is_trailing(self) -> None:
+        # The other half of the same bug. A knee that bends while the leg
+        # reaches forward is a limp, and it is what shipped.
+        from vibestorm.viewer3d.avatar_mesh import bone_matrices
+
+        for step in range(24):
+            phase = 2.0 * math.pi * step / 24.0
+            pose = pose_for_motion(
+                AvatarMotion(position=ORIGIN, speed_mps=3.0, gait_phase=phase)
+            )
+            for side in ("l", "r"):
+                bend = pose[f"shin_{side}"]
+                if abs(bend) <= 1e-9:
+                    continue
+                # A positive bone pitch swings a bone's far end backwards, so
+                # the knee of a trailing leg is behind the hip.
+                knee_x = bone_matrices(pose)[f"shin_{side}"][12]
+                with self.subTest(phase=round(phase, 3), side=side):
+                    self.assertLess(knee_x, 0.0, "a forward-reaching knee bent")
 
     def test_the_stride_stops_growing_once_it_is_a_run(self) -> None:
         # Past the full-stride speed the gait cycles faster -- which the
@@ -265,19 +317,55 @@ class PoseTests(unittest.TestCase):
 
         self.assertLess(abs(slow["leg_l"]), abs(fast["leg_l"]))
 
+    def test_sitting_folds_the_hips_forward_and_the_knees_back(self) -> None:
+        # Through the skeleton for the same reason the walk's knees are: the
+        # two angles have opposite signs and getting either backwards gives a
+        # figure kneeling, or one with its shins through the seat.
+        from vibestorm.viewer3d.avatar_mesh import AVATAR_NOMINAL_SCALE, bone_matrices
+
+        bones = bone_matrices(sit_pose())
+        # These matrices are in mesh space, which divides each axis by a
+        # different number, so comparing a horizontal reach against a vertical
+        # drop there compares nothing. Back to metres first.
+        sx, _sy, sz = AVATAR_NOMINAL_SCALE
+
+        for side in ("l", "r"):
+            with self.subTest(side=side):
+                matrix = bones[f"shin_{side}"]
+                # The knee is the shin bone's own origin, and sitting puts it
+                # well in front of the hip -- most of a thigh's length.
+                self.assertGreater(matrix[12] * sx, 0.2, "the thigh does not come forward")
+
+                # From there the shin *drops*. The hip and knee angles nearly
+                # cancel, which is the point: get one sign wrong and the shin
+                # is horizontal instead, either stuck out in front or folded
+                # back through the seat.
+                reach = -matrix[8] * sx
+                fall = matrix[10] * sz
+                self.assertGreater(fall, 0.5, "the foot is not below the knee")
+                self.assertLess(
+                    abs(reach), 0.35 * fall, "the shin points along the ground, not down"
+                )
+
+    def test_sitting_is_not_the_standing_pose(self) -> None:
+        # The whole point: a seated avatar used to be drawn standing to
+        # attention on its chair.
+        self.assertNotEqual(sit_pose(), pose_for_motion(AvatarMotion(position=ORIGIN)))
+
     def test_every_bone_the_pose_names_is_a_real_bone(self) -> None:
         # A typo here is silent: bone_matrices looks the pose up by name and
         # a name nothing matches simply leaves that limb at rest.
         from vibestorm.viewer3d.avatar_mesh import AVATAR_BONES
 
         known = {bone.name for bone in AVATAR_BONES}
-        posed = pose_for_motion(
-            AvatarMotion(position=ORIGIN, speed_mps=3.0, gait_phase=1.0)
-        )
-
-        self.assertTrue(posed)
-        for name in posed:
-            self.assertIn(name, known)
+        for label, posed in (
+            ("walking", pose_for_motion(AvatarMotion(position=ORIGIN, speed_mps=3.0, gait_phase=1.0))),
+            ("sitting", sit_pose()),
+        ):
+            with self.subTest(pose=label):
+                self.assertTrue(posed)
+                for name in posed:
+                    self.assertIn(name, known)
 
 
 if __name__ == "__main__":

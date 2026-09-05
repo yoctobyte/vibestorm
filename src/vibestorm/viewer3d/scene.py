@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from vibestorm.viewer3d.avatar_pose import AvatarMotion, advance_all, pose_for_motion
+from vibestorm.viewer3d.avatar_pose import (
+    AvatarMotion,
+    advance_all,
+    pose_for_motion,
+    sit_pose,
+)
 from vibestorm.viewer3d.linkset import resolve_world_transforms
 from vibestorm.world.chat_types import (
     CHAT_TYPE_SAY,
@@ -737,8 +742,19 @@ class Scene:
             local_id: entity.position for local_id, entity in self.avatar_entities.items()
         }
         self.avatar_motion = advance_all(self.avatar_motion, positions, dt_seconds)
+        # An avatar with a parent is an avatar sitting on something: the
+        # simulator reparents it onto the seat, which is the one thing about
+        # what an avatar is *doing* that can be read without decoding an
+        # animation asset. The gait still runs underneath -- a seated avatar
+        # carried by a moving vehicle is still moving -- but the pose is not
+        # the gait's to give.
+        seated = {
+            local_id
+            for local_id, entity in self.avatar_entities.items()
+            if entity.parent_id
+        }
         self.avatar_poses = {
-            local_id: pose_for_motion(motion)
+            local_id: sit_pose() if local_id in seated else pose_for_motion(motion)
             for local_id, motion in self.avatar_motion.items()
         }
 

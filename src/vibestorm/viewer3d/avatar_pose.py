@@ -51,6 +51,16 @@ ARM_SWING_RATIO: float = 0.62
 #: Bending both ways looks like a limp.
 KNEE_BEND_RADIANS: float = 0.62
 
+#: How far the hip folds when seated. Just short of a right angle: a thigh at
+#: exactly 90 degrees reads as a mannequin rather than as someone sitting.
+#: Negative because a positive bone pitch swings a bone's far end *backwards*,
+#: and a seated thigh points forwards.
+SIT_HIP_RADIANS: float = -1.45
+
+#: And the knee folds back by about as much, which puts the shin vertical
+#: again. Positive, for the same reason the hip is negative.
+SIT_KNEE_RADIANS: float = 1.40
+
 #: A resting elbow is not straight. Small, constant, and it stops the arms
 #: reading as planks when the avatar is standing still.
 ELBOW_REST_RADIANS: float = -0.12
@@ -178,22 +188,55 @@ def pose_for_motion(motion: AvatarMotion) -> dict[str, float]:
     leg = LEG_SWING_RADIANS * amount * swing
     arm = LEG_SWING_RADIANS * ARM_SWING_RATIO * amount * swing
 
-    # The trailing leg is the one swung back, and its knee is what bends.
-    # max(0, ...) keeps the bend one-directional: a knee that bends forward as
-    # well reads as a limp.
-    bend_l = KNEE_BEND_RADIANS * amount * max(0.0, -swing)
-    bend_r = KNEE_BEND_RADIANS * amount * max(0.0, swing)
+    # The trailing leg is the one swung back, and its knee is what bends. Both
+    # halves of that were wrong when this shipped, and the two errors hid each
+    # other: the bend fired on the leg swung *forward*, and it bent the knee
+    # the wrong way, so the ankle ended up in front of the knee. A positive
+    # bone pitch swings a bone's far end backward -- see ``_pitch_at`` -- so a
+    # knee that bends the way a knee bends is a positive shin angle, on the leg
+    # whose own angle is positive.
+    bend_l = KNEE_BEND_RADIANS * amount * max(0.0, swing)
+    bend_r = KNEE_BEND_RADIANS * amount * max(0.0, -swing)
 
     return {
         "leg_l": leg,
         "leg_r": -leg,
-        "shin_l": -bend_l,
-        "shin_r": -bend_r,
+        "shin_l": bend_l,
+        "shin_r": bend_r,
         # Arms swing opposite the leg on the same side.
         "arm_l": -arm,
         "arm_r": arm,
         "forearm_l": ELBOW_REST_RADIANS - 0.18 * amount,
         "forearm_r": ELBOW_REST_RADIANS - 0.18 * amount,
+    }
+
+
+def sit_pose() -> dict[str, float]:
+    """The pose for an avatar sitting on something.
+
+    Sitting is knowable without decoding a single animation: the simulator
+    reparents a seated avatar onto its seat, so an avatar with a parent is an
+    avatar sitting on something. Observed live -- see
+    ``tools/verify_seated_avatar.py``, where sitting on a rezzed prim set the
+    avatar's ``parent_id`` to that prim and changed its reported position to
+    ``(-0.415, 0.0, 0.9)``, the seat's frame.
+
+    What this cannot know is *how* they are sitting. A poseball or a scripted
+    animation can put an avatar in any shape at all, and none of that is
+    readable here. This is the ordinary case -- knees forward, shins down --
+    and it is a great deal closer than standing to attention on a chair.
+    """
+    return {
+        "leg_l": SIT_HIP_RADIANS,
+        "leg_r": SIT_HIP_RADIANS,
+        "shin_l": SIT_KNEE_RADIANS,
+        "shin_r": SIT_KNEE_RADIANS,
+        # Arms a little forward, off the lap, rather than clipping through the
+        # thighs the resting pose would put them in.
+        "arm_l": -0.22,
+        "arm_r": -0.22,
+        "forearm_l": ELBOW_REST_RADIANS - 0.30,
+        "forearm_r": ELBOW_REST_RADIANS - 0.30,
     }
 
 
@@ -221,10 +264,13 @@ def rest_pose() -> dict[str, float]:
 
 __all__ = [
     "MOVEMENT_EPSILON_M",
+    "SIT_HIP_RADIANS",
+    "SIT_KNEE_RADIANS",
     "STOP_AFTER_SECONDS",
     "AvatarMotion",
     "advance_all",
     "advance_motion",
     "pose_for_motion",
     "rest_pose",
+    "sit_pose",
 ]

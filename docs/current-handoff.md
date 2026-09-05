@@ -176,9 +176,21 @@ Sitting also needed two messages this client did not have: `AgentRequestSit`
 asks, the simulator answers with `AvatarSitResponse`, and `AgentSit` commits.
 Standing back up is the `STAND_UP` control flag, which already existed.
 
-What is still missing is the *pose*: a seated avatar is drawn standing, on the
-seat. `parent_id` is a reliable signal that an avatar is sitting, and the
-skeleton to bend is already there.
+It is posed sitting, too. `parent_id` is the one thing about what an avatar is
+*doing* that can be read without decoding an animation asset, so a seated
+avatar gets knees forward and shins down instead of standing to attention on
+its chair. What that cannot know is *how* they are sitting -- a poseball can
+put an avatar in any shape at all, and none of that is readable here.
+
+*Two sign errors in the walk came out of it.* Rendering candidate seated poses
+to look at them meant working out which way a bone pitch turns a limb, and the
+answer said the gait was wrong: the knee bent on the leg swung **forward**
+rather than the trailing one, and it bent the knee **backwards**, so the ankle
+finished in front of the knee. Both had shipped, and the test asserted
+`shin <= 0` -- which is the bug written down. The two errors also partly hid
+each other on screen. The replacement measures the skeleton instead of the
+numbers: bending a knee has to move that foot backwards, which is true of every
+knee and cannot be satisfied by a wrong sign.
 
 **A -- linksets were drawn at the region corner (2026-09-05).** `ObjectUpdate`
 carries a `parent_id`; the 3D scene stored it and never used it, drawing every
@@ -456,10 +468,11 @@ probes, including a genuine name collision (`vibestorm-sync-88338` and
 `vibestorm-sync-88338.lsl`) that the verify tool reports as a conflict every
 run. `tools/clean_test_prim.py` removes them.
 
-**Two stray prims are left in the test region**,
-`d20cbafb-d79e-4771-84cf-25f7090fe69b` and `f09bb2a0-d56d-4b83-b2c3-cd781bd89740`
-at (130, 128, 27.1) and (134, 128, 27.1) -- the linkset made to observe what
-frame a child's position is in. `tools/delete_prims.py` cannot remove them, and
+**Stray prims are left in the test region.** Two at (130, 128, 27.1) and
+(134, 128, 27.1) -- `d20cbafb-d79e-4771-84cf-25f7090fe69b` and
+`f09bb2a0-d56d-4b83-b2c3-cd781bd89740`, the linkset made to observe what frame
+a child's position is in -- plus one 0.5 m cube per run of
+`verify_seated_avatar.py`, which needs something to sit on. `tools/delete_prims.py` cannot remove them, and
 neither can anything else here: **this OpenSim build has no handler for
 `ObjectDelete`**. Its own log answers every attempt with
 

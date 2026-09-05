@@ -19,7 +19,10 @@ Three questions, in order:
    parents, so the seated avatar should be drawn on the seat, not at the
    region corner.
 
-It rezzes its own seat, sits, looks, stands, and deletes the seat again.
+It rezzes its own seat, sits, looks, and stands. It *tries* to take the seat
+away afterwards and cannot: the local OpenSim build has no handler for
+``ObjectDelete`` (see ``tools/delete_prims.py``), so every run leaves one
+0.5 m cube behind and says so.
 
     set -a; . local/vibestorm-login.env; set +a
     .venv/bin/python tools/verify_seated_avatar.py
@@ -158,6 +161,18 @@ async def main() -> int:
                 failures.append("the seated avatar is not drawn at all")
                 print("    the scene has no entity for the seated avatar")
             else:
+                # The pose as well as the place: a seated avatar drawn standing
+                # to attention on its chair is the other half of getting this
+                # right, and it is derived from exactly this parent_id.
+                scene.advance_avatar_poses(0.016)
+                pose = scene.avatar_poses.get(avatar.local_id, {})
+                from vibestorm.viewer3d.avatar_pose import sit_pose
+
+                if pose != sit_pose():
+                    failures.append("the seated avatar is not posed sitting")
+                    print(f"    posed {pose} -- not the sitting pose")
+                else:
+                    print("    and poses it sitting, not standing")
                 print(f"    scene draws it at {tuple(round(c, 2) for c in drawn.position)}")
                 off_by = math.dist(drawn.position, seat.position)
                 print(f"    that is {off_by:.2f} m from the seat")
@@ -195,9 +210,12 @@ async def main() -> int:
                 )
                 await asyncio.sleep(6.0)
                 gone = seat_id not in (client.current.world_view.objects if client.current else {})
-                print(f"    seat removed: {gone}")
-                if not gone:
-                    print(f"    NOTE: the seat is still there -- {seat_id}")
+                if gone:
+                    print("    seat removed")
+                else:
+                    # Expected against OpenSim, which does not implement
+                    # ObjectDelete. Named so it can be cleared by hand.
+                    print(f"    seat left behind (ObjectDelete is unhandled here) -- {seat_id}")
         stop.set()
         try:
             await asyncio.wait_for(task, timeout=10.0)

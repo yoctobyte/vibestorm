@@ -1258,5 +1258,61 @@ class SceneSimHealthTests(unittest.TestCase):
         self.assertNotIn("55", scene.sim_health)
 
 
+class SeatedAvatarPoseTests(unittest.TestCase):
+    """An avatar with a parent is an avatar sitting on something.
+
+    That is the only thing about what an avatar is *doing* that this client can
+    read without decoding an animation asset, and it was observed live: sitting
+    on a rezzed prim set the avatar's parent_id to that prim. See
+    tools/verify_seated_avatar.py.
+    """
+
+    def _scene_with(self, *, parent_id: int) -> Scene:
+        from dataclasses import replace
+
+        scene = Scene()
+        entity = replace(
+            _make_entity(7, PCODE_AVATAR),
+            position=(128.0, 128.0, 25.0),
+            parent_id=parent_id,
+        )
+        scene.avatar_entities[7] = entity
+        return scene
+
+    def test_a_seated_avatar_gets_the_sitting_pose(self) -> None:
+        from vibestorm.viewer3d.avatar_pose import sit_pose
+
+        scene = self._scene_with(parent_id=99)
+
+        scene.advance_avatar_poses(0.016)
+
+        self.assertEqual(scene.avatar_poses[7], sit_pose())
+
+    def test_a_standing_avatar_does_not(self) -> None:
+        from vibestorm.viewer3d.avatar_pose import sit_pose
+
+        scene = self._scene_with(parent_id=0)
+
+        scene.advance_avatar_poses(0.016)
+
+        self.assertNotEqual(scene.avatar_poses[7], sit_pose())
+
+    def test_standing_up_returns_the_avatar_to_the_gait(self) -> None:
+        # Sitting is not a latch. An avatar that stands has parent_id 0 again,
+        # and a pose that stayed seated would leave it sitting in mid-air.
+        from vibestorm.viewer3d.avatar_pose import sit_pose
+
+        scene = self._scene_with(parent_id=99)
+        scene.advance_avatar_poses(0.016)
+        self.assertEqual(scene.avatar_poses[7], sit_pose())
+
+        from dataclasses import replace
+
+        scene.avatar_entities[7] = replace(scene.avatar_entities[7], parent_id=0)
+        scene.advance_avatar_poses(0.016)
+
+        self.assertNotEqual(scene.avatar_poses[7], sit_pose())
+
+
 if __name__ == "__main__":
     unittest.main()
