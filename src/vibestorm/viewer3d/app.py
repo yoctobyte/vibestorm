@@ -78,6 +78,13 @@ from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import DEFAULT_SCRIPT_ASSET_ID
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient, WorldClientError
+from vibestorm.sync.naming import (
+    TEXT_ASSET_TYPES,
+    asset_file_suffix,
+    match_files_to_rows,
+    safe_filename,
+    upload_kind_for_path,
+)
 from vibestorm.viewer3d.camera import Camera, CameraPreset
 from vibestorm.viewer3d.gl_compositor import GLCompositor
 from vibestorm.viewer3d.hud import HUD, ObjectAssetSelection
@@ -93,7 +100,11 @@ if TYPE_CHECKING:
     import pygame
 
 
-TEXT_ASSET_TYPES = {7, 10}
+#: Naming and matching live in vibestorm.sync so the CLI sync and the
+#: viewer cannot drift apart on what a pulled file is called.
+_safe_filename = safe_filename
+_asset_file_suffix = asset_file_suffix
+_upload_kind_for_path = upload_kind_for_path
 DEFAULT_ASSET_DOWNLOAD_DIR = Path("local/asset-downloads")
 DEFAULT_ASSET_UPLOAD_DIR = Path("local/upload")
 
@@ -1177,16 +1188,6 @@ def _write_asset_save(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-def _asset_file_suffix(asset_type: int) -> str:
-    if asset_type == 10:
-        return ".lsl"
-    if asset_type == 7:
-        return ".txt"
-    if asset_type == 0:
-        return ".j2k"
-    return ".bin"
-
-
 #: Marks a selection this session created rather than read off the object, so
 #: the completion line can report creates separately from updates.
 _CREATED_ROW_KEY = "__created__"
@@ -1305,43 +1306,27 @@ def _match_files_to_task_selections(
     upload_dir: Path,
     asset_rows: dict[str, ObjectAssetSelection],
 ) -> tuple[list[tuple[Path, ObjectAssetSelection]], list[Path]]:
-    """Match uploadable files in upload_dir to task inventory asset rows by name stem.
+    """Match uploadable files in upload_dir to task inventory asset rows by name.
 
-    Returns (matched, unmatched) where matched is list of (file_path, selection)
-    and unmatched is list of file_paths with no inventory match.
+    Delegates the rule itself to ``vibestorm.sync.naming`` so the pull
+    direction writes the names this matches back.
     """
-    name_to_selection: dict[str, ObjectAssetSelection] = {}
-    for selection in asset_rows.values():
-        if selection.asset_type not in (7, 10):
-            continue
-        safe = _safe_filename(selection.item_name or "")
-        name_to_selection[safe.lower()] = selection
-
-    matched: list[tuple[Path, ObjectAssetSelection]] = []
-    unmatched: list[Path] = []
-    for file_path in sorted(upload_dir.iterdir()):
-        if not file_path.is_file():
-            continue
-        if _upload_kind_for_path(file_path) is None:
-            continue
-        stem = _safe_filename(file_path.stem).lower()
-        selection = name_to_selection.get(stem)
-        if selection is None:
-            selection = name_to_selection.get(file_path.stem.lower())
-        if selection is not None:
-            matched.append((file_path, selection))
-        else:
-            unmatched.append(file_path)
-    return matched, unmatched
-
-
-def _upload_kind_for_path(path: Path) -> tuple[str, str] | None:
-    suffix = path.suffix.lower()
-    if suffix == ".lsl":
-        return ("lsltext", "lsl")
-    if suffix in {".txt", ".nc"}:
-        return ("notecard", "notecard")
-    return None
+    rows = [
+        selection
+        for selection in asset_rows.values()
+        if selection.asset_type in TEXT_ASSET_TYPES
+    ]
+    files = [
+        path
+        for path in upload_dir.iterdir()
+        if path.is_file() and _upload_kind_for_path(path) is not None
+    ]
+    return match_files_to_rows(
+        files,
+        rows,
+        name_of=lambda selection: selection.item_name or "",
+        asset_type_of=lambda selection: selection.asset_type,
+    )
 
 
 def _first_resolved(caps: dict[str, str], names: list[str]) -> str | None:
@@ -1360,12 +1345,6 @@ def _first_resolved(caps: dict[str, str], names: list[str]) -> str | None:
 
 def _resolve_user_path(path: Path) -> Path:
     return path if path.is_absolute() else Path.cwd() / path
-
-
-def _safe_filename(value: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in " ._-" else "_" for ch in value.strip())
-    cleaned = cleaned.strip(" .")
-    return cleaned or "unnamed"
 
 
 def _load_viewer_help() -> str:

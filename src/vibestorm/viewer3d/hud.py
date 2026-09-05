@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from vibestorm.world.asset_types import ASSET_TYPE_BY_NAME, asset_type_to_int
 from vibestorm.world.attachments import describe_attachment
 from vibestorm.world.prim_attributes import click_action_name, prim_material_name
 from vibestorm.world.sound_flags import decode_sound_flags
@@ -2134,43 +2135,10 @@ def _kind_color_html(kind: str) -> str:
     }.get(kind, "#aaaaaa")
 
 
-# SL/OpenSim asset type string → integer mapping (covers the types we care about for viewing)
-_ASSET_TYPE_MAP: dict[str, int] = {
-    "texture": 0,
-    "sound": 1,
-    "calling_card": 2,
-    "landmark": 3,
-    "script": 4,      # legacy
-    "clothing": 5,
-    "object": 6,
-    "notecard": 7,
-    "category": 8,
-    "root_category": 9,
-    "lsltext": 10,    # LSL script (current)
-    "lslbytecode": 11,
-    "texture_tga": 12,
-    "bodypart": 13,
-    "trash": 14,
-    "snapshot_category": 15,
-    "lost_and_found": 16,
-    "sound_wav": 17,
-    "image_tga": 18,
-    "image_jpeg": 19,
-    "animation": 20,
-    "gesture": 21,
-    "simstate": 22,
-}
-
-
-def _asset_type_string_to_int(asset_type_str: str) -> int | None:
-    """Convert a task-inventory asset type string to its integer equivalent."""
-    s = asset_type_str.strip().lower()
-    if s in _ASSET_TYPE_MAP:
-        return _ASSET_TYPE_MAP[s]
-    try:
-        return int(s)
-    except (ValueError, TypeError):
-        return None
+# The table itself lives in vibestorm.world.asset_types, where a headless
+# caller can reach it without importing pygame.
+_ASSET_TYPE_MAP = ASSET_TYPE_BY_NAME
+_asset_type_string_to_int = asset_type_to_int
 
 
 def _default_download_path_for_selection(selection: ObjectAssetSelection) -> Path:

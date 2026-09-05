@@ -419,7 +419,14 @@ class WorldClient:
             self.bus.publish(
                 ObjectInventorySnapshotReady(region_handle=handle, snapshot=snapshot)
             )
-        elif kind == "transfer.complete":
+        elif kind in ("transfer.complete", "asset.http.ok"):
+            # Both fetch paths end here. Only the UDP one used to: an asset
+            # served over the ViewerAsset capability landed in
+            # ``session.fetched_assets`` and was never announced, so every
+            # subscriber waiting on it -- the viewer's "save object text
+            # assets", the folder sync's pull -- waited out its timeout while
+            # the bytes sat in memory. The HTTP path is the *preferred* one
+            # whenever the capability resolves, which is to say almost always.
             parts = _kv_split(event.detail)
             asset_raw = parts.get("asset")
             type_raw = parts.get("type")
@@ -431,6 +438,14 @@ class WorldClient:
                 asset_type = int(type_raw)
             except (ValueError, KeyError):
                 return
+            # The sim answers with the stored asset's real content type, which
+            # is more trustworthy than the type we guessed when asking.
+            served_raw = parts.get("served_type")
+            if served_raw is not None:
+                try:
+                    asset_type = int(served_raw)
+                except ValueError:
+                    pass
             data = session.fetched_assets.get(asset_id)
             if data is None:
                 return

@@ -94,3 +94,17 @@ Moved to the docs project; listed so a later session does not re-queue them.
   wire, with w recovered as the non-negative root -- so it can only carry a yaw
   in [-pi, pi]. A yaw accumulated past half a turn has to be wrapped before
   packing or it comes back mirrored. (2026-09-03)
+
+- An asset served over the `ViewerAsset` capability completed but was never
+  announced on the bus: `WorldClient.on_session_event` published
+  `AssetDataReady` only for the UDP `transfer.complete` path, while
+  `asset.http.ok` -- the *preferred* path whenever the capability resolves,
+  which is nearly always -- left the bytes sitting in `session.fetched_assets`
+  with every waiter timing out. Worth recording because the failure is silent
+  and reads as "the sim would not give us the asset". (2026-09-05)
+- In-world item names routinely carry the file suffix already: the local test
+  prim holds an item genuinely called `vibestorm-sync-88338.lsl`. Matching a
+  file back to its row on `Path.stem` therefore misses, and a sync that misses
+  does not stop -- it creates a *second* row beside the one it pulled from.
+  Two items can also legitimately claim one file name (`notes` and
+  `notes.lsl`), which no folder can represent. (2026-09-05)

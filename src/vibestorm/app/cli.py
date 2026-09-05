@@ -50,6 +50,13 @@ from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.session import SessionConfig, SessionEvent, SessionReport, run_live_session
 from vibestorm.udp.socket_client import UdpSocketClient
 from vibestorm.udp.world_client import WorldClient
+from vibestorm.sync.engine import (
+    pull_object_to_folder,
+    push_folder_to_object,
+    resolve_sync_caps,
+)
+from vibestorm.sync.watch import DEFAULT_POLL_SECONDS as WATCH_POLL_SECONDS
+from vibestorm.sync.watch import watch_folder
 from vibestorm.udp.zerocode import decode_zerocode
 from vibestorm.world.census import census_world, format_census, format_object_physics
 from vibestorm.world.chat_types import chat_type_name
@@ -195,6 +202,61 @@ def build_parser() -> argparse.ArgumentParser:
         "--text",
         default="Written by Vibestorm.",
         help="Notecard body. Stored in a Linden text version 2 container.",
+    )
+
+    sync_parser = subparsers.add_parser(
+        "sync-object",
+        help="Sync an in-world object's scripts and notecards with a local folder.",
+    )
+    sync_parser.add_argument("--login-uri", required=True)
+    sync_parser.add_argument("--first", required=True)
+    sync_parser.add_argument("--last", required=True)
+    sync_parser.add_argument("--password", required=True)
+    sync_parser.add_argument("--start", default="last")
+    sync_parser.add_argument(
+        "--object",
+        required=True,
+        help="Full UUID of the object to sync with.",
+    )
+    sync_parser.add_argument(
+        "--folder",
+        required=True,
+        help="Local folder holding the object's scripts and notecards.",
+    )
+    sync_parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="Write the object's contents into the folder.",
+    )
+    sync_parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Send the folder's changed files onto the object.",
+    )
+    sync_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Stay running and push each time a file changes. Implies --push.",
+    )
+    sync_parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=WATCH_POLL_SECONDS,
+        help="How often --watch looks for changes.",
+    )
+    sync_parser.add_argument(
+        "--overwrite-untracked",
+        action="store_true",
+        help=(
+            "Let --pull overwrite files it has no sync record for. Without this "
+            "such a file is reported as a conflict and left alone."
+        ),
+    )
+    sync_parser.add_argument(
+        "--object-wait-seconds",
+        type=float,
+        default=60.0,
+        help="How long to wait for the object to come into view after login.",
     )
 
     upload_parser = subparsers.add_parser(
@@ -1261,6 +1323,9 @@ def main() -> int:
         )
         return 0
 
+    if args.command == "sync-object":
+        return _run_sync_object(args)
+
     if args.command == "unknowns-report":
         database = UnknownsDatabase(DEFAULT_UNKNOWNS_DB_PATH)
         print(f"db={DEFAULT_UNKNOWNS_DB_PATH}")
@@ -1386,6 +1451,173 @@ def main() -> int:
     status = get_status()
     print(f"{status.phase}: {status.message}")
     return 0
+
+
+
+async def _await_object_in_view(client, task_id, *, timeout: float):
+    """Wait for the object to appear in the world view, returning its local id.
+
+    An object is only addressable once the simulator has sent an update for
+    it, which for a prim out of draw distance may be never. Waiting with a
+    deadline and saying so beats a stack trace about a missing key.
+    """
+    import asyncio as _asyncio
+
+    deadline = _asyncio.get_running_loop().time() + timeout
+    while _asyncio.get_running_loop().time() < deadline:
+        session = client.current
+        if session is not None and session.movement_completed:
+            obj = session.world_view.objects.get(task_id)
+            if obj is not None:
+                return obj.local_id
+        await _asyncio.sleep(0.5)
+    return None
+
+
+def _print_sync_outcome(label: str, outcome) -> None:
+    print(f"{label}={outcome.summary()}", flush=True)
+    for name in outcome.transferred:
+        print(f"  transferred {name}", flush=True)
+    for name in outcome.created:
+        print(f"  created     {name}", flush=True)
+    for name, reason in outcome.conflicts:
+        print(f"  CONFLICT    {name}: {reason}", flush=True)
+    for name, reason in outcome.skipped:
+        print(f"  skipped     {name}: {reason}", flush=True)
+    for name, reason in outcome.failed:
+        print(f"  FAILED      {name}: {reason}", flush=True)
+
+
+def _run_sync_object(args: argparse.Namespace) -> int:
+    """Login, bind one object to one folder, and pull, push or watch."""
+    from uuid import UUID as _UUID
+
+    task_id = _UUID(args.object)
+    folder = Path(args.folder)
+    # No flags at all means "show me what is in there", which is the least
+    # destructive of the three and the one a first run wants.
+    do_pull = args.pull or not (args.pull or args.push or args.watch)
+    do_push = args.push or args.watch
+
+    async def main() -> int:
+        import signal
+
+        request = LoginRequest(
+            login_uri=args.login_uri,
+            credentials=LoginCredentials(
+                first=args.first, last=args.last, password=args.password
+            ),
+            start=args.start,
+            version=__version__,
+            platform=platform.system(),
+            platform_version=platform.platform(),
+        )
+        bootstrap = await LoginClient().login(request)
+        print(f"login=ok agent={bootstrap.agent_id}", flush=True)
+
+        client = WorldClient()
+        stop_event = asyncio.Event()
+
+        def _on_signal(sig: int, frame: object) -> None:
+            print("\nsync=stopping (signal received)", flush=True)
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+
+        session_task = asyncio.create_task(
+            run_live_session(
+                bootstrap,
+                MessageDispatcher.from_repo_root(Path.cwd()),
+                config=SessionConfig(duration_seconds=86400.0),
+                world_client=client,
+                stop_event=stop_event,
+            )
+        )
+        status = 0
+        try:
+            local_id = await _await_object_in_view(
+                client, task_id, timeout=args.object_wait_seconds
+            )
+            if local_id is None:
+                print(
+                    f"sync=failed object {task_id} did not come into view within "
+                    f"{args.object_wait_seconds:.0f}s",
+                    flush=True,
+                )
+                return 1
+            print(f"object=in-view local_id={local_id}", flush=True)
+
+            def progress(message: str) -> None:
+                print(f"  .. {message}", flush=True)
+
+            if do_pull:
+                outcome = await pull_object_to_folder(
+                    client,
+                    task_id=task_id,
+                    local_id=local_id,
+                    folder=folder,
+                    overwrite_untracked=args.overwrite_untracked,
+                    on_progress=progress,
+                )
+                _print_sync_outcome("pull", outcome)
+                if outcome.failed:
+                    status = 1
+
+            script_cap = notecard_cap = None
+            if do_push:
+                script_cap, notecard_cap = await resolve_sync_caps(client.current)
+                print(
+                    f"caps script={'yes' if script_cap else 'no'} "
+                    f"notecard={'yes' if notecard_cap else 'no'}",
+                    flush=True,
+                )
+
+            if args.push:
+                outcome = await push_folder_to_object(
+                    client,
+                    client.current,
+                    handle=client.current_handle or 0,
+                    task_id=task_id,
+                    local_id=local_id,
+                    folder=folder,
+                    script_cap=script_cap,
+                    notecard_cap=notecard_cap,
+                    on_progress=progress,
+                )
+                _print_sync_outcome("push", outcome)
+                if outcome.failed:
+                    status = 1
+
+            if args.watch:
+                print(
+                    f"watch=running folder={folder} poll={args.poll_seconds:.1f}s "
+                    "(ctrl-c to stop)",
+                    flush=True,
+                )
+                await watch_folder(
+                    client,
+                    client.current,
+                    handle=client.current_handle or 0,
+                    task_id=task_id,
+                    local_id=local_id,
+                    folder=folder,
+                    script_cap=script_cap,
+                    notecard_cap=notecard_cap,
+                    poll_seconds=args.poll_seconds,
+                    stop_event=stop_event,
+                    on_progress=progress,
+                    on_outcome=lambda outcome: _print_sync_outcome("push", outcome),
+                )
+        finally:
+            stop_event.set()
+            try:
+                await asyncio.wait_for(session_task, timeout=5.0)
+            except (TimeoutError, asyncio.CancelledError):
+                session_task.cancel()
+        return status
+
+    return asyncio.run(main())
 
 
 if __name__ == "__main__":
