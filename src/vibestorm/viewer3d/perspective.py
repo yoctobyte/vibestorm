@@ -143,6 +143,23 @@ def _sculpt_asset_shape_key(sculpt_id: UUID, sculpt_type: int | None) -> str:
     return f"sculpt:{sculpt_id}:{sculpt_type or 0}"
 
 
+def _has_face_textures(entity: SceneEntity) -> bool:
+    """Whether this prim's faces can differ from each other.
+
+    A cube is drawn as six meshes so a ``TextureEntry`` can put a different
+    texture on each side. A prim that names no per-face texture wears its
+    default all over, and splitting it draws the same pixels six times, at six
+    times the cost -- which is most of the prims in a region.
+
+    ``face_texture_ids`` empty is exactly "every face resolves to the default",
+    by ``TextureEntry.texture_for_face``. The entry's default is what
+    ``SceneEntity.default_texture_id`` already holds, so the whole-mesh path
+    picks the same texture the per-face path would have.
+    """
+    entry = entity.texture_entry
+    return entry is not None and bool(entry.face_texture_ids)
+
+
 def _single_face_index(shape_key: str) -> int | None:
     """SL face index to texture a whole-mesh draw with, if the prim has one face.
 
@@ -894,6 +911,14 @@ class PerspectiveRenderer:
         self._mesh_asset_paths: dict[UUID, Path] = {}
         self._sculpt_asset_paths: dict[tuple[UUID, int | None], Path] = {}
         self._instance_capacity = 0
+        # One entity's packed instance record -- model matrix and tint -- kept
+        # beside the entity it was packed from. A cube is drawn as six faces
+        # and each pass wanted the same nineteen floats, so they were being
+        # rebuilt six times a frame for every prim in the region; and a prim
+        # that has not moved packs to exactly what it packed to last frame.
+        # ``Scene`` hands back the same ``SceneEntity`` object for anything
+        # unchanged, so ``is`` is what says whether this is still good.
+        self._instance_blobs: dict[int, tuple[SceneEntity, bytes]] = {}
         # Ground (region floor) — separate program because the cubes are
         # flat-tinted while the ground samples a texture.
         self._ground_program = None  # type: moderngl.Program | None
@@ -1000,6 +1025,7 @@ class PerspectiveRenderer:
 
         self._prune_object_textures(scene)
         self._prune_mesh_assets(scene)
+        self._prune_instance_blobs(scene)
         self._upload_ground_texture(ctx, scene)
         self._upload_scene_mesh_assets(ctx, scene)
         self._upload_scene_sculpt_assets(ctx, scene)
@@ -1008,11 +1034,18 @@ class PerspectiveRenderer:
         # Multi-face prims bypass the (shape, texture) grouping: their texture
         # is chosen per SL face, so grouping them by a single texture up front
         # would only split each shape into redundant passes.
-        face_shape_groups = {
-            shape_key: shape_groups.pop(shape_key)
-            for shape_key in list(shape_groups)
-            if shape_key in self._prim_face_meshes
-        }
+        face_shape_groups: dict[str, list[SceneEntity]] = {}
+        for shape_key in list(shape_groups):
+            if shape_key not in self._prim_face_meshes:
+                continue
+            per_face: list[SceneEntity] = []
+            uniform: list[SceneEntity] = []
+            for entity in shape_groups.pop(shape_key):
+                (per_face if _has_face_textures(entity) else uniform).append(entity)
+            if per_face:
+                face_shape_groups[shape_key] = per_face
+            if uniform:
+                shape_groups[shape_key] = uniform
         groups = self._group_entities_for_draw(scene, shape_groups=shape_groups)
 
         ctx.enable(ctx.DEPTH_TEST)
@@ -2027,19 +2060,44 @@ class PerspectiveRenderer:
         if len(entities) > self._instance_capacity:
             self._grow_instance_buffer(ctx, len(entities))
 
-        floats: list[float] = []
-        for entity in entities:
-            quat = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
-            floats.extend(model_matrix(entity.position, entity.scale, quat))
-            r, g, b = entity.tint
-            floats.append(r / 255.0)
-            floats.append(g / 255.0)
-            floats.append(b / 255.0)
-
-        data = struct.pack(f"{len(floats)}f", *floats)
+        blob = self._instance_blob
+        data = b"".join([blob(entity) for entity in entities])
         assert self._instance_vbo is not None
         self._instance_vbo.orphan(size=len(data))
         self._instance_vbo.write(data)
+
+    def _instance_blob(self, entity: SceneEntity) -> bytes:
+        """This entity's model matrix and tint, packed and remembered.
+
+        Neither depends on which face is being drawn, so packing them per face
+        was six times the work for the same bytes; and neither changes while
+        the prim sits still, which is what most of a region does.
+        """
+        cached = self._instance_blobs.get(entity.local_id)
+        if cached is not None and cached[0] is entity:
+            return cached[1]
+        quat = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
+        r, g, b = entity.tint
+        packed = struct.pack(
+            f"{_FLOATS_PER_INSTANCE}f",
+            *model_matrix(entity.position, entity.scale, quat),
+            r / 255.0,
+            g / 255.0,
+            b / 255.0,
+        )
+        self._instance_blobs[entity.local_id] = (entity, packed)
+        return packed
+
+    def _prune_instance_blobs(self, scene: Scene) -> None:
+        """Forget packed instances for prims no longer in view.
+
+        Keyed by local id, so an id reused by a different prim is caught by
+        the identity check rather than by this; what this stops is a session
+        that walks a grid holding one record per prim it has ever seen.
+        """
+        in_view = len(scene.object_entities) + len(scene.avatar_entities)
+        if len(self._instance_blobs) > 2 * in_view + 64:
+            self._instance_blobs.clear()
 
     def _upload_ground_texture(self, ctx: moderngl.Context, scene: Scene) -> None:
         """Lazily upload ``scene.map_tile_path`` as the ground texture.

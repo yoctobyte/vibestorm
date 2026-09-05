@@ -13,7 +13,9 @@ surface in a recognisable way, ``clear_caches`` is safe to call.
 """
 
 import os
+import struct
 import unittest
+from uuid import UUID
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
@@ -227,3 +229,138 @@ class VoidWaterTests(unittest.TestCase):
         from vibestorm.viewer3d.perspective import _water_vertices
 
         self.assertEqual(set(_water_vertices(20.0)[2::3]), {20.0})
+
+
+def _cube(local_id: int, position=(10.0, 10.0, 25.0), *, texture_entry=None):
+    from vibestorm.viewer3d.scene import PCODE_PRIM, SceneEntity
+
+    return SceneEntity(
+        local_id=local_id,
+        pcode=PCODE_PRIM,
+        kind="prim",
+        position=position,
+        scale=(0.5, 0.5, 0.5),
+        rotation=(0.0, 0.0, 0.0, 1.0),
+        rotation_z_radians=0.0,
+        texture_entry=texture_entry,
+    )
+
+
+class InstanceBlobCacheTests(unittest.TestCase):
+    """One prim's model matrix and tint, packed once rather than per face.
+
+    A cube is drawn as six meshes so its sides can carry different textures,
+    and every one of those passes was rebuilding the same nineteen floats for
+    every prim in the region -- six times the work for identical bytes. None of
+    it depends on the face, and none of it changes while the prim sits still.
+
+    ``Scene`` hands back the same ``SceneEntity`` for anything it did not
+    rebuild, so identity is what says the packed bytes are still good. The
+    failure worth guarding is the stale one: a prim that moved and kept the
+    bytes that put it where it was.
+    """
+
+    def _renderer(self):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        # No GL context: the packing is arithmetic, and the buffers it feeds
+        # are allocated lazily.
+        return PerspectiveRenderer(Camera3D())
+
+    def test_the_same_entity_packs_once(self) -> None:
+        renderer = self._renderer()
+        entity = _cube(1)
+
+        first = renderer._instance_blob(entity)
+
+        self.assertIs(renderer._instance_blob(entity), first)
+
+    def test_a_prim_that_moved_is_repacked(self) -> None:
+        renderer = self._renderer()
+        renderer._instance_blob(_cube(1, (10.0, 10.0, 25.0)))
+
+        moved = renderer._instance_blob(_cube(1, (40.0, 10.0, 25.0)))
+
+        # The translation is the last column of the model matrix.
+        self.assertEqual(struct.unpack("19f", moved)[12], 40.0)
+
+    def test_the_pack_is_the_model_matrix_and_the_tint(self) -> None:
+        from vibestorm.viewer3d.perspective import model_matrix
+
+        renderer = self._renderer()
+        entity = _cube(1, (3.0, 4.0, 5.0))
+
+        packed = struct.unpack("19f", renderer._instance_blob(entity))
+
+        # Through float32 and back, so compare to the precision the GPU gets.
+        expected = model_matrix(entity.position, entity.scale, entity.rotation)
+        r, g, b = entity.tint
+        for got, want in zip(
+            packed, (*expected, r / 255.0, g / 255.0, b / 255.0), strict=True
+        ):
+            self.assertAlmostEqual(got, want, places=6)
+
+    def test_prims_that_left_the_region_are_forgotten(self) -> None:
+        # Otherwise walking a grid keeps one packed record per prim ever seen.
+        from vibestorm.viewer3d.scene import Scene
+
+        renderer = self._renderer()
+        for local_id in range(500):
+            renderer._instance_blob(_cube(local_id))
+
+        renderer._prune_instance_blobs(Scene())
+
+        self.assertEqual(renderer._instance_blobs, {})
+
+    def test_prims_still_in_view_are_kept(self) -> None:
+        from vibestorm.viewer3d.scene import Scene
+
+        renderer = self._renderer()
+        scene = Scene()
+        for local_id in range(500):
+            entity = _cube(local_id)
+            scene.object_entities[local_id] = entity
+            renderer._instance_blob(entity)
+
+        renderer._prune_instance_blobs(scene)
+
+        self.assertEqual(len(renderer._instance_blobs), 500)
+
+
+class FaceTextureSplitTests(unittest.TestCase):
+    """Which prims actually need drawing a face at a time.
+
+    Six draw passes per cube exist so a ``TextureEntry`` can put a different
+    texture on each side. A prim that names none wears its default all over,
+    and the six passes then draw the same pixels six times.
+    """
+
+    def test_a_prim_with_no_texture_entry_does_not(self) -> None:
+        from vibestorm.viewer3d.perspective import _has_face_textures
+
+        self.assertFalse(_has_face_textures(_cube(1)))
+
+    def test_a_uniformly_textured_prim_does_not(self) -> None:
+        # The common case in-world: one texture, applied to the whole prim.
+        from vibestorm.viewer3d.perspective import _has_face_textures
+        from vibestorm.world.texture_entry import TextureEntry
+
+        entry = TextureEntry(default_texture_id=UUID(int=7))
+
+        self.assertFalse(_has_face_textures(_cube(1, texture_entry=entry)))
+
+    def test_a_prim_with_one_face_overridden_does(self) -> None:
+        from vibestorm.viewer3d.perspective import _has_face_textures
+        from vibestorm.world.texture_entry import TextureEntry
+
+        entry = TextureEntry(
+            default_texture_id=UUID(int=7),
+            face_texture_ids=((2, UUID(int=9)),),
+        )
+
+        self.assertTrue(_has_face_textures(_cube(1, texture_entry=entry)))
+
+
+if __name__ == "__main__":
+    unittest.main()

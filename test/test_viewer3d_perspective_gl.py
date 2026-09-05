@@ -2848,3 +2848,96 @@ class SkyGLTests(_GLTestBase):
             self.assertGreater(b, max(r, g), "water should still be drawn")
         finally:
             renderer.clear_caches()
+
+
+class UniformTexturePathGLTests(_GLTestBase):
+    """A prim whose faces are all the same is drawn once, not six times.
+
+    Cubes, cylinders and prisms are split into one mesh per SL face so a
+    ``TextureEntry`` can put a different texture on each side. Almost no prim
+    does: the usual thing in-world is one texture over the whole box, and the
+    six passes then draw the same pixels six times over -- which was most of a
+    frame in any region of size.
+
+    The shortcut is only safe if it is invisible, so this renders the same
+    uniformly textured prim both ways and compares the framebuffers pixel for
+    pixel. ``PrimFaceMapGLTests`` covers the other half: a prim that *does*
+    name a per-face texture still gets it, on the right face.
+    """
+
+    TILE = UUID("cccccccc-0000-0000-0000-000000000001")
+
+    def _scene(self, shape: str):
+        from vibestorm.viewer3d.scene import Scene, SceneEntity
+        from vibestorm.world.texture_entry import TextureEntry
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_water = False
+        scene.render_sky = False
+        scene.texture_paths[self.TILE] = _write_solid_tile((40, 200, 90))
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=(0.0, 0.0, 0.0),
+            scale=(2.0, 2.0, 2.0),
+            # Turned off every axis, so the shortcut cannot pass by drawing a
+            # symmetric silhouette that happens to match.
+            rotation=(0.2, 0.3, 0.1, 0.927),
+            rotation_z_radians=0.0,
+            shape=shape,
+            default_texture_id=self.TILE,
+            texture_entry=TextureEntry(default_texture_id=self.TILE),
+        )
+        return scene
+
+    def _frame(self, scene) -> bytes:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), eye_position=(5.0, 4.0, 3.0))
+        camera.set_mode("free")
+        camera.screen_size = self.FBO_SIZE
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self.fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+
+    def _frame_forcing_the_face_path(self, scene) -> bytes:
+        from vibestorm.viewer3d import perspective
+
+        original = perspective._has_face_textures
+        perspective._has_face_textures = lambda entity: True
+        try:
+            return self._frame(scene)
+        finally:
+            perspective._has_face_textures = original
+
+    def test_a_uniform_cube_draws_the_same_either_way(self) -> None:
+        scene = self._scene("cube")
+
+        self.assertEqual(self._frame(scene), self._frame_forcing_the_face_path(scene))
+
+    def test_a_uniform_cylinder_draws_the_same_either_way(self) -> None:
+        scene = self._scene("cylinder")
+
+        self.assertEqual(self._frame(scene), self._frame_forcing_the_face_path(scene))
+
+    def test_a_uniform_prism_draws_the_same_either_way(self) -> None:
+        scene = self._scene("prism")
+
+        self.assertEqual(self._frame(scene), self._frame_forcing_the_face_path(scene))
+
+    def test_the_prim_is_actually_on_screen(self) -> None:
+        # Two identical black frames would satisfy the comparisons above.
+        scene = self._scene("cube")
+
+        self._frame(scene)
+        pixel = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+
+        self.assertGreater(pixel[1], max(pixel[0], pixel[2]), f"expected the tile, got {pixel}")
+
