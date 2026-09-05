@@ -1,8 +1,14 @@
-"""End-to-end live check of whole-folder object sync against local OpenSim.
+"""End-to-end live check of row creation against local OpenSim.
 
-Drives the real code paths -- `_create_task_script_rows` and the task
+Drives the real code paths -- ``create_task_script_rows`` and the task
 inventory upload capability -- rather than reimplementing them, so a pass here
 says something about the shipped code.
+
+Narrower than ``verify_object_folder_sync.py``, deliberately. That one checks
+the whole engine round trip; this one isolates the step that is hardest to
+reason about from a green suite: RezScript creates a row asynchronously, and
+"a row exists" is not the same claim as "the upload landed on it". The proof
+is the row's asset id moving off ``Constants.DefaultScriptID``.
 """
 
 import asyncio
@@ -19,12 +25,8 @@ from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import DEFAULT_SCRIPT_ASSET_ID
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient
-from vibestorm.viewer3d.app import (
-    SCRIPT_TASK_CAP_NAMES,
-    _await_object_inventory,
-    _create_task_script_rows,
-    _first_resolved,
-)
+from vibestorm.sync.engine import SCRIPT_TASK_CAP_NAMES, first_resolved
+from vibestorm.sync.task_inventory import await_object_inventory, create_task_script_rows
 
 SCRIPT_TEXT = """default
 {
@@ -34,11 +36,6 @@ SCRIPT_TEXT = """default
     }
 }
 """
-
-
-class _Scene:
-    def apply_chat_alert(self, alert):
-        print(f"  [scene] {getattr(alert, 'message', alert)}")
 
 
 async def main() -> int:
@@ -95,7 +92,7 @@ async def main() -> int:
             udp_listen_port=session.caps_udp_listen_port,
             user_agent="Vibestorm",
         )
-        script_cap = _first_resolved(caps, SCRIPT_TASK_CAP_NAMES)
+        script_cap = first_resolved(caps, SCRIPT_TASK_CAP_NAMES)
         print(f"script cap resolved: {bool(script_cap)}")
         if not script_cap:
             print("FAIL: no script task cap")
@@ -107,21 +104,22 @@ async def main() -> int:
             path.write_text(SCRIPT_TEXT)
 
             print("--- creating row ---")
-            created, skipped = await _create_task_script_rows(
-                client, session, _Scene(),
+            created, skipped = await create_task_script_rows(
+                client, session,
                 handle=client.current_handle or 0,
-                task_id=task_id, local_id=local_id, files=[path],
+                task_id=task_id, local_id=local_id, names=[name],
+                on_progress=print,
             )
             if not created:
                 print(f"FAIL: no row created; skipped={skipped}")
                 return 1
-            _f, selection = created[0]
-            print(f"created row item_id={selection.item_id} name={selection.item_name!r}")
+            row_created = created[0]
+            print(f"created row item_id={row_created.item_id} name={row_created.name!r}")
 
             print("--- uploading contents onto it ---")
             result = await TaskInventoryUploadClient(timeout_seconds=25.0).upload_task_script(
                 script_cap,
-                item_id=selection.item_id,
+                item_id=row_created.item_id,
                 task_id=task_id,
                 script_bytes=path.read_bytes(),
                 udp_listen_port=session.caps_udp_listen_port,
@@ -132,11 +130,11 @@ async def main() -> int:
                 return 1
 
             print("--- re-reading to confirm the asset changed ---")
-            after = await _await_object_inventory(client, local_id, timeout=20.0)
+            after = await await_object_inventory(client, local_id, timeout=20.0)
             if after is None:
                 print("FAIL: no inventory re-read")
                 return 1
-            row = next((i for i in after.items if i.item_id == selection.item_id), None)
+            row = next((i for i in after.items if i.item_id == row_created.item_id), None)
             if row is None:
                 print("FAIL: created row vanished")
                 return 1

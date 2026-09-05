@@ -310,80 +310,71 @@ class PerspectiveSkyBackgroundTests(unittest.TestCase):
             self.assertEqual((corner.r, corner.g, corner.b), SKY_COLOR)
 
 
-class MatchFilesToTaskSelectionsTests(unittest.TestCase):
-    def _make_selection(self, item_name: str, asset_type: int, item_id=None):
-        from vibestorm.viewer3d.hud import ObjectAssetSelection
+class SyncFolderForTaskTests(unittest.TestCase):
+    """Where the viewer's Upload button decides to sync from.
 
-        return ObjectAssetSelection(
-            item_key=f"{item_name} [{asset_type}]",
-            asset_id=UUID("00000000-0000-4000-8000-000000000001"),
-            asset_type=asset_type,
-            item_name=item_name,
-            task_id=UUID("00000000-0000-4000-8000-000000000002"),
-            item_id=item_id or UUID("00000000-0000-4000-8000-000000000003"),
-        )
+    The button is the one sync entry point with no headless verification --
+    driving it needs a window and a live simulator -- so the part of it that
+    is not a guard clause or a call into the engine is pulled out here and
+    tested directly.
+    """
 
-    def test_matches_lsl_file_to_script_selection(self) -> None:
-        from vibestorm.viewer3d.app import _match_files_to_task_selections
+    TASK = UUID("d7f47f7e-4328-4d17-a665-19feaec7b1e9")
 
-        sel = self._make_selection("Main Script", 10)
-        rows = {sel.item_key: sel}
+    def setUp(self) -> None:
+        self._cwd = Path.cwd()
+
+    def test_no_path_means_the_object_s_own_download_folder(self) -> None:
+        from vibestorm.viewer3d.app import DEFAULT_ASSET_DOWNLOAD_DIR, sync_folder_for_task
+
+        folder = sync_folder_for_task(self.TASK, None)
+
+        self.assertTrue(folder.is_absolute())
+        self.assertEqual(folder.name, str(self.TASK))
+        self.assertEqual(folder.parent.name, DEFAULT_ASSET_DOWNLOAD_DIR.name)
+
+    def test_a_directory_is_used_as_given(self) -> None:
+        from vibestorm.viewer3d.app import sync_folder_for_task
+
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / "Main Script.lsl").write_text("default {}")
-            matched, unmatched = _match_files_to_task_selections(d, rows)
-        self.assertEqual(len(matched), 1)
-        self.assertEqual(matched[0][1].item_name, "Main Script")
-        self.assertEqual(unmatched, [])
+            folder = sync_folder_for_task(self.TASK, Path(tmp))
 
-    def test_matches_txt_file_to_notecard_selection(self) -> None:
-        from vibestorm.viewer3d.app import _match_files_to_task_selections
+            self.assertEqual(folder, Path(tmp))
 
-        sel = self._make_selection("Config Note", 7)
-        rows = {sel.item_key: sel}
+    def test_a_file_means_the_folder_it_is_in(self) -> None:
+        # A file picker hands back a file. Taking it literally would sync a
+        # folder that does not exist and report the user's folder missing.
+        from vibestorm.viewer3d.app import sync_folder_for_task
+
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / "Config Note.txt").write_text("hello")
-            matched, unmatched = _match_files_to_task_selections(d, rows)
-        self.assertEqual(len(matched), 1)
-        self.assertEqual(matched[0][1].item_name, "Config Note")
+            chosen = Path(tmp) / "greeter.lsl"
+            chosen.write_text("default {}")
 
-    def test_unmatched_file_lands_in_unmatched(self) -> None:
-        from vibestorm.viewer3d.app import _match_files_to_task_selections
+            self.assertEqual(sync_folder_for_task(self.TASK, chosen), Path(tmp))
 
-        sel = self._make_selection("Other Script", 10)
-        rows = {sel.item_key: sel}
+    def test_a_relative_path_is_anchored_to_the_working_directory(self) -> None:
+        from vibestorm.viewer3d.app import sync_folder_for_task
+
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / "Main Script.lsl").write_text("default {}")
-            matched, unmatched = _match_files_to_task_selections(d, rows)
-        self.assertEqual(matched, [])
-        self.assertEqual(len(unmatched), 1)
-        self.assertIn("Main Script.lsl", unmatched[0].name)
+            (Path(tmp) / "work").mkdir()
+            os.chdir(tmp)
+            try:
+                folder = sync_folder_for_task(self.TASK, Path("work"))
+            finally:
+                os.chdir(self._cwd)
 
-    def test_non_text_asset_types_excluded_from_match_map(self) -> None:
-        from vibestorm.viewer3d.app import _match_files_to_task_selections
+            self.assertEqual(folder, Path(tmp).resolve() / "work")
 
-        texture_sel = self._make_selection("My Texture", 0)
-        rows = {texture_sel.item_key: texture_sel}
+    def test_a_folder_that_is_not_there_is_not_quietly_replaced_by_its_parent(self) -> None:
+        # A mistyped folder name resolving to the folder above it would push
+        # whatever that holds into the object. The caller checks is_dir() and
+        # reports it missing; that only works if the name survives to it.
+        from vibestorm.viewer3d.app import sync_folder_for_task
+
         with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / "My Texture.lsl").write_text("default {}")
-            matched, unmatched = _match_files_to_task_selections(d, rows)
-        self.assertEqual(matched, [])
-        self.assertEqual(len(unmatched), 1)
+            missing = Path(tmp) / "scrpits"
 
-    def test_non_uploadable_file_extensions_skipped(self) -> None:
-        from vibestorm.viewer3d.app import _match_files_to_task_selections
-
-        sel = self._make_selection("readme", 7)
-        rows = {sel.item_key: sel}
-        with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            (d / "readme.md").write_text("# hi")
-            matched, unmatched = _match_files_to_task_selections(d, rows)
-        self.assertEqual(matched, [])
-        self.assertEqual(unmatched, [])
+            self.assertEqual(sync_folder_for_task(self.TASK, missing), missing)
 
 
 if __name__ == "__main__":

@@ -165,6 +165,7 @@ def match_files_to_rows(
 
     matched: list[tuple[Path, _T]] = []
     unmatched: list[Path] = []
+    claimed: set[int] = set()
     for file_path in sorted(files):
         kind = upload_kind_for_path(file_path)
         target_type = (
@@ -174,14 +175,25 @@ def match_files_to_rows(
             target_type, ({}, {}, {})
         )
         stem = file_path.stem
-        row = (
-            by_file_name.get(file_path.name.lower())
-            or by_safe_stem.get(safe_filename(stem).lower())
-            or by_raw_stem.get(stem.lower())
-        )
+        # A row is claimed by at most one file. Two files can reach the same
+        # row -- the lookups are case-insensitive, and sanitising collapses
+        # distinct names onto one -- and giving it to both would upload each
+        # over the other and report two successes. The loser is reported as
+        # unmatched, which push turns into a row of its own: two files are
+        # two items, and that is the honest reading.
+        row = None
+        for candidate in (
+            by_file_name.get(file_path.name.lower()),
+            by_safe_stem.get(safe_filename(stem).lower()),
+            by_raw_stem.get(stem.lower()),
+        ):
+            if candidate is not None and id(candidate) not in claimed:
+                row = candidate
+                break
         if row is None:
             unmatched.append(file_path)
         else:
+            claimed.add(id(row))
             matched.append((file_path, row))
     return matched, unmatched
 

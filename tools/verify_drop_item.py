@@ -18,7 +18,7 @@ from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient
-from vibestorm.viewer3d.app import _await_object_inventory
+from vibestorm.sync.task_inventory import await_object_inventory
 
 INVENTORY_NOTECARD = 7
 
@@ -95,7 +95,7 @@ async def main() -> int:
         item = notecards[0]
         print(f"dropping notecard {item.name!r} item_id={item.item_id}")
 
-        before = await _await_object_inventory(client, local_id, timeout=20.0)
+        before = await await_object_inventory(client, local_id, timeout=20.0)
         if before is None:
             print("FAIL: no baseline inventory read")
             return 1
@@ -114,7 +114,7 @@ async def main() -> int:
         client.queue_outbound_packet(client.current_handle or 0, packet)
         await asyncio.sleep(3.0)
 
-        after = await _await_object_inventory(client, local_id, timeout=20.0)
+        after = await await_object_inventory(client, local_id, timeout=20.0)
         if after is None:
             print("FAIL: no inventory re-read")
             return 1

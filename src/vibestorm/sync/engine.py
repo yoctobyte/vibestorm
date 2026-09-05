@@ -11,6 +11,7 @@ file it can push back onto the row it came from.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
@@ -35,7 +36,13 @@ from vibestorm.udp.world_client import WorldClient
 from vibestorm.world.asset_types import ASSET_NAME_BY_TYPE, asset_type_to_int
 from vibestorm.world.object_inventory import ObjectInventorySnapshot
 
-#: Capability names for filling in a task inventory row, current first.
+#: Both names OpenSim registers for updating a script in object inventory,
+#: current one first. ``BunchOfCaps`` registers ``UpdateScriptTask`` and then
+#: ``UpdateScriptTaskInventory`` against the same handler, with the second
+#: marked ``//legacy`` in its source. Asking only for the legacy alias works
+#: today but leaves the client depending on the name OpenSim has already
+#: labelled as the one it keeps for compatibility. Preference, not fallback
+#: ranking: a sim offering both should be talked to by the current name.
 SCRIPT_TASK_CAP_NAMES = ["UpdateScriptTask", "UpdateScriptTaskInventory"]
 NOTECARD_TASK_CAP_NAME = "UpdateNotecardTaskInventory"
 #: Filling in a notecard that lives in *agent* inventory. Needed to create one
@@ -157,6 +164,21 @@ def _encode_for_upload(data: bytes, asset_type: int) -> bytes:
     return data
 
 
+def first_resolved(caps: dict[str, str], names: Sequence[str]) -> str | None:
+    """The first of ``names`` the simulator actually resolved.
+
+    Order is preference, not fallback ranking: a sim that offers both a
+    current and a legacy name for one handler should be talked to by its
+    current name. An empty string does not count as resolved -- it would pass
+    a truthiness-free lookup and then be POSTed to as a URL.
+    """
+    for name in names:
+        url = caps.get(name)
+        if url:
+            return url
+    return None
+
+
 async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCaps:
     """The capabilities a sync can use against this session."""
     caps = await CapabilityClient(timeout_seconds=timeout).resolve_seed_caps(
@@ -166,9 +188,9 @@ async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCa
         user_agent="Vibestorm",
     )
     return SyncCaps(
-        script=next((caps[name] for name in SCRIPT_TASK_CAP_NAMES if caps.get(name)), None),
-        notecard=caps.get(NOTECARD_TASK_CAP_NAME) or None,
-        notecard_agent=caps.get(NOTECARD_AGENT_CAP_NAME) or None,
+        script=first_resolved(caps, SCRIPT_TASK_CAP_NAMES),
+        notecard=first_resolved(caps, [NOTECARD_TASK_CAP_NAME]),
+        notecard_agent=first_resolved(caps, [NOTECARD_AGENT_CAP_NAME]),
     )
 
 
@@ -502,6 +524,7 @@ __all__ = [
     "NOTECARD_AGENT_CAP_NAME",
     "NOTECARD_TASK_CAP_NAME",
     "SCRIPT_TASK_CAP_NAMES",
+    "first_resolved",
     "InventoryRow",
     "SyncCaps",
     "SyncOutcome",

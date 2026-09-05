@@ -69,19 +69,14 @@ from vibestorm.caps.inventory_client import (
     parse_inventory_descendents_payload,
     snapshot_with_loaded_empty_folder,
 )
-from vibestorm.caps.task_inventory_upload_client import (
-    TaskInventoryUploadClient,
-    TaskInventoryUploadError,
-)
 from vibestorm.login.client import LoginError
 from vibestorm.udp.dispatch import MessageDispatcher
-from vibestorm.udp.messages import DEFAULT_SCRIPT_ASSET_ID
 from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient, WorldClientError
+from vibestorm.sync.engine import push_folder_to_object, resolve_sync_caps
 from vibestorm.sync.naming import (
     TEXT_ASSET_TYPES,
     asset_file_suffix,
-    match_files_to_rows,
     safe_filename,
     upload_kind_for_path,
 )
@@ -93,7 +88,6 @@ from vibestorm.viewer3d.perspective import PerspectiveRenderer
 from vibestorm.viewer3d.render import clear_tile_cache
 from vibestorm.viewer3d.renderer import TopDownRenderer, ViewerRenderer
 from vibestorm.viewer3d.scene import Scene
-from vibestorm.world.object_inventory import ObjectInventorySnapshot
 
 if TYPE_CHECKING:
     import moderngl
@@ -107,15 +101,6 @@ _asset_file_suffix = asset_file_suffix
 _upload_kind_for_path = upload_kind_for_path
 DEFAULT_ASSET_DOWNLOAD_DIR = Path("local/asset-downloads")
 DEFAULT_ASSET_UPLOAD_DIR = Path("local/upload")
-
-#: Both names OpenSim registers for updating a script in object inventory,
-#: current one first. ``BunchOfCaps`` registers ``UpdateScriptTask`` and then
-#: ``UpdateScriptTaskInventory`` against the same handler, with the second
-#: marked ``//legacy`` in the source. Asking only for the legacy alias works
-#: today but leaves the client depending on the name OpenSim has already
-#: labelled as the one it keeps for compatibility.
-SCRIPT_TASK_CAP_NAMES = ["UpdateScriptTask", "UpdateScriptTaskInventory"]
-
 
 @dataclass(slots=True, frozen=True)
 class PendingAssetSave:
@@ -725,180 +710,78 @@ async def run_viewer(args: argparse.Namespace) -> int:
         asset_rows: dict[str, ObjectAssetSelection],
         path: Path | None = None,
     ) -> None:
-        asyncio.create_task(sync_files_to_object_task_inventory(task_id, asset_rows, path))
+        # ``asset_rows`` is what the inspector panel happens to be showing.
+        # The engine re-reads the object's inventory for itself, which is the
+        # point: it then sees rows the panel never listed, and the bindings
+        # recorded in the folder outrank every name on either side.
+        asyncio.create_task(sync_files_to_object_task_inventory(task_id, path))
 
     async def sync_files_to_object_task_inventory(
         task_id: UUID,
-        asset_rows: dict[str, ObjectAssetSelection],
         path: Path | None,
     ) -> None:
+        """Push a folder into an object, through the shipped sync engine.
+
+        This used to be ~180 lines of its own: its own name matching, its own
+        row creation, its own upload loop. All of that now lives in
+        ``vibestorm.sync`` and is exercised headlessly against a live
+        simulator, so the button and the CLI cannot drift apart -- and the
+        button inherits what the engine learned. In particular it stops
+        matching on the file's stem, which misses whenever an in-world item is
+        named with its suffix already (they routinely are), and a miss here
+        does not fail: it creates a *second* row beside the one the file came
+        from.
+        """
         session = client.current
         handle = client.current_handle or 0
+
+        def report(message: str) -> None:
+            scene.apply_chat_alert(
+                ChatAlert(region_handle=handle, message=f"Sync: {message}")
+            )
+
         if session is None:
-            scene.apply_chat_alert(ChatAlert(region_handle=handle, message="Sync: not connected."))
+            report("not connected.")
             return
+        obj = session.world_view.objects.get(task_id)
+        if obj is None:
+            report("the object is not in view, so its inventory cannot be read.")
+            return
+
+        folder = sync_folder_for_task(task_id, path)
+        if not folder.is_dir():
+            report(f"folder not found: {folder}")
+            return
+
         try:
-            caps = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
-                session.bootstrap.seed_capability,
-                SCRIPT_TASK_CAP_NAMES + ["UpdateNotecardTaskInventory"],
-                udp_listen_port=session.caps_udp_listen_port,
-                user_agent="Vibestorm",
-            )
+            caps = await resolve_sync_caps(session)
         except CapabilityError as exc:
-            scene.apply_chat_alert(ChatAlert(region_handle=handle, message=f"Sync caps: {exc}"))
+            report(f"caps: {exc}")
             return
-        script_cap = _first_resolved(caps, SCRIPT_TASK_CAP_NAMES)
-        notecard_cap = caps.get("UpdateNotecardTaskInventory")
-        if not script_cap and not notecard_cap:
-            scene.apply_chat_alert(
-                ChatAlert(region_handle=handle, message="Sync: no task inventory caps available.")
-            )
+        if not caps.script and not caps.notecard:
+            report("no task inventory capabilities are available.")
             return
-        safe_task = _safe_filename(str(task_id))
-        if path is None:
-            upload_dir = _resolve_user_path(DEFAULT_ASSET_DOWNLOAD_DIR / safe_task)
-        elif path.is_dir():
-            upload_dir = _resolve_user_path(path)
-        else:
-            upload_dir = _resolve_user_path(path.parent)
-        if not upload_dir.is_dir():
-            scene.apply_chat_alert(
-                ChatAlert(region_handle=handle, message=f"Sync: folder not found: {upload_dir}")
-            )
-            return
-        matched, unmatched = _match_files_to_task_selections(upload_dir, asset_rows)
 
-        # Files with no row yet: make the row, then treat them like any other
-        # match. Without this step a whole-folder sync can only ever update
-        # what the object already contains, which is not what "upload a folder"
-        # means. Only scripts can be created this way -- RezScript is
-        # script-specific, and there is no equivalent create for notecards.
-        skipped: list[tuple[Path, str]] = []
-        if unmatched:
-            to_create = [f for f in unmatched if f.suffix.lower() == ".lsl"]
-            skipped.extend(
-                (f, "no matching inventory item, and only .lsl rows can be created")
-                for f in unmatched
-                if f.suffix.lower() != ".lsl"
-            )
-            if to_create and not script_cap:
-                skipped.extend((f, "no script task cap to fill it in") for f in to_create)
-                to_create = []
-            if to_create:
-                obj = session.world_view.objects.get(task_id)
-                if obj is None:
-                    skipped.extend((f, "object not in view; cannot create") for f in to_create)
-                else:
-                    created, create_skipped = await _create_task_script_rows(
-                        client,
-                        session,
-                        scene,
-                        handle=handle,
-                        task_id=task_id,
-                        local_id=obj.local_id,
-                        files=to_create,
-                    )
-                    matched.extend(created)
-                    skipped.extend(create_skipped)
-
-        if not matched:
-            scene.apply_chat_alert(
-                ChatAlert(
-                    region_handle=handle,
-                    message=f"Sync: no file names match inventory items in {upload_dir}",
-                )
-            )
-            for file_path, reason in skipped:
-                scene.apply_chat_alert(
-                    ChatAlert(
-                        region_handle=handle,
-                        message=f"Sync: skipped {file_path.name} ({reason})",
-                    )
-                )
-            return
-        for file_path, reason in skipped:
-            scene.apply_chat_alert(
-                ChatAlert(
-                    region_handle=handle,
-                    message=f"Sync: skipped {file_path.name} ({reason})",
-                )
-            )
-        created_count = sum(1 for _f, sel in matched if sel.item_key == _CREATED_ROW_KEY)
-        uploader = TaskInventoryUploadClient(timeout_seconds=20.0)
-        uploaded = 0
-        failed = 0
-        for file_path, selection in matched:
-            if selection.item_id is None:
-                scene.apply_chat_alert(
-                    ChatAlert(
-                        region_handle=handle,
-                        message=f"Sync: skipped {file_path.name} (item_id unknown)",
-                    )
-                )
-                continue
-            try:
-                data = file_path.read_bytes()
-                if selection.asset_type == 10:
-                    if not script_cap:
-                        scene.apply_chat_alert(
-                            ChatAlert(
-                                region_handle=handle,
-                                message=f"Sync: skipped {file_path.name} (no script task cap)",
-                            )
-                        )
-                        continue
-                    result = await uploader.upload_task_script(
-                        script_cap,
-                        item_id=selection.item_id,
-                        task_id=task_id,
-                        script_bytes=data,
-                        udp_listen_port=session.caps_udp_listen_port,
-                    )
-                    if result.compiled:
-                        msg = f"Sync: {file_path.name} → compiled OK (item={result.new_item_id})"
-                    else:
-                        errs = "; ".join(str(e) for e in result.errors[:3])
-                        msg = f"Sync: {file_path.name} → compile errors: {errs}"
-                    scene.apply_chat_alert(ChatAlert(region_handle=handle, message=msg))
-                else:
-                    if not notecard_cap:
-                        scene.apply_chat_alert(
-                            ChatAlert(
-                                region_handle=handle,
-                                message=f"Sync: skipped {file_path.name} (UpdateNotecardTaskInventory not available)",
-                            )
-                        )
-                        continue
-                    result = await uploader.upload_task_notecard(
-                        notecard_cap,
-                        item_id=selection.item_id,
-                        task_id=task_id,
-                        notecard_bytes=data,
-                        udp_listen_port=session.caps_udp_listen_port,
-                    )
-                    scene.apply_chat_alert(
-                        ChatAlert(
-                            region_handle=handle,
-                            message=f"Sync: {file_path.name} → OK (item={result.new_item_id})",
-                        )
-                    )
-                uploaded += 1
-            except (TaskInventoryUploadError, OSError) as exc:
-                scene.apply_chat_alert(
-                    ChatAlert(
-                        region_handle=handle, message=f"Sync: {file_path.name} failed: {exc}"
-                    )
-                )
-                failed += 1
-        scene.apply_chat_alert(
-            ChatAlert(
-                region_handle=handle,
-                message=(
-                    f"Sync complete: {uploaded} uploaded, {created_count} created, "
-                    f"{len(skipped)} skipped, {failed} failed."
-                ),
-            )
+        outcome = await push_folder_to_object(
+            client,
+            session,
+            handle=handle,
+            task_id=task_id,
+            local_id=obj.local_id,
+            folder=folder,
+            script_cap=caps.script,
+            notecard_cap=caps.notecard,
+            notecard_agent_cap=caps.notecard_agent,
+            agent_folder_id=session.bootstrap.inventory_root_folder_id,
+            on_progress=report,
         )
+        for name, reason in outcome.conflicts:
+            report(f"conflict on {name}: {reason}")
+        for name, reason in outcome.skipped:
+            report(f"skipped {name} ({reason})")
+        for name, reason in outcome.failed:
+            report(f"{name} failed: {reason}")
+        report(f"complete: {outcome.summary()}")
 
     def on_render_mode_change(mode: str) -> None:
         nonlocal renderer
@@ -1266,159 +1149,26 @@ def _write_asset_save(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-#: Marks a selection this session created rather than read off the object, so
-#: the completion line can report creates separately from updates.
-_CREATED_ROW_KEY = "__created__"
+def sync_folder_for_task(task_id: UUID, path: Path | None) -> Path:
+    """The folder a sync of ``task_id`` works in.
 
-#: How long to wait for the object's inventory to come back after creating
-#: rows. The reply is a RequestXfer round trip, not a single packet.
-_TASK_INVENTORY_REFRESH_TIMEOUT = 15.0
+    ``path`` comes from the inspector panel and can be any of four things,
+    which is why this is not a one-liner: absent, meaning the object's own
+    download folder; a directory, used as given; a *file* inside the folder
+    the user meant, which is what a file picker hands back; or something that
+    is not there at all.
 
-
-async def _await_object_inventory(
-    client: WorldClient,
-    local_id: int,
-    *,
-    timeout: float = _TASK_INVENTORY_REFRESH_TIMEOUT,
-) -> ObjectInventorySnapshot | None:
-    """Request one object's task inventory and wait for the snapshot.
-
-    Subscribes *before* dispatching the request: the snapshot can arrive while
-    this coroutine is still being set up, and a subscription taken afterwards
-    would miss it and then wait out the full timeout.
+    That last case is why "not a directory" is not enough to justify taking
+    the parent. A mistyped folder name would then quietly resolve to the
+    folder above it and push whatever *that* holds into the object. It is
+    returned unchanged instead, so the caller reports it missing under the
+    name the user actually gave.
     """
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[ObjectInventorySnapshot] = loop.create_future()
-
-    def _on_ready(event: ObjectInventorySnapshotReady) -> None:
-        if event.snapshot.local_id == local_id and not future.done():
-            future.set_result(event.snapshot)
-
-    subscription = client.bus.subscribe(ObjectInventorySnapshotReady, _on_ready)
-    try:
-        client.bus.dispatch(RequestObjectInventory(local_id))
-        return await asyncio.wait_for(future, timeout)
-    except (TimeoutError, BusError):
-        return None
-    finally:
-        subscription.cancel()
-
-
-async def _create_task_script_rows(
-    client: WorldClient,
-    session: object,
-    scene: Scene,
-    *,
-    handle: int,
-    task_id: UUID,
-    local_id: int,
-    files: list[Path],
-    timeout: float = _TASK_INVENTORY_REFRESH_TIMEOUT,
-) -> tuple[list[tuple[Path, ObjectAssetSelection]], list[tuple[Path, str]]]:
-    """Create one empty script per file, then resolve the rows they became.
-
-    Returns the files that now have a row to upload onto, plus the ones that
-    did not get one and why.
-
-    The rows are created in a batch and the inventory is re-read **once**. A
-    read per file would be correct too, but each read is an Xfer round trip, so
-    a ten-file folder would spend ten of them to learn what one tells us.
-
-    New rows are identified by diffing item ids against a baseline rather than
-    by looking for the name: an object may already hold a script called
-    ``foo.lsl`` while the file ``foo.lsl`` failed to match for some other
-    reason, and then matching on name would upload over the wrong row.
-    """
-    before = await _await_object_inventory(client, local_id, timeout=timeout)
-    if before is None:
-        return [], [(f, "could not read object inventory before creating") for f in files]
-    baseline = {item.item_id for item in before.items if item.item_id is not None}
-
-    for file_path in files:
-        packet = session.build_rez_script_packet(  # type: ignore[attr-defined]
-            part_id=task_id,
-            local_id=local_id,
-            name=file_path.stem,
-            description="created by Vibestorm folder sync",
-        )
-        client.queue_outbound_packet(handle, packet)
-        scene.apply_chat_alert(
-            ChatAlert(region_handle=handle, message=f"Sync: creating {file_path.name}")
-        )
-
-    after = await _await_object_inventory(client, local_id, timeout=timeout)
-    if after is None:
-        return [], [(f, "created, but the object inventory did not come back") for f in files]
-
-    added = [
-        item
-        for item in after.items
-        if item.item_id is not None and item.item_id not in baseline
-    ]
-    by_name = {item.name: item for item in added}
-
-    created: list[tuple[Path, ObjectAssetSelection]] = []
-    skipped: list[tuple[Path, str]] = []
-    for file_path in files:
-        item = by_name.pop(file_path.stem, None)
-        if item is None:
-            skipped.append((file_path, "the sim did not create a row for it"))
-            continue
-        created.append(
-            (
-                file_path,
-                ObjectAssetSelection(
-                    item_key=_CREATED_ROW_KEY,
-                    asset_id=item.asset_id or DEFAULT_SCRIPT_ASSET_ID,
-                    asset_type=10,
-                    item_name=item.name,
-                    task_id=task_id,
-                    item_id=item.item_id,
-                ),
-            )
-        )
-    return created, skipped
-
-
-def _match_files_to_task_selections(
-    upload_dir: Path,
-    asset_rows: dict[str, ObjectAssetSelection],
-) -> tuple[list[tuple[Path, ObjectAssetSelection]], list[Path]]:
-    """Match uploadable files in upload_dir to task inventory asset rows by name.
-
-    Delegates the rule itself to ``vibestorm.sync.naming`` so the pull
-    direction writes the names this matches back.
-    """
-    rows = [
-        selection
-        for selection in asset_rows.values()
-        if selection.asset_type in TEXT_ASSET_TYPES
-    ]
-    files = [
-        path
-        for path in upload_dir.iterdir()
-        if path.is_file() and _upload_kind_for_path(path) is not None
-    ]
-    return match_files_to_rows(
-        files,
-        rows,
-        name_of=lambda selection: selection.item_name or "",
-        asset_type_of=lambda selection: selection.asset_type,
-    )
-
-
-def _first_resolved(caps: dict[str, str], names: list[str]) -> str | None:
-    """The first of ``names`` the simulator actually resolved.
-
-    Order is preference, not fallback ranking: a sim that offers both a
-    current and a legacy name for one handler should be talked to by its
-    current name.
-    """
-    for name in names:
-        url = caps.get(name)
-        if url:
-            return url
-    return None
+    if path is None:
+        return _resolve_user_path(DEFAULT_ASSET_DOWNLOAD_DIR / _safe_filename(str(task_id)))
+    if path.is_file():
+        return _resolve_user_path(path.parent)
+    return _resolve_user_path(path)
 
 
 def _resolve_user_path(path: Path) -> Path:

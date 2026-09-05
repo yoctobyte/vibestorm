@@ -2,14 +2,18 @@
 
 The point of these is the *identification* logic. Sending RezScript is checked
 live and by `test_rez_script`; what can silently go wrong here is deciding
-which of the rows that came back belongs to which file, and doing that by name
-would upload a file over a pre-existing row of the same name.
+which of the rows that came back belongs to which name, and doing that by name
+alone would upload a file over a pre-existing row that happens to share it.
+
+These used to drive a copy of the routine that lived in ``viewer3d/app.py``.
+That copy is gone -- the viewer's Upload button now goes through the same
+engine as the CLI -- so they drive ``vibestorm.sync.task_inventory``, which is
+the only implementation left.
 """
 
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
 from uuid import UUID
 
 from vibestorm.bus import Bus
@@ -59,14 +63,6 @@ class _FakeSession:
         return b"packet"
 
 
-class _FakeScene:
-    def __init__(self) -> None:
-        self.alerts: list[str] = []
-
-    def apply_chat_alert(self, alert: object) -> None:
-        self.alerts.append(getattr(alert, "message", ""))
-
-
 class _FakeClient:
     """Answers each inventory request with the next queued snapshot."""
 
@@ -108,20 +104,18 @@ class _DispatchingBusClient(_FakeClient):
 
 
 class CreateTaskScriptRowTests(unittest.IsolatedAsyncioTestCase):
-    async def _run(self, snapshots, files):
-        from vibestorm.viewer3d.app import _create_task_script_rows
+    async def _run(self, snapshots, names):
+        from vibestorm.sync.task_inventory import create_task_script_rows
 
         client = _DispatchingBusClient(list(snapshots))
         session = _FakeSession()
-        scene = _FakeScene()
-        created, skipped = await _create_task_script_rows(
+        created, skipped = await create_task_script_rows(
             client,
             session,
-            scene,
             handle=1,
             task_id=TASK,
             local_id=LOCAL_ID,
-            files=list(files),
+            names=list(names),
             # Real timeout is 15s; the two failure cases below would otherwise
             # spend it, and a slow suite is a suite that stops being run.
             timeout=0.25,
@@ -132,16 +126,12 @@ class CreateTaskScriptRowTests(unittest.IsolatedAsyncioTestCase):
         before = _snapshot(_item(EXISTING, "Old"))
         after = _snapshot(_item(EXISTING, "Old"), _item(NEW_A, "hello"))
 
-        created, skipped, session, client = await self._run(
-            [before, after], [Path("hello.lsl")]
-        )
+        created, skipped, session, client = await self._run([before, after], ["hello"])
 
         self.assertEqual(skipped, [])
         self.assertEqual(len(created), 1)
-        file_path, selection = created[0]
-        self.assertEqual(file_path.name, "hello.lsl")
-        self.assertEqual(selection.item_id, NEW_A)
-        self.assertEqual(selection.asset_type, 10)
+        self.assertEqual(created[0].name, "hello")
+        self.assertEqual(created[0].item_id, NEW_A)
         self.assertEqual(len(session.rez_calls), 1)
         self.assertEqual(session.rez_calls[0]["name"], "hello")
         self.assertEqual(session.rez_calls[0]["part_id"], TASK)
@@ -156,9 +146,7 @@ class CreateTaskScriptRowTests(unittest.IsolatedAsyncioTestCase):
         before = _snapshot(_item(EXISTING, "hello"))
         after = _snapshot(_item(EXISTING, "hello"))
 
-        created, skipped, _session, _client = await self._run(
-            [before, after], [Path("hello.lsl")]
-        )
+        created, skipped, _session, _client = await self._run([before, after], ["hello"])
 
         self.assertEqual(created, [])
         self.assertEqual(len(skipped), 1)
@@ -168,18 +156,16 @@ class CreateTaskScriptRowTests(unittest.IsolatedAsyncioTestCase):
         before = _snapshot()
         after = _snapshot(_item(NEW_A, "one"), _item(NEW_B, "two"))
 
-        created, skipped, session, client = await self._run(
-            [before, after], [Path("one.lsl"), Path("two.lsl")]
-        )
+        created, skipped, session, client = await self._run([before, after], ["one", "two"])
 
         self.assertEqual(skipped, [])
-        self.assertEqual({p.name for p, _ in created}, {"one.lsl", "two.lsl"})
+        self.assertEqual({row.name for row in created}, {"one", "two"})
         self.assertEqual(len(session.rez_calls), 2)
         # Two creates, but only the before and after reads.
         self.assertEqual(client.requests, 2)
 
     async def test_unreadable_inventory_before_creating_skips_everything(self) -> None:
-        created, skipped, session, _client = await self._run([None], [Path("a.lsl")])
+        created, skipped, session, _client = await self._run([None], ["a"])
 
         self.assertEqual(created, [])
         self.assertEqual(len(skipped), 1)
@@ -187,9 +173,7 @@ class CreateTaskScriptRowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.rez_calls, [], "must not create rows it cannot verify")
 
     async def test_missing_reread_reports_the_files_as_unresolved(self) -> None:
-        created, skipped, session, _client = await self._run(
-            [_snapshot(), None], [Path("a.lsl")]
-        )
+        created, skipped, session, _client = await self._run([_snapshot(), None], ["a"])
 
         self.assertEqual(created, [])
         self.assertEqual(len(skipped), 1)
