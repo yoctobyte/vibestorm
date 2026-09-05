@@ -78,14 +78,22 @@ def plan_pull(
     folder: Path,
     state: SyncState,
     overwrite_untracked: bool = False,
+    include_binary: bool = False,
 ) -> list[PullEntry]:
     """What to fetch from the object into ``folder``.
 
     ``items`` is an iterable of objects with ``name``, ``item_id``,
     ``asset_id`` and a numeric ``asset_type``.
+
+    ``include_binary`` exports the types sync cannot author -- textures,
+    animations, wearables -- as raw bytes. They come out **read-only**: push
+    will never send one back, because nothing here knows how to build one and
+    a round trip that silently truncates an asset is worse than no round trip.
+    It is off by default so that a folder someone is already watching does not
+    fill up with them on the next pull.
     """
     items = list(items)
-    collisions = _colliding_pull_names(items, state)
+    collisions = _colliding_pull_names(items, state, include_binary=include_binary)
     tracked_names = {
         record.item_id: record.file_name
         for record in state.items.values()
@@ -95,7 +103,7 @@ def plan_pull(
     for item in items:
         asset_type = item.asset_type
         name = item.name or ""
-        if asset_type not in TEXT_ASSET_TYPES:
+        if asset_type not in TEXT_ASSET_TYPES and not include_binary:
             entries.append(
                 PullEntry(
                     item_name=name,
@@ -338,7 +346,7 @@ def plan_push(
     return entries
 
 
-def _colliding_pull_names(items, state: SyncState) -> set[str]:
+def _colliding_pull_names(items, state: SyncState, *, include_binary: bool = False) -> set[str]:
     """File names more than one row would write, honouring existing bindings.
 
     Computed from the names pull will *actually* use, so a row already bound to
@@ -348,7 +356,7 @@ def _colliding_pull_names(items, state: SyncState) -> set[str]:
     tracked = {record.item_id: record.file_name for record in state.items.values() if record.item_id}
     seen: dict[str, int] = {}
     for item in items:
-        if item.asset_type not in TEXT_ASSET_TYPES:
+        if item.asset_type not in TEXT_ASSET_TYPES and not include_binary:
             continue
         item_id = _str_or_none(item.item_id) or ""
         name = tracked.get(item_id) or file_name_for_item(item.name or "", item.asset_type)

@@ -32,7 +32,7 @@ from vibestorm.sync.task_inventory import (
     fetch_task_asset,
 )
 from vibestorm.udp.world_client import WorldClient
-from vibestorm.world.asset_types import asset_type_to_int
+from vibestorm.world.asset_types import ASSET_NAME_BY_TYPE, asset_type_to_int
 from vibestorm.world.object_inventory import ObjectInventorySnapshot
 
 #: Capability names for filling in a task inventory row, current first.
@@ -132,7 +132,13 @@ def _decode_for_disk(data: bytes, asset_type: int) -> tuple[bytes, str | None]:
     A notecard asset is a container: its text is what a person wants to edit,
     but it can also carry embedded inventory items that re-encoding the text
     would drop. Such a file is written for reading and marked unpushable.
+
+    Everything outside the two text types is written byte-for-byte and marked
+    unpushable too. Exporting a texture is useful; pretending we could author
+    one back is not.
     """
+    if asset_type not in TEXT_ASSET_TYPES:
+        return data, f"{ASSET_NAME_BY_TYPE.get(asset_type, 'this')} assets are exported, not edited"
     if asset_type != NOTECARD_ASSET_TYPE:
         return data, None
     notecard = decode_notecard(data)
@@ -176,9 +182,14 @@ async def pull_object_to_folder(
     local_id: int,
     folder: Path,
     overwrite_untracked: bool = False,
+    include_binary: bool = False,
     on_progress: Progress | None = None,
 ) -> SyncOutcome:
-    """Write the object's text contents into ``folder``."""
+    """Write the object's contents into ``folder``.
+
+    Text assets by default; ``include_binary`` adds everything else as raw
+    bytes, read-only.
+    """
     outcome = SyncOutcome()
     folder.mkdir(parents=True, exist_ok=True)
     state = SyncState.load(folder, task_id=task_id)
@@ -190,7 +201,11 @@ async def pull_object_to_folder(
 
     rows = rows_from_snapshot(snapshot)
     entries = plan_pull(
-        rows, folder=folder, state=state, overwrite_untracked=overwrite_untracked
+        rows,
+        folder=folder,
+        state=state,
+        overwrite_untracked=overwrite_untracked,
+        include_binary=include_binary,
     )
     by_name = {row.name: row for row in rows}
 

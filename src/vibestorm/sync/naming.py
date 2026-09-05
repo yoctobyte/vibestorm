@@ -16,14 +16,25 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TypeVar
 
+from vibestorm.world.asset_types import ASSET_NAME_BY_TYPE
+
 #: Asset types this project round-trips as editable text: notecard and LSL
-#: source. Anything else is exported as bytes and never matched back.
+#: source. Anything else can be *exported* as bytes but is never uploaded back,
+#: because nothing here knows how to author one.
 TEXT_ASSET_TYPES = frozenset({7, 10})
 
+#: Suffixes for asset types whose container this tree has actually seen. Every
+#: entry below is backed by bytes OpenSim wrote -- the live probe on 2026-09-05
+#: for textures, the captured fixtures in ``test/fixtures/library/`` for the
+#: rest -- rather than by what the extension "ought" to be.
 _SUFFIX_BY_ASSET_TYPE = {
-    10: ".lsl",   # LSLText
-    7: ".txt",    # Notecard
-    0: ".j2k",    # Texture
+    10: ".lsl",        # LSLText: plain UTF-8 source, no container
+    7: ".txt",         # Notecard
+    0: ".j2k",         # Texture: JPEG2000 codestream, magic ff 4f ff 51
+    5: ".wearable",    # Clothing: "LLWearable version 22" UTF-8 text
+    13: ".wearable",   # Body part: the same format under a different type
+    20: ".animation",  # SL's internal binary animation; no standard extension
+    21: ".gesture",    # Line-based UTF-8 text
 }
 
 #: Suffixes that can be uploaded, mapped to (asset kind, inventory kind) as the
@@ -33,6 +44,9 @@ _UPLOAD_KIND_BY_SUFFIX = {
     ".txt": ("notecard", "notecard"),
     ".nc": ("notecard", "notecard"),
 }
+
+#: The asset type each uploadable suffix ends up as in world.
+_ASSET_TYPE_BY_UPLOAD_KIND = {"lsltext": 10, "notecard": 7}
 
 
 def safe_filename(value: str) -> str:
@@ -48,8 +62,21 @@ def safe_filename(value: str) -> str:
 
 
 def asset_file_suffix(asset_type: int) -> str:
-    """The file suffix a given SL asset type is written with."""
-    return _SUFFIX_BY_ASSET_TYPE.get(asset_type, ".bin")
+    """The file suffix a given SL asset type is written with.
+
+    A type whose container this tree has verified gets the real extension. Any
+    other known type gets its own *name* -- ``.sound``, ``.object`` -- which
+    says what the bytes are without claiming to know how they are wrapped. A
+    guessed extension is worse than an honest one: ``.ogg`` on a sound we have
+    never opened invites a tool to fail confusingly on the day it is wrong.
+    """
+    suffix = _SUFFIX_BY_ASSET_TYPE.get(asset_type)
+    if suffix is not None:
+        return suffix
+    name = ASSET_NAME_BY_TYPE.get(asset_type)
+    if name:
+        return f".{name}"
+    return ".bin"
 
 
 def upload_kind_for_path(path: Path) -> tuple[str, str] | None:
@@ -116,21 +143,36 @@ def match_files_to_rows(
     then the stem is ``vibestorm-sync-88338``, which matches nothing. A sync
     that misses like that does not fail loudly: it decides the file is new and
     creates a *second* row beside the one it came from.
+
+    All three passes are restricted to rows the file could actually be uploaded
+    into. Passes 2 and 3 match on the *stem*, which drops the suffix and with it
+    the only thing distinguishing a script from a texture: a prim holding a
+    texture called ``Greeter`` would otherwise capture the user's new
+    ``Greeter.lsl`` and push LSL source into a texture row. With the type
+    checked, the file is correctly seen as having no row yet and a script row is
+    created for it.
     """
-    by_file_name: dict[str, _T] = {}
-    by_safe_stem: dict[str, _T] = {}
-    by_raw_stem: dict[str, _T] = {}
+    tables: dict[int, tuple[dict[str, _T], dict[str, _T], dict[str, _T]]] = {}
     for row in rows:
-        raw_name = name_of(row) or ""
-        by_file_name.setdefault(
-            file_name_for_item(raw_name, asset_type_of(row)).lower(), row
+        asset_type = asset_type_of(row)
+        by_file_name, by_safe_stem, by_raw_stem = tables.setdefault(
+            asset_type, ({}, {}, {})
         )
+        raw_name = name_of(row) or ""
+        by_file_name.setdefault(file_name_for_item(raw_name, asset_type).lower(), row)
         by_safe_stem.setdefault(safe_filename(raw_name).lower(), row)
         by_raw_stem.setdefault(raw_name.lower(), row)
 
     matched: list[tuple[Path, _T]] = []
     unmatched: list[Path] = []
     for file_path in sorted(files):
+        kind = upload_kind_for_path(file_path)
+        target_type = (
+            _ASSET_TYPE_BY_UPLOAD_KIND.get(kind[0]) if kind is not None else None
+        )
+        by_file_name, by_safe_stem, by_raw_stem = tables.get(
+            target_type, ({}, {}, {})
+        )
         stem = file_path.stem
         row = (
             by_file_name.get(file_path.name.lower())

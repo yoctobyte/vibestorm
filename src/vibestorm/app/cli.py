@@ -245,6 +245,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="How often --watch looks for changes.",
     )
     sync_parser.add_argument(
+        "--all-assets",
+        action="store_true",
+        help=(
+            "Let --pull also export the assets sync cannot author -- textures, "
+            "animations, wearables -- as raw bytes. They are marked read-only "
+            "and are never pushed back."
+        ),
+    )
+    sync_parser.add_argument(
         "--overwrite-untracked",
         action="store_true",
         help=(
@@ -1558,6 +1567,7 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                     local_id=local_id,
                     folder=folder,
                     overwrite_untracked=args.overwrite_untracked,
+                    include_binary=args.all_assets,
                     on_progress=progress,
                 )
                 _print_sync_outcome("pull", outcome)

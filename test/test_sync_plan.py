@@ -353,3 +353,86 @@ class RenamedItemTests(_FolderCase):
 
         [entry] = plan_push([path], {bound.name: bound}, state=self.state)
         self.assertNotEqual(entry.action, CONFLICT)
+
+
+class BinaryExportTests(_FolderCase):
+    """Exporting the asset types sync cannot author.
+
+    Pull can write them; push must never send one back. The interesting cases
+    are the ones where the safety comes from the *asset type* rather than from
+    bookkeeping that a user could delete.
+    """
+
+    def test_binary_assets_are_still_skipped_by_default(self) -> None:
+        [entry] = plan_pull([_row(asset_type=0)], folder=self.folder, state=self.state)
+        self.assertEqual(entry.action, SKIP)
+
+    def test_include_binary_fetches_them_with_a_typed_suffix(self) -> None:
+        rows = [
+            _row(name="Cloud", asset_type=0),
+            _row(name="Wave", asset_type=20),
+            _row(name="Shirt", asset_type=5),
+            _row(name="Chime", asset_type=1),
+        ]
+        entries = plan_pull(
+            rows, folder=self.folder, state=self.state, include_binary=True
+        )
+        self.assertEqual([e.action for e in entries], [TRANSFER] * 4)
+        self.assertEqual(
+            [e.file_name for e in entries],
+            ["Cloud.j2k", "Wave.animation", "Shirt.wearable", "Chime.sound"],
+        )
+
+    def test_an_exported_suffix_is_not_uploadable(self) -> None:
+        row = _row(name="Cloud", asset_type=0)
+        path = self.write("Cloud.j2k", "not really a texture")
+
+        [entry] = plan_push([path], {row.name: row}, state=self.state)
+
+        self.assertEqual(entry.action, SKIP)
+        self.assertIn("uploadable", entry.reason)
+
+    def test_a_script_file_does_not_match_a_texture_of_the_same_name(self) -> None:
+        # Two of the three matching passes compare *stems*, which drops the
+        # suffix and with it the only thing separating "Greeter" the texture
+        # from "Greeter.lsl" the script the user is writing. Matching them would
+        # push LSL source into a texture row through the script upload
+        # capability. The right answer is that the file has no row yet.
+        texture = _row(name="Greeter", asset_type=0)
+        path = self.write("Greeter.lsl", "default { }")
+
+        [entry] = plan_push([path], {texture.name: texture}, state=self.state)
+
+        self.assertEqual(entry.action, TRANSFER)
+        self.assertTrue(entry.create, "it should make a script row of its own")
+        self.assertEqual(entry.asset_type, 10)
+
+    def test_a_notecard_file_still_matches_a_notecard_of_the_same_name(self) -> None:
+        # The same rule must not break the match it exists to allow.
+        note = _row(name="Readme", asset_type=7)
+        self.write("Readme.txt", "hello")
+        self.track("Readme.txt", "hello", note)
+        path = self.write("Readme.txt", "edited")
+
+        [entry] = plan_push([path], {note.name: note}, state=self.state)
+
+        self.assertEqual(entry.action, TRANSFER)
+        self.assertFalse(entry.create)
+        self.assertEqual(entry.item_id, str(note.item_id))
+
+    def test_a_binary_export_does_not_collide_with_a_script_of_the_same_name(self) -> None:
+        # "Greeter" the script and "Greeter" the texture want different files,
+        # so neither is a collision.
+        rows = [_row(name="Greeter", asset_type=10), _row(name="Greeter", asset_type=0)]
+        entries = plan_pull(
+            rows, folder=self.folder, state=self.state, include_binary=True
+        )
+        self.assertEqual([e.action for e in entries], [TRANSFER, TRANSFER])
+        self.assertEqual([e.file_name for e in entries], ["Greeter.lsl", "Greeter.j2k"])
+
+    def test_two_binary_rows_wanting_one_file_name_still_conflict(self) -> None:
+        rows = [_row(name="Cloud", asset_type=0), _row(name="Cloud", asset_type=0)]
+        entries = plan_pull(
+            rows, folder=self.folder, state=self.state, include_binary=True
+        )
+        self.assertEqual([e.action for e in entries], [CONFLICT, CONFLICT])
