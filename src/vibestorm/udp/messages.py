@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from struct import pack, unpack_from
 from uuid import UUID
 
@@ -242,6 +243,69 @@ class ObjectPropertiesFamilyMessage:
     last_owner_id: UUID
     name: str
     description: str
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectPropertiesEntry:
+    """One prim's full properties, as ``ObjectProperties`` reports them.
+
+    Everything ``ObjectPropertiesFamily`` carries and then some. The three
+    that matter to this project and are in no other message:
+
+    - ``creator_id`` -- who made the thing, which the family reply omits.
+      "Extract all its internals" is not complete without it.
+    - ``inventory_serial`` -- the object's contents version. It goes up when
+      anything in the prim's inventory changes, so a sync can tell whether
+      there is anything to fetch without fetching it.
+    - ``item_id`` / ``folder_id`` / ``from_task_id`` -- where a rezzed object
+      came from in inventory.
+
+    ``creation_date`` is **microseconds** since the Unix epoch. The template
+    says only ``U64``; the unit was read off a real one. A prim rezzed at
+    2026-09-05 23:09:36 UTC came back as 1788649776000000, which is that
+    instant in microseconds and nothing else -- as seconds or milliseconds it
+    is tens of thousands of years away. ``created_at`` does the division.
+    """
+
+    object_id: UUID
+    creator_id: UUID
+    owner_id: UUID
+    group_id: UUID
+    creation_date: int
+    base_mask: int
+    owner_mask: int
+    group_mask: int
+    everyone_mask: int
+    next_owner_mask: int
+    ownership_cost: int
+    sale_type: int
+    sale_price: int
+    aggregate_perms: int
+    aggregate_perm_textures: int
+    aggregate_perm_textures_owner: int
+    category: int
+    inventory_serial: int
+    item_id: UUID
+    folder_id: UUID
+    from_task_id: UUID
+    last_owner_id: UUID
+    name: str
+    description: str
+    touch_name: str
+    sit_name: str
+    texture_ids: tuple[UUID, ...]
+
+    @property
+    def created_at(self) -> datetime | None:
+        """When the object was made, or None if the simulator sent nothing."""
+        if not self.creation_date:
+            return None
+        return datetime.fromtimestamp(self.creation_date / 1_000_000, UTC)
+
+
+@dataclass(slots=True, frozen=True)
+class ObjectPropertiesMessage:
+    objects: tuple[ObjectPropertiesEntry, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -1768,6 +1832,121 @@ def decode_compressed_object_data(
         sound_radius=sound_radius,
         texture_animation=texture_animation,
     )
+
+
+#: Bytes before the four variable-length strings in one ObjectProperties
+#: block: four UUIDs, the creation date, five permission masks, the ownership
+#: cost, the sale type and price, three aggregate-permission bytes, the
+#: category, the inventory serial, and four more UUIDs.
+_OBJECT_PROPERTIES_FIXED_BYTES = 174
+
+
+def parse_object_properties(message: MessageDispatch) -> ObjectPropertiesMessage:
+    """Decode ``ObjectProperties`` -- Medium 9, a variable-count block.
+
+    The simulator sends this for an object that has been selected, which is
+    what ``ObjectSelect`` is for. It is the long form of
+    ``ObjectPropertiesFamily``: same owner and permissions, plus the creator,
+    the creation date, the inventory serial, where the object came from in
+    inventory, and the touch and sit verbs.
+
+    The trailing ``TextureID`` field is a byte blob rather than a string -- the
+    face textures laid end to end, sixteen bytes each -- and is read as one.
+    Anything left over after the last whole UUID is ignored rather than
+    guessed at.
+    """
+    if message.summary.name != "ObjectProperties":
+        raise MessageDecodeError(f"expected ObjectProperties, got {message.summary.name}")
+    if not message.body:
+        raise MessageDecodeError("ObjectProperties body is empty")
+
+    count = message.body[0]
+    offset = 1
+    entries: list[ObjectPropertiesEntry] = []
+    for index in range(count):
+        if len(message.body) < offset + _OBJECT_PROPERTIES_FIXED_BYTES:
+            raise MessageDecodeError(f"ObjectProperties block {index} is truncated")
+        object_id = UUID(bytes=message.body[offset : offset + 16])
+        creator_id = UUID(bytes=message.body[offset + 16 : offset + 32])
+        owner_id = UUID(bytes=message.body[offset + 32 : offset + 48])
+        group_id = UUID(bytes=message.body[offset + 48 : offset + 64])
+        offset += 64
+        creation_date = unpack_from("<Q", message.body, offset)[0]
+        offset += 8
+        (
+            base_mask,
+            owner_mask,
+            group_mask,
+            everyone_mask,
+            next_owner_mask,
+        ) = unpack_from("<5I", message.body, offset)
+        offset += 20
+        ownership_cost = unpack_from("<i", message.body, offset)[0]
+        offset += 4
+        sale_type = message.body[offset]
+        offset += 1
+        sale_price = unpack_from("<i", message.body, offset)[0]
+        offset += 4
+        aggregate_perms = message.body[offset]
+        aggregate_perm_textures = message.body[offset + 1]
+        aggregate_perm_textures_owner = message.body[offset + 2]
+        offset += 3
+        category = unpack_from("<I", message.body, offset)[0]
+        offset += 4
+        inventory_serial = unpack_from("<h", message.body, offset)[0]
+        offset += 2
+        item_id = UUID(bytes=message.body[offset : offset + 16])
+        folder_id = UUID(bytes=message.body[offset + 16 : offset + 32])
+        from_task_id = UUID(bytes=message.body[offset + 32 : offset + 48])
+        last_owner_id = UUID(bytes=message.body[offset + 48 : offset + 64])
+        offset += 64
+
+        strings: list[str] = []
+        for field in ("Name", "Description", "TouchName", "SitName"):
+            payload, offset = _read_variable_field(
+                message.body, offset, 1, f"ObjectProperties.{field}"
+            )
+            strings.append(payload.decode("utf-8", errors="replace").rstrip("\x00"))
+        blob, offset = _read_variable_field(
+            message.body, offset, 1, "ObjectProperties.TextureID"
+        )
+        texture_ids = tuple(
+            UUID(bytes=blob[start : start + 16]) for start in range(0, len(blob) - 15, 16)
+        )
+
+        entries.append(
+            ObjectPropertiesEntry(
+                object_id=object_id,
+                creator_id=creator_id,
+                owner_id=owner_id,
+                group_id=group_id,
+                creation_date=creation_date,
+                base_mask=base_mask,
+                owner_mask=owner_mask,
+                group_mask=group_mask,
+                everyone_mask=everyone_mask,
+                next_owner_mask=next_owner_mask,
+                ownership_cost=ownership_cost,
+                sale_type=sale_type,
+                sale_price=sale_price,
+                aggregate_perms=aggregate_perms,
+                aggregate_perm_textures=aggregate_perm_textures,
+                aggregate_perm_textures_owner=aggregate_perm_textures_owner,
+                category=category,
+                inventory_serial=inventory_serial,
+                item_id=item_id,
+                folder_id=folder_id,
+                from_task_id=from_task_id,
+                last_owner_id=last_owner_id,
+                name=strings[0],
+                description=strings[1],
+                touch_name=strings[2],
+                sit_name=strings[3],
+                texture_ids=texture_ids,
+            )
+        )
+
+    return ObjectPropertiesMessage(objects=tuple(entries))
 
 
 def parse_object_properties_family(message: MessageDispatch) -> ObjectPropertiesFamilyMessage:

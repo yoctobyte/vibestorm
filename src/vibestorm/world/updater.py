@@ -15,10 +15,11 @@ from vibestorm.udp.messages import (
     parse_improved_terse_object_update,
     parse_kill_object,
     parse_object_extra_params,
+    parse_object_properties,
+    parse_object_properties_family,
     parse_object_update,
     parse_object_update_cached,
     parse_object_update_compressed,
-    parse_object_properties_family,
     parse_object_update_summary,
     parse_sim_stats,
     parse_simulator_viewer_time,
@@ -204,6 +205,24 @@ class WorldUpdater:
                     f"region_handle={compressed.region_handle} "
                     f"objects={len(compressed.objects)} decoded={len(entries)} "
                     f"dilation={compressed.time_dilation}"
+                ),
+            )
+
+        if dispatched.summary.name == "ObjectProperties":
+            full = parse_object_properties(dispatched)
+            self.world_view.apply_object_properties(full)
+            first = full.objects[0] if full.objects else None
+            return WorldUpdateEvent(
+                kind="world.object_properties",
+                detail=(
+                    f"objects={len(full.objects)}"
+                    + (
+                        f" object_id={first.object_id} name={first.name!r} "
+                        f"creator={first.creator_id} inventory_serial="
+                        f"{first.inventory_serial}"
+                        if first is not None
+                        else ""
+                    )
                 ),
             )
 

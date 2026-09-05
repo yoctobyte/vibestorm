@@ -11,7 +11,9 @@ from vibestorm.udp.messages import (
     ExtraParamEntry,
     ImprovedTerseObjectUpdateMessage,
     KillObjectMessage,
+    ObjectPropertiesEntry,
     ObjectPropertiesFamilyMessage,
+    ObjectPropertiesMessage,
     ObjectUpdateMessage,
     ObjectUpdateSummary,
     PrimShapeData,
@@ -180,6 +182,10 @@ class WorldView:
     coarse_location_updates: int = 0
     object_update_events: int = 0
     object_properties_family_events: int = 0
+    #: Long-form properties per object, from `ObjectProperties`. Only ever
+    #: populated for objects that have been selected.
+    object_properties: dict[UUID, ObjectPropertiesEntry] = field(default_factory=dict)
+    object_properties_events: int = 0
 
     @property
     def terse_avatar_count(self) -> int:
@@ -437,6 +443,19 @@ class WorldView:
             if full_id is not None:
                 self.objects.pop(full_id, None)
             self.terse_objects.pop(local_id, None)
+
+    def apply_object_properties(self, message: ObjectPropertiesMessage) -> None:
+        """Keep the long-form properties for each object the message names.
+
+        Kept beside the objects rather than folded into ``WorldObject``: this
+        arrives only for an object that has been *selected*, so it exists for a
+        handful of prims at a time while ``objects`` holds the whole region,
+        and a field on every prim that is almost always ``None`` says less
+        than a table of the ones actually asked about.
+        """
+        for entry in message.objects:
+            self.object_properties[entry.object_id] = entry
+        self.object_properties_events += 1
 
     def apply_object_properties_family(self, message: ObjectPropertiesFamilyMessage) -> None:
         self.latest_object_properties_family = message
