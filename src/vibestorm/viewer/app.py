@@ -51,6 +51,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument(
+        "--screenshot",
+        metavar="PATH",
+        help=(
+            "Write one PNG of the rendered frame and exit. Runs under Xvfb, so "
+            "it is the way to see what the viewer draws without opening a "
+            "window on anyone's desktop."
+        ),
+    )
+    parser.add_argument(
+        "--screenshot-after",
+        type=float,
+        default=25.0,
+        help=(
+            "Seconds to let the region load before the screenshot. Terrain, "
+            "object updates and the map tile all arrive over several seconds."
+        ),
+    )
+    parser.add_argument(
         "--ui-scale",
         type=float,
         default=0.0,
@@ -177,9 +195,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
     )
 
     running = True
+    screenshot_path = Path(args.screenshot) if getattr(args, "screenshot", None) else None
+    elapsed_s = 0.0
     try:
         while running and not session_task.done():
             dt = clock.tick(60) / 1000.0
+            elapsed_s += dt
             for event in pygame.event.get():
                 consumed_by_ui = hud.process_event(event)
                 if hud.quit_requested:
@@ -219,6 +240,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
             hud.update(dt, scene)
             hud.draw(screen)
             pygame.display.flip()
+            if screenshot_path is not None and elapsed_s >= args.screenshot_after:
+                # Plain surface, not GL: the screen really is what was drawn.
+                screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+                pygame.image.save(screen, str(screenshot_path))
+                print(f"screenshot={screenshot_path}", flush=True)
+                running = False
             await asyncio.sleep(0)
     finally:
         stop_event.set()

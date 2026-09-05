@@ -252,6 +252,26 @@ class HUDRefreshCostTests(unittest.TestCase):
         widget.set_text = recording
         return calls
 
+    def _record_ticker(self) -> list[str]:
+        """Every ticker repaint, as the text it drew.
+
+        The ticker is a hand-drawn `UIImage` now, so there is no `set_text` to
+        watch and a surface tells the reader nothing. Watching the draw call
+        and recording its entries makes the same claim readable.
+        """
+        from vibestorm.viewer import hud as hud_module
+
+        calls: list[str] = []
+        original = hud_module.draw_ticker
+
+        def recording(surface, entries, **kwargs):
+            calls.append(" | ".join(f"{e.sender}: {e.message}" for e in entries))
+            return original(surface, entries, **kwargs)
+
+        hud_module.draw_ticker = recording
+        self.addCleanup(setattr, hud_module, "draw_ticker", original)
+        return calls
+
     def test_unchanged_scene_stops_writing_the_status_bar(self) -> None:
         from vibestorm.viewer.hud import STATUS_REFRESH_INTERVAL_S
 
@@ -307,7 +327,7 @@ class HUDRefreshCostTests(unittest.TestCase):
         hud.chat_window.hide()
         hud.update(STATUS_REFRESH_INTERVAL_S, scene)
 
-        calls = self._count_set_text(hud.ticker)
+        calls = self._record_ticker()
         scene.chat_lines.append(ChatLine(kind="local", sender="Res", message="hello"))
         hud.update(STATUS_REFRESH_INTERVAL_S, scene)
         self.assertEqual(calls, [], "chat arriving behind a closed window is free")
