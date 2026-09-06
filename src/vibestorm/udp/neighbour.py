@@ -96,6 +96,14 @@ class NeighbourCircuit:
     heightmap: RegionHeightmap = field(default_factory=RegionHeightmap)
     region_name: str = ""
     water_height: float | None = None
+    #: The region's own four ground textures and the elevation band each
+    #: covers, straight out of its handshake. Asset ids, so the *root*
+    #: region's GetTexture capability fetches them like any other asset --
+    #: a neighbour's ground does not need a second texture pipeline, only
+    #: for someone to notice these exist.
+    terrain_detail: tuple[UUID, UUID, UUID, UUID] | None = None
+    terrain_start_height: tuple[float, float, float, float] | None = None
+    terrain_height_range: tuple[float, float, float, float] | None = None
     #: Counted rather than logged: a child circuit is quiet and the useful
     #: question about one is "did anything arrive at all".
     received: Counter[str] = field(default_factory=Counter)
@@ -215,6 +223,9 @@ class NeighbourCircuit:
         self.handshakes_seen += 1
         self.region_name = handshake.sim_name
         self.water_height = handshake.water_height
+        self.terrain_detail = handshake.terrain_detail
+        self.terrain_start_height = handshake.terrain_start_height
+        self.terrain_height_range = handshake.terrain_height_range
         # Replied to every time, not only the first. The measurement above is
         # what says why: an unanswered handshake is resent, and twenty-nine
         # copies of it arrived in thirty seconds.

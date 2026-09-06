@@ -220,6 +220,25 @@ class AnsweringTheRegionTests(NeighbourCircuitTestCase):
         self.assertEqual(circuit.water_height, 20.0)
         self.assertEqual(circuit.handshakes_seen, 1)
 
+    def test_a_handshake_names_the_region_s_own_ground_textures(self) -> None:
+        # A neighbour is drawn as shaded ground until these arrive. They are
+        # ordinary asset ids, so the region the avatar is in fetches them --
+        # but only if somebody keeps them off the handshake first.
+        circuit = self.circuit()
+        circuit.handle_incoming(
+            self.inbound(REGION_HANDSHAKE_LOW + _handshake_body())
+        )
+        self.assertEqual(
+            circuit.terrain_detail, tuple(UUID(int=0xB0 + index) for index in range(4, 8))
+        )
+        self.assertEqual(circuit.terrain_start_height, (10.0, 11.0, 12.0, 13.0))
+        self.assertEqual(circuit.terrain_height_range, (60.0, 61.0, 62.0, 63.0))
+
+    def test_a_region_that_has_not_spoken_names_no_textures(self) -> None:
+        # None rather than four zero UUIDs: "not asked yet" and "this region
+        # has no ground textures" are drawn differently.
+        self.assertIsNone(self.circuit().terrain_detail)
+
     def test_a_handshake_is_answered(self) -> None:
         circuit = self.circuit()
         replies = circuit.handle_incoming(

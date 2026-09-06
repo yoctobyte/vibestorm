@@ -398,6 +398,17 @@ class NeighbourTerrain:
     offset: tuple[float, float]
     heightmap: RegionHeightmap
     region_name: str = ""
+    #: This region's own four ground textures and elevation bands, once the
+    #: bytes have arrived. All four or none: a partial set blends against
+    #: whatever the last region left in that texture unit.
+    texture_paths: tuple[Path | None, Path | None, Path | None, Path | None] = (
+        None,
+        None,
+        None,
+        None,
+    )
+    start_height: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    height_range: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 
 @dataclass(slots=True)
@@ -1108,12 +1119,19 @@ class Scene:
         if root is None:
             self.neighbour_terrain = ()
             return
+        paths = getattr(session, "texture_paths", {})
         self.neighbour_terrain = tuple(
             NeighbourTerrain(
                 handle=handle,
                 offset=circuit.offset_from(root),
                 heightmap=circuit.heightmap,
                 region_name=circuit.region_name,
+                texture_paths=tuple(  # type: ignore[arg-type]
+                    paths.get(texture_id)
+                    for texture_id in (circuit.terrain_detail or (None,) * 4)
+                ),
+                start_height=circuit.terrain_start_height or (0.0, 0.0, 0.0, 0.0),
+                height_range=circuit.terrain_height_range or (0.0, 0.0, 0.0, 0.0),
             )
             for handle, circuit in sorted(neighbours.items())
             if circuit.heightmap.patch_count > 0

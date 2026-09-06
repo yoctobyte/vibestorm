@@ -144,6 +144,8 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
             texture_paths={},
             texture_fetch_attempted=set(),
             region_map_image_id=None,
+            # No region next door: their ground textures queue here too.
+            neighbours={},
         )
 
         first = _next_pending_object_texture_id(session)
@@ -188,6 +190,8 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
             texture_paths={},
             texture_fetch_attempted=set(),
             region_map_image_id=None,
+            # No region next door: their ground textures queue here too.
+            neighbours={},
         )
 
         self.assertEqual(_next_pending_object_texture_id(session), DETAIL[0])
@@ -215,6 +219,8 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
             texture_paths={},
             texture_fetch_attempted=set(),
             region_map_image_id=None,
+            # No region next door: their ground textures queue here too.
+            neighbours={},
         )
         session.texture_fetch_attempted.update(DETAIL)
 
@@ -239,6 +245,8 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
             texture_paths={},
             texture_fetch_attempted=set(),
             region_map_image_id=None,
+            # No region next door: their ground textures queue here too.
+            neighbours={},
         )
 
         self.assertEqual(_next_pending_object_texture_id(session), prim_texture)

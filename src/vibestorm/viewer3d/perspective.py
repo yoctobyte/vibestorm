@@ -1906,18 +1906,31 @@ def _quat_rotate(q: tuple[float, float, float, float], v: tuple[float, float, fl
 
 @dataclass(slots=True)
 class _NeighbourMesh:
-    """One neighbouring region's ground on the GPU, and what it was built from."""
+    """One neighbouring region's ground on the GPU, and what it was built from.
+
+    Two vertex arrays over one buffer: `vao` for the shaded fill and
+    `texture_vao` for the four-texture splat, which is used the moment that
+    region's own ground textures have arrived. Which one draws is decided per
+    frame, because the textures arrive several seconds after the ground does.
+    """
 
     vbo: object
     ibo: object
     vao: object
+    texture_vao: object
     index_count: int
     revision: int
     offset: tuple[float, float]
-    height_range: tuple[float, float]
+    #: The lowest and highest sample in this region, for the fill shader's
+    #: colour ramp.
+    fill_band: tuple[float, float]
+    #: This region's own texture blend bands, from its handshake.
+    start_height: tuple[float, float, float, float]
+    height_range: tuple[float, float, float, float]
+    texture_paths: tuple[Path | None, ...]
 
     def release(self) -> None:
-        for resource in (self.vao, self.ibo, self.vbo):
+        for resource in (self.vao, self.texture_vao, self.ibo, self.vbo):
             if resource is not None:
                 resource.release()
 
@@ -2155,6 +2168,10 @@ class PerspectiveRenderer:
         #: fetched, so the alternative to shaded ground is not textured ground
         #: but no ground at all.
         self._neighbour_meshes: dict[int, _NeighbourMesh] = {}
+        #: Ground textures for the regions next door, keyed by the four paths
+        #: rather than by region: neighbours on one grid usually share a
+        #: palette, and eight copies of four images is VRAM for nothing.
+        self._neighbour_texture_sets: dict[tuple[Path | None, ...], list[object]] = {}
         self._terrain_line_index_count: int = 0
         self._terrain_revision: int | None = None
         self._terrain_z_scale: float = 1.0
@@ -2359,7 +2376,7 @@ class PerspectiveRenderer:
             if scene.render_terrain and scene.render_neighbours:
                 self._upload_neighbour_terrain(ctx, scene)
                 self._render_neighbour_terrain(
-                    view_data, proj_data, sun_direction=sun_direction
+                    ctx, view_data, proj_data, sun_direction=sun_direction
                 )
             else:
                 self._release_neighbour_terrain()
@@ -3861,6 +3878,12 @@ class PerspectiveRenderer:
                 and existing.revision == entry.heightmap.revision
                 and existing.offset == entry.offset
             ):
+                # The ground is the same ground; only its bands and textures
+                # can still be catching up, and those cost nothing to carry
+                # over without rebuilding sixty-five hundred vertices.
+                existing.texture_paths = tuple(entry.texture_paths)
+                existing.start_height = entry.start_height
+                existing.height_range = entry.height_range
                 continue
             samples = coarse_terrain_samples(entry.heightmap)
             count = NEIGHBOUR_TERRAIN_SAMPLES
@@ -3879,47 +3902,137 @@ class PerspectiveRenderer:
                 index_buffer=ibo,
                 index_element_size=4,
             )
+            texture_vao = None
+            if self._terrain_texture_program is not None:
+                texture_vao = ctx.vertex_array(
+                    self._terrain_texture_program,
+                    [(vbo, "3f 2f", "in_pos", "in_uv")],
+                    index_buffer=ibo,
+                    index_element_size=4,
+                )
             if existing is not None:
                 existing.release()
             self._neighbour_meshes[handle] = _NeighbourMesh(
                 vbo=vbo,
                 ibo=ibo,
                 vao=vao,
+                texture_vao=texture_vao,
                 index_count=len(indices),
                 revision=entry.heightmap.revision,
                 offset=entry.offset,
-                height_range=(min(samples), max(samples)),
+                fill_band=(min(samples), max(samples)),
+                start_height=entry.start_height,
+                height_range=entry.height_range,
+                texture_paths=tuple(entry.texture_paths),
             )
+
+    def _neighbour_texture_set(
+        self, ctx: moderngl.Context, paths: tuple[Path | None, ...]
+    ) -> list[object] | None:
+        """The four ground textures for one region, uploaded once and shared.
+
+        Keyed by the paths rather than by the region, because neighbouring
+        regions on one grid usually share a ground palette and there is no
+        reason to hold eight copies of the same four images.
+        """
+        if len(paths) != 4 or any(path is None for path in paths):
+            return None
+        cached = self._neighbour_texture_sets.get(paths)
+        if cached is not None:
+            return cached
+
+        import pygame
+
+        uploaded: list[object] = []
+        for path in paths:
+            try:
+                surface = pygame.image.load(str(path))
+            except (pygame.error, FileNotFoundError, OSError):
+                for texture in uploaded:
+                    texture.release()
+                return None
+            texture = ctx.texture(
+                surface.get_size(),
+                components=4,
+                data=pygame.image.tobytes(surface, "RGBA"),
+            )
+            texture.repeat_x = True
+            texture.repeat_y = True
+            _minify_through_mipmaps(ctx, texture)
+            uploaded.append(texture)
+        self._neighbour_texture_sets[paths] = uploaded
+        return uploaded
 
     def _render_neighbour_terrain(
         self,
+        ctx: moderngl.Context,
         view_data: bytes,
         proj_data: bytes,
         *,
         sun_direction: tuple[float, float, float],
     ) -> None:
-        program = self._terrain_fill_program
-        if program is None or not self._neighbour_meshes:
+        """Draw each neighbour, textured where its ground textures arrived.
+
+        Which shader draws a region is decided per frame and per region: the
+        heightmap arrives seconds before the textures do, and on a grid where
+        one neighbour's ground is cached and another's is not, the two are
+        drawn differently in the same frame.
+        """
+        fill = self._terrain_fill_program
+        textured = self._terrain_texture_program
+        if fill is None or not self._neighbour_meshes:
             return
-        program["u_view"].write(view_data)
-        program["u_proj"].write(proj_data)
-        program["u_color"].value = TERRAIN_FILL_RGBA
-        program["u_sun_dir"].value = sun_direction
-        program["u_ambient_light"].value = self._ambient_light
-        program["u_diffuse_light"].value = self._diffuse_light
+        fill_ready = False
+        textured_ready = False
         for mesh in self._neighbour_meshes.values():
+            textures = (
+                self._neighbour_texture_set(ctx, mesh.texture_paths)
+                if textured is not None and mesh.texture_vao is not None
+                else None
+            )
+            if textures is not None:
+                if not textured_ready:
+                    textured["u_view"].write(view_data)
+                    textured["u_proj"].write(proj_data)
+                    textured["u_repeats"].value = TERRAIN_TEXTURE_REPEATS
+                    textured["u_sun_dir"].value = sun_direction
+                    textured["u_ambient_light"].value = self._ambient_light
+                    textured["u_diffuse_light"].value = self._diffuse_light
+                    textured_ready = True
+                # Per region: the bands come out of that region's own
+                # handshake, and a neighbour blended against ours puts its
+                # sand where its grass should be.
+                textured["u_start_height"].value = tuple(mesh.start_height)
+                textured["u_height_range"].value = tuple(mesh.height_range)
+                for index, texture in enumerate(textures):
+                    texture.use(location=index)
+                mesh.texture_vao.render()
+                continue
+
+            if not fill_ready:
+                fill["u_view"].write(view_data)
+                fill["u_proj"].write(proj_data)
+                fill["u_color"].value = TERRAIN_FILL_RGBA
+                fill["u_sun_dir"].value = sun_direction
+                fill["u_ambient_light"].value = self._ambient_light
+                fill["u_diffuse_light"].value = self._diffuse_light
+                fill_ready = True
             # Each region's own height band: the fill shader ramps its colour
             # between these, and lighting one region's hills with another
             # region's range makes a flat neighbour read as a cliff.
-            low, high = mesh.height_range
-            program["u_height_min"].value = low
-            program["u_height_max"].value = high if high > low else low + 1.0
+            low, high = mesh.fill_band
+            fill["u_height_min"].value = low
+            fill["u_height_max"].value = high if high > low else low + 1.0
             mesh.vao.render()
 
     def _release_neighbour_terrain(self) -> None:
         for mesh in self._neighbour_meshes.values():
             mesh.release()
         self._neighbour_meshes.clear()
+        for textures in self._neighbour_texture_sets.values():
+            for texture in textures:
+                texture.release()
+        self._neighbour_texture_sets.clear()
 
     def _release_terrain_mesh(self) -> None:
         for resource in (

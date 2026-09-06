@@ -211,6 +211,41 @@ class RoutingTests(NeighbourTestCase):
         self.assertIsNone(session.neighbour_at(("127.0.0.1", 9002)))
 
 
+class NeighbourGroundTextureTests(NeighbourTestCase):
+    """A neighbour's ground textures go through this region's capability."""
+
+    def test_a_neighbour_s_ground_textures_join_the_fetch_queue(self) -> None:
+        # They are asset ids like any other, and the asset service does not
+        # care which region asked. Fetching them through the neighbour's own
+        # capabilities would be a second texture pipeline for no reason.
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        circuit = session.open_neighbour(NORTH)
+        wanted = UUID("cccccccc-dddd-eeee-ffff-000000000001")
+        circuit.terrain_detail = (wanted, wanted, wanted, wanted)
+        self.assertEqual(_next_pending_object_texture_id(session), wanted)
+
+    def test_a_texture_already_fetched_is_not_asked_for_again(self) -> None:
+        from pathlib import Path
+
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        circuit = session.open_neighbour(NORTH)
+        wanted = UUID("cccccccc-dddd-eeee-ffff-000000000001")
+        circuit.terrain_detail = (wanted,) * 4
+        session.texture_paths[wanted] = Path("/tmp/already-here.png")
+        self.assertIsNone(_next_pending_object_texture_id(session))
+
+    def test_a_region_that_never_answered_asks_for_nothing(self) -> None:
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        session.open_neighbour(NORTH)
+        self.assertIsNone(_next_pending_object_texture_id(session))
+
+
 class SessionEventTests(NeighbourTestCase):
     def test_both_halves_are_recorded_as_events(self) -> None:
         # The session log is where a neighbour that never opened is diagnosed

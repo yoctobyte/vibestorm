@@ -3762,6 +3762,18 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
             if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
                 continue
             return texture_id
+    # Then the regions next door, for the same reason: their ground is drawn
+    # shaded until these arrive, and a neighbouring region is a lot of square
+    # metres. Their ids are asset ids like any other, so this region's
+    # GetTexture capability fetches them -- a neighbour's ground needs no
+    # second texture pipeline.
+    for circuit in session.neighbours.values():
+        for texture_id in circuit.terrain_detail or ():
+            if texture_id.int == 0:
+                continue
+            if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
+                continue
+            return texture_id
     # Then the day cycle's own: the moon's face, the cloud layer and the
     # water's normal map are asset ids like any other, and they cover the
     # whole sky and the whole sea. Same argument as the ground textures above,

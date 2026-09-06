@@ -398,6 +398,29 @@ up past the north edge as green-tinted sea -- which is correct, and worth
 knowing before anyone reads it as a bug: that region's ground has a mean of
 3.0 m under a water table at 20 m, so nearly all of it is seabed.
 
+**And then textured, which turned out to be four lines and a shader
+choice.** A region's four ground textures are named in its own
+`RegionHandshake`, which the circuit was parsing and throwing away, and
+they are ordinary asset ids -- so *this* region's `GetTexture` capability
+fetches them and a neighbour needs no second texture pipeline at all. They
+go into the same fetch queue, right behind the region's own ground and
+ahead of every prim, on the same argument: a neighbouring region is a lot
+of square metres. Live: all four of `Vibestorm North`'s fetched, with its
+own blend bands (start 10, range 60).
+
+Which shader draws a region is decided per frame *and per region*, because
+the heightmap arrives seconds before the textures do and on a busy grid one
+neighbour's ground can be cached while another's is not. Uploaded texture
+sets are keyed by the four paths rather than by the region: neighbours on
+one grid usually share a palette, and eight copies of four images is VRAM
+for nothing. Bands are set per region -- shared, a neighbour gets our sand
+where its grass should be. Late textures do not rebuild the sheet.
+
+Thirteen more tests; thirteen mutants planted, twelve killed. The survivor
+is equivalent: dropping the `any(path is None)` half of the guard makes the
+loader try to open a file called "None", which raises and falls back to
+shading exactly as the guard did.
+
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
 eighteen seconds since 2026-09-05 23:26 -- 2970 times by the time anyone
@@ -2022,13 +2045,20 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
-   - **A neighbour's ground is shaded, not textured, and holds nothing but
-     ground.** Its four ground textures are named in its own
-     `RegionHandshake`, which `NeighbourCircuit` parses and throws away, and
-     nothing fetches them. Its objects, its avatars and its water level are
-     not read at all -- a neighbouring region with a building on it shows as
-     an empty hillside. The next piece is the handshake's texture ids, since
-     the fetch and the splat shader both already exist.
+   - **A neighbour holds nothing but ground.** Its terrain is drawn, and
+     textured with its own four ground textures, but its objects, its
+     avatars and its own water level are not read at all -- a neighbouring
+     region with a building on it shows as an empty hillside. Objects are
+     the big one: `ObjectUpdate` on a child circuit would have to go into
+     the world view under that region's local-id space and be drawn at the
+     neighbour's offset, and local ids are per region, so they cannot simply
+     be merged.
+   - **The neighbour resends its handshake a few times an hour.** Measured
+     over ninety seconds: four `RegionHandshake` packets, each answered
+     reliably, with terrain flowing throughout -- so the first reply plainly
+     arrived. Harmless, and unexplained. The likeliest reading is that
+     OpenSim resends on region-info changes rather than that the reply is
+     being missed, but nobody has checked.
    - **The camera does not see round anything.** It is held out of the
      ground since the eleventh pass, but nothing stops it looking *through* a
      hill or a prim standing between it and the avatar. That is a raycast

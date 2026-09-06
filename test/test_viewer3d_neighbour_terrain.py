@@ -17,8 +17,24 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
+from uuid import UUID
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+
+
+def _solid_tile(color: tuple[int, int, int], size: int = 4) -> Path:
+    """A small solid-colour PNG, so the loader runs end to end."""
+    import tempfile
+
+    import pygame
+
+    surface = pygame.Surface((size, size))
+    surface.fill(color)
+    handle, path = tempfile.mkstemp(suffix=".png")
+    os.close(handle)
+    pygame.image.save(surface, path)
+    return Path(path)
 
 
 def _flat_heightmap(height: float, *, revision: int = 1):
@@ -134,22 +150,37 @@ class SceneRefreshTests(unittest.TestCase):
         class _Session:
             region_handle = (256000 << 32) | 256256
             neighbours = circuits
+            texture_paths: dict = {}
 
         return _Session()
 
+    #: A real circuit, not a stand-in. The scene reads half a dozen
+    #: attributes off one, and a stub that grew them by hand would go on
+    #: passing after the circuit stopped having them.
+    @classmethod
+    def setUpClass(cls) -> None:
+        from vibestorm.udp.dispatch import MessageDispatcher
+
+        cls.dispatcher = MessageDispatcher.from_repo_root(
+            Path(__file__).resolve().parents[1]
+        )
+
     def _circuit(self, handle: int, heightmap, name: str = "North"):
-        class _Circuit:
-            def __init__(self) -> None:
-                self.heightmap = heightmap
-                self.region_name = name
+        from uuid import UUID
 
-            def offset_from(self, root: int) -> tuple[float, float]:
-                return (
-                    float(((handle >> 32) & 0xFFFFFFFF) - ((root >> 32) & 0xFFFFFFFF)),
-                    float((handle & 0xFFFFFFFF) - (root & 0xFFFFFFFF)),
-                )
+        from vibestorm.udp.neighbour import NeighbourCircuit
 
-        return _Circuit()
+        circuit = NeighbourCircuit(
+            handle=handle,
+            address=("127.0.0.1", 9001),
+            agent_id=UUID(int=1),
+            session_id=UUID(int=2),
+            circuit_code=7,
+            dispatcher=self.dispatcher,
+            heightmap=heightmap,
+        )
+        circuit.region_name = name
+        return circuit
 
     def test_a_neighbour_with_ground_reaches_the_scene(self) -> None:
         from vibestorm.viewer3d.scene import Scene
@@ -194,6 +225,45 @@ class SceneRefreshTests(unittest.TestCase):
         )
         scene.refresh_neighbours(self._session({}))
         self.assertEqual(scene.neighbour_terrain, ())
+
+    def test_the_region_s_own_ground_textures_reach_the_scene(self) -> None:
+        # They are fetched through this region's capability and land in the
+        # session's texture cache, keyed by asset id like every other
+        # texture. The scene's job is only to look them up.
+        from vibestorm.viewer3d.scene import Scene
+
+        handle = (256000 << 32) | 256512
+        circuit = self._circuit(handle, _flat_heightmap(21.0))
+        ids = tuple(UUID(int=0xB0 + index) for index in range(4))
+        circuit.terrain_detail = ids
+        circuit.terrain_start_height = (1.0, 2.0, 3.0, 4.0)
+        circuit.terrain_height_range = (5.0, 6.0, 7.0, 8.0)
+
+        session = self._session({handle: circuit})
+        session.texture_paths = {
+            texture_id: Path(f"/tmp/ground-{index}.png")
+            for index, texture_id in enumerate(ids)
+        }
+        scene = Scene()
+        scene.refresh_neighbours(session)
+
+        entry = scene.neighbour_terrain[0]
+        self.assertEqual(
+            entry.texture_paths,
+            tuple(Path(f"/tmp/ground-{index}.png") for index in range(4)),
+        )
+        self.assertEqual(entry.start_height, (1.0, 2.0, 3.0, 4.0))
+        self.assertEqual(entry.height_range, (5.0, 6.0, 7.0, 8.0))
+
+    def test_a_texture_that_has_not_arrived_reads_as_missing(self) -> None:
+        from vibestorm.viewer3d.scene import Scene
+
+        handle = (256000 << 32) | 256512
+        circuit = self._circuit(handle, _flat_heightmap(21.0))
+        circuit.terrain_detail = tuple(UUID(int=0xC0 + index) for index in range(4))
+        scene = Scene()
+        scene.refresh_neighbours(self._session({handle: circuit}))
+        self.assertEqual(scene.neighbour_terrain[0].texture_paths, (None,) * 4)
 
     def test_the_heightmap_is_held_by_reference(self) -> None:
         # Patches keep arriving after the first frame that draws one, and the
@@ -240,12 +310,15 @@ class NeighbourTerrainGLTests(unittest.TestCase):
         )
         self.fbo.use()
         ctx.viewport = (0, 0, *self.FBO_SIZE)
+        self._tiles: list[Path] = []
 
     def tearDown(self) -> None:
         self.fbo.release()
         self._color_tex.release()
         self._depth_rb.release()
         self.ctx.release()
+        for path in self._tiles:
+            path.unlink(missing_ok=True)
 
     def _draw(self, renderer, scene) -> None:
         # The depth buffer is not cleared by the renderer -- the app clears
@@ -367,6 +440,159 @@ class NeighbourTerrainGLTests(unittest.TestCase):
             )
         finally:
             renderer.clear_caches()
+
+    def _textured_scene(self, color: tuple[int, int, int]):
+        """The same neighbour, with four ground textures of one flat colour."""
+        from vibestorm.viewer3d.scene import NeighbourTerrain
+
+        scene = self._scene(with_neighbour=True)
+        entry = scene.neighbour_terrain[0]
+        paths = tuple(_solid_tile(color) for _ in range(4))
+        self._tiles.extend(paths)
+        scene.neighbour_terrain = (
+            NeighbourTerrain(
+                handle=entry.handle,
+                offset=entry.offset,
+                heightmap=entry.heightmap,
+                texture_paths=paths,
+                start_height=(10.0, 10.0, 10.0, 10.0),
+                height_range=(60.0, 60.0, 60.0, 60.0),
+            ),
+        )
+        return scene
+
+    def test_a_neighbour_with_its_own_ground_textures_is_drawn_with_them(self) -> None:
+        # A region's four ground textures are named in its own handshake and
+        # are ordinary asset ids, so this region's GetTexture capability
+        # fetches them. Until they arrive the neighbour is shaded ground; the
+        # moment they do it should be textured ground, and the two do not
+        # look alike.
+        renderer = self._renderer()
+        try:
+            self._draw(renderer, self._scene(with_neighbour=True))
+            shaded = self._read_pixel(32, 32)
+            self._draw(renderer, self._textured_scene((220, 30, 30)))
+            textured = self._read_pixel(32, 32)
+        finally:
+            renderer.clear_caches()
+
+        self.assertNotEqual(shaded[:3], textured[:3])
+        self.assertGreater(textured[0], textured[1], f"not the red ground: {textured}")
+
+    def test_the_texture_set_is_shared_between_regions_that_match(self) -> None:
+        # Neighbours on one grid usually share a ground palette, and eight
+        # copies of the same four images is VRAM for nothing.
+        renderer = self._renderer()
+        try:
+            self._draw(renderer, self._textured_scene((30, 30, 220)))
+            self.assertEqual(len(renderer._neighbour_texture_sets), 1)
+            self._draw(renderer, self._textured_scene((30, 30, 220)))
+            # Different files, same colour: keyed by path, so two sets.
+            self.assertEqual(len(renderer._neighbour_texture_sets), 2)
+        finally:
+            renderer.clear_caches()
+
+    def test_the_same_ground_is_uploaded_once(self) -> None:
+        # Frame after frame, the same four files. Re-uploading them every
+        # frame is four texture uploads a frame per neighbour.
+        renderer = self._renderer()
+        try:
+            scene = self._textured_scene((30, 30, 220))
+            paths = scene.neighbour_terrain[0].texture_paths
+            self._draw(renderer, scene)
+            first = renderer._neighbour_texture_sets[paths]
+            self._draw(renderer, scene)
+            self.assertIs(renderer._neighbour_texture_sets[paths], first)
+        finally:
+            renderer.clear_caches()
+
+    def test_each_region_blends_against_its_own_bands(self) -> None:
+        # Two neighbours, two handshakes, two sets of elevation bands. Set
+        # once for the whole pass and the second region gets the first one's
+        # sand where its grass should be.
+        from vibestorm.viewer3d.scene import NeighbourTerrain
+
+        renderer = self._renderer()
+        try:
+            scene = self._textured_scene((220, 30, 30))
+            near = scene.neighbour_terrain[0]
+            far_paths = tuple(_solid_tile((30, 220, 30)) for _ in range(4))
+            self._tiles.extend(far_paths)
+            far = NeighbourTerrain(
+                handle=near.handle + 1,
+                offset=(256.0, 256.0),
+                heightmap=near.heightmap,
+                texture_paths=far_paths,
+                start_height=(90.0, 91.0, 92.0, 93.0),
+                height_range=(40.0, 41.0, 42.0, 43.0),
+            )
+            scene.neighbour_terrain = (near, far)
+            self._draw(renderer, scene)
+            program = renderer._terrain_texture_program
+            # Drawn in order, so the uniform still holds the last region's.
+            self.assertEqual(program["u_start_height"].value, far.start_height)
+            self.assertEqual(program["u_height_range"].value, far.height_range)
+        finally:
+            renderer.clear_caches()
+
+    def test_clearing_the_caches_gives_the_ground_textures_back(self) -> None:
+        renderer = self._renderer()
+        self._draw(renderer, self._textured_scene((220, 30, 30)))
+        self.assertEqual(len(renderer._neighbour_texture_sets), 1)
+        renderer.clear_caches()
+        self.assertEqual(renderer._neighbour_texture_sets, {})
+
+    def test_a_half_arrived_texture_set_falls_back_to_shading(self) -> None:
+        # Three textures out of four would blend against whatever the last
+        # region left in the fourth unit.
+        from vibestorm.viewer3d.scene import NeighbourTerrain
+
+        renderer = self._renderer()
+        try:
+            scene = self._textured_scene((220, 30, 30))
+            entry = scene.neighbour_terrain[0]
+            self._draw(renderer, scene)
+            textured = self._read_pixel(32, 32)
+
+            scene.neighbour_terrain = (
+                NeighbourTerrain(
+                    handle=entry.handle,
+                    offset=entry.offset,
+                    heightmap=entry.heightmap,
+                    texture_paths=(*entry.texture_paths[:3], None),
+                    start_height=entry.start_height,
+                    height_range=entry.height_range,
+                ),
+            )
+            self._draw(renderer, scene)
+            partial = self._read_pixel(32, 32)
+
+            self._draw(renderer, self._scene(with_neighbour=True))
+            shaded = self._read_pixel(32, 32)
+        finally:
+            renderer.clear_caches()
+
+        self.assertEqual(partial[:3], shaded[:3])
+        self.assertNotEqual(partial[:3], textured[:3])
+
+    def test_textures_arriving_late_do_not_rebuild_the_ground(self) -> None:
+        # The heightmap arrives seconds before the textures do. Rebuilding
+        # sixty-five hundred vertices because a texture finally downloaded
+        # would be a stutter for nothing.
+        renderer = self._renderer()
+        try:
+            scene = self._scene(with_neighbour=True)
+            self._draw(renderer, scene)
+            before = renderer._neighbour_meshes[scene.neighbour_terrain[0].handle]
+
+            textured = self._textured_scene((30, 220, 30))
+            self._draw(renderer, textured)
+            after = renderer._neighbour_meshes[textured.neighbour_terrain[0].handle]
+        finally:
+            renderer.clear_caches()
+
+        self.assertIs(before, after)
+        self.assertEqual(after.start_height, (10.0, 10.0, 10.0, 10.0))
 
     def test_a_neighbour_that_moves_relative_to_us_is_rebuilt(self) -> None:
         # Region handles do not change, but the frame they are measured in
