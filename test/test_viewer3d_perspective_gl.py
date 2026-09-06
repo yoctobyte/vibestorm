@@ -3364,6 +3364,206 @@ class RegionWeatherGLTests(_GLTestBase):
             20,
         )
 
+    def _sky_frame(self, scene, eye, target):
+        """Render one sky-only frame and hand back every pixel of it."""
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        scene.render_water = False
+        scene.render_terrain = False
+        camera = Camera3D(mode="eye", eye_position=eye, target=target)
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = self.fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+        return [tuple(data[i : i + 4]) for i in range(0, len(data), 4)]
+
+    #: The star tests render into their own, larger buffer.
+    #:
+    #: A star is about a twentieth of a degree across, and the shared 64-pixel
+    #: buffer spans 60 degrees -- so a star covers a twentieth of a pixel, and
+    #: whether one shows up at all comes down to how near a pixel centre it
+    #: lands. The first version of this test measured the *moon's* edge and
+    #: passed with the star uniform wired to zero. At 256 the field is still
+    #: sub-pixel but reliably samples a few dozen of them.
+    STAR_FBO_SIZE = (256, 256)
+
+    #: Where the star camera looks, and at what. High and west, and the moon
+    #: is turned off in every star frame: at midnight it sits at the zenith,
+    #: comfortably inside a 60-degree frame aimed 80 degrees up, and its edge
+    #: is exactly the sharp bright thing these tests count.
+    STAR_EYE = (128.0, 128.0, 30.0)
+    STAR_TARGET = (110.6, 128.0, 128.5)
+
+    def _starless_moon(self, day_fraction: float):
+        scene = self._scene_at(day_fraction)
+        scene.moon_level = 0.0
+        scene.render_water = False
+        scene.render_terrain = False
+        return scene
+
+    def _star_frame(self, scene, *, target=None, viewport_offset: int = 0):
+        """Render one sky into a 256-pixel buffer and return all its pixels.
+
+        `viewport_offset` shifts the viewport inside the buffer without
+        touching the camera, which is the whole trick of the invariance test
+        below: the same NDC, and so the same world direction, lands on a
+        different `gl_FragCoord`.
+        """
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        size = self.STAR_FBO_SIZE
+        texture = self.ctx.texture(size, components=4)
+        depth = self.ctx.depth_renderbuffer(size)
+        fbo = self.ctx.framebuffer(color_attachments=[texture], depth_attachment=depth)
+        camera = Camera3D(
+            mode="eye",
+            eye_position=self.STAR_EYE,
+            target=target or self.STAR_TARGET,
+        )
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            fbo.use()
+            self.ctx.viewport = (viewport_offset, viewport_offset, *size)
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+            fbo.release()
+            depth.release()
+            texture.release()
+            self.fbo.use()
+            self.ctx.viewport = (0, 0, *self.FBO_SIZE)
+        return [tuple(data[i : i + 4]) for i in range(0, len(data), 4)]
+
+    def _speckles(self, frame, threshold: int = 60) -> int:
+        """Pixels much brighter than the eight around them.
+
+        Brightness alone cannot find a star: the daytime sky is brighter than
+        any star, everywhere. What a star *is* is a sharp local peak, and a
+        gradient, a sun glow and a moon's interior are all smooth.
+        """
+        width, height = self.STAR_FBO_SIZE
+        total = 0
+        for y in range(1, height - 1):
+            for x in range(1, width - 1):
+                here = sum(frame[y * width + x][:3])
+                around = [
+                    sum(frame[(y + dy) * width + (x + dx)][:3])
+                    for dy in (-1, 0, 1)
+                    for dx in (-1, 0, 1)
+                    if (dx, dy) != (0, 0)
+                ]
+                if here - (sum(around) / 8.0) > threshold:
+                    total += 1
+        return total
+
+    def test_stars_come_out_at_night_and_not_before(self) -> None:
+        """The night sky was an empty gradient, and `star_brightness` was in
+        the document all along: exactly 500 in both night keyframes and
+        exactly 0 in all six daytime ones.
+        """
+        night = self._speckles(self._star_frame(self._starless_moon(0.0)))
+        day = self._speckles(self._star_frame(self._starless_moon(0.3)))
+
+        self.assertGreater(night, 10, "no stars in the night sky")
+        self.assertEqual(day, 0, "something is drawing stars in the daytime sky")
+
+    def test_the_night_sky_is_stars_and_mostly_not_stars(self) -> None:
+        # The upper bound, and it is not fussiness: a field with no threshold
+        # on the cell hash puts a star in every cell, which is a grey wash
+        # rather than a night sky and looks nothing like one.
+        frame = self._star_frame(self._starless_moon(0.0))
+
+        lit = sum(1 for r, g, b, _ in frame if r + g + b > 130)
+
+        self.assertGreater(lit, 0)
+        self.assertLess(lit, len(frame) // 100, "the sky is a wall of stars")
+
+    def test_there_are_no_stars_below_the_horizon(self) -> None:
+        # Under the horizon is ground, and the terrain and the sea are turned
+        # off in these frames -- so without the check the sky quad happily
+        # draws stars into the earth. At 0.05 rather than at midnight: the sun
+        # is straight down at midnight and its own blob would be in the frame.
+        scene = self._starless_moon(0.05)
+
+        below = self._star_frame(
+            scene, target=(self.STAR_EYE[0], self.STAR_EYE[1] + 0.01, -70.0)
+        )
+
+        self.assertEqual(self._speckles(below), 0)
+
+    def test_the_stars_do_not_move_with_the_screen(self) -> None:
+        """The one that a screenshot cannot show.
+
+        Stars sit on the celestial sphere: the same world direction has to
+        give the same star whatever pixel it lands on, or they swim about as
+        the camera turns. Hashing the view direction does that; hashing
+        anything that includes the screen position looks identical in a still
+        and is wrong the moment anyone moves.
+
+        Shifting the *viewport* inside a larger buffer, rather than moving the
+        camera, is what isolates it: every NDC -- and so every world direction
+        -- is unchanged, and only `gl_FragCoord` differs.
+        """
+        scene = self._starless_moon(0.0)
+        shift = 16
+        width, height = self.STAR_FBO_SIZE
+
+        square = self._star_frame(scene)
+        shifted = self._star_frame(scene, viewport_offset=shift)
+
+        differing = 0
+        for y in range(height - shift):
+            for x in range(width - shift):
+                here = square[y * width + x]
+                there = shifted[(y + shift) * width + (x + shift)]
+                if max(abs(here[i] - there[i]) for i in range(3)) > 3:
+                    differing += 1
+        self.assertEqual(differing, 0, "the star field follows the screen, not the sky")
+
+    def test_the_moon_is_drawn_where_the_day_cycle_puts_it(self) -> None:
+        """Straight up at midnight, and opposite the sun at every keyframe.
+
+        The camera is aimed down the scene's own moon direction, so what this
+        asserts is that the uniform and the derivation agree -- pointing it at
+        a hardcoded bearing would pass just as well with the moon nailed to
+        the sky.
+        """
+        scene = self._scene_at(0.0)
+        direction = scene.moon_direction
+        self.assertIsNotNone(direction)
+        eye = (128.0, 128.0, 30.0)
+        target = tuple(e + d * 100.0 for e, d in zip(eye, direction, strict=True))
+
+        lit = self._sky_frame(scene, eye, target)
+        centre = lit[(self.FBO_SIZE[1] // 2) * self.FBO_SIZE[0] + self.FBO_SIZE[0] // 2]
+
+        gradient = sum(round(c * 255) for c in self._expected_sky(scene))
+        self.assertGreater(
+            sum(centre[:3]),
+            gradient + 100,
+            f"no moon at the direction the scene derived: {centre}",
+        )
+
+    def test_no_moon_is_drawn_when_the_region_says_none(self) -> None:
+        scene = self._scene_at(0.0)
+        direction = scene.moon_direction
+        scene.moon_level = 0.0
+        eye = (128.0, 128.0, 30.0)
+        target = tuple(e + d * 100.0 for e, d in zip(eye, direction, strict=True))
+
+        dark = self._sky_frame(scene, eye, target)
+        centre = dark[(self.FBO_SIZE[1] // 2) * self.FBO_SIZE[0] + self.FBO_SIZE[0] // 2]
+
+        gradient = sum(round(c * 255) for c in self._expected_sky(scene))
+        self.assertLess(sum(centre[:3]), gradient + 40)
+
     def test_the_drawn_horizon_is_the_horizon_colour(self) -> None:
         """The other half of the gradient, and it needed its own test.
 

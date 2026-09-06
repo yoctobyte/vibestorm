@@ -699,10 +699,46 @@ _SKY_FRAGMENT_SHADER = """
 uniform vec3 u_horizon;
 uniform vec3 u_zenith;
 uniform vec3 u_sun_dir;
+uniform vec3 u_moon_dir;
+uniform float u_moon_level;
+uniform float u_star_level;
 
 in vec3 v_ray;
 
 out vec4 frag_color;
+
+// One float in 0..1 from a cell of the sky. Deterministic and view
+// independent, which is the whole point: the stars have to sit still on the
+// celestial sphere while the camera turns under them, and a hash of the *cell*
+// rather than of the screen does that for free.
+float cell_hash(vec3 cell) {
+    vec3 p = fract(cell * 0.1031 + vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+// A star field, procedural rather than a texture. `star_id` names one of a
+// handful of textures nobody here has fetched, and a sphere of points is what
+// it would hold: the sky is divided into cells, about one in thirty gets a
+// star at a hashed position inside it, and each is a small round falloff.
+float star_field(vec3 dir) {
+    vec3 p = dir * 220.0;
+    vec3 cell = floor(p);
+    float pick = cell_hash(cell);
+    if (pick < 0.966) {
+        return 0.0;
+    }
+    vec3 centre = vec3(
+        cell_hash(cell + 11.0),
+        cell_hash(cell + 23.0),
+        cell_hash(cell + 37.0)
+    );
+    float distance_to = length((p - cell) - centre);
+    // Brightness varies per star, or a field of identical dots reads as a
+    // pattern rather than as a sky.
+    float magnitude = 0.35 + 0.65 * fract(pick * 91.7);
+    return smoothstep(0.18, 0.0, distance_to) * magnitude;
+}
 
 void main() {
     vec3 dir = normalize(v_ray);
@@ -711,8 +747,31 @@ void main() {
     float height = clamp(dir.z, 0.0, 1.0);
     vec3 rgb = mix(u_horizon, u_zenith, sqrt(height));
 
+    // Stars go under the sun and moon and above the gradient, and the
+    // region's own night keyframes are what turn them on at all.
+    if (u_star_level > 0.0) {
+        // `rise` does two jobs, and the second is the one that matters: it
+        // fades the field in over the first few degrees so it does not stop
+        // at a hard line along the horizon, and because smoothstep clamps, it
+        // is also zero for every ray pointing below it. A separate `dir.z > 0`
+        // guard beside this would be dead code -- which is exactly how the
+        // mutation battery found it.
+        float rise = smoothstep(0.0, 0.12, dir.z);
+        rgb += vec3(0.92, 0.94, 1.0) * star_field(dir) * u_star_level * rise;
+    }
+
+    // The moon: a disc with a soft edge, about the angular size of the sun
+    // blob below it. Both are drawn a little large -- the real pair are half a
+    // degree across, which at this field of view is a few pixels and reads as
+    // a speck.
+    if (u_moon_level > 0.0) {
+        float moon_alignment = dot(dir, normalize(u_moon_dir));
+        float disc = smoothstep(0.9990, 0.9994, moon_alignment);
+        rgb += vec3(0.96, 0.95, 0.90) * disc * u_moon_level;
+    }
+
     // The sun, and the haze around it. Both are pure falloff on the angle to
-    // the light direction the simulator gives us -- no disc geometry, so it
+    // the light direction the day cycle gives us -- no disc geometry, so it
     // costs one dot product.
     float alignment = max(dot(dir, normalize(u_sun_dir)), 0.0);
     rgb += vec3(1.0, 0.95, 0.80) * pow(alignment, 900.0);
@@ -833,6 +892,13 @@ def lighting_direction(scene: Scene) -> tuple[float, float, float]:
         if _is_a_direction(candidate):
             return _normalize_vec3(candidate, fallback=DEFAULT_SUN_DIRECTION)
     return _normalize_vec3(DEFAULT_SUN_DIRECTION, fallback=DEFAULT_SUN_DIRECTION)
+
+
+def _a_direction_or(value, fallback: tuple[float, float, float]):
+    """A usable direction, or the fallback. Same zero-vector trap as the sun."""
+    if _is_a_direction(value):
+        return _normalize_vec3(value, fallback=fallback)
+    return fallback
 
 
 def _is_a_direction(value) -> bool:
@@ -1234,6 +1300,11 @@ class PerspectiveRenderer:
                     sun_direction=sun_direction,
                     horizon=getattr(scene, "sky_horizon_color", DEFAULT_SKY_HORIZON_COLOR),
                     zenith=getattr(scene, "sky_zenith_color", DEFAULT_SKY_ZENITH_COLOR),
+                    moon_direction=_a_direction_or(
+                        getattr(scene, "moon_direction", None), (0.0, 0.0, -1.0)
+                    ),
+                    moon_level=float(getattr(scene, "moon_level", 0.0) or 0.0),
+                    star_level=float(getattr(scene, "star_level", 0.0) or 0.0),
                 )
             if scene.render_terrain:
                 self._upload_terrain_mesh(ctx, scene)
@@ -2413,6 +2484,9 @@ class PerspectiveRenderer:
         sun_direction,
         horizon: tuple[float, float, float] = DEFAULT_SKY_HORIZON_COLOR,
         zenith: tuple[float, float, float] = DEFAULT_SKY_ZENITH_COLOR,
+        moon_direction: tuple[float, float, float] = (0.0, 0.0, -1.0),
+        moon_level: float = 0.0,
+        star_level: float = 0.0,
     ) -> None:
         """Paint the sky before anything else in the frame.
 
@@ -2430,6 +2504,9 @@ class PerspectiveRenderer:
         self._sky_program["u_horizon"].value = horizon
         self._sky_program["u_zenith"].value = zenith
         self._sky_program["u_sun_dir"].value = sun_direction
+        self._sky_program["u_moon_dir"].value = moon_direction
+        self._sky_program["u_moon_level"].value = float(moon_level)
+        self._sky_program["u_star_level"].value = float(star_level)
         ctx.disable(ctx.DEPTH_TEST)
         try:
             self._sky_vao.render()

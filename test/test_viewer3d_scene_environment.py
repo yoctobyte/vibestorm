@@ -118,6 +118,30 @@ class EnvironmentRefreshTests(unittest.TestCase):
         self.assertEqual(scene.sky_horizon_color, DEFAULT_SKY_HORIZON_COLOR)
         self.assertIsNone(scene.environment_sun_direction)
 
+    def test_the_night_sky_reaches_the_scene(self) -> None:
+        midnight = Scene()
+        midnight.refresh_from_world_view(_world_view(clock=_at(0.0)))
+        noon = Scene()
+        noon.refresh_from_world_view(_world_view(clock=_at(0.5)))
+
+        self.assertAlmostEqual(midnight.star_level, 1.0, places=3)
+        self.assertEqual(noon.star_level, 0.0)
+        # And the moon is the half of the sky the sun is not in.
+        self.assertGreater(midnight.moon_direction[2], 0.99)
+        self.assertLess(noon.moon_direction[2], -0.99)
+
+    def test_losing_the_environment_takes_the_night_sky_with_it(self) -> None:
+        # Same reason as the colours: a teleport must not leave the previous
+        # region's stars hanging in an unfetched sky.
+        scene = Scene()
+        scene.refresh_from_world_view(_world_view(clock=_at(0.0)))
+
+        scene.refresh_from_world_view(_world_view(environment=False))
+
+        self.assertEqual(scene.star_level, 0.0)
+        self.assertEqual(scene.moon_level, 0.0)
+        self.assertIsNone(scene.moon_direction)
+
 
 class LightingDirectionTests(unittest.TestCase):
     """Which of the four sun sources wins."""

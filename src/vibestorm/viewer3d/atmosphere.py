@@ -49,6 +49,21 @@ Vec3 = tuple[float, float, float]
 #: dawn and dusk, and straight up at noon.
 SUN_REFERENCE_DIRECTION: Vec3 = (1.0, 0.0, 0.0)
 
+#: The moon turns the same vector, and the arithmetic says so rather than the
+#: naming: at midnight the default cycle's `moon_rotation` is a quarter turn
+#: about -Y, which takes +X to straight up, and at noon it is the same turn
+#: the other way, which takes it straight down. Opposite the sun at both, which
+#: is what a moon does.
+MOON_REFERENCE_DIRECTION: Vec3 = SUN_REFERENCE_DIRECTION
+
+#: What counts as a fully dark sky's worth of stars.
+#:
+#: A normalising constant, not a physical one. Nothing documents the range of
+#: `star_brightness`; what is observable is that OpenSim's default cycle writes
+#: exactly 500 in both night keyframes and exactly 0 in all six daytime ones,
+#: so this converts the one to "all of them" and leaves the other at none.
+STAR_BRIGHTNESS_FULL: float = 500.0
+
 #: What a region that says nothing looks like: the colours this viewer picked
 #: by eye before any of them came off the wire. Kept as the fallback rather
 #: than deleted -- a region whose environment cannot be read is still a region
@@ -101,6 +116,28 @@ def light_hues(sky: SkySettings) -> tuple[Color3, Color3]:
 def sun_direction(sky: SkySettings) -> Vec3:
     """Where the sun is, from the day cycle rather than from the simulator."""
     return quat_rotate(sky.sun_rotation, SUN_REFERENCE_DIRECTION)
+
+
+def moon_direction(sky: SkySettings) -> Vec3:
+    """Where the moon is. Same reference vector as the sun -- see the constant."""
+    return quat_rotate(sky.moon_rotation, MOON_REFERENCE_DIRECTION)
+
+
+def star_level(sky: SkySettings) -> float:
+    """How much of the star field to draw, 0 to 1."""
+    return _clamp(sky.star_brightness / STAR_BRIGHTNESS_FULL)
+
+
+def moon_level(sky: SkySettings) -> float:
+    """How bright the moon's disc is, 0 to 1.
+
+    Not gated on night. The default cycle holds `moon_brightness` at 0.5 all
+    day and lets the moon be up whenever its rotation puts it up, which is
+    right: a daytime moon is a real thing, and against a sky already near 0.7
+    a half-strength white disc is pale rather than absent -- which is roughly
+    how it looks.
+    """
+    return _clamp(sky.moon_brightness)
 
 
 def sky_gradient(sky: SkySettings) -> tuple[Color3, Color3]:

@@ -25,7 +25,12 @@ from vibestorm.viewer3d.atmosphere import (
     DEFAULT_WATER_TINT,
     daylight_scale,
     light_hues,
+    moon_level,
     sky_gradient,
+    star_level,
+)
+from vibestorm.viewer3d.atmosphere import (
+    moon_direction as moon_direction_for,
 )
 from vibestorm.viewer3d.atmosphere import (
     sun_direction as sun_direction_for,
@@ -467,6 +472,12 @@ class Scene:
     # White until a region's day cycle says otherwise.
     ambient_light_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
     diffuse_light_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    # The night sky. `star_level` is zero all day in the default cycle and one
+    # in both night keyframes; the moon is up whenever its own rotation puts
+    # it up, which is the opposite half of the day from the sun.
+    moon_direction: tuple[float, float, float] | None = None
+    moon_level: float = 0.0
+    star_level: float = 0.0
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
     # Who is currently typing, from the start/stop-typing chat types. Kept as a
     # dict rather than a set so insertion order gives a stable display order.
@@ -498,6 +509,9 @@ class Scene:
             self.light_level = 1.0
             self.ambient_light_color = (1.0, 1.0, 1.0)
             self.diffuse_light_color = (1.0, 1.0, 1.0)
+            self.moon_direction = None
+            self.moon_level = 0.0
+            self.star_level = 0.0
             return
 
         clock = (
@@ -522,6 +536,9 @@ class Scene:
         self.environment_sun_direction = sun_direction_for(sky)
         self.light_level = daylight_scale(sky)
         self.ambient_light_color, self.diffuse_light_color = light_hues(sky)
+        self.moon_direction = moon_direction_for(sky)
+        self.moon_level = moon_level(sky)
+        self.star_level = star_level(sky)
 
     def apply_region_changed(self, event: RegionChanged) -> None:
         debug_heightmap = self.terrain_heightmap if self.debug_terrain_source is not None else None

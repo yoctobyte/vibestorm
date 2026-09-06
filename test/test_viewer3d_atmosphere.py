@@ -22,11 +22,16 @@ from pathlib import Path
 from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
     DEFAULT_SKY_HORIZON_COLOR,
+    MOON_REFERENCE_DIRECTION,
     NIGHT_LIGHT_FLOOR,
+    STAR_BRIGHTNESS_FULL,
     SUN_REFERENCE_DIRECTION,
     daylight_scale,
     light_hues,
+    moon_direction,
+    moon_level,
     sky_gradient,
+    star_level,
     sun_direction,
     water_tint,
 )
@@ -274,3 +279,91 @@ class WaterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NightSkyTests(unittest.TestCase):
+    """The moon and the stars, both of which were in the document unread."""
+
+    def setUp(self) -> None:
+        self.env = _live_environment()
+
+    def test_the_moon_turns_the_same_vector_as_the_sun(self) -> None:
+        self.assertEqual(MOON_REFERENCE_DIRECTION, SUN_REFERENCE_DIRECTION)
+
+    def test_the_moon_is_opposite_the_sun_at_every_keyframe(self) -> None:
+        """Which is what says the reference vector is right.
+
+        Nothing names the vector a `moon_rotation` turns, and picking one by
+        eye at a single keyframe would agree with three of them. All eight at
+        once is the check: at midnight the moon is straight up and the sun
+        straight down, at noon the reverse, and at every keyframe between them
+        their elevations are exact negatives.
+        """
+        for fraction, sky in self.env.sky_track:
+            with self.subTest(fraction=fraction):
+                self.assertAlmostEqual(
+                    _elevation_degrees(moon_direction(sky)),
+                    -_elevation_degrees(sun_direction(sky)),
+                    delta=0.01,
+                )
+
+    def test_the_moon_is_up_at_midnight_and_down_at_noon(self) -> None:
+        midnight = dict(self.env.sky_track)[0.0]
+        noon = dict(self.env.sky_track)[0.5]
+
+        self.assertAlmostEqual(_elevation_degrees(moon_direction(midnight)), 90.0, delta=0.01)
+        self.assertAlmostEqual(_elevation_degrees(moon_direction(noon)), -90.0, delta=0.01)
+
+    def test_the_stars_are_out_at_night_and_gone_by_dawn(self) -> None:
+        # Every keyframe, because the interesting claim is that the document
+        # is emphatic about this: exactly 500 twice and exactly 0 six times,
+        # with nothing in between to interpolate a guess from.
+        lit = {
+            fraction: star_level(sky) for fraction, sky in self.env.sky_track
+        }
+
+        # Rounded: the keyframe keys come off the wire as 32-bit floats, so
+        # 0.95 arrives as 0.949999988.
+        self.assertEqual(
+            [round(fraction, 3) for fraction, level in lit.items() if level > 0.0],
+            [0.0, 0.05, 0.95],
+        )
+        for level in lit.values():
+            self.assertIn(round(level, 3), (0.0, 1.0))
+
+    def test_the_star_scale_is_what_the_document_writes(self) -> None:
+        # The constant is a normalisation and nothing more; this is the only
+        # evidence for its value, so it is worth saying out loud.
+        self.assertEqual(STAR_BRIGHTNESS_FULL, 500.0)
+        self.assertEqual(
+            {
+                round(sky.star_brightness, 1)
+                for _fraction, sky in self.env.sky_track
+                if sky.star_brightness
+            },
+            {500.0},
+        )
+
+    def test_a_brighter_star_field_than_the_scale_is_still_all_of_them(self) -> None:
+        self.assertEqual(star_level(SkySettings(star_brightness=5000.0)), 1.0)
+
+    def test_half_the_scale_is_half_the_stars(self) -> None:
+        # The document only ever says 0 or 500, so every other test here would
+        # pass just as well if the level were not divided by the scale at all
+        # -- the clamp alone turns 500 into 1. This is the one that says the
+        # constant is doing arithmetic rather than sitting there.
+        self.assertAlmostEqual(
+            star_level(SkySettings(star_brightness=STAR_BRIGHTNESS_FULL / 2.0)),
+            0.5,
+            places=5,
+        )
+
+    def test_the_moon_is_up_in_the_daytime_too(self) -> None:
+        """Not gated on night, deliberately.
+
+        The default cycle holds `moon_brightness` at 0.5 through the whole
+        day, and a daytime moon is a real thing. What hides it is the sky
+        being brighter, which the gradient already does.
+        """
+        for _fraction, sky in self.env.sky_track:
+            self.assertAlmostEqual(moon_level(sky), 0.5, places=4)

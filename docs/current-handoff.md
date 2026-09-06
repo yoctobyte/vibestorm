@@ -236,6 +236,69 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the night sky has a moon and stars in it (2026-09-06).** Both were in
+the day cycle already, parsed and unread. `star_brightness` is the emphatic
+one: the default cycle writes exactly **500** in both night keyframes and
+exactly **0** in all six daytime ones, with nothing in between to interpolate a
+guess from, so all a viewer has to do is normalise it.
+
+The moon took a small piece of evidence. Nothing names the vector a
+`moon_rotation` turns, and one keyframe agreeing with a guess proves nothing --
+so the check is all eight at once: read as turning **+X**, the same vector as
+the sun, the moon's elevation is the exact negative of the sun's at every
+keyframe in the cycle, straight up at midnight and straight down at noon. That
+is what `MOON_REFERENCE_DIRECTION` rests on.
+
+Both are drawn procedurally. `star_id` and `moon_id` name textures this tree
+has never fetched, so the moon is a disc with a soft edge and no phase, and the
+stars are a hash of the view direction: the sky is cut into cells, about one in
+thirty holds a star at a hashed position inside it, and each is a small round
+falloff with a hashed magnitude so the field does not read as a pattern. The
+hash is of the *cell*, not of the screen, which is what keeps the stars still
+while the camera turns under them.
+
+Two things are deliberately not gated on night. The moon is up whenever its own
+rotation puts it up, including in daylight, where the brighter gradient washes
+it out on its own -- which is roughly how a daytime moon looks. And the moon
+disc and the sun blob are both drawn a few times larger than half a degree,
+because at this field of view the true angular size is a speck.
+
+Sixteen mutations. Fourteen killed, one deleted as dead code, one equivalent
+-- and the first run of the battery is the whole reason this section is worth
+reading, because **six of the fourteen survived and every one of them was the
+same test being vacuous.**
+
+`test_stars_come_out_at_night_and_not_before` had been counting the *moon's
+edge*. The star camera looks 80 degrees up; at midnight the moon is at the
+zenith, comfortably inside a 60-degree frame, and its rim is exactly the sharp
+bright thing the test was measuring. It passed with the star uniform wired to
+zero. It also passed with a star in every single cell -- because when every
+neighbour is bright too, a local-contrast measure reads nothing.
+
+The second problem underneath it was resolution. A star is about a twentieth
+of a degree across, and the shared 64-pixel test buffer spans sixty degrees --
+so a star covers a twentieth of a pixel and whether it registers at all is
+down to where it lands. At 256 the same frame reliably shows a couple of dozen.
+The repaired tests turn the moon off, render into their own larger buffer, and
+count sharp local peaks; the night frame has 22 and the daytime frame has none.
+
+The one that could not have been caught by looking is *the star field is view
+dependent*: add `gl_FragCoord` to the hash input and the night sky is still
+completely convincing in a screenshot, and the stars swim about the moment
+anyone turns their head. Testing it needs the same world direction to land on
+a different pixel, and the way to do that without touching the camera is to
+shift the **viewport** inside a larger buffer: every NDC is unchanged, so every
+ray is unchanged, and only `gl_FragCoord` moves. Sixty pixels differ under the
+mutation and none without it.
+
+The two that did not die are worth naming as well, because neither is a gap.
+`dir.z > 0.0` beside the star term was dead: `smoothstep(0.0, 0.12, dir.z)`
+clamps, so it is already zero for every ray below the horizon -- the mutation
+proved the code redundant rather than the test weak, and the guard is gone.
+`u_star_level > 0.0` is likewise only an early-out for a multiply by zero.
+Replacing the horizon fade itself with `1.0` does fail, which is the check
+that matters.
+
 **A -- prim textures have a memory ceiling (2026-09-06).** The renderer had a
 prune and no bound. `_prune_object_textures` released whatever the region had
 stopped referencing, which is exactly right and is not a limit: a region may
@@ -720,8 +783,12 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      scroll rates. None is drawn; the sky is a clean gradient. This is the
      largest of what is left and it is ordinary work -- the parameters are
      already parsed and sitting on `SkySettings`.
-   - **Stars and the moon.** `star_brightness` reaches 500 in the night
-     keyframes and `moon_id` names a texture. The night sky is empty.
+   - ~~**Stars and the moon.**~~ Done in the seventh pass. What is left of it
+     is that both are drawn *procedurally*: `star_id` and `moon_id` name
+     textures nobody here has fetched, so the moon is a plain disc with no
+     phase and no maria, and the stars are a hash rather than a catalogue.
+     Neither turns with the night, either -- the field is fixed to the world
+     axes rather than to a celestial pole.
    - **The water surface itself.** `normal_map`, the two wave directions,
      `fresnel_scale` and `fresnel_offset` are all parsed and none is used: the
      sea is a flat tinted quad with a sine ripple. A real Fresnel term would
