@@ -85,6 +85,7 @@ from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient, WorldClientError
 from vibestorm.viewer3d.camera import Camera, CameraPreset
 from vibestorm.viewer3d.gl_compositor import GLCompositor
+from vibestorm.viewer3d.health import HealthProbe, SoakLog
 from vibestorm.viewer3d.hud import HUD, ObjectAssetSelection
 from vibestorm.viewer3d.input import handle_event
 from vibestorm.viewer3d.perspective import PerspectiveRenderer
@@ -306,6 +307,31 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Vertical scale applied to rendered terrain. Use values above 1 for debugging.",
     )
+    parser.add_argument(
+        "--run-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Leave the loop cleanly after this many seconds. 0 runs until "
+            "quit. Exists for soak runs, and exercises the ordinary shutdown "
+            "path rather than a signal, which is the one worth testing."
+        ),
+    )
+    parser.add_argument(
+        "--soak-log",
+        metavar="PATH",
+        help=(
+            "Append one JSON line of health numbers every --soak-interval "
+            "seconds. Read it back with tools/soak_report.py, which says which "
+            "of them was still growing at the end of the run."
+        ),
+    )
+    parser.add_argument(
+        "--soak-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between health samples. Only used with --soak-log.",
+    )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument(
@@ -325,6 +351,180 @@ def build_parser() -> argparse.ArgumentParser:
         help="UI scale factor. Defaults to auto based on desktop size.",
     )
     return parser
+
+
+#: Sentinel for "this owner does not have that attribute at all", kept apart
+#: from ``None``, which is an owner that is legitimately not there yet.
+_MISSING = object()
+
+
+def _len_of(owner_get, *names: str):
+    """A gauge over ``len(x.a.b)`` that tells absent from misspelt.
+
+    The pieces a soak watches come and go: there is no circuit before login
+    and no world view before a handshake, so an owner of ``None`` is ordinary
+    and reads as zero.
+
+    A name the owner *does not have* is the opposite -- somebody renamed a
+    cache and this gauge now watches nothing. Returning zero for that is the
+    worst outcome available: the series reads perfectly flat for the whole
+    run, which is exactly what a container that never leaked looks like, and
+    the report says the viewer is clean because it was blind. So it raises,
+    the probe records it as unreadable, and there is a test that fails if any
+    gauge is unreadable against a fully built viewer.
+    """
+
+    def read() -> float:
+        target = owner_get()
+        for name in names:
+            if target is None:
+                return 0.0
+            target = getattr(target, name, _MISSING)
+            if target is _MISSING:
+                raise AttributeError(f"no gauge target {'.'.join(names)}: {name!r} is missing")
+        if target is None:
+            return 0.0
+        return float(len(target))
+
+    return read
+
+
+def build_health_probe(scene, renderer, client, *, interval_s: float) -> HealthProbe:
+    """Every container in the viewer that a long run could quietly fill.
+
+    Chosen by reading for the shape rather than by suspicion: a dict or a set
+    keyed by something the world supplies -- an asset id, a packet sequence, a
+    line of text -- has no ceiling of its own, and over four hours that is the
+    difference between a viewer and a swap storm. Whether any of them
+    *actually* grows is what the run answers; the list is deliberately longer
+    than the number of leaks anyone expects to find.
+
+    Counters are declared apart from gauges. They are not leak candidates --
+    they are how the report tells "nothing grew" from "nothing happened",
+    which look identical in a flat gauge.
+    """
+    session = lambda: client.current  # noqa: E731 - one expression, read every sample
+    view = lambda: client.world_view()  # noqa: E731
+
+    gauges = {
+        # --- what is being drawn
+        "scene.object_entities": _len_of(lambda: scene, "object_entities"),
+        "scene.avatar_entities": _len_of(lambda: scene, "avatar_entities"),
+        "scene.neighbour_objects": _len_of(lambda: scene, "neighbour_object_entities"),
+        "scene.neighbour_avatars": _len_of(lambda: scene, "neighbour_avatar_entities"),
+        "scene.entity_cache": _len_of(lambda: scene, "_entity_cache"),
+        "scene.placement": _len_of(lambda: scene, "_placement"),
+        "scene.neighbour_caches": _len_of(lambda: scene, "_neighbour_caches"),
+        "scene.chat_lines": _len_of(lambda: scene, "chat_lines"),
+        "scene.mesh_paths": _len_of(lambda: scene, "mesh_paths"),
+        "scene.object_inventory": _len_of(lambda: scene, "object_inventory_snapshots"),
+        # --- GPU-side caches. Each entry here is a live GL object, so growth
+        # is VRAM as well as RAM, and VRAM is the one nothing here can see.
+        "gl.shape_meshes": _len_of(lambda: renderer, "_shape_meshes"),
+        "gl.prim_face_meshes": _len_of(lambda: renderer, "_prim_face_meshes"),
+        "gl.mesh_face_meshes": _len_of(lambda: renderer, "_mesh_face_meshes"),
+        "gl.avatar_bone_meshes": _len_of(lambda: renderer, "_avatar_bone_meshes"),
+        "gl.instance_blobs": _len_of(lambda: renderer, "_instance_blobs"),
+        "gl.object_textures": _len_of(lambda: renderer, "_object_textures"),
+        "gl.hover_text_textures": _len_of(lambda: renderer, "_hover_text_textures"),
+        "gl.neighbour_meshes": _len_of(lambda: renderer, "_neighbour_meshes"),
+        "gl.neighbour_texture_sets": _len_of(lambda: renderer, "_neighbour_texture_sets"),
+        "gl.mesh_asset_paths": _len_of(lambda: renderer, "_mesh_asset_paths"),
+        "gl.sculpt_asset_paths": _len_of(lambda: renderer, "_sculpt_asset_paths"),
+        "gl.object_texture_bytes": _object_texture_bytes(renderer),
+        # --- the world as the protocol left it
+        "world.objects": _len_of(view, "objects"),
+        "world.terse_objects": _len_of(view, "terse_objects"),
+        "world.local_id_map": _len_of(view, "local_id_to_full_id"),
+        "world.pending_textures": _len_of(view, "objects_pending_textures"),
+        "world.pending_meshes": _len_of(view, "objects_pending_meshes"),
+        "world.object_properties": _len_of(view, "object_properties"),
+        "world.agent_presences": _len_of(view, "agent_presences"),
+        # --- the circuit. `seen_reliable_sequences` is the one with no
+        # ceiling at all by construction: one int per reliable packet ever
+        # received, and a busy region sends tens a second for as long as the
+        # session lasts.
+        "udp.seen_sequences": _len_of(session, "seen_reliable_sequences"),
+        "udp.pending_reliable": _len_of(session, "pending_reliable"),
+        "udp.queued_acks": _len_of(session, "queued_acks"),
+        "udp.message_kinds": _len_of(session, "received_messages"),
+        "udp.events": _len_of(session, "events"),
+        "udp.neighbours": _len_of(session, "neighbours"),
+        "udp.neighbour_failures": _len_of(session, "neighbour_failures"),
+        # --- assets the session is holding on to. `fetched_assets` holds the
+        # *bytes*, not a path, so its length is the wrong number to watch on
+        # its own and the byte total sits beside it.
+        "asset.fetched": _len_of(session, "fetched_assets"),
+        "asset.fetched_bytes": _fetched_asset_bytes(session),
+        "asset.texture_paths": _len_of(session, "texture_paths"),
+        "asset.mesh_paths": _len_of(session, "mesh_paths"),
+        "asset.texture_attempted": _len_of(session, "texture_fetch_attempted"),
+        "asset.mesh_attempted": _len_of(session, "mesh_fetch_attempted"),
+        "asset.pending_transfers": _len_of(session, "pending_asset_transfers"),
+        "asset.pending_http": _len_of(session, "pending_http_assets"),
+        # --- region data kept per id
+        "region.layer_blobs": _len_of(session, "latest_layer_data"),
+        "region.parcel_overlay": _len_of(session, "parcel_overlay_packets"),
+        "region.parcel_properties": _len_of(session, "parcel_properties_by_local_id"),
+        "region.object_physics": _len_of(session, "object_physics"),
+        "region.object_costs": _len_of(session, "object_costs"),
+        # --- the loop itself
+        "loop.tasks": _asyncio_task_count,
+    }
+    counters = {
+        "udp.total_received": _int_of(session, "total_received"),
+        "udp.agent_updates": _int_of(session, "agent_update_count"),
+        "udp.acks_received": _int_of(session, "packet_acks_received"),
+        "eq.polls": _int_of(session, "event_queue_polls"),
+        "eq.events": _int_of(session, "event_queue_events"),
+        "world.object_updates": _int_of(view, "object_update_events"),
+    }
+    return HealthProbe(gauges=gauges, counters=counters, interval_s=interval_s)
+
+
+def _int_of(owner_get, name: str):
+    """A gauge over a plain integer attribute. Misspelt raises, as above."""
+
+    def read() -> float:
+        target = owner_get()
+        if target is None:
+            return 0.0
+        value = getattr(target, name, _MISSING)
+        if value is _MISSING:
+            raise AttributeError(f"no counter target {name!r}")
+        return float(value or 0)
+
+    return read
+
+
+def _object_texture_bytes(renderer):
+    def read() -> float:
+        sizes = getattr(renderer, "_object_texture_bytes", _MISSING)
+        if sizes is _MISSING:
+            raise AttributeError("no gauge target renderer._object_texture_bytes")
+        return float(sum(sizes.values())) if sizes else 0.0
+
+    return read
+
+
+def _fetched_asset_bytes(owner_get):
+    def read() -> float:
+        session = owner_get()
+        assets = getattr(session, "fetched_assets", None) if session is not None else None
+        if not assets:
+            return 0.0
+        return float(sum(len(blob) for blob in assets.values()))
+
+    return read
+
+
+def _asyncio_task_count() -> float:
+    try:
+        return float(len(asyncio.all_tasks()))
+    except RuntimeError:
+        # No running loop -- only reachable from a test calling the gauge
+        # directly, since the viewer samples from inside its own loop.
+        return 0.0
 
 
 class _PhaseStats:
@@ -953,6 +1153,17 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 camera.set_avatar_eye(avatar.position, avatar.rotation)
 
     screenshot_path = Path(args.screenshot) if getattr(args, "screenshot", None) else None
+    soak_path = getattr(args, "soak_log", None)
+    soak_log = SoakLog(Path(soak_path)) if soak_path else None
+    probe = (
+        build_health_probe(
+            scene, renderer, client, interval_s=float(getattr(args, "soak_interval", 30.0))
+        )
+        if soak_log is not None
+        else None
+    )
+    run_seconds = float(getattr(args, "run_seconds", 0.0) or 0.0)
+    frame_number = 0
     elapsed_s = 0.0
     try:
         while running and not session_task.done():
@@ -1066,6 +1277,11 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 save_screenshot(ctx, screen_size, screenshot_path)
                 print(f"screenshot={screenshot_path}", flush=True)
                 running = False
+            frame_number += 1
+            if probe is not None and soak_log is not None and probe.due(elapsed_s):
+                soak_log.write(probe.sample(elapsed_s=elapsed_s, frame=frame_number))
+            if run_seconds > 0.0 and elapsed_s >= run_seconds:
+                running = False
             if _PHASE_STATS is not None:
                 _PHASE_STATS.add(
                     scene_refresh=_m1 - _m0,
@@ -1085,6 +1301,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
             await asyncio.wait_for(session_task, timeout=2.0)
         except TimeoutError:
             session_task.cancel()
+        if probe is not None and soak_log is not None:
+            # One last sample after the loop, before anything is torn down:
+            # the shape of the final reading is what says whether a run that
+            # ended early ended with something already out of hand.
+            soak_log.write(probe.sample(elapsed_s=elapsed_s, frame=frame_number))
+            soak_log.close()
         renderer.clear_caches()
         compositor.release()
         pygame.quit()

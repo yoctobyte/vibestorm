@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (thirteenth pass)
+Last updated: 2026-09-07 (fourteenth pass)
 
 ## The Owner's Priorities
 
@@ -829,6 +829,82 @@ The lesson is the one about where a guard lives. A crash caused by a message
 this client sends belongs to the encoder, not to whichever tool happened to
 learn about it.
 
+
+**A -- nothing here had ever run for more than a few minutes (2026-09-07).**
+Every measurement in this project so far has been of one frame or one tick.
+That is the wrong shape for half of *without crashes*: a viewer does not
+usually fall over on the frame it was wrong on, it is fine for an hour and
+swapping at four, and by the time it dies the frame it died on says nothing
+at all about which container filled. There was no way to ask that question,
+so there is one now.
+
+`viewer3d/health.py` is a probe over a named set of numbers, sampled on a
+cadence and written one JSON object per line; `--soak-log PATH`,
+`--soak-interval` and `--run-seconds` turn it on, and `tools/soak_report.py`
+reads the log back. Fifty-odd gauges, chosen by reading for the *shape*
+rather than by suspicion: a dict or a set keyed by something the world
+supplies -- an asset id, a packet sequence, a line of text -- has no ceiling
+of its own. The list is deliberately longer than the number of leaks anyone
+expects to find.
+
+Four decisions are what make the record worth reading.
+
+**A cache filling is not a leak; a cache still filling at the end is.** The
+report ranks by the rate over the *second half* of the run, not by the total
+change. Sorting on the total puts them exactly the wrong way round: a texture
+cache that filled in the first minute and sat still for four hours is the
+largest number in the file and the least interesting thing in it.
+
+**A counter is not a leak, and a counter that stops is its own failure.**
+Packets received and frames drawn rise for the whole run by design, so they
+are declared apart and never ranked as growth. They earn their place the
+other way up: a session that went deaf an hour in raises nothing, drops no
+frames, and leaves *every gauge in the report perfectly flat* -- which is
+indistinguishable from a quiet region unless something is counting what
+arrives. That reads as `stalled`.
+
+**A gauge may not kill the viewer.** Every one is called inside a guard and an
+unreadable one is recorded as `None`. A probe that ends the run at minute
+three has told you nothing about hour four.
+
+**And an unreadable gauge must not be a zero.** This is the one that needed a
+guard rather than a decision. A gauge naming a cache somebody has since
+renamed would read zero on every sample -- perfectly flat, which in this
+report is exactly what a container that never grew looks like. A four-hour run
+would come back clean because it was blind. So the walk tells *absent* (no
+circuit before login, no world view before a handshake: zero, and ordinary)
+from *misspelt* (raise), and a test builds a real scene, a real renderer and a
+real circuit and fails if any gauge is unreadable against them.
+
+`gc.get_count()` was tried and dropped. It counts allocations since the last
+collection, so it swings every frame and reports "growing" in about half of
+all runs whatever the viewer is doing, and one false row in every report is
+how a report stops being read to the bottom. `sys.getallocatedblocks()`
+answers the same question without the noise, and sits beside RSS and the
+thread count.
+
+43 tests, none of which runs a viewer -- the probe's contract is that it reads
+other people's containers without raising, and the report's is that it can
+tell a filling cache from a leaking one, and neither becomes truer for having
+a GL context in the room. Twenty-seven mutants planted, twenty-six killed. Two
+of the three that survived the first pass are tests now, and both are the same
+lesson in different clothes: **a wrong number that is still a plausible number
+needs a test that separates it from the right one, not a range check.**
+
+- RSS read from `/proc/self/statm`'s *first* field is the whole address space
+  rather than what is in RAM. Both are byte counts of an entirely plausible
+  size, so no bound tells them apart -- and reading the first would report a
+  reservation as a leak and miss a real one behind an allocator that had
+  already reserved the room. Half a gigabyte of anonymous mapping nobody
+  touches separates them exactly: 537 MB of address space, 0.1 MB resident.
+- A missing *counter* reading zero rather than raising, which is worse than the
+  gauge case it was already guarded against: a counter flat at zero for the
+  whole run is reported as `stalled`, which is a loud and completely wrong
+  finding about the session having gone deaf.
+
+The one survivor is equivalent by construction: dropping the "fewer than two
+points" guard in the rate is caught by the "zero span" guard immediately below
+it.
 
 **A -- rubbish into every decoder, before anyone logs in to the main grid
 (2026-09-06).** The other half of the first priority is *without crashes*, and
