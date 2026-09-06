@@ -824,7 +824,8 @@ class PerspectiveRendererWaterTests(_GLTestBase):
         try:
             renderer.render_gl(scene, aspect=1.0)
 
-            self.assertAlmostEqual(renderer._water_height, 6.5)
+            assert renderer._water_quads is not None
+            self.assertEqual({q[4] for q in renderer._water_quads}, {6.5})
         finally:
             renderer.clear_caches()
 

@@ -416,6 +416,11 @@ class NeighbourTerrain:
     )
     start_height: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     height_range: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    #: The sea level this region announced in its own handshake, and `None`
+    #: until one arrives. Water height is per region, not per grid: a region
+    #: whose sea is a metre below ours has our plane drawn a metre up its
+    #: beach, which is enough to make an island next door look sunk.
+    water_height: float | None = None
 
 
 @dataclass(slots=True)
@@ -1184,6 +1189,7 @@ class Scene:
                 ),
                 start_height=circuit.terrain_start_height or (0.0, 0.0, 0.0, 0.0),
                 height_range=circuit.terrain_height_range or (0.0, 0.0, 0.0, 0.0),
+                water_height=circuit.water_height,
             )
             for handle, circuit in sorted(neighbours.items())
             if circuit.heightmap.patch_count > 0

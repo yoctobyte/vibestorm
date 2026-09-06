@@ -65,6 +65,8 @@ from vibestorm.viewer3d.atmosphere import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import moderngl
     import pygame
 
@@ -1667,12 +1669,6 @@ void main() {
     "__CLOUD_IN_SKY_GLSL__", _CLOUD_IN_SKY_GLSL
 )
 
-_WATER_INDICES: tuple[int, ...] = (
-    0, 1, 2,
-    0, 2, 3,
-)
-
-
 #: How far water extends past the region edge, in metres.
 #:
 #: The water plane used to be exactly the region: 0..256. From any height that
@@ -1684,15 +1680,169 @@ _WATER_INDICES: tuple[int, ...] = (
 VOID_WATER_EXTENT_M: float = 1024.0
 
 
-def _water_vertices(water_height: float) -> tuple[float, ...]:
+def _flat_water_quads(
+    water_height: float,
+) -> tuple[tuple[float, float, float, float, float], ...]:
+    """The whole sea as one rectangle, which is what almost every frame is."""
     low = -VOID_WATER_EXTENT_M
     high = REGION_GROUND_SIZE_M + VOID_WATER_EXTENT_M
-    return (
-        low,   low,   water_height,
-        high,  low,   water_height,
-        high,  high,  water_height,
-        low,   high,  water_height,
-    )
+    return ((low, low, high, high, water_height),)
+
+
+def _water_vertices(water_height: float) -> tuple[float, ...]:
+    return _water_mesh(_flat_water_quads(water_height))[0]
+
+
+def _water_quads(scene: Scene) -> tuple[tuple[float, float, float, float, float], ...]:
+    """The sea, as (x0, y0, x1, y1, height) rectangles in this region's frame.
+
+    One rectangle, until a region next door announces a sea of its own at a
+    different level. Water height is per region, not per grid, and the plane
+    is 2304 m across: a neighbour whose sea sits a metre below ours gets our
+    water drawn a metre up its beach, which is enough to make an island next
+    door look sunk. So the plane is cut along the region edges that disagree
+    and each piece is drawn at the height its own region asked for.
+
+    Only regions whose ground is being drawn count -- `neighbour_terrain` is
+    already filtered to those. Over the void there is nothing for a step in
+    the sea to be a step *against*, and a lone rectangle of slightly lower
+    water in open ocean is a worse picture than the seam it would fix.
+    """
+    base = float(getattr(scene, "water_height", WATER_LEVEL_M))
+    low = -VOID_WATER_EXTENT_M
+    high = REGION_GROUND_SIZE_M + VOID_WATER_EXTENT_M
+    whole = _flat_water_quads(base)
+    if not getattr(scene, "render_neighbours", False):
+        return whole
+    footprints: list[tuple[float, float, float, float, float]] = []
+    for terrain in getattr(scene, "neighbour_terrain", ()):
+        height = getattr(terrain, "water_height", None)
+        if height is None or abs(float(height) - base) < 0.001:
+            continue
+        offset_x, offset_y = terrain.offset
+        x0 = max(low, float(offset_x))
+        y0 = max(low, float(offset_y))
+        x1 = min(high, float(offset_x) + REGION_GROUND_SIZE_M)
+        y1 = min(high, float(offset_y) + REGION_GROUND_SIZE_M)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        footprints.append((x0, y0, x1, y1, float(height)))
+    if not footprints:
+        return whole
+    # Every edge that matters, in both axes, and then one rectangle per cell
+    # of the grid they cut. The cells tile the plane exactly and share their
+    # corner coordinates, so there is no overlap to fight over the depth
+    # buffer and no gap between two pieces at the same height.
+    xs = sorted({low, high, *(f[0] for f in footprints), *(f[2] for f in footprints)})
+    ys = sorted({low, high, *(f[1] for f in footprints), *(f[3] for f in footprints)})
+    quads: list[tuple[float, float, float, float, float]] = []
+    for x0, x1 in zip(xs, xs[1:], strict=False):
+        for y0, y1 in zip(ys, ys[1:], strict=False):
+            middle_x = (x0 + x1) / 2.0
+            middle_y = (y0 + y1) / 2.0
+            height = base
+            for f_x0, f_y0, f_x1, f_y1, f_height in footprints:
+                if f_x0 < middle_x < f_x1 and f_y0 < middle_y < f_y1:
+                    height = f_height
+                    break
+            quads.append((x0, y0, x1, y1, height))
+    return tuple(quads)
+
+
+#: Corners of one wall closing the step between two rectangles.
+_Wall = tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]
+
+
+def _water_walls(
+    quads: Sequence[tuple[float, float, float, float, float]],
+) -> list[_Wall]:
+    """The walls that close the steps between rectangles at different levels.
+
+    Two pieces of sea meeting along an edge at different heights leave a slot
+    between them, and a slot in the sea shows the *sky* through it -- which
+    is a far worse picture than the seam the levels were cut apart to fix.
+    So each such edge gets a wall of water, from the lower level up to the
+    higher, the way a terrain skirt closes the same kind of gap.
+
+    Nothing culls faces in this renderer, so a wall is visible from either
+    side and its winding does not matter.
+    """
+    walls: list[_Wall] = []
+    for lower in quads:
+        for upper in quads:
+            if upper[4] <= lower[4]:
+                continue
+            low, high = lower[4], upper[4]
+            # Along x: the two share a vertical edge, and the wall runs the
+            # length of the y they have in common.
+            if lower[0] == upper[2] or lower[2] == upper[0]:
+                edge = lower[0] if lower[0] == upper[2] else lower[2]
+                y0 = max(lower[1], upper[1])
+                y1 = min(lower[3], upper[3])
+                if y1 > y0:
+                    walls.append(
+                        (
+                            (edge, y0, low),
+                            (edge, y1, low),
+                            (edge, y1, high),
+                            (edge, y0, high),
+                        )
+                    )
+            # And along y, the same the other way round.
+            if lower[1] == upper[3] or lower[3] == upper[1]:
+                edge = lower[1] if lower[1] == upper[3] else lower[3]
+                x0 = max(lower[0], upper[0])
+                x1 = min(lower[2], upper[2])
+                if x1 > x0:
+                    walls.append(
+                        (
+                            (x0, edge, low),
+                            (x1, edge, low),
+                            (x1, edge, high),
+                            (x0, edge, high),
+                        )
+                    )
+    return walls
+
+
+def _water_mesh(
+    quads: Sequence[tuple[float, float, float, float, float]],
+) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Those rectangles, and the walls between them, as vertex and index blobs.
+
+    Corners are not shared between faces even where they coincide: two pieces
+    at different heights must not share one, and the saving on the handful
+    that could is not worth a second pass to find them.
+
+    The flat rectangles wind counter-clockwise seen from above, which is what
+    the single-rectangle plane always did.
+    """
+    vertices: list[float] = []
+    indices: list[int] = []
+
+    def add(corners: _Wall) -> None:
+        first = len(vertices) // 3
+        for corner in corners:
+            vertices.extend(corner)
+        indices.extend((first, first + 1, first + 2, first, first + 2, first + 3))
+
+    for x0, y0, x1, y1, height in quads:
+        add(
+            (
+                (x0, y0, height),
+                (x1, y0, height),
+                (x1, y1, height),
+                (x0, y1, height),
+            )
+        )
+    for wall in _water_walls(quads):
+        add(wall)
+    return tuple(vertices), tuple(indices)
 
 
 def _underwater_uniforms(
@@ -1708,6 +1858,10 @@ def _underwater_uniforms(
     the sea off is what a person does to look at what is under it, and a
     viewer that hid the seabed in fog after being asked to take the water away
     would be answering a different question.
+
+    Always *this* region's sea level, even where `_water_quads` has drawn a
+    neighbour's at its own: the fog is one uniform for the whole frame, and
+    the camera is over this region in every case that matters.
     """
     fog = tuple(float(c) for c in getattr(scene, "water_fog", DEFAULT_WATER_FOG))
     surface = float(getattr(scene, "water_height", WATER_LEVEL_M))
@@ -2193,7 +2347,9 @@ class PerspectiveRenderer:
         self._water_vbo = None  # type: moderngl.Buffer | None
         self._water_ibo = None  # type: moderngl.Buffer | None
         self._water_vao = None  # type: moderngl.VertexArray | None
-        self._water_height: float | None = None
+        self._water_capacity = 0
+        self._water_index_count = 0
+        self._water_quads: tuple[tuple[float, float, float, float, float], ...] | None = None
         if ctx is not None:
             self._setup_gl(ctx)
 
@@ -2439,7 +2595,7 @@ class PerspectiveRenderer:
                 and self._water_program is not None
                 and self._water_vao is not None
             ):
-                self._upload_water_mesh(ctx, scene.water_height)
+                self._upload_water_mesh(ctx, _water_quads(scene))
                 self._water_program["u_view"].write(view_data)
                 self._water_program["u_proj"].write(proj_data)
                 alpha = max(0.0, min(1.0, float(getattr(scene, "water_alpha", 0.72))))
@@ -2520,7 +2676,7 @@ class PerspectiveRenderer:
                 ctx.enable(ctx.BLEND)
                 ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
                 try:
-                    self._water_vao.render()
+                    self._water_vao.render(vertices=self._water_index_count)
                 finally:
                     ctx.disable(ctx.BLEND)
 
@@ -2740,7 +2896,9 @@ class PerspectiveRenderer:
         self._water_ibo = None
         self._water_vbo = None
         self._water_program = None
-        self._water_height = None
+        self._water_capacity = 0
+        self._water_index_count = 0
+        self._water_quads = None
 
     # -------------------------------------------------------------- helpers
 
@@ -2899,10 +3057,18 @@ class PerspectiveRenderer:
             vertex_shader=_WATER_VERTEX_SHADER,
             fragment_shader=_WATER_FRAGMENT_SHADER,
         )
-        vertices = _water_vertices(WATER_LEVEL_M)
-        self._water_vbo = ctx.buffer(struct.pack(f"{len(vertices)}f", *vertices))
+        # Built from the same two functions the frame uses, and recorded as
+        # what the buffers hold, so the first frame at the default sea level
+        # is not an upload of what is already there. Writing the vertices one
+        # way and the record another is how those two drift apart.
+        quads = _flat_water_quads(WATER_LEVEL_M)
+        vertices, indices = _water_mesh(quads)
+        self._water_capacity = len(indices) // 6
+        self._water_vbo = ctx.buffer(
+            struct.pack(f"{len(vertices)}f", *vertices), dynamic=True
+        )
         self._water_ibo = ctx.buffer(
-            struct.pack(f"{len(_WATER_INDICES)}I", *_WATER_INDICES)
+            struct.pack(f"{len(indices)}I", *indices), dynamic=True
         )
         self._water_vao = ctx.vertex_array(
             self._water_program,
@@ -2910,7 +3076,8 @@ class PerspectiveRenderer:
             index_buffer=self._water_ibo,
             index_element_size=4,
         )
-        self._water_height = WATER_LEVEL_M
+        self._water_index_count = len(indices)
+        self._water_quads = quads
 
         self._label_program = ctx.program(
             vertex_shader=_LABEL_VERTEX_SHADER,
@@ -4198,14 +4365,51 @@ class PerspectiveRenderer:
         finally:
             ctx.disable(ctx.BLEND)
 
-    def _upload_water_mesh(self, ctx: moderngl.Context, water_height: float) -> None:
-        if self._water_vbo is None or self._water_program is None:
+    def _upload_water_mesh(
+        self,
+        ctx: moderngl.Context,
+        quads: tuple[tuple[float, float, float, float, float], ...],
+    ) -> None:
+        """Put the sea's rectangles in the buffers, if they are not there now.
+
+        Compared as a whole rather than by height: the plane is one rectangle
+        in almost every frame, and the cut-up form only appears at a border
+        between two regions that disagree about their sea level.
+        """
+        if self._water_vbo is None or self._water_ibo is None:
             return
-        if self._water_height is not None and abs(self._water_height - water_height) < 0.001:
+        if self._water_quads == quads:
             return
-        vertices = _water_vertices(water_height)
+        vertices, indices = _water_mesh(quads)
+        # Faces, not rectangles: the walls between two levels are faces too.
+        faces = len(indices) // 6
+        if faces > self._water_capacity:
+            self._grow_water_buffers(ctx, faces)
+            assert self._water_vbo is not None and self._water_ibo is not None
         self._water_vbo.write(struct.pack(f"{len(vertices)}f", *vertices))
-        self._water_height = water_height
+        self._water_ibo.write(struct.pack(f"{len(indices)}I", *indices))
+        self._water_index_count = len(indices)
+        self._water_quads = quads
+
+    def _grow_water_buffers(self, ctx: moderngl.Context, faces: int) -> None:
+        """Reallocate the sea's buffers, and the array that records them.
+
+        Same reason as `_grow_instance_buffer`: a vertex array remembers the
+        buffers it was built against, so replacing one means rebuilding it.
+        """
+        assert self._water_program is not None
+        for buffer in (self._water_vao, self._water_ibo, self._water_vbo):
+            if buffer is not None:
+                buffer.release()
+        self._water_capacity = max(self._water_capacity * 2, faces)
+        self._water_vbo = ctx.buffer(reserve=self._water_capacity * 4 * 3 * 4, dynamic=True)
+        self._water_ibo = ctx.buffer(reserve=self._water_capacity * 6 * 4, dynamic=True)
+        self._water_vao = ctx.vertex_array(
+            self._water_program,
+            [(self._water_vbo, "3f", "in_pos")],
+            index_buffer=self._water_ibo,
+            index_element_size=4,
+        )
 
     def _grow_instance_buffer(self, ctx: moderngl.Context, required: int) -> None:
         """Reallocate the shared instance buffer and rebind every shape VAO.

@@ -591,6 +591,77 @@ The tests that inserted straight into `world_view.objects` now go through
 `remember_object`, which is the better test anyway: a prim put into the
 world around the model's own door is one the fetches will never look at.
 
+**And the sea, which two regions are allowed to disagree about
+(2026-09-06).** Water height is announced per region, in each region's own
+`RegionHandshake`. The plane the renderer draws is one rectangle 2304 m
+across -- nine regions wide, so that the horizon never ends in a straight
+line with sky under it -- at *our* region's level. Which means a neighbour
+whose sea sits a metre below ours had our water drawn a metre up its beach,
+and one whose sea sits well below ours had its island drawn looking sunk.
+The height was already being parsed off the neighbour's handshake and kept
+on the circuit; nothing downstream had ever read it.
+
+`_water_quads` now cuts the plane along the region edges that disagree.
+Every footprint that wants a different level contributes its four edges,
+the two sorted edge lists cut the plane into a grid, and each cell is drawn
+at the height of the region whose footprint contains its centre -- our own
+everywhere else. The cells tile the plane exactly and share their corner
+coordinates, so there is nothing overlapping to fight over the depth buffer
+and no gap between two pieces at the same height; corners are *not* shared
+between rectangles, because two pieces that meet along an edge sit at
+different heights and a shared corner would drag one to the other's level.
+
+One rectangle is still the answer in almost every frame: a neighbour that
+agrees with us, or has not sent its handshake yet, costs nothing. That
+matters more than it sounds -- the common case must not turn one rectangle
+into nine for no visible difference, and `None` must not be read as a sea
+level of zero for the frame or two before the handshake lands.
+
+Cutting the plane into pieces at different heights leaves a slot between
+them, and the first rendered frame said what a slot in the sea looks like:
+the sky, straight through it, in a bright band along the whole border. So
+each step gets a wall of water from the lower level up to the higher, the
+way a terrain skirt closes the same kind of gap -- four of them round a
+region next door. Nothing culls faces here, so a wall shows from either
+side and its winding does not matter. The walls are *striped*, because the
+sea's shader takes its normal from a wave function of world x and y, which
+on a vertical face varies along one axis only; from eye height in our own
+region they read as a thin line along the border, and closing the hole is
+worth that. Making them shade properly means a per-vertex flag and a branch
+in the water shader, which is not this pass's work.
+
+Two decisions worth keeping. The cut is only made for a region whose
+*ground* is being drawn, which `neighbour_terrain` already filters to:
+over open void there is nothing for a step in the sea to be a step against,
+and a lone rectangle of slightly lower water in open ocean is a worse
+picture than the seam it would fix. And the underwater fog is still one
+uniform at this region's level, because the camera is over this region in
+every case that matters.
+
+The sea's buffers had to become growable for this -- four vertices and six
+indices was the whole of it before -- so they now double the way the
+instance buffer does, and the vertex array is rebuilt with them because a
+vertex array remembers the buffers it was built against. Their capacity
+counts *faces*, not rectangles, since the walls are faces too.
+
+Twenty-five tests, four of them rendering a frame and reading a pixel back.
+Two mutants were worth the battery on their own. Dropping
+`_water_index_count` leaves the draw call asking for one rectangle's worth
+of indices, so the cut-up plane loses eight ninths of itself -- our own
+region's sea included -- while a test that only looks at the neighbour goes
+on passing; the test that catches it looks at our own water instead. And
+the setup used to record `None` for what the buffers held while writing the
+default plane into them, which is two statements of the same fact that can
+drift apart: it now builds the buffers from the same two functions the frame
+uses and records exactly what it put there.
+
+Verified live, which is where the claim about *whose* handshake carries the
+level was actually settled. `Vibestorm North` was set to a water height of
+12 m against `Vibestorm Test`'s 20 m: the child circuit's handshake carries
+12.0, the plane comes back as nine rectangles with 12 m in the one that is
+the neighbour's footprint, and the rendered frame shows its island standing
+properly out of a lower sea where before it was drowned to a hump.
+
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
 eighteen seconds since 2026-09-05 23:26 -- 2970 times by the time anyone
@@ -2215,14 +2286,11 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
-   - ~~**A neighbour holds nothing but ground.**~~ Spent, except for the
-     water. Its prims and its avatars arrive on the child circuit, go into
-     a `WorldView` of that region's own, and are drawn at its offset; its
-     textures and mesh assets go through this region's capabilities behind
-     our own prims. What is left is the neighbour's **water level**, which
-     is in its handshake and unread: a region with a different sea level
-     from ours draws its sea at ours, and along the border that is a visible
-     step.
+   - ~~**A neighbour holds nothing but ground.**~~ Spent. Its prims and its
+     avatars arrive on the child circuit, go into a `WorldView` of that
+     region's own, and are drawn at its offset; its textures and mesh assets
+     go through this region's capabilities behind our own prims; and its own
+     sea level, off its own handshake, is the level its sea is drawn at.
    - **The neighbour resends its handshake a few times an hour.** Measured
      over ninety seconds: four `RegionHandshake` packets, each answered
      reliably, with terrain flowing throughout -- so the first reply plainly
