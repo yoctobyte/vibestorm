@@ -2536,6 +2536,205 @@ class MeshUVGLTests(_GLTestBase):
         )
 
 
+class SeaHorizonGLTests(_GLTestBase):
+    """Where the sea meets the sky.
+
+    It used to meet it in a line. The water plane is the sky's own horizon
+    colour with a dark tint blended over it, so the two simply abut, and from
+    a camera three metres above the surface the step across that line measured
+    **sixty-seven levels** -- a wall at the edge of the world rather than a
+    distance. Real air between the viewer and the horizon is what fixes it.
+
+    A tall narrow buffer, and the assertions are on a single column of it:
+    what is being measured is how the colour changes going *up*, which is one
+    dimension, and 320 rows of it resolve a degree of elevation to about five.
+    """
+
+    COLUMN_SIZE = (16, 320)
+    EYE = (73.0, 73.0, 34.0)
+    WATER_HEIGHT = 17.0
+
+    def _column(self, scene, *, target=None):
+        """Render one tall frame and return its centre column, bottom-up."""
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        size = self.COLUMN_SIZE
+        texture = self.ctx.texture(size, components=4)
+        depth = self.ctx.depth_renderbuffer(size)
+        fbo = self.ctx.framebuffer(color_attachments=[texture], depth_attachment=depth)
+        camera = Camera3D(
+            mode="eye",
+            eye_position=self.EYE,
+            # Level and due north-east unless asked otherwise: the horizon has
+            # to be in the frame for any of this to mean anything.
+            target=target or (128.0, 128.0, self.EYE[2]),
+        )
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            fbo.use()
+            self.ctx.viewport = (0, 0, *size)
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=size[0] / size[1])
+            data = fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+            fbo.release()
+            depth.release()
+            texture.release()
+            self.fbo.use()
+            self.ctx.viewport = (0, 0, *self.FBO_SIZE)
+        width, height = size
+        middle = width // 2
+        return [
+            tuple(data[(y * width + middle) * 4 : (y * width + middle) * 4 + 4])
+            for y in range(height)
+        ]
+
+    def _sea_scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_clouds = False
+        scene.water_height = self.WATER_HEIGHT
+        return scene
+
+    def _worst_step(self, column, low_row: int, high_row: int) -> int:
+        return max(
+            max(abs(column[y][i] - column[y - 1][i]) for i in range(3))
+            for y in range(low_row + 1, high_row)
+        )
+
+    def test_the_sea_does_not_meet_the_sky_in_a_wall(self) -> None:
+        # The whole point. Sixty-seven before; anything in this range is a
+        # gradient rather than an edge.
+        column = self._column(self._sea_scene())
+
+        self.assertLess(self._worst_step(column, 120, 175), 30)
+
+    def test_the_sea_close_by_is_still_the_sea(self) -> None:
+        """The haze must not eat the water at the viewer's feet.
+
+        The first version measured the distance in the *vertex* shader. The
+        plane is two triangles more than two kilometres across, so every
+        fragment got the average of three corners a kilometre off and the
+        whole sea came out sky-coloured -- a horizon with no wall in it
+        because there was no sea either.
+        """
+        scene = self._sea_scene()
+
+        column = self._column(scene, target=(128.0, 128.0, -40.0))
+
+        near = column[len(column) // 2]
+        self.assertLess(
+            sum(near[:3]),
+            sum(round(c * 255) for c in scene.sky_horizon_color) - 60,
+            f"the sea underfoot is the colour of the sky: {near}",
+        )
+
+    def test_the_far_sea_takes_the_colour_of_this_region_s_sky(self) -> None:
+        """Not a constant: the haze has to be the sky this region is drawing.
+
+        Asserted as a *change* down the column rather than as one pixel's
+        colour, because a single pixel near the horizon could be the sky
+        itself and a test that read one would pass without any sea in it.
+        Row 130 is a good way below the horizon and row 152 is close to it;
+        the second has to be much nearer the sky's colour than the first.
+        """
+        scene = self._sea_scene()
+        scene.sky_horizon_color = (0.85, 0.35, 0.20)
+        scene.sky_zenith_color = (0.85, 0.35, 0.20)
+
+        column = self._column(scene)
+
+        near, far = column[130], column[152]
+        # The sky here is strongly red; the water tint is blue-green.
+        self.assertLess(near[0], near[2], f"the near sea is already the sky: {near}")
+        self.assertGreater(far[0], far[2], f"the far sea is not the sky: {far}")
+
+    def test_the_far_sea_stops_caring_about_the_water_opacity(self) -> None:
+        """Opacity is a near-water setting, and at the horizon it is a bug.
+
+        The slider exists so a viewer can see what is under the surface. At
+        the horizon there is nothing under the surface but sky, and leaving
+        the sea partly transparent there lets that sky through at a different
+        brightness from the sky beside it -- which is the wall coming back by
+        another route. So the alpha rises with the haze, and by the horizon
+        the slider has stopped mattering.
+        """
+        opaque = self._sea_scene()
+        opaque.water_alpha = 1.0
+        clear = self._sea_scene()
+        clear.water_alpha = 0.2
+
+        column_opaque = self._column(opaque)
+        column_clear = self._column(clear)
+
+        def gap(row: int) -> int:
+            return max(
+                abs(a - b)
+                for a, b in zip(
+                    column_opaque[row][:3], column_clear[row][:3], strict=True
+                )
+            )
+
+        # Row 145 is well out to sea and row 153 is nearly at the horizon.
+        self.assertGreater(gap(145), 40, "the opacity slider does nothing at all")
+        self.assertLess(gap(153), 10, "the sea is as translucent at the horizon")
+
+    def test_the_haze_is_measured_from_the_viewer(self) -> None:
+        """From the viewer, not from the world origin.
+
+        The two are the same thing in a region whose corner is at (0, 0) and
+        whose camera is near it, which is every other test here -- so a shader
+        handed a zero eye position passes all of them. A viewer standing well
+        away from the origin is where it shows: the sea at their feet is a
+        kilometre from (0, 0) and would be drawn as fully hazed, which is to
+        say as sky.
+        """
+        scene = self._sea_scene()
+        self.EYE = (900.0, 900.0, 34.0)
+
+        column = self._column(scene, target=(900.0, 910.0, -40.0))
+
+        underfoot = column[len(column) // 2]
+        to_water = sum(
+            abs(underfoot[i] - round(scene.water_tint[i] * 255)) for i in range(3)
+        )
+        to_sky = sum(
+            abs(underfoot[i] - round(scene.sky_horizon_color[i] * 255)) for i in range(3)
+        )
+        self.assertLess(
+            to_water, to_sky, f"the sea underfoot is drawn as horizon: {underfoot}"
+        )
+
+    def test_the_sea_inside_the_region_is_not_hazed(self) -> None:
+        """`WATER_HAZE_NEAR_M` is about a region across, on purpose.
+
+        A viewer standing in a region should see that region's water as
+        water. Starting the haze at their feet instead tints everything, most
+        of it too slightly to notice in a screenshot -- so the tint and the
+        sky are pushed to opposite extremes here, which turns a few levels of
+        drift into fifty.
+        """
+        scene = self._sea_scene()
+        scene.water_tint = (0.0, 0.0, 0.0)
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+
+        column = self._column(scene)
+
+        # Row 60 is sea about 47 metres off and row 140 about 242 -- both
+        # inside the near distance, so the only difference between them
+        # should be the ripple.
+        close, far = column[60], column[140]
+        self.assertLess(
+            max(abs(a - b) for a, b in zip(close[:3], far[:3], strict=True)),
+            18,
+            f"the near sea is already hazing: {close} against {far}",
+        )
+
 class LargeRegionTextureGLTests(_GLTestBase):
     """A region holding more distinct textures than any fixed cache cap.
 

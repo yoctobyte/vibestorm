@@ -873,6 +873,23 @@ _SKY_VERTICES: tuple[float, ...] = (
 )
 _SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 
+#: Where the sea starts turning into the sky, and where it finishes, in
+#: metres from the viewer.
+#:
+#: A rendering choice, and the numbers are the region's own size rather than
+#: anything on the wire: the near edge is about a region across, so nothing
+#: inside the region a viewer is standing in is hazed, and the far edge is
+#: inside `VOID_WATER_EXTENT_M` so the plane has finished becoming the sky
+#: before it runs out.
+#:
+#: `WaterSettings.fog_density` is *not* this. That one is the fog seen from
+#: **under** the surface, which is a different quantity in a different medium,
+#: and using it here would be reading the document to mean something it does
+#: not say.
+WATER_HAZE_NEAR_M: float = 260.0
+WATER_HAZE_FAR_M: float = 900.0
+
+
 _WATER_VERTEX_SHADER = """
 #version 330
 
@@ -893,6 +910,8 @@ _WATER_FRAGMENT_SHADER = """
 #version 330
 
 uniform vec4 u_color;
+uniform vec3 u_haze;
+uniform vec2 u_eye_xy;
 
 in vec2 v_world_xy;
 out vec4 frag_color;
@@ -902,9 +921,36 @@ void main() {
     float fine = sin((v_world_xy.x + v_world_xy.y) * 0.61);
     float noise = (wave * 0.65 + fine * 0.35) * 0.5 + 0.5;
     vec3 rgb = u_color.rgb + (noise - 0.5) * __WATER_NOISE_STRENGTH__;
-    frag_color = vec4(clamp(rgb, 0.0, 1.0), u_color.a);
+
+    // Distant sea becomes the sky it meets. Without this the horizon is a
+    // hard line -- measured at sixty-seven levels of jump from a camera three
+    // metres over the water, because the sea is the sky's horizon colour with
+    // a dark tint blended over it and the two simply meet. Real distance puts
+    // air in between, and the far edge of the plane is exactly where the sky
+    // starts, so that is where the two have to agree.
+    //
+    // The distance is measured here and not handed down from the vertex
+    // shader, which was the first attempt and was wrong: the plane is two
+    // triangles more than two kilometres across, so an interpolated distance
+    // is the average of three corners a kilometre away and the sea at the
+    // viewer's feet comes out as hazed as the sea at the horizon.
+    float haze = smoothstep(
+        __WATER_HAZE_NEAR__, __WATER_HAZE_FAR__, length(v_world_xy - u_eye_xy)
+    );
+    rgb = mix(rgb, u_haze, haze);
+    // The alpha goes with it: the sea is translucent up close, where there is
+    // something under it worth seeing, and opaque at the horizon, where being
+    // partly transparent only lets the sky through at the wrong brightness.
+    float alpha = mix(u_color.a, 1.0, haze);
+    frag_color = vec4(clamp(rgb, 0.0, 1.0), alpha);
 }
-""".replace("__WATER_NOISE_STRENGTH__", f"{WATER_NOISE_STRENGTH:f}")
+""".replace(
+    "__WATER_NOISE_STRENGTH__", f"{WATER_NOISE_STRENGTH:f}"
+).replace(
+    "__WATER_HAZE_NEAR__", f"{WATER_HAZE_NEAR_M:f}"
+).replace(
+    "__WATER_HAZE_FAR__", f"{WATER_HAZE_FAR_M:f}"
+)
 
 _WATER_INDICES: tuple[int, ...] = (
     0, 1, 2,
@@ -1335,6 +1381,15 @@ class PerspectiveRenderer:
 
         view = self.camera.view_matrix()
         proj = self.camera.projection_matrix(aspect)
+        # Where the viewer is standing, in the same terms every mode agrees
+        # on. Only the water pass wants it, to know how far away the far sea
+        # is, but working it out here keeps `view_matrix`'s two branches from
+        # being spelled out twice.
+        eye_position = (
+            self.camera.orbit_eye()
+            if self.camera.mode == "orbit"
+            else self.camera.eye_position
+        )
         view_data = struct.pack("16f", *view)
         proj_data = struct.pack("16f", *proj)
         sun_direction = lighting_direction(scene)
@@ -1494,6 +1549,15 @@ class PerspectiveRenderer:
                 alpha = max(0.0, min(1.0, float(getattr(scene, "water_alpha", 0.72))))
                 tint = getattr(scene, "water_tint", DEFAULT_WATER_TINT)
                 self._water_program["u_color"].value = (*tint, alpha)
+                # The sky the sea has to agree with at the horizon, and where
+                # the viewer is standing so it knows what "far" means.
+                self._water_program["u_haze"].value = getattr(
+                    scene, "sky_horizon_color", DEFAULT_SKY_HORIZON_COLOR
+                )
+                self._water_program["u_eye_xy"].value = (
+                    float(eye_position[0]),
+                    float(eye_position[1]),
+                )
                 ctx.enable(ctx.BLEND)
                 ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
                 try:

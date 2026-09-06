@@ -236,6 +236,44 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the sea stopped ending in a wall (2026-09-06).** Found by measuring
+rather than by looking: a column of pixels from a camera three metres above the
+water, with the elevation of each row printed beside it, showed a **step of
+sixty-seven levels** across one row at the horizon. The reason is arithmetic
+rather than a bug -- the water plane is drawn as the sky's own horizon colour
+with a dark tint blended over it, so the two are bound to differ by exactly the
+tint, and they simply abut. What is missing is the air in between.
+
+Distant sea now fades into the sky it meets, and the alpha fades with it: the
+opacity slider exists so a viewer can see what is *under* the surface, and at
+the horizon there is nothing under it but sky, so leaving it translucent there
+lets the sky through at the wrong brightness -- the same wall by another route.
+The worst step across a row is now fifteen, and the ramp runs over about two
+degrees of elevation.
+
+`WaterSettings.fog_density` is deliberately **not** what drives this. That is
+the fog seen from *under* the surface -- a different quantity in a different
+medium -- and using it here would be reading the document to mean something it
+does not say. `WATER_HAZE_NEAR_M` and `WATER_HAZE_FAR_M` are a rendering choice
+and are sized off the region, not off the wire.
+
+Eleven mutations, all killed. The one that had already happened is in the tests
+as a docstring: the first version measured the distance in the **vertex**
+shader, and the plane is two triangles more than two kilometres across, so
+every fragment got the average of three corners a kilometre away and the whole
+sea came out sky-coloured. A horizon with no wall in it, because there was no
+sea either. It is measured per fragment now.
+
+Two of the eleven survived the first pass, and both survived for the same
+reason: **every camera in these tests stood near the world origin**, which is
+also the region's corner. A shader handed a zero eye position draws almost the
+right sea from there, and a haze that starts at the viewer's feet instead of a
+region away shifts the near water by a few levels that no screenshot shows.
+What kills them is a camera nine hundred metres out -- where the sea underfoot
+is a kilometre from (0, 0) and would be drawn as sky -- and pushing the water
+tint and the sky to opposite extremes so that a few levels of drift becomes
+fifty.
+
 **A -- the sky has weather in it (2026-09-06).** Every cloud parameter was in
 the day cycle and none was drawn. Four of them were not even parsed:
 `cloud_pos_density1`, `cloud_pos_density2`, `cloud_scroll_rate` and
@@ -865,8 +903,13 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      axes rather than to a celestial pole.
    - **The water surface itself.** `normal_map`, the two wave directions,
      `fresnel_scale` and `fresnel_offset` are all parsed and none is used: the
-     sea is a flat tinted quad with a sine ripple. A real Fresnel term would
-     also replace the fixed sky-reflection mixture in `water_tint`.
+     sea is a flat tinted quad with a sine ripple and a distance haze. A real
+     Fresnel term would also replace the fixed sky-reflection mixture in
+     `water_tint`. The *horizon* is no longer part of this entry -- see the
+     seventh pass.
+   - **`cloud_shadow` is still unspent.** It is not about the clouds: it is
+     how much they darken the **ground**, and nothing casts it. The parameter
+     is parsed and sitting on `SkySettings` at 0.27 all day.
    (The gait, sitting, attachments, linkset placement, the frame cost at
    region scale, texture filtering, and the sky and sea themselves, which used
    to be this entry in various forms, are done -- see the fourth, fifth and
