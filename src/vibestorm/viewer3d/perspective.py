@@ -65,7 +65,7 @@ from vibestorm.viewer3d.atmosphere import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     import moderngl
     import pygame
@@ -2058,6 +2058,145 @@ def _quat_rotate(q: tuple[float, float, float, float], v: tuple[float, float, fl
     )
 
 
+def _ray_hits_entity(
+    origin: tuple[float, float, float],
+    direction: tuple[float, float, float],
+    entity: SceneEntity,
+) -> float | None:
+    """How far along `direction` the ray first meets this prim's box, or None.
+
+    The prim's own box: the ray is taken into the entity's frame and tested
+    against a slab per axis, so a rotated prim is met where it actually is
+    rather than where its axis-aligned bounds would be.
+
+    A ray starting *inside* the box is not a hit. Both callers want that --
+    a click inside a prim you are standing in should reach what is beyond it,
+    and a camera already inside something has nothing to be pulled in front
+    of -- and it falls out of `tmin` starting at zero.
+    """
+    if entity.scale is None or entity.position is None:
+        return None
+    local_origin = (
+        origin[0] - entity.position[0],
+        origin[1] - entity.position[1],
+        origin[2] - entity.position[2],
+    )
+    rotation = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
+    inverse = (-rotation[0], -rotation[1], -rotation[2], rotation[3])
+    local_origin = _quat_rotate(inverse, local_origin)
+    local_dir = _quat_rotate(inverse, direction)
+
+    tmin = 0.0
+    tmax = float("inf")
+    for axis in range(3):
+        half_extent = entity.scale[axis] / 2.0
+        if abs(local_dir[axis]) < 1e-6:
+            if abs(local_origin[axis]) > half_extent:
+                return None
+        else:
+            inverse_dir = 1.0 / local_dir[axis]
+            near = (-half_extent - local_origin[axis]) * inverse_dir
+            far = (half_extent - local_origin[axis]) * inverse_dir
+            if near > far:
+                near, far = far, near
+            tmin = max(tmin, near)
+            tmax = min(tmax, far)
+            if tmin > tmax:
+                return None
+    return tmin if tmin > 0.0 else None
+
+
+def sight_blocked_by(scene: Scene) -> Callable[
+    [tuple[float, float, float], tuple[float, float, float]], float | None
+]:
+    """A `SightBlocked` for this scene, answering once per pair it is asked.
+
+    The camera asks for its eye several times a frame -- the view matrix, the
+    water pass, `pick` -- and each answer walks every prim in the region, so
+    the closure remembers what it has already worked out. A new one is built
+    each frame, which is what clears it: a prim that moved must not be
+    answered for out of last frame's memory.
+
+    Only this region's prims, and not its avatars. The neighbours are 256 m
+    away and the segment is a camera boom; an avatar is the thing being
+    looked at as often as it is the thing in the way, and a camera that
+    jumped in every time someone walked past would be worse than one that
+    did not.
+    """
+    remembered: dict[tuple, float | None] = {}
+
+    def blocked(
+        target: tuple[float, float, float], eye: tuple[float, float, float]
+    ) -> float | None:
+        key = (target, eye)
+        if key not in remembered:
+            remembered[key] = _first_prim_in_the_way(scene, target, eye)
+        return remembered[key]
+
+    return blocked
+
+
+def _first_prim_in_the_way(
+    scene: Scene,
+    target: tuple[float, float, float],
+    eye: tuple[float, float, float],
+) -> float | None:
+    """The nearest prim standing across target -> eye, as a fraction of it.
+
+    Walks the region once. The cheap reject in front of the slab test is what
+    makes that affordable: a camera boom is metres long and a region holds
+    thousands of prims, almost none of which are anywhere near it, and the box
+    around the segment throws those out in a short-circuiting chain of six
+    comparisons. The bound used for a prim's reach is the sum of its
+    half-extents rather than the diagonal it would need a square root for --
+    larger than the truth, which is the safe direction for a reject.
+
+    Measured at 15,000 prims: 4 to 7 ms a frame depending on what else the
+    machine is doing, against a scene refresh that costs 40 ms at that size.
+    Nearly all of it is the walk and the reach -- indexing the position and
+    unpacking it into locals measure the same, interleaved, best of twelve,
+    so do not "optimise" that again. What the reach buys is correctness: a
+    fixed margin is about a third faster and wrong for any prim wider than
+    twice the margin, which is what a megaprim is. If this ever needs to be
+    cheaper the answer is an index built where the entities already are, not
+    a guess about how big a prim can be.
+    """
+    dx = eye[0] - target[0]
+    dy = eye[1] - target[1]
+    dz = eye[2] - target[2]
+    span = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if span < 1e-6:
+        return None
+    direction = (dx / span, dy / span, dz / span)
+    low_x, high_x = min(target[0], eye[0]), max(target[0], eye[0])
+    low_y, high_y = min(target[1], eye[1]), max(target[1], eye[1])
+    low_z, high_z = min(target[2], eye[2]), max(target[2], eye[2])
+
+    nearest = span
+    for entity in scene.object_entities.values():
+        position = entity.position
+        scale = entity.scale
+        if position is None or scale is None:
+            continue
+        x, y, z = position
+        reach = 0.5 * (abs(scale[0]) + abs(scale[1]) + abs(scale[2]))
+        if (
+            x < low_x - reach
+            or x > high_x + reach
+            or y < low_y - reach
+            or y > high_y + reach
+            or z < low_z - reach
+            or z > high_z + reach
+        ):
+            continue
+        distance = _ray_hits_entity(target, direction, entity)
+        if distance is not None and distance < nearest:
+            nearest = distance
+    if nearest >= span:
+        return None
+    return nearest / span
+
+
 @dataclass(slots=True)
 class _NeighbourMesh:
     """One neighbouring region's ground on the GPU, and what it was built from.
@@ -2426,6 +2565,10 @@ class PerspectiveRenderer:
         # cannot do that until someone who has the heightmap tells it where the
         # terrain is. Once a frame, because the heightmap can change under it.
         self.camera.ground_height = ground_height_for(scene)
+        # And what else is in the way, for the same reason and on the same
+        # schedule. A fresh closure each frame is what stops it answering out
+        # of last frame's memory for a prim that has since moved.
+        self.camera.sight_blocked = sight_blocked_by(scene)
         view = self.camera.view_matrix()
         proj = self.camera.projection_matrix(aspect)
         # Where the viewer is standing, in the same terms every mode agrees
@@ -2737,49 +2880,12 @@ class PerspectiveRenderer:
             view_dir_x * side[2] + view_dir_y * upward[2] + forward[2],
         ))
 
-        # Ray-OBB intersection
         best_id = None
-        best_dist = float('inf')
-
+        best_dist = float("inf")
         for entity in scene.object_entities.values():
-            if entity.scale is None or entity.position is None:
-                continue
-
-            # Inverse transform ray to local space
-            # Translate
-            lx = eye[0] - entity.position[0]
-            ly = eye[1] - entity.position[1]
-            lz = eye[2] - entity.position[2]
-
-            # Rotate
-            qx, qy, qz, qw = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
-            inv_q = (-qx, -qy, -qz, qw)
-            local_origin = _quat_rotate(inv_q, (lx, ly, lz))
-            local_dir = _quat_rotate(inv_q, ray_dir)
-
-            tmin = 0.0
-            tmax = float('inf')
-            hit = True
-            for i in range(3):
-                half_extent = entity.scale[i] / 2.0
-                if abs(local_dir[i]) < 1e-6:
-                    if abs(local_origin[i]) > half_extent:
-                        hit = False
-                        break
-                else:
-                    ood = 1.0 / local_dir[i]
-                    t1 = (-half_extent - local_origin[i]) * ood
-                    t2 = (half_extent - local_origin[i]) * ood
-                    if t1 > t2:
-                        t1, t2 = t2, t1
-                    if t1 > tmin: tmin = t1
-                    if t2 < tmax: tmax = t2
-                    if tmin > tmax:
-                        hit = False
-                        break
-
-            if hit and tmin > 0.0 and tmin < best_dist:
-                best_dist = tmin
+            distance = _ray_hits_entity(eye, ray_dir, entity)
+            if distance is not None and distance < best_dist:
+                best_dist = distance
                 best_id = entity.local_id
 
         return best_id

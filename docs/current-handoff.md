@@ -591,6 +591,85 @@ The tests that inserted straight into `world_view.objects` now go through
 `remember_object`, which is the better test anyway: a prim put into the
 world around the model's own door is one the fetches will never look at.
 
+**The camera sees round things now (2026-09-06).** Two halves of one
+complaint, and the first half was a bug hiding inside a fix. The ground
+march has been there since the eleventh pass, but it opened with `if not
+blocked(eye): return eye` -- so it only ever ran when the camera was
+*itself* underground. A camera in clear air with a ridge between it and the
+avatar answered "I am not underground", stayed there, and drew the inside of
+the hill across the picture. The march now always runs, from the target
+outward, and the eye is just the last sample: a blocked eye is found the same
+way a ridge is, and the early return is gone.
+
+The other half is prims, which nothing had ever looked at. `_ray_hits_entity`
+is the slab test lifted out of `pick` -- one function now, where there were a
+picker's worth of inline loops -- and `_first_prim_in_the_way` walks the
+region with it and comes back with how far along target -> eye the nearest
+prim stands, as a fraction. `Camera3D` gained `sight_blocked` beside
+`ground_height`, injected by the renderer once a frame for the same reason:
+a camera that walked the prims itself would be a camera that knew what a
+prim was.
+
+The order matters and there is a test that pins it. The ground runs first
+and the prim question is asked about the segment that came back, so the
+nearer of the two wins whichever it is; the other order can hand the camera
+back to the hill it was just pulled out of. First person is exempt from both
+-- the eye there is the avatar's own head, and where that goes is the
+simulator's business.
+
+`SIGHT_CLEARANCE_M` is 0.25 m and is deliberately larger than the ground's
+0.5 m is small: the ground is *under* the camera and a near plane of 0.1 m
+keeps it there, while a wall is *across* the view, and a camera stopping in
+its surface shows what is behind it through the hole the near plane cuts.
+The clearance is subtracted in metres, not as a fraction, or a longer boom
+would stop further from the wall than a short one.
+
+What it costs: 4 to 7 ms a frame at 15,000 prims, depending on what else the
+machine is doing, against a scene refresh that costs 40 ms at that size.
+Nearly all of it is the walk and the per-prim reach. Two things were
+measured and should not be re-derived. Indexing the position and unpacking
+it into locals cost the *same*, interleaved, best of twelve -- an earlier
+reading that said otherwise was the owner's own compile running beside it,
+which is a good reminder that a benchmark on a busy machine is a rumour. And
+the per-prim reach is worth what it costs: a fixed margin is about a third
+faster and wrong for any prim wider than twice the margin, which is exactly
+what a megaprim is, and a camera that fails to avoid a megaprim wall is the
+bug this pass is about. If it ever needs to be cheaper the answer is an
+index built where the entities already are, not a guess about how big a prim
+can be.
+
+The closure the renderer hands over remembers its answers, because the
+camera is asked for its eye several times a frame -- the view matrix, the
+water pass, the picker -- and each answer walks the whole region. A fresh
+closure each frame is what clears that memory; a prim that moved must not be
+answered for out of last frame's.
+
+**And a defect the battery found by accident.** One mutant hung the suite --
+two and a half hours, main thread in a futex, SDL threads idle, no spin. It
+did not reproduce afterwards, so the deadlock itself is the software GL stack
+under the owner's own compiles and not something in this repo. But chasing it
+turned up a real hazard, and one that was already shipped: an eye pulled
+*onto* its target has no direction to look in, and `look_at` says so in the
+worst way available. `forward` normalises to (0, 0, 0), every axis of the
+view matrix goes to zero with it, and the entire world maps to the origin
+with w = 0. Nothing raises. The frame is simply wrong, and what a software
+rasteriser does with a w of zero is its own business.
+
+`eye_clear_of_the_view` could reach that exactly -- `max(0.0, ...)` -- any
+time a wall stood closer to the avatar than the clearance in front of it,
+which is ordinary play. `MINIMUM_BOOM_M` is a tenth of a metre, the near
+plane, and the boom is never shortened past it; a boom already shorter than
+that is left alone, since the eye cannot be pushed *out*. When a wall really
+is that close there is no third-person view to be had and the camera clips
+into it, which is the better of the two.
+
+Sixteen mutants planted, fourteen killed. Of the two survivors one was real
+-- the march stopping a sample short of the eye, which is the camera buried
+in a hillside and reported as clear -- and the other is equivalent by
+construction: the reject box in front of the slab test can only ever be made
+*wider* by dropping a check, and correctness lives in the slab test. Only
+shrinking it is a bug, and the mutant that shrank it died.
+
 **And the sea, which two regions are allowed to disagree about
 (2026-09-06).** Water height is announced per region, in each region's own
 `RegionHandshake`. The plane the renderer draws is one rectangle 2304 m
@@ -2297,11 +2376,13 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      arrived. Harmless, and unexplained. The likeliest reading is that
      OpenSim resends on region-info changes rather than that the reply is
      being missed, but nobody has checked.
-   - **The camera does not see round anything.** It is held out of the
-     ground since the eleventh pass, but nothing stops it looking *through* a
-     hill or a prim standing between it and the avatar. That is a raycast
-     against all the geometry rather than against the heightfield, and it is
-     the largest remaining piece of "the camera behaves like a viewer's".
+   - ~~**The camera does not see round anything.**~~ Spent. A ridge between
+     the camera and the avatar pulls it in, and so does a prim: the ground is
+     marched and the prims are cast against, in that order, and the nearer
+     wins. What is left of it is avatars, which are deliberately not
+     consulted -- an avatar is the thing being looked at as often as it is
+     the thing in the way, and a camera that jumped in every time someone
+     walked past would be worse than one that did not.
    - **The sky's own unread fields.** `gamma`, `max_y`, `glow`,
      `density_multiplier`, `distance_multiplier` and `haze_density` are all
      parsed and none is drawn. Most belong to the Windlight atmospheric
@@ -2379,6 +2460,16 @@ suite, from the command that is the push gate. It now uses the `dev` extra
 
 If the sim is dead rather than the Python side, `docs/runtime-platform-risk.md`
 and `docs/local-opensim.md` have the .NET 8 story; do not re-derive it.
+
+**`Vibestorm North` is deliberately set to a water height of 12 m** (2026-09-06),
+against `Vibestorm Test`'s 20 m, so that a border between two regions that
+disagree about their sea level is a thing this grid actually has. It lives in
+`regionsettings.water_height` in `local/opensim/runtime/bin/OpenSim.db` and is
+only read when the region starts, so changing it means stopping the simulator
+first -- edit the row while it is running and the shutdown writes it back.
+`-console=rest` is what it is started with; started without a console argument
+it spins on `Console.KeyAvailable` and writes a gigabyte of the same error a
+minute.
 
 ## Two Ways A Test Can Agree With A Bug
 

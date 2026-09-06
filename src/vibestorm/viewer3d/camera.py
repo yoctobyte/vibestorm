@@ -45,12 +45,47 @@ DEFAULT_UP: tuple[float, float, float] = (0.0, 0.0, 1.0)
 #: visibly floating when it is pulled in against a slope.
 GROUND_CLEARANCE_M: float = 0.5
 
+#: How far in front of a prim the camera stops when one is in the way.
+#:
+#: Larger than the ground's clearance, and for a different reason: the ground
+#: is under the camera and a near plane of 0.1 m is enough to keep it there,
+#: while a wall is *across* the view and a camera stopping in its surface
+#: shows what is behind it through the hole the near plane cuts.
+SIGHT_CLEARANCE_M: float = 0.25
+
+#: The shortest the camera boom is ever allowed to become.
+#:
+#: An eye *on* its target has no direction to look in, and `look_at` says so
+#: in the worst way available: `forward` normalises to (0, 0, 0), every axis
+#: of the view matrix goes to zero with it, and the whole world maps to the
+#: origin with w = 0. Nothing raises -- the frame is simply wrong, and on a
+#: software rasteriser a w of zero is a good way to find out what that driver
+#: does with infinities.
+#:
+#: Reachable in ordinary play: a wall closer to the avatar than the clearance
+#: in front of it. When that happens there is no third-person view to be had
+#: and the camera clips into the wall; that is the better of the two.
+#: A tenth of a metre, which is the near plane -- nearer than that is not
+#: drawn anyway.
+MINIMUM_BOOM_M: float = 0.1
+
 #: How high the ground is at a world point, or `None` where there is none.
 #:
 #: A callable rather than a heightmap so the camera keeps knowing nothing about
 #: terrain decoding, and so the answer can be `None`: the drawn terrain stops
 #: at the region's edge, and a camera out over the void is not inside anything.
 GroundHeight = Callable[[float, float], "float | None"]
+
+#: How far along target -> eye the first solid thing stands, as a fraction of
+#: that segment, or `None` where the whole of it is clear.
+#:
+#: A callable for the same reason `GroundHeight` is one: the camera has no
+#: business knowing what a prim is, and whoever holds the scene can answer in
+#: whatever way is cheap for them. Fractions rather than metres so the answer
+#: composes with the ground march, which works in the same units.
+SightBlocked = Callable[
+    ["tuple[float, float, float]", "tuple[float, float, float]"], "float | None"
+]
 
 
 def _normalize(v: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -140,7 +175,7 @@ def eye_clear_of_the_ground(
     clearance_m: float = GROUND_CLEARANCE_M,
     step_m: float = 1.0,
 ) -> tuple[float, float, float]:
-    """`eye`, pulled in towards `target` until it is out of the ground.
+    """`eye`, pulled in towards `target` until nothing solid is between them.
 
     Pulled in rather than lifted: shortening the distance keeps the direction
     the viewer is looking from, which is what they asked for, where raising the
@@ -155,6 +190,12 @@ def eye_clear_of_the_ground(
     the bisection afterwards is what makes the result smooth enough not to pop
     as the camera turns.
 
+    It marches even when the eye itself is standing in clear air, which is the
+    whole point of casting rather than testing a point: the eye can be well
+    above the ground with a *ridge* between it and the avatar, and a camera
+    that only asked "am I underground?" answered no and drew the inside of the
+    hill across the picture.
+
     If the target itself is underground there is nothing to pull back to -- the
     avatar is already inside the hill -- so the eye is lifted straight up
     instead, which at least draws the world from outside it.
@@ -163,9 +204,6 @@ def eye_clear_of_the_ground(
     def blocked(point: tuple[float, float, float]) -> bool:
         ground = ground_height(point[0], point[1])
         return ground is not None and point[2] < ground + clearance_m
-
-    if not blocked(eye):
-        return eye
 
     dx = eye[0] - target[0]
     dy = eye[1] - target[1]
@@ -176,22 +214,26 @@ def eye_clear_of_the_ground(
         return (target[0] + dx * t, target[1] + dy * t, target[2] + dz * t)
 
     if span < 1e-6 or blocked(target):
+        if not blocked(eye):
+            return eye
         ground = ground_height(eye[0], eye[1])
         if ground is None:
             return eye
         return (eye[0], eye[1], ground + clearance_m)
 
-    # The eye is known to be blocked, so t=1 is the far end of the bracket
-    # whether or not the coarse march finds something nearer.
     clear_t = 0.0
-    blocked_t = 1.0
+    blocked_t: float | None = None
+    # The last sample is the eye itself, so a blocked eye is found by the
+    # march like anything else rather than by a test of its own.
     steps = max(2, int(span / max(step_m, 1e-3)))
-    for i in range(1, steps):
+    for i in range(1, steps + 1):
         t = i / steps
         if blocked(along(t)):
             blocked_t = t
             break
         clear_t = t
+    if blocked_t is None:
+        return eye
 
     for _ in range(8):
         middle = 0.5 * (clear_t + blocked_t)
@@ -200,6 +242,41 @@ def eye_clear_of_the_ground(
         else:
             clear_t = middle
     return along(clear_t)
+
+
+def eye_clear_of_the_view(
+    eye: tuple[float, float, float],
+    target: tuple[float, float, float],
+    sight_blocked: SightBlocked,
+    *,
+    clearance_m: float = SIGHT_CLEARANCE_M,
+) -> tuple[float, float, float]:
+    """`eye`, pulled in until whatever `sight_blocked` found is behind it.
+
+    The same move the ground march makes, against whatever else is in the way
+    -- a prim standing between the avatar and the camera. The answer comes
+    back as a fraction of the segment, so this only has to decide how far in
+    front of it to stop: `clearance_m` back along the segment, so the camera
+    sits in front of the wall rather than in its surface, where the near plane
+    would slice it open.
+
+    Pulled towards the target rather than past it when the blocker is very
+    close, and never all the way onto it: a camera at the avatar's own eyes
+    is a first-person view the viewer did not ask for, and worse than that it
+    is a camera with no direction to look in -- see `MINIMUM_BOOM_M`.
+    """
+    fraction = sight_blocked(target, eye)
+    if fraction is None or fraction >= 1.0:
+        return eye
+    dx = eye[0] - target[0]
+    dy = eye[1] - target[1]
+    dz = eye[2] - target[2]
+    span = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if span < 1e-6:
+        return eye
+    shortest = min(1.0, MINIMUM_BOOM_M / span)
+    t = max(shortest, min(1.0, fraction - clearance_m / span))
+    return (target[0] + dx * t, target[1] + dy * t, target[2] + dz * t)
 
 
 @dataclass(slots=True)
@@ -233,6 +310,15 @@ class Camera3D:
     #: decode LayerData. `None` means nobody has said, and then the camera goes
     #: wherever it is put.
     ground_height: GroundHeight | None = field(
+        default=None, compare=False, repr=False
+    )
+
+    #: What else is between the avatar and the camera, if anyone has told it.
+    #: Set by whoever has the scene in hand -- the renderer, once a frame --
+    #: for the same reason `ground_height` is: a camera that walked the prims
+    #: itself would be a camera that knew what a prim was. `None` means nobody
+    #: has said, and then only the ground is consulted.
+    sight_blocked: SightBlocked | None = field(
         default=None, compare=False, repr=False
     )
 
@@ -395,11 +481,17 @@ class Camera3D:
         - ``eye`` / ``free``: ``eye_position``, as set.
         - ``map``: above the target, matching the ortho framing.
 
-        Held clear of the ground where `ground_height` says there is any, in
-        the two modes that look *at* something: orbit, and the ``free`` the
-        avatar-behind preset uses. Not in ``eye``, which is first person -- the
-        eye there is the avatar's own head, and where that goes is the
-        simulator's business, not this camera's.
+        Held clear of the ground where `ground_height` says there is any, and
+        of whatever else `sight_blocked` finds, in the two modes that look
+        *at* something: orbit, and the ``free`` the avatar-behind preset uses.
+        Not in ``eye``, which is first person -- the eye there is the avatar's
+        own head, and where that goes is the simulator's business, not this
+        camera's.
+
+        The two run in that order and the nearer wins, because each is asked
+        about the segment it is given: pulling in for the ground first and
+        then asking about prims over the shortened segment cannot put the
+        camera back inside the hill, while the other order could.
 
         One method rather than the same three-way branch spelled out at each
         call site. The renderer wants the eye for the water pass, `pick` wants
@@ -414,9 +506,13 @@ class Camera3D:
         else:  # "map" -- top-down from above target
             tx, ty, tz = self.target
             return (tx, ty, tz + max(self.distance, 1.0))
-        if self.ground_height is None or self.mode == "eye":
+        if self.mode == "eye":
             return raw
-        return eye_clear_of_the_ground(raw, self.target, self.ground_height)
+        if self.ground_height is not None:
+            raw = eye_clear_of_the_ground(raw, self.target, self.ground_height)
+        if self.sight_blocked is not None:
+            raw = eye_clear_of_the_view(raw, self.target, self.sight_blocked)
+        return raw
 
     def view_matrix(self) -> tuple[float, ...]:
         """4x4 column-major view matrix for the active 3D mode.
