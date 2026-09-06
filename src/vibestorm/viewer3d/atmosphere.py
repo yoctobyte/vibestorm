@@ -469,6 +469,44 @@ def moon_face_axes(sky: SkySettings) -> tuple[Vec3, Vec3]:
     )
 
 
+def celestial_axes(sky: SkySettings) -> tuple[Vec3, Vec3, Vec3]:
+    """The celestial sphere's own three axes, in world space.
+
+    The stars are fixed to the sphere and the day cycle turns the sphere;
+    that is the difference between a night sky and a wallpaper. `star_field`
+    hashed a *world* direction until this arrived, so the field was nailed to
+    the region and the moon crossed a sky that never moved -- and at the same
+    two stars, every night, whatever the hour.
+
+    `sun_rotation` is the turn. It takes `SUN_REFERENCE_DIRECTION` to where
+    the sun is, which is to say it takes the sphere's own frame to the world,
+    so the images of the three unit axes are that frame written in world
+    coordinates. Dotting a ray with the three of them is the way back.
+
+    Which of the two rotations to read is not really a choice. At every
+    keyframe of the live cycle `moon_rotation` is `sun_rotation` followed by a
+    half turn about Y -- the two bases come out identical with X and Z negated
+    -- so they name one turning sphere and either would serve. The sun's is
+    taken because it is meaningful by day as well, and `test_atmosphere` holds
+    the pair to that agreement so a cycle where they part company is a failing
+    test rather than a sky that drifts.
+
+    A consequence worth stating: this fixes the *moon* among the stars too,
+    since its rotation is the sphere's. The real moon drifts about thirteen
+    degrees a day against them; the document describes no such drift, and
+    inventing one is not this module's business.
+
+    Returned in world space and unit length, like `moon_face_axes` and for the
+    same reason: nothing in the document promises a unit quaternion, and a
+    scaled one would stretch the sky rather than turn it.
+    """
+    return (
+        _unit3(quat_rotate(sky.sun_rotation, (1.0, 0.0, 0.0)), (1.0, 0.0, 0.0)),
+        _unit3(quat_rotate(sky.sun_rotation, (0.0, 1.0, 0.0)), (0.0, 1.0, 0.0)),
+        _unit3(quat_rotate(sky.sun_rotation, (0.0, 0.0, 1.0)), (0.0, 0.0, 1.0)),
+    )
+
+
 def star_level(sky: SkySettings) -> float:
     """How much of the star field to draw, 0 to 1."""
     return _clamp(sky.star_brightness / STAR_BRIGHTNESS_FULL)
@@ -629,3 +667,4 @@ _DEFAULT_SKY = SkySettings()
 DEFAULT_SUN_DISC: Vec2 = sun_disc(_DEFAULT_SKY)
 DEFAULT_MOON_DISC: Vec2 = moon_disc(_DEFAULT_SKY)
 DEFAULT_MOON_FACE_AXES: tuple[Vec3, Vec3] = moon_face_axes(_DEFAULT_SKY)
+DEFAULT_CELESTIAL_AXES: tuple[Vec3, Vec3, Vec3] = celestial_axes(_DEFAULT_SKY)

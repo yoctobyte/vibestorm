@@ -20,6 +20,7 @@ from uuid import UUID
 
 from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
+    DEFAULT_CELESTIAL_AXES,
     DEFAULT_MOON_DISC,
     DEFAULT_MOON_FACE_AXES,
     DEFAULT_SKY_HORIZON_COLOR,
@@ -376,6 +377,29 @@ class SunAndMoonRefreshTests(unittest.TestCase):
         # and belongs to `cloud_cover`, which is why this checks all four.
         self.assertEqual(scene.cloud_offsets, (0.25, 0.5, 0.125, 0.375))
 
+    def test_the_sky_that_carries_the_sun_carries_the_stars(self) -> None:
+        """The frame `star_field` is hashed in, off `sun_rotation`.
+
+        A quarter turn about Y puts the sphere's own +X where world -Z was,
+        which is a night sky a quarter turn round from the region's default
+        rather than one nailed to the region's axes.
+        """
+        eighth = math.pi / 4.0
+        scene = Scene()
+        view = WorldView()
+        view.environment = self._sky_cycle(
+            sun_rotation=(0.0, math.sin(eighth), 0.0, math.cos(eighth))
+        )
+
+        scene.refresh_from_world_view(view)
+
+        x_axis, y_axis, z_axis = scene.celestial_axes
+        for drawn, expected in zip(x_axis, (0.0, 0.0, -1.0), strict=True):
+            self.assertAlmostEqual(drawn, expected, places=6)
+        self.assertEqual(tuple(round(v, 6) for v in y_axis), (0.0, 1.0, 0.0))
+        for drawn, expected in zip(z_axis, (1.0, 0.0, 0.0), strict=True):
+            self.assertAlmostEqual(drawn, expected, places=6)
+
     def test_a_lost_environment_takes_the_moons_face_with_it(self) -> None:
         scene = Scene()
         loaded = WorldView()
@@ -385,8 +409,10 @@ class SunAndMoonRefreshTests(unittest.TestCase):
             cloud_id=str(UUID(int=0xC10D)),
             cloud_pos_density1=(0.25, 0.5, 0.75),
             # Rolled, so that "back to the default" is a different answer from
-            # "left as this region had it".
+            # "left as this region had it" -- which is why the sun is turned
+            # as well: the moon's roll leaves the star sphere where it was.
             moon_rotation=(math.sin(quarter), 0.0, 0.0, math.cos(quarter)),
+            sun_rotation=(0.0, math.sin(quarter), 0.0, math.cos(quarter)),
         )
         scene.refresh_from_world_view(loaded)
 
@@ -396,6 +422,7 @@ class SunAndMoonRefreshTests(unittest.TestCase):
         self.assertIsNone(scene.cloud_texture_id)
         self.assertEqual(scene.cloud_offsets, (0.0, 0.0, 0.0, 0.0))
         self.assertEqual(scene.moon_face_axes, DEFAULT_MOON_FACE_AXES)
+        self.assertEqual(scene.celestial_axes, DEFAULT_CELESTIAL_AXES)
 
 
 class WaterSurfaceRefreshTests(unittest.TestCase):

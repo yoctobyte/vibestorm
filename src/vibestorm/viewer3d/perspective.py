@@ -49,6 +49,7 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_EDGE_HIGH,
     CLOUD_EDGE_LOW,
     CLOUD_NOISE_CELLS_PER_TILE,
+    DEFAULT_CELESTIAL_AXES,
     DEFAULT_MOON_DISC,
     DEFAULT_MOON_FACE_AXES,
     DEFAULT_SKY_HORIZON_COLOR,
@@ -1007,6 +1008,12 @@ uniform vec3 u_sun_dir;
 // asks for it to be drawn. The moon's is in `_MOON_IN_SKY_GLSL`.
 uniform vec2 u_sun_disc;
 uniform float u_star_level;
+// The celestial sphere's own three axes, in world space. The stars are fixed
+// to the sphere and the day cycle turns it, so a ray is turned into this
+// frame before it is hashed -- see `celestial_axes`.
+uniform vec3 u_sphere_x;
+uniform vec3 u_sphere_y;
+uniform vec3 u_sphere_z;
 // The sea's own colour, and (reach, surface height, eye height) -- see the
 // water shader. Only the reach is read here: a viewer under the surface has
 // no sky, and the far wall of the water is what is in its place.
@@ -1036,6 +1043,10 @@ float cell_hash(vec3 cell) {
 // in any keyframe of the live cycle, so there is nothing to fetch. The sky is
 // divided into cells, about one in thirty gets a star at a hashed position
 // inside it, and each is a small round falloff.
+//
+// The direction is the sphere's own, not the world's -- the caller turns it in
+// -- so the cells are fixed to the sphere and the day cycle carries them
+// round with the sun and the moon. See `celestial_axes`.
 float star_field(vec3 dir) {
     vec3 p = dir * 220.0;
     vec3 cell = floor(p);
@@ -1096,7 +1107,15 @@ void main() {
         // guard beside this would be dead code -- which is exactly how the
         // mutation battery found it.
         float rise = smoothstep(0.0, 0.12, dir.z);
-        rgb += vec3(0.92, 0.94, 1.0) * star_field(dir) * u_star_level * rise;
+        // Hashed in the sphere's frame rather than the world's, so the field
+        // turns with the night instead of hanging off the region's axes.
+        // `rise` stays in the world's: the horizon is a fact about the ground
+        // the viewer is standing on, not about the sky.
+        vec3 fixed_to_the_sky = vec3(
+            dot(dir, u_sphere_x), dot(dir, u_sphere_y), dot(dir, u_sphere_z)
+        );
+        rgb += vec3(0.92, 0.94, 1.0)
+            * star_field(fixed_to_the_sky) * u_star_level * rise;
     }
 
     rgb += moon_in_sky(dir);
@@ -2200,6 +2219,9 @@ class PerspectiveRenderer:
                     horizon=getattr(scene, "sky_horizon_color", DEFAULT_SKY_HORIZON_COLOR),
                     zenith=getattr(scene, "sky_zenith_color", DEFAULT_SKY_ZENITH_COLOR),
                     star_level=float(getattr(scene, "star_level", 0.0) or 0.0),
+                    celestial_axes=getattr(
+                        scene, "celestial_axes", DEFAULT_CELESTIAL_AXES
+                    ),
                     sun_disc=getattr(scene, "sun_disc", DEFAULT_SUN_DISC),
                     moon=_moon_in_sky(scene),
                     moon_texture=self._moon_texture(ctx, scene),
@@ -3464,6 +3486,11 @@ class PerspectiveRenderer:
         horizon: tuple[float, float, float] = DEFAULT_SKY_HORIZON_COLOR,
         zenith: tuple[float, float, float] = DEFAULT_SKY_ZENITH_COLOR,
         star_level: float = 0.0,
+        celestial_axes: tuple[
+            tuple[float, float, float],
+            tuple[float, float, float],
+            tuple[float, float, float],
+        ] = DEFAULT_CELESTIAL_AXES,
         sun_disc: tuple[float, float] = DEFAULT_SUN_DISC,
         moon: _MoonInSky,
         moon_texture: object | None = None,
@@ -3488,6 +3515,9 @@ class PerspectiveRenderer:
         self._sky_program["u_sun_dir"].value = sun_direction
         self._sky_program["u_sun_disc"].value = sun_disc
         self._sky_program["u_star_level"].value = float(star_level)
+        self._sky_program["u_sphere_x"].value = celestial_axes[0]
+        self._sky_program["u_sphere_y"].value = celestial_axes[1]
+        self._sky_program["u_sphere_z"].value = celestial_axes[2]
         _bind_moon_in_sky(self._sky_program, moon, moon_texture)
         _bind_cloud_layer(self._sky_program, cloud, cloud_texture)
         ctx.disable(ctx.DEPTH_TEST)

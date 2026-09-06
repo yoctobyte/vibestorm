@@ -21,6 +21,7 @@ from uuid import UUID
 
 from vibestorm.viewer3d.atmosphere import (
     CLOUD_DRIFT_PER_SECOND,
+    DEFAULT_CELESTIAL_AXES,
     DEFAULT_MOON_DISC,
     DEFAULT_MOON_FACE_AXES,
     DEFAULT_SKY_HORIZON_COLOR,
@@ -55,6 +56,9 @@ from vibestorm.viewer3d.atmosphere import (
     water_wave_slope_below,
     water_wave_speed,
     water_waves,
+)
+from vibestorm.viewer3d.atmosphere import (
+    celestial_axes as celestial_axes_for,
 )
 from vibestorm.viewer3d.atmosphere import (
     moon_direction as moon_direction_for,
@@ -535,6 +539,14 @@ class Scene:
     moon_direction: tuple[float, float, float] | None = None
     moon_level: float = 0.0
     star_level: float = 0.0
+    # The celestial sphere's own three axes, in world space. The stars are
+    # fixed to the sphere and the day cycle turns it, so a ray is turned into
+    # this frame before the field is hashed -- see `celestial_axes`.
+    celestial_axes: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ] = DEFAULT_CELESTIAL_AXES
     # How large each is drawn, as the cosines of the disc's outer and inner
     # edge -- which is what a shader with no disc geometry can compare a dot
     # product against.
@@ -609,6 +621,7 @@ class Scene:
             self.moon_direction = None
             self.moon_level = 0.0
             self.star_level = 0.0
+            self.celestial_axes = DEFAULT_CELESTIAL_AXES
             self.sun_disc = DEFAULT_SUN_DISC
             self.moon_disc = DEFAULT_MOON_DISC
             self.moon_texture_id = None
@@ -653,6 +666,7 @@ class Scene:
         self.moon_direction = moon_direction_for(sky)
         self.moon_level = moon_level(sky)
         self.star_level = star_level(sky)
+        self.celestial_axes = celestial_axes_for(sky)
         self.sun_disc = sun_disc(sky)
         self.moon_disc = moon_disc(sky)
         self.moon_texture_id = _asset_id(sky.moon_id)

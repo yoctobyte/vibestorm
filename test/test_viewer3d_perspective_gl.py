@@ -5421,15 +5421,15 @@ class RegionWeatherGLTests(_GLTestBase):
             self.ctx.viewport = (0, 0, *self.FBO_SIZE)
         return [tuple(data[i : i + 4]) for i in range(0, len(data), 4)]
 
-    def _speckles(self, frame, threshold: int = 60) -> int:
-        """Pixels much brighter than the eight around them.
+    def _star_pixels(self, frame, threshold: int = 60) -> set[int]:
+        """Where the pixels much brighter than the eight around them are.
 
         Brightness alone cannot find a star: the daytime sky is brighter than
         any star, everywhere. What a star *is* is a sharp local peak, and a
         gradient, a sun glow and a moon's interior are all smooth.
         """
         width, height = self.STAR_FBO_SIZE
-        total = 0
+        found = set()
         for y in range(1, height - 1):
             for x in range(1, width - 1):
                 here = sum(frame[y * width + x][:3])
@@ -5440,8 +5440,12 @@ class RegionWeatherGLTests(_GLTestBase):
                     if (dx, dy) != (0, 0)
                 ]
                 if here - (sum(around) / 8.0) > threshold:
-                    total += 1
-        return total
+                    found.add(y * width + x)
+        return found
+
+    def _speckles(self, frame, threshold: int = 60) -> int:
+        """How many of them there are, which is all most of these tests want."""
+        return len(self._star_pixels(frame, threshold))
 
     def test_stars_come_out_at_night_and_not_before(self) -> None:
         """The night sky was an empty gradient, and `star_brightness` was in
@@ -5506,6 +5510,119 @@ class RegionWeatherGLTests(_GLTestBase):
                 if max(abs(here[i] - there[i]) for i in range(3)) > 3:
                     differing += 1
         self.assertEqual(differing, 0, "the star field follows the screen, not the sky")
+
+    def test_the_star_field_turns_with_the_celestial_sphere(self) -> None:
+        """The stars are fixed to the sphere, and the sphere turns.
+
+        Hashing a world direction -- which is what this did until the tenth
+        pass -- nails the field to the region instead: the moon crosses a sky
+        that never moves, and the same two stars sit over the same two hills
+        every night of the year. Nothing in a single frame can show it, which
+        is why this compares two.
+
+        Only `celestial_axes` differs between the two scenes here, so a field
+        that came back unchanged would be one that never read them. A quarter
+        turn is about an hour and a half of this cycle's night.
+        """
+        scene = self._starless_moon(0.0)
+        turned = self._starless_moon(0.0)
+        turned.celestial_axes = tuple(
+            (axis[2], axis[1], -axis[0]) for axis in scene.celestial_axes
+        )
+
+        before = self._star_pixels(self._star_frame(scene))
+        after = self._star_pixels(self._star_frame(turned))
+
+        self.assertGreater(len(before), 10, "no stars to turn")
+        # About as many either way: the sphere turned, rather than the field
+        # being rehashed into something with a different density.
+        self.assertGreater(len(after), len(before) // 2)
+        self.assertLess(len(after), len(before) * 2)
+        # And in new places. Not disjointness -- two of a few dozen stars
+        # landing on the same pixel by chance is a sky, not a bug.
+        self.assertLess(
+            len(before & after),
+            len(before) // 4,
+            "the star field did not turn with the sky",
+        )
+
+    def test_the_night_sky_is_a_different_sky_an_hour_later(self) -> None:
+        """The same thing again, through the day cycle rather than by hand.
+
+        The cycle has stars in three of its eight keyframes, and this takes
+        two of them: the axes come from `sun_rotation` at each, so a viewer
+        that read the document but bound a constant frame would pass the test
+        above and fail this one.
+        """
+        midnight = self._star_pixels(self._star_frame(self._starless_moon(0.0)))
+        later = self._star_pixels(self._star_frame(self._starless_moon(0.05)))
+
+        self.assertGreater(len(midnight), 10)
+        self.assertGreater(len(later), 10)
+        self.assertLess(
+            len(midnight & later),
+            len(midnight) // 4,
+            "the night sky is the same sky at every hour",
+        )
+
+    def test_the_sky_turns_the_way_the_sphere_turns(self) -> None:
+        """Not merely that the field moves: that it moves the right way round.
+
+        Turning a ray into the sphere's frame and turning it out of the
+        sphere's frame both give a star field that turns with the night, and
+        the two turn opposite ways -- so a transposed frame passes both of the
+        tests above and drifts the stars backwards past the moon.
+
+        A quarter turn about the camera's own up axis is what makes that
+        checkable without any pixel arithmetic. Turn the sphere about +Z and
+        turn the camera by the same quarter about +Z, and the camera's basis
+        turns with it exactly -- no roll, because +Z is the up vector -- so
+        the two frames are the same picture of the same sky and the stars land
+        on the same pixels. Turned the other way they land on none of them.
+
+        The sea, the ground, the moon and the cloud layer are off in these
+        frames; the gradient and the sun's blob depend on the ray's height
+        alone, which a turn about +Z does not change. So the pixels compared
+        differ in the star field or in nothing.
+        """
+        eye = self.STAR_EYE
+        # Forty-five degrees up, and far enough round that a quarter turn
+        # lands on quite a different piece of sky.
+        looking = (100.0, 0.0, 100.0)
+
+        def turn(vector):
+            """A quarter turn about +Z, in whole numbers so it is exact."""
+            return (-vector[1], vector[0], vector[2])
+
+        def stars(axes, direction):
+            scene = self._starless_moon(0.0)
+            scene.render_clouds = False
+            scene.celestial_axes = axes
+            return self._star_pixels(
+                self._star_frame(
+                    scene,
+                    target=tuple(e + d for e, d in zip(eye, direction, strict=True)),
+                )
+            )
+
+        upright = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        turned_axes = tuple(turn(axis) for axis in upright)
+
+        before = stars(upright, looking)
+        with_the_sky = stars(turned_axes, turn(looking))
+        against_it = stars(turned_axes, (looking[1], -looking[0], looking[2]))
+
+        self.assertGreater(len(before), 10, "no stars to follow")
+        self.assertGreaterEqual(
+            len(before & with_the_sky),
+            len(before) * 3 // 4,
+            "the stars did not follow the sphere round",
+        )
+        self.assertEqual(
+            before & against_it,
+            set(),
+            "the sky turns the wrong way: the frame is transposed",
+        )
 
     def test_the_moon_is_drawn_where_the_day_cycle_puts_it(self) -> None:
         """Straight up at midnight, and opposite the sun at every keyframe.

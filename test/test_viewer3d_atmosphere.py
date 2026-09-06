@@ -28,6 +28,7 @@ from vibestorm.viewer3d.atmosphere import (
     STAR_BRIGHTNESS_FULL,
     SUN_REFERENCE_DIRECTION,
     WATER_WAVE_LENGTH_SPREAD,
+    celestial_axes,
     cloud_cover,
     cloud_hue,
     cloud_offsets,
@@ -77,6 +78,11 @@ def _dot3(first, second) -> float:
 
 def _length3(vector) -> float:
     return math.sqrt(_dot3(vector, vector))
+
+
+def _in_frame(direction, axes):
+    """A world direction written in the frame's own coordinates."""
+    return tuple(_dot3(direction, axis) for axis in axes)
 
 
 def _turn_about_y(angle: float):
@@ -836,6 +842,115 @@ class NightSkyTests(unittest.TestCase):
         """
         for _fraction, sky in self.env.sky_track:
             self.assertAlmostEqual(moon_level(sky), 0.5, places=4)
+
+
+class CelestialSphereTests(unittest.TestCase):
+    """The frame the stars are fixed to, and the day cycle turning it.
+
+    `star_field` hashed a world direction until this arrived, so the night
+    sky was nailed to the region: the moon crossed a field that never moved,
+    and the same two stars sat over the same two hills every night of the
+    year. The document does say how the sky turns -- it is the rotation that
+    carries the sun -- and these say what reading it commits to.
+    """
+
+    def setUp(self) -> None:
+        self.env = _live_environment()
+
+    def test_the_axes_are_a_frame_a_direction_can_be_turned_into(self) -> None:
+        """Unit length, mutually square and right-handed, at every keyframe.
+
+        Dotting a ray with three axes is only a rotation while they are that,
+        and `_quat` takes whatever the document writes. A frame that is not
+        orthonormal would stretch the star field rather than turn it, which
+        looks like stars of the wrong size in the wrong places.
+        """
+        for fraction, sky in self.env.sky_track:
+            with self.subTest(fraction=fraction):
+                x_axis, y_axis, z_axis = celestial_axes(sky)
+                for axis in (x_axis, y_axis, z_axis):
+                    self.assertAlmostEqual(_length3(axis), 1.0, places=6)
+                self.assertAlmostEqual(_dot3(x_axis, y_axis), 0.0, places=6)
+                self.assertAlmostEqual(_dot3(y_axis, z_axis), 0.0, places=6)
+                self.assertAlmostEqual(_dot3(z_axis, x_axis), 0.0, places=6)
+                # Right-handed: x cross y is z, not -z. A mirrored frame
+                # would still pass everything above and hand the sky back
+                # to itself reflected.
+                cross = (
+                    x_axis[1] * y_axis[2] - x_axis[2] * y_axis[1],
+                    x_axis[2] * y_axis[0] - x_axis[0] * y_axis[2],
+                    x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0],
+                )
+                self.assertAlmostEqual(_dot3(cross, z_axis), 1.0, places=6)
+
+    def test_the_sun_is_at_one_place_on_the_sphere_all_day(self) -> None:
+        """Which is the whole content of fixing the stars to it.
+
+        Turned into this frame, the sun does not move: it is at
+        `SUN_REFERENCE_DIRECTION` at every keyframe, because the frame is the
+        rotation that put it where it is. So a star and the sun keep a fixed
+        angle, all day, without the star field knowing anything about either.
+        """
+        for fraction, sky in self.env.sky_track:
+            with self.subTest(fraction=fraction):
+                for got, want in zip(
+                    _in_frame(sun_direction(sky), celestial_axes(sky)),
+                    SUN_REFERENCE_DIRECTION,
+                    strict=True,
+                ):
+                    self.assertAlmostEqual(got, want, places=5)
+
+    def test_the_moon_is_at_one_place_on_it_too(self) -> None:
+        """And this is why either rotation would have served as the frame.
+
+        `moon_rotation` is `sun_rotation` followed by a half turn about Y at
+        every keyframe of the live cycle, so the moon is as fixed on this
+        sphere as the sun is -- at the reference direction with X and Z
+        turned over. Taking the sun's rotation as the frame therefore holds
+        the moon still among the stars as well, which is what the real sky
+        does to within thirteen degrees a day.
+        """
+        opposite = (
+            -SUN_REFERENCE_DIRECTION[0],
+            SUN_REFERENCE_DIRECTION[1],
+            -SUN_REFERENCE_DIRECTION[2],
+        )
+        for fraction, sky in self.env.sky_track:
+            with self.subTest(fraction=fraction):
+                for got, want in zip(
+                    _in_frame(moon_direction(sky), celestial_axes(sky)),
+                    opposite,
+                    strict=True,
+                ):
+                    self.assertAlmostEqual(got, want, places=5)
+
+    def test_the_sphere_actually_turns_across_the_night(self) -> None:
+        """Everything above would hold just as well for a frame that never moved.
+
+        The three night keyframes are the ones that matter, since they are
+        the only ones with stars in them, and between the first and the last
+        of them the sky has to have turned by a visible amount.
+        """
+        night = [
+            sky for _fraction, sky in self.env.sky_track if star_level(sky) > 0.0
+        ]
+        first, last = celestial_axes(night[0]), celestial_axes(night[-1])
+
+        turned = math.degrees(math.acos(min(1.0, _dot3(first[0], last[0]))))
+        self.assertGreater(turned, 30.0, "the star sphere hardly moved all night")
+
+    def test_a_quaternion_of_nothing_leaves_the_sphere_where_it_was(self) -> None:
+        """The same guard as `moon_face_axes`, and for the same reason.
+
+        `_quat` does not normalise and a document need not either. A zero
+        quaternion sends every axis to nothing, which is not a frame; each
+        keeps the axis it had, so the field is the world-fixed one it was
+        before rather than three zero vectors and no stars at all.
+        """
+        self.assertEqual(
+            celestial_axes(SkySettings(sun_rotation=(0.0, 0.0, 0.0, 0.0))),
+            ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        )
 
 
 class CloudTests(unittest.TestCase):

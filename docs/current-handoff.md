@@ -358,6 +358,54 @@ quantity -- and it is the second time in two passes that it has been the one
 survivor.
 
 
+**A -- the sky turns, and the stars turn with it (2026-09-06).** The
+last thing in the night sky that was this client's own idea rather than the
+region's. `star_field` hashed a *world* direction, so the field was nailed to
+the region: the moon crossed a sky that never moved, and the same two stars
+sat over the same two hills at every hour of every night.
+
+The document does say how the sky turns, in a field already being read for
+something else. `sun_rotation` takes `SUN_REFERENCE_DIRECTION` to where the
+sun is -- which is to say it takes the celestial sphere's own frame to the
+world -- so the images of the three unit axes are that frame, and dotting a
+ray with them is the way back into it. `celestial_axes` returns those three,
+the sky shader turns each ray in before hashing it, and the stars are fixed to
+the sphere while the sphere turns under the day cycle.
+
+Two things make this more than a guess.
+
+**Either rotation would have served, and that is the evidence.** At every
+keyframe of the live cycle `moon_rotation` is `sun_rotation` followed by a
+half turn about Y -- the two bases come out identical with X and Z negated --
+so the sun and the moon are on *one* turning sphere rather than two. The sun's
+is taken because it is meaningful by day as well, and there is a test holding
+the pair to that agreement, so a cycle where they part company is a failing
+test rather than a sky that quietly drifts. A consequence worth stating: this
+fixes the moon among the stars too. The real moon drifts about thirteen
+degrees a day against them; the document describes no such drift and inventing
+one is not this viewer's business.
+
+**A frame turned the wrong way looks exactly as right.** Turning a ray *into*
+the sphere's frame and turning it *out of* the sphere's frame both give stars
+that move with the night, in opposite directions -- so a transposed frame
+passes any test that merely asks whether the field moved, and drifts the stars
+backwards past the moon. What closes it is a quarter turn about the camera's
+own up axis: turn the sphere about +Z and turn the camera by the same quarter
+about +Z, and the camera's basis turns with it exactly, with no roll, so the
+two frames are the same picture of the same sky. Measured: 17 of 20 star
+pixels land on the same pixel, and turned the other way, none of 20 do.
+
+Ten mutations and ten dead, with two familiar shapes in them. Hashing the
+world direction again takes 117 tests down rather than one, because
+`fixed_to_the_sky` then has no reader, GLSL optimises the three uniforms out,
+and binding them raises `KeyError` on the first frame -- the same loud failure
+the cloud layer gave. And the one survivor of the first run was the reset
+branch: dropping `celestial_axes` from what a *lost* environment restores
+passed, because the test that watches that branch rolled the region's moon
+without turning its sun, so "back to the default" and "left as this region had
+it" were the same answer. It turns the sun now.
+
+
 **A -- the moon hangs the way the document hangs it (2026-09-06).** A
 correction, and the handoff is the thing being corrected. It has said for two
 passes that *"the document says nothing about which way up a moon hangs"*, and
@@ -1594,9 +1642,11 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      `moon_scale` and `sun_scale` since, and the moon wears its own `moon_id`
      texture. What is left of it is the **stars**, which are a hash rather
      than a catalogue -- and note that the live document names no `star_id` at
-     all, so unlike the moon there is nothing to fetch. Neither turns with the
-     night, either: the field is fixed to the world axes rather than to a
-     celestial pole.
+     all, so unlike the moon there is nothing to fetch. They do turn with the
+     night since the tenth pass: the field is hashed on the celestial
+     sphere's own frame, which `sun_rotation` gives, so the sky carries the
+     stars round with the sun and the moon rather than nailing them to the
+     region's axes.
    - ~~**The water surface itself.**~~ Done in the seventh pass: the two wave
      directions and both Fresnel fields are read and drawn, and the fixed
      sky-reflection mixture in `water_tint` is gone from the 3D path (it stays
