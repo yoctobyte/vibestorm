@@ -421,6 +421,27 @@ is equivalent: dropping the `any(path is None)` half of the guard makes the
 loader try to open a file called "None", which raises and falls back to
 shading exactly as the guard did.
 
+**And then a defect the local grid could never have shown.** The seed-cap
+POST was being *awaited* inside the run loop -- the loop that acks the
+region the avatar is standing in. On 127.0.0.1 that is a millisecond and
+invisible. On a real grid it is a round trip with a ten-second timeout, and
+an eight-way corner is eight of them back to back: up to eighty seconds in
+which this client sends no acks and no `AgentUpdate`, which a simulator
+reads as a viewer that has gone away. It would have shown up as "the main
+grid disconnects me when I walk near a corner" and looked nothing like a
+neighbour bug.
+
+Requests are now started and collected separately:
+`_start_neighbour_seed_requests` schedules one future per announced region
+and returns before the coroutine has even begun running, and
+`_open_finished_neighbours` opens circuits for the ones that have answered.
+Anything still in flight when the session ends is cancelled, so a dying
+session does not hold a thread on a region nobody will look at. Seven more
+tests, one of which asserts the strongest available form of "nobody
+waited": immediately after the call the request has not started at all.
+Nine mutants planted, eight killed; the survivor swaps `ensure_future` for
+`create_task`, which is the same thing.
+
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
 eighteen seconds since 2026-09-05 23:26 -- 2970 times by the time anyone

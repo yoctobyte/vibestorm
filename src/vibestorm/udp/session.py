@@ -3328,6 +3328,11 @@ async def run_live_session(
                 )
             )
 
+        #: Seed-capability requests in flight, keyed by region handle. Kept
+        #: here rather than on the session because they are asyncio futures
+        #: belonging to this loop, and the session outlives it.
+        neighbour_requests: dict[int, asyncio.Future] = {}
+
         for packet in session.start(start_time):
             await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
@@ -3343,7 +3348,8 @@ async def run_live_session(
         while _should_continue():
             now = loop.time()
             if session_config.open_neighbours:
-                await _open_announced_neighbours(session, sock, loop)
+                _start_neighbour_seed_requests(session, sock, loop, neighbour_requests)
+                await _open_finished_neighbours(session, sock, loop, neighbour_requests)
             for _, packet in client.drain_outbound_packets(session_handle):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
             for packet in session.drain_due_packets(now):
@@ -3575,6 +3581,16 @@ async def run_live_session(
                 # window is time spent listening to a circuit that has closed.
                 break
 
+    # A seed request still in flight is an HTTP call to a region nobody is
+    # going to look at any more. Left alone it holds a thread until it times
+    # out and then logs a failure into a session that has ended.
+    for request in neighbour_requests.values():
+        request.cancel()
+    for request in neighbour_requests.values():
+        with suppress(asyncio.CancelledError, CapabilityError, OSError, ValueError):
+            await request
+    neighbour_requests.clear()
+
     if event_queue_task is not None:
         event_queue_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -3608,27 +3624,53 @@ NEIGHBOUR_CAPABILITIES: tuple[str, ...] = (
 )
 
 
-async def _open_announced_neighbours(
+def _start_neighbour_seed_requests(
     session: LiveCircuitSession,
     sock: socket.socket,
     loop: asyncio.AbstractEventLoop,
+    pending: dict[int, asyncio.Future],
 ) -> None:
-    """Dial every region that has been announced and has a seed capability.
+    """Ask each announced region for its seed capability, without waiting.
 
-    The POST comes first and the circuit second, because the POST is what the
-    simulator waits on: `ScenePresence.SendInitialData` returns early until
-    both the handshake reply and the seed request have arrived, and a circuit
-    opened without one gets a region name, a water height and no ground.
+    The POST comes before the circuit, because it is what the simulator waits
+    on: `ScenePresence.SendInitialData` returns early until both the
+    handshake reply and the seed request have arrived, and a circuit opened
+    without one gets a region name, a water height and no ground.
+
+    It is *started* here and collected elsewhere, which is the whole point.
+    This runs on the loop that pumps the session's packets, and an eight-way
+    corner on a busy grid is eight of these; awaiting them here would stop
+    acking the region the avatar is actually standing in for as long as the
+    slowest one takes to answer -- up to eighty seconds of silence, which the
+    simulator reads as a viewer that has gone away.
     """
     for announcement, seed_url in session.neighbours_ready_to_open():
-        handle = announcement.handle
-        try:
-            await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
+        if announcement.handle in pending:
+            continue
+        pending[announcement.handle] = asyncio.ensure_future(
+            CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
                 seed_url,
                 list(NEIGHBOUR_CAPABILITIES),
                 udp_listen_port=int(sock.getsockname()[1]),
             )
-        except (CapabilityError, OSError) as exc:
+        )
+        session._record_event(
+            loop.time(), "neighbour.dialling", f"{announcement.handle:#018x}"
+        )
+
+
+async def _open_finished_neighbours(
+    session: LiveCircuitSession,
+    sock: socket.socket,
+    loop: asyncio.AbstractEventLoop,
+    pending: dict[int, asyncio.Future],
+) -> None:
+    """Open a circuit to each region whose seed capability has answered."""
+    for handle in [handle for handle, task in pending.items() if task.done()]:
+        task = pending.pop(handle)
+        try:
+            task.result()
+        except (CapabilityError, OSError, ValueError, asyncio.CancelledError) as exc:
             # A neighbour is a nicety. One that will not answer is a region
             # that stays undrawn, not a session that ends -- and it is not
             # retried, or a dead region costs an HTTP timeout every pass.
@@ -3638,7 +3680,7 @@ async def _open_announced_neighbours(
             )
             continue
 
-        circuit = session.open_neighbour(announcement)
+        circuit = session.open_neighbour(session.neighbour_announcements[handle])
         for packet in circuit.start():
             await loop.sock_sendto(sock, packet, circuit.address)
         session._record_event(

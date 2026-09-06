@@ -12,6 +12,7 @@ one region with another's front door key.
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from pathlib import Path
 from uuid import UUID
@@ -244,6 +245,177 @@ class NeighbourGroundTextureTests(NeighbourTestCase):
         session = self.session()
         session.open_neighbour(NORTH)
         self.assertIsNone(_next_pending_object_texture_id(session))
+
+
+class DiallingDoesNotStopThePumpTests(unittest.IsolatedAsyncioTestCase):
+    """Opening a neighbour must not hold up the region we are standing in.
+
+    The seed capability is an HTTP POST, and it runs on the loop that pumps
+    this session's packets. An eight-way corner on a busy grid is eight of
+    them; awaiting each in turn would stop acking the region the avatar is
+    actually in for as long as the slowest one takes, which the simulator
+    reads as a viewer that has gone away.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.dispatcher = MessageDispatcher.from_repo_root(REPO_ROOT)
+
+    def setUp(self) -> None:
+        import socket
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setblocking(False)
+        self.sock.bind(("127.0.0.1", 0))
+        self.addCleanup(self.sock.close)
+        self.session = NeighbourTestCase.session(self)
+        self.pending: dict = {}
+
+    def _stub_capability_client(self, behaviour):
+        """Replace the seed-cap client with one whose answer we control."""
+        import vibestorm.udp.session as session_module
+
+        class _Client:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            async def resolve_seed_caps(self, seed_url, names, **_kwargs):
+                return await behaviour(seed_url, names)
+
+        original = session_module.CapabilityClient
+        session_module.CapabilityClient = _Client
+        self.addCleanup(setattr, session_module, "CapabilityClient", original)
+
+    async def _dial(self, *events):
+        from vibestorm.udp.session import (
+            _open_finished_neighbours,
+            _start_neighbour_seed_requests,
+        )
+
+        loop = asyncio.get_running_loop()
+        self.session.handle_event_queue_batch(
+            EventQueueBatch(ack_id=1, events=list(events)), now=1.0
+        )
+        _start_neighbour_seed_requests(self.session, self.sock, loop, self.pending)
+        await _open_finished_neighbours(self.session, self.sock, loop, self.pending)
+
+    async def _settle(self):
+        from vibestorm.udp.session import _open_finished_neighbours
+
+        # One turn of the loop is enough for a request that is already
+        # resolved; the point is that the caller never awaited it.
+        await asyncio.sleep(0)
+        await _open_finished_neighbours(
+            self.session, self.sock, asyncio.get_running_loop(), self.pending
+        )
+
+    async def test_a_slow_region_does_not_stall_the_pass(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow(_seed_url, _names):
+            started.set()
+            await release.wait()
+            return {}
+
+        self._stub_capability_client(slow)
+        await self._dial(NORTH, NORTH_SEED)
+
+        # Back already, and the request has not even begun -- it is scheduled
+        # on the loop, which is the strongest form of "nobody waited".
+        self.assertFalse(started.is_set())
+        self.assertEqual(self.session.neighbours, {})
+        self.assertIn(NORTH_HANDLE, self.pending)
+
+        # It does begin, and still nothing is waiting for it to finish.
+        await asyncio.sleep(0)
+        self.assertTrue(started.is_set())
+        self.assertEqual(self.session.neighbours, {})
+
+        release.set()
+        await self._settle()
+        self.assertIn(NORTH_HANDLE, self.session.neighbours)
+        self.assertEqual(self.pending, {})
+
+    async def test_two_regions_are_dialled_at_once(self) -> None:
+        release = asyncio.Event()
+
+        async def slow(_seed_url, _names):
+            await release.wait()
+            return {}
+
+        self._stub_capability_client(slow)
+        await self._dial(NORTH, EAST, NORTH_SEED, EAST_SEED)
+        self.assertEqual(sorted(self.pending), sorted((NORTH_HANDLE, EAST_HANDLE)))
+
+        release.set()
+        await self._settle()
+        self.assertEqual(sorted(self.session.neighbours), sorted((NORTH_HANDLE, EAST_HANDLE)))
+
+    async def test_a_request_in_flight_is_not_sent_twice(self) -> None:
+        calls = []
+        release = asyncio.Event()
+
+        async def slow(seed_url, _names):
+            calls.append(seed_url)
+            await release.wait()
+            return {}
+
+        self._stub_capability_client(slow)
+        await self._dial(NORTH, NORTH_SEED)
+        await asyncio.sleep(0)
+        await self._dial()
+        await self._dial()
+        await asyncio.sleep(0)
+        self.assertEqual(len(calls), 1)
+        release.set()
+        await self._settle()
+
+    async def test_the_circuit_opens_only_once_the_seed_cap_answered(self) -> None:
+        async def quick(_seed_url, _names):
+            return {"EventQueueGet": "http://example.invalid/eq"}
+
+        self._stub_capability_client(quick)
+        await self._dial(NORTH, NORTH_SEED)
+        await self._settle()
+
+        circuit = self.session.neighbours[NORTH_HANDLE]
+        self.assertEqual(circuit.address, ("127.0.0.1", 9001))
+        # And it said hello: `start` is idempotent, so an empty list here
+        # means the opening packets have already gone out.
+        self.assertEqual(circuit.start(), [])
+
+    async def test_a_region_that_refuses_is_recorded_and_left_alone(self) -> None:
+        from vibestorm.caps.client import CapabilityError
+
+        calls = []
+
+        async def refuse(seed_url, _names):
+            calls.append(seed_url)
+            raise CapabilityError("connection refused")
+
+        self._stub_capability_client(refuse)
+        await self._dial(NORTH, NORTH_SEED)
+        await self._settle()
+
+        self.assertIn(NORTH_HANDLE, self.session.neighbour_failures)
+        self.assertEqual(self.session.neighbours, {})
+
+        await self._dial()
+        await self._settle()
+        self.assertEqual(len(calls), 1, "a dead region was dialled again")
+
+    async def test_a_region_that_answers_rubbish_does_not_end_the_session(self) -> None:
+        # The seed capability answers LLSD. A grid that answers an HTML error
+        # page instead is a region that stays undrawn, not a viewer that goes
+        # down mid-flight.
+        async def rubbish(_seed_url, _names):
+            raise ValueError("not LLSD")
+
+        self._stub_capability_client(rubbish)
+        await self._dial(NORTH, NORTH_SEED)
+        await self._settle()
+        self.assertIn(NORTH_HANDLE, self.session.neighbour_failures)
 
 
 class SessionEventTests(NeighbourTestCase):
