@@ -1905,6 +1905,24 @@ def _quat_rotate(q: tuple[float, float, float, float], v: tuple[float, float, fl
 
 
 @dataclass(slots=True)
+class _NeighbourMesh:
+    """One neighbouring region's ground on the GPU, and what it was built from."""
+
+    vbo: object
+    ibo: object
+    vao: object
+    index_count: int
+    revision: int
+    offset: tuple[float, float]
+    height_range: tuple[float, float]
+
+    def release(self) -> None:
+        for resource in (self.vao, self.ibo, self.vbo):
+            if resource is not None:
+                resource.release()
+
+
+@dataclass(slots=True)
 class _ShapeMesh:
     """GL resources for one primitive mesh.
 
@@ -1949,8 +1967,16 @@ def terrain_mesh_from_heightmap(
     height: int,
     size_m: float = REGION_GROUND_SIZE_M,
     z_scale: float = 1.0,
+    origin: tuple[float, float] = (0.0, 0.0),
 ) -> tuple[tuple[float, ...], tuple[int, ...]]:
-    """Build a textured terrain grid from row-major height samples."""
+    """Build a textured terrain grid from row-major height samples.
+
+    `origin` moves the whole sheet in the world's x/y, which is what a
+    neighbouring region needs: its samples are in *its* region coordinates,
+    and the region due north sits at (0, 256) in ours. The texture
+    coordinates do not move with it -- each region's ground textures tile
+    across that region, starting at its own corner.
+    """
     if width < 2 or height < 2:
         raise ValueError("terrain mesh needs at least a 2x2 heightmap")
     if len(samples) != width * height:
@@ -1958,12 +1984,13 @@ def terrain_mesh_from_heightmap(
             f"height sample count {len(samples)} does not match {width}x{height}"
         )
 
+    origin_x, origin_y = origin
     vertices: list[float] = []
     for row in range(height):
-        y = (float(row) / float(height - 1)) * size_m
+        y = origin_y + (float(row) / float(height - 1)) * size_m
         v = 1.0 - (float(row) / float(height - 1))
         for col in range(width):
-            x = (float(col) / float(width - 1)) * size_m
+            x = origin_x + (float(col) / float(width - 1)) * size_m
             u = float(col) / float(width - 1)
             vertices.extend((x, y, float(samples[row * width + col]) * z_scale, u, v))
 
@@ -1977,6 +2004,38 @@ def terrain_mesh_from_heightmap(
             indices.extend((sw, se, ne, sw, ne, nw))
 
     return tuple(vertices), tuple(indices)
+
+
+#: How many samples a side a neighbouring region's ground is drawn with. The
+#: full grid is 256 a side -- 65k vertices and 130k triangles, the same as the
+#: region the avatar is standing in -- and there can be eight neighbours. At
+#: 65 the spacing is 4 m, which is a sixteenth of the geometry for ground that
+#: is never closer than a region away, and it keeps both edges: a grid that
+#: dropped the last row would leave a seam of sky along the shared border.
+NEIGHBOUR_TERRAIN_SAMPLES: int = 65
+
+
+def coarse_terrain_samples(
+    heightmap: object,
+    *,
+    count: int = NEIGHBOUR_TERRAIN_SAMPLES,
+    size_m: float = REGION_GROUND_SIZE_M,
+) -> tuple[float, ...]:
+    """Resample a region's heightmap onto a `count` x `count` grid.
+
+    Bilinear, through `RegionHeightmap.height_at`, and inclusive of both
+    edges: sample 0 sits on the region's near corner and sample `count - 1`
+    on the far one, so the sheet spans exactly `size_m` and meets its
+    neighbours' edges rather than stopping a sample short of them.
+    """
+    if count < 2:
+        raise ValueError("a terrain grid needs at least 2 samples a side")
+    step = size_m / float(count - 1)
+    return tuple(
+        heightmap.height_at(col * step, row * step, size_m=size_m)
+        for row in range(count)
+        for col in range(count)
+    )
 
 
 def terrain_line_indices(width: int, height: int) -> tuple[int, ...]:
@@ -2089,6 +2148,13 @@ class PerspectiveRenderer:
         self._parcel_border_key: tuple[int, int] | None = None
         self._terrain_line_ibo = None  # type: moderngl.Buffer | None
         self._terrain_line_vao = None  # type: moderngl.VertexArray | None
+        #: One entry per neighbouring region whose ground has arrived, keyed
+        #: by region handle: (vbo, ibo, vao, revision, offset). Drawn with the
+        #: fill program rather than the four-texture splat -- a neighbour's
+        #: own ground textures are named in *its* handshake and are not
+        #: fetched, so the alternative to shaded ground is not textured ground
+        #: but no ground at all.
+        self._neighbour_meshes: dict[int, _NeighbourMesh] = {}
         self._terrain_line_index_count: int = 0
         self._terrain_revision: int | None = None
         self._terrain_z_scale: float = 1.0
@@ -2287,6 +2353,16 @@ class PerspectiveRenderer:
                 self._ground_texture.use(location=0)
                 assert self._ground_vao is not None
                 self._ground_vao.render()
+
+            # The regions next door, after this one: same depth test, and
+            # they never overlap it.
+            if scene.render_terrain and scene.render_neighbours:
+                self._upload_neighbour_terrain(ctx, scene)
+                self._render_neighbour_terrain(
+                    view_data, proj_data, sun_direction=sun_direction
+                )
+            else:
+                self._release_neighbour_terrain()
 
             if scene.render_parcel_borders:
                 self._upload_parcel_borders(ctx, scene)
@@ -2567,6 +2643,7 @@ class PerspectiveRenderer:
         self._object_texture_used.clear()
         self._water_normal_filtered = None
         self._release_terrain_textures()
+        self._release_neighbour_terrain()
         for resource in (self._sky_vao, self._sky_ibo, self._sky_vbo):
             if resource is not None:
                 resource.release()
@@ -3762,6 +3839,88 @@ class PerspectiveRenderer:
         raw_max = heightmap.sample_max if heightmap.sample_max is not None else 1.0
         self._terrain_height_range = (raw_min * z_scale, raw_max * z_scale)
 
+    def _upload_neighbour_terrain(self, ctx: moderngl.Context, scene: Scene) -> None:
+        """Build or refresh a ground sheet for each region next door.
+
+        Rebuilt only when a region's heightmap revision moves. Patches keep
+        arriving for a second or two after a circuit opens, so the first few
+        frames of a new neighbour do rebuild -- and then it is still.
+        """
+        if self._terrain_fill_program is None:
+            return
+        wanted = {entry.handle: entry for entry in scene.neighbour_terrain}
+        for handle in list(self._neighbour_meshes):
+            if handle not in wanted:
+                self._neighbour_meshes.pop(handle).release()
+
+        z_scale = float(getattr(scene, "terrain_z_scale", 1.0))
+        for handle, entry in wanted.items():
+            existing = self._neighbour_meshes.get(handle)
+            if (
+                existing is not None
+                and existing.revision == entry.heightmap.revision
+                and existing.offset == entry.offset
+            ):
+                continue
+            samples = coarse_terrain_samples(entry.heightmap)
+            count = NEIGHBOUR_TERRAIN_SAMPLES
+            vertices, indices = terrain_mesh_from_heightmap(
+                samples,
+                width=count,
+                height=count,
+                z_scale=z_scale,
+                origin=entry.offset,
+            )
+            vbo = ctx.buffer(struct.pack(f"{len(vertices)}f", *vertices))
+            ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
+            vao = ctx.vertex_array(
+                self._terrain_fill_program,
+                [(vbo, "3f 2x4", "in_pos")],
+                index_buffer=ibo,
+                index_element_size=4,
+            )
+            if existing is not None:
+                existing.release()
+            self._neighbour_meshes[handle] = _NeighbourMesh(
+                vbo=vbo,
+                ibo=ibo,
+                vao=vao,
+                index_count=len(indices),
+                revision=entry.heightmap.revision,
+                offset=entry.offset,
+                height_range=(min(samples), max(samples)),
+            )
+
+    def _render_neighbour_terrain(
+        self,
+        view_data: bytes,
+        proj_data: bytes,
+        *,
+        sun_direction: tuple[float, float, float],
+    ) -> None:
+        program = self._terrain_fill_program
+        if program is None or not self._neighbour_meshes:
+            return
+        program["u_view"].write(view_data)
+        program["u_proj"].write(proj_data)
+        program["u_color"].value = TERRAIN_FILL_RGBA
+        program["u_sun_dir"].value = sun_direction
+        program["u_ambient_light"].value = self._ambient_light
+        program["u_diffuse_light"].value = self._diffuse_light
+        for mesh in self._neighbour_meshes.values():
+            # Each region's own height band: the fill shader ramps its colour
+            # between these, and lighting one region's hills with another
+            # region's range makes a flat neighbour read as a cliff.
+            low, high = mesh.height_range
+            program["u_height_min"].value = low
+            program["u_height_max"].value = high if high > low else low + 1.0
+            mesh.vao.render()
+
+    def _release_neighbour_terrain(self) -> None:
+        for mesh in self._neighbour_meshes.values():
+            mesh.release()
+        self._neighbour_meshes.clear()
+
     def _release_terrain_mesh(self) -> None:
         for resource in (
             self._terrain_vao,
@@ -3968,5 +4127,6 @@ __all__ = [
     "lighting_direction",
     "model_matrix",
     "terrain_line_indices",
+    "coarse_terrain_samples",
     "terrain_mesh_from_heightmap",
 ]

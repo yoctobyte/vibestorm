@@ -368,8 +368,35 @@ regions: `Vibestorm North` opens, 256 patches, heights -0.13 to 25.0,
 offset (0, 256) m. 18 more tests in `test/test_udp_session_neighbours.py`,
 thirteen mutants planted and thirteen killed.
 
-**What is still missing is the drawing.** The heightmap arrives and nothing
-renders it; standing at the north edge you still see sea.
+And it is drawn. `Scene.neighbour_terrain` carries one entry per region
+whose ground has actually arrived -- a circuit opens a second or two before
+its first patch lands, and drawing it then paints a flat sheet at zero
+metres over the sea, which looks far more broken than the sea did -- and the
+renderer builds one sheet per neighbour, offset into our frame. Three things
+were worth getting right:
+
+- The sheet is **resampled to 65 a side**, not 256. Full resolution is 65k
+  vertices per neighbour and there can be eight; at 4 m spacing for ground
+  that is never nearer than a region away, it is a sixteenth of the
+  geometry. Both edges are kept, or a seam of sky opens along the border.
+- It is drawn with the **fill** shader, not the four-texture splat. A
+  neighbour's own ground textures are named in *its* handshake and are not
+  fetched, so the alternative to shaded ground is not textured ground but no
+  ground.
+- Each neighbour gets **its own height band** in the ramp. Lighting one
+  region's hills with another region's range makes a flat neighbour read as
+  a cliff.
+
+Rebuilt only when a heightmap's revision moves or its offset does. The
+offset moving is not hypothetical: cross the border and the region you came
+from becomes the neighbour to the south, so every offset shifts by a region
+while every handle and revision stays exactly as it was.
+
+19 tests, five of them pictures rendered through a real GL context;
+fourteen mutants planted and fourteen killed. Live, `Vibestorm North` shows
+up past the north edge as green-tinted sea -- which is correct, and worth
+knowing before anyone reads it as a bug: that region's ground has a mean of
+3.0 m under a water table at 20 m, so nearly all of it is seabed.
 
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
@@ -1995,13 +2022,13 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
-   - **The world still stops at the region edge, but only in the picture.**
-     The session opens a child circuit to each announced neighbour and its
-     heightmap arrives complete; nothing draws it. Standing at the north
-     edge of `Vibestorm Test` you still see sea where `Vibestorm North` is.
-     What is left is one terrain mesh per neighbour, translated by
-     `NeighbourCircuit.offset_from(session.region_handle)`, and a decision
-     about how far out to keep them.
+   - **A neighbour's ground is shaded, not textured, and holds nothing but
+     ground.** Its four ground textures are named in its own
+     `RegionHandshake`, which `NeighbourCircuit` parses and throws away, and
+     nothing fetches them. Its objects, its avatars and its water level are
+     not read at all -- a neighbouring region with a building on it shows as
+     an empty hillside. The next piece is the handshake's texture ids, since
+     the fetch and the splat shader both already exist.
    - **The camera does not see round anything.** It is held out of the
      ground since the eleventh pass, but nothing stops it looking *through* a
      hill or a prim standing between it and the avatar. That is a raycast

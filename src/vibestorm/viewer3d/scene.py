@@ -383,6 +383,23 @@ class SceneEntity:
         return self.tint
 
 
+@dataclass(slots=True, frozen=True)
+class NeighbourTerrain:
+    """One neighbouring region's ground, and where it sits relative to ours.
+
+    `offset` is in metres and signed, straight from
+    `NeighbourCircuit.offset_from`: the region due north of a 256 m region is
+    at (0, 256). The heightmap is the circuit's own, by reference rather than
+    by copy -- it keeps arriving in patches after the first frame that draws
+    it, and `revision` is what tells the renderer to rebuild.
+    """
+
+    handle: int
+    offset: tuple[float, float]
+    heightmap: RegionHeightmap
+    region_name: str = ""
+
+
 @dataclass(slots=True)
 class Scene:
     """Render-state aggregated from bus events + a live WorldView reference.
@@ -446,6 +463,14 @@ class Scene:
     inventory_snapshot: InventoryFetchSnapshot | None = None
     object_inventory_snapshots: dict[int, ObjectInventorySnapshot] = field(default_factory=dict)
     terrain_heightmap: RegionHeightmap | None = None
+    #: The regions next door, each with its own ground and where that ground
+    #: sits relative to this one. Rebuilt from the session every frame, which
+    #: is cheap: it is a list of references, and the renderer rebuilds a mesh
+    #: only when a heightmap's revision moves.
+    neighbour_terrain: tuple[NeighbourTerrain, ...] = ()
+    #: Draw them at all. Off is what the viewer looked like before there were
+    #: any: sea past the region edge.
+    render_neighbours: bool = True
     #: The region's four ground textures, once their bytes have been cached,
     #: and the elevation band each covers. All four have to be present before
     #: the blend means anything, so the renderer checks for a full set.
@@ -1066,6 +1091,34 @@ class Scene:
             for local_id, motion in self.avatar_motion.items()
         }
 
+    def refresh_neighbours(self, session: object | None) -> None:
+        """Re-derive the regions next door from the live session.
+
+        A neighbour only counts once its ground has actually arrived. The
+        circuit opens, is answered, and stays empty for a second or two while
+        the patches come in; drawing it at that point paints a flat sheet at
+        zero metres over the sea, which looks far more broken than the sea
+        did.
+        """
+        neighbours = getattr(session, "neighbours", None)
+        if not neighbours:
+            self.neighbour_terrain = ()
+            return
+        root = getattr(session, "region_handle", None)
+        if root is None:
+            self.neighbour_terrain = ()
+            return
+        self.neighbour_terrain = tuple(
+            NeighbourTerrain(
+                handle=handle,
+                offset=circuit.offset_from(root),
+                heightmap=circuit.heightmap,
+                region_name=circuit.region_name,
+            )
+            for handle, circuit in sorted(neighbours.items())
+            if circuit.heightmap.patch_count > 0
+        )
+
     def refresh_from_world_view(self, world_view: object | None) -> None:
         """Re-derive entities from the current WorldView. Called once per frame.
 
@@ -1366,6 +1419,7 @@ __all__ = [
     "EntityKind",
     "PrimShape",
     "SceneEntity",
+    "NeighbourTerrain",
     "Scene",
     "SculptMeshHint",
     "MeshSourceKind",
