@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (eleventh pass)
+Last updated: 2026-09-06 (twelfth pass)
 
 ## The Owner's Priorities
 
@@ -315,6 +315,49 @@ together, where the sky pass fans its rays across a whole hemisphere including
 the horizon, where `dir.xy / dir.z` runs away and every neighbouring pixel
 reads a different part of the field.
 
+
+**A -- the region next door will not send its ground until you knock on its
+front door (2026-09-06).** With a second local region standing beside the
+first, a child circuit to it did everything the wire asks: `UseCircuitCode`,
+`AgentThrottle`, a `RegionHandshakeReply` to every handshake, an ack for
+every reliable packet, and `AgentUpdate` naming a camera inside the
+neighbour with a 512 m draw distance. It learned the region's name and its
+water height, and it received **no terrain at all** -- forty seconds of
+layer type 0x37, which is cloud.
+
+Nothing on the wire says why, and nothing on the wire fixes it. OpenSim's
+`ScenePresence.SendInitialData` returns early unless *both*
+`m_gotRegionHandShake` and `Caps.CapsFlags.SentSeeds` are set, and
+`SentSeeds` is set at the end of `BunchOfCaps.SeedCapRequest` -- the handler
+for an HTTP POST to the seed capability URL. That URL arrives beside
+`EnableSimulator`, in `EstablishAgentCommunication`, and this client had
+been ignoring it. One POST to it, on the same circuit that had been getting
+cloud, and the whole 256x256 heightmap arrives in eleven packets:
+
+                          no seed fetch    seed fetch
+      LayerData                       3            14
+      ParcelOverlay                   0             4
+      terrain patches                 0           256
+      layer types             cloud only   land + cloud
+
+The diagnostic that got there was worth the detour and is worth repeating:
+`SendTerrainUpdatesByViewDistance = true` in `OpenSimDefaults.ini` was the
+obvious suspect, so it was set to false on the local sim and the probe run
+again -- **no change**, which ruled out the whole view-distance path in one
+experiment and sent the search into the initial-data guard instead. The
+setting was put back afterwards; making the simulator accommodate the client
+is not a fix, because a real grid will not have it.
+
+`src/vibestorm/udp/neighbour.py` is the circuit that came out of it, with
+`test/test_udp_neighbour.py` beside it -- 24 tests, and a twenty-mutant
+battery that killed twenty (the survivor, "the handshake reply goes out
+unreliably", is now a test: the simulator latches that flag once and never
+asks again, so a lost reply is a region that stays a name with no ground
+under it). **It is not wired into the viewer yet.** Doing that needs the
+seed-cap POST beside it, which is `CapabilityClient.resolve_seed_caps`
+against `EstablishAgentCommunicationEvent.seed_capability` -- both of which
+this client already has, and neither of which it currently calls for a
+neighbour.
 
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
@@ -1940,6 +1983,15 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
+   - **The world still stops at the region edge.** `NeighbourCircuit` opens a
+     child circuit and brings back the region next door's heightmap, and the
+     seed-cap POST that unlocks it is measured and understood, but nothing in
+     the viewer opens one. Standing at the north edge of `Vibestorm Test` you
+     see sea where `Vibestorm North` is. What is missing is the wiring, not
+     the protocol: on `EnableSimulator`, POST
+     `EstablishAgentCommunicationEvent.seed_capability`, open the circuit,
+     pump it on the session's socket, and draw its terrain at
+     `offset_from(root_handle)`.
    - **The camera does not see round anything.** It is held out of the
      ground since the eleventh pass, but nothing stops it looking *through* a
      hill or a prim standing between it and the avatar. That is a raycast

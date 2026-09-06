@@ -1,0 +1,411 @@
+"""The child circuit to the region next door.
+
+`NeighbourCircuit` is the only piece of this client that talks to a
+simulator the avatar is not in, and it is the piece most likely to be
+handed something unexpected: a region running a different build, a packet
+for a message this client has never parsed, a handshake resent four times
+because an ack went missing. Its contract is therefore narrow and worth
+pinning -- it answers what it is asked, it remembers the terrain, and it
+never raises, because a neighbour is a nicety and a viewer that falls over
+because the region next door said something odd is worse than a viewer with
+no neighbours at all.
+
+The live half of the story -- that none of this yields terrain until the
+neighbour's *seed capability* has been POSTed to -- is measured in the
+module's own docstring. It cannot be asserted here: it is a fact about
+OpenSim, not about this class, and this class has no HTTP.
+"""
+
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+from struct import pack
+from uuid import UUID
+
+from vibestorm.udp.dispatch import MessageDispatcher
+from vibestorm.udp.messages import parse_packet_ack
+from vibestorm.udp.neighbour import ACK_BATCH, NeighbourCircuit
+from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
+from vibestorm.udp.zerocode import decode_zerocode
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+AGENT = UUID("11111111-1111-1111-1111-111111111111")
+SESSION = UUID("22222222-2222-2222-2222-222222222222")
+OWNER = UUID("33333333-3333-3333-3333-333333333333")
+CIRCUIT_CODE = 991046347
+
+#: (1000, 1000) and (1000, 1001) in region coordinates -- the two regions the
+#: live measurement in the module docstring was taken against.
+ROOT_HANDLE = (256000 << 32) | 256000
+NORTH_HANDLE = (256000 << 32) | 256256
+
+LAYER_DATA_HIGH = bytes([0x0B])
+START_PING_HIGH = bytes([0x01])
+REGION_HANDSHAKE_LOW = bytes([0xFF, 0xFF, 0x00, 0x94])
+
+
+def _handshake_body(sim_name: bytes = b"Vibestorm North", water: float = 20.0) -> bytes:
+    """A RegionHandshake body, laid out from the message template in order."""
+    body = bytearray()
+    body += (9).to_bytes(4, "little")            # RegionFlags
+    body += bytes([13])                          # SimAccess
+    body += bytes([len(sim_name)]) + sim_name    # SimName
+    body += OWNER.bytes                          # SimOwner
+    body += bytes([0])                           # IsEstateManager
+    body += pack("<f", water)                    # WaterHeight
+    body += pack("<f", 1.0)                      # BillableFactor
+    body += UUID(int=1).bytes                    # CacheID
+    for index in range(8):                       # TerrainBase0..3, Detail0..3
+        body += UUID(int=0xB0 + index).bytes
+    for value in (10.0, 11.0, 12.0, 13.0):       # TerrainStartHeight00..11
+        body += pack("<f", value)
+    for value in (60.0, 61.0, 62.0, 63.0):       # TerrainHeightRange00..11
+        body += pack("<f", value)
+    body += UUID(int=9).bytes                    # RegionInfo2.RegionID
+    return bytes(body)
+
+
+def _land_blob(
+    dc_offset: float = 21.0,
+    patch_x: int = 0,
+    patch_y: int = 0,
+    layer_type: int | None = None,
+) -> bytes:
+    """One all-zero patch: a flat 16x16 square, `dc_offset` deciding how high.
+
+    The layer type that decides whether this is ground lives *in the blob*,
+    not in the LayerID byte beside it, so it is settable here.
+    """
+    from vibestorm.world.terrain import END_OF_PATCHES, LAYER_TYPE_LAND, BitPackWriter
+
+    writer = BitPackWriter()
+    writer.pack_bits(264, 16)                 # stride
+    writer.pack_bits(16, 8)                   # patch size
+    writer.pack_bits(LAYER_TYPE_LAND if layer_type is None else layer_type, 8)
+    writer.pack_bits(0x36, 8)                 # quant_wbits: prequant 5, word 8
+    writer.pack_float(dc_offset)
+    writer.pack_bits(1, 16)                   # range
+    writer.pack_bits(((patch_x & 0x1F) << 5) | (patch_y & 0x1F), 10)
+    writer.pack_bits(0b10, 2)                 # ZERO_EOB: every coefficient zero
+    writer.pack_bits(END_OF_PATCHES, 8)
+    return writer.to_bytes()
+
+
+def _layer_data_message(blob: bytes, layer_type: int) -> bytes:
+    return (
+        LAYER_DATA_HIGH
+        + bytes([layer_type])
+        + len(blob).to_bytes(2, "little")
+        + blob
+    )
+
+
+class NeighbourCircuitTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Parsing the message template is most of the cost of this file, and
+        # nothing here mutates the index.
+        cls.dispatcher = MessageDispatcher.from_repo_root(REPO_ROOT)
+
+    def circuit(self) -> NeighbourCircuit:
+        return NeighbourCircuit(
+            handle=NORTH_HANDLE,
+            address=("127.0.0.1", 9001),
+            agent_id=AGENT,
+            session_id=SESSION,
+            circuit_code=CIRCUIT_CODE,
+            dispatcher=self.dispatcher,
+        )
+
+    def inbound(self, message: bytes, *, sequence: int = 1, reliable: bool = True) -> bytes:
+        return build_packet(
+            message,
+            sequence=sequence,
+            flags=LL_RELIABLE_FLAG if reliable else 0,
+        )
+
+    def names(self, packets: list[bytes]) -> list[str]:
+        out = []
+        for packet in packets:
+            view = split_packet(decode_zerocode(packet))
+            out.append(self.dispatcher.dispatch(view.message).summary.name)
+        return out
+
+
+class WhereTheRegionSitsTests(NeighbourCircuitTestCase):
+    def test_the_handle_says_where_the_region_is(self) -> None:
+        circuit = self.circuit()
+        self.assertEqual(circuit.region_x_meters, 256000)
+        self.assertEqual(circuit.region_y_meters, 256256)
+
+    def test_the_region_due_north_is_offset_by_one_region(self) -> None:
+        # The whole point of the offset: everything this circuit reports is
+        # in its own region's coordinates, and has to be drawn 256 m north.
+        self.assertEqual(self.circuit().offset_from(ROOT_HANDLE), (0.0, 256.0))
+
+    def test_the_offset_is_signed(self) -> None:
+        # Looking the other way round. An unsigned subtraction wraps to about
+        # four billion here, which draws the neighbour off the edge of the
+        # solar system rather than one region south.
+        south = NeighbourCircuit(
+            handle=ROOT_HANDLE,
+            address=("127.0.0.1", 9000),
+            agent_id=AGENT,
+            session_id=SESSION,
+            circuit_code=CIRCUIT_CODE,
+            dispatcher=self.dispatcher,
+        )
+        self.assertEqual(south.offset_from(NORTH_HANDLE), (0.0, -256.0))
+
+    def test_east_and_west_move_along_x(self) -> None:
+        east = NeighbourCircuit(
+            handle=(256256 << 32) | 256000,
+            address=("127.0.0.1", 9002),
+            agent_id=AGENT,
+            session_id=SESSION,
+            circuit_code=CIRCUIT_CODE,
+            dispatcher=self.dispatcher,
+        )
+        self.assertEqual(east.offset_from(ROOT_HANDLE), (256.0, 0.0))
+
+
+class OpeningTheCircuitTests(NeighbourCircuitTestCase):
+    def test_it_opens_with_a_circuit_code_and_a_throttle(self) -> None:
+        circuit = self.circuit()
+        packets = circuit.start()
+        self.assertEqual(
+            self.names(packets), ["UseCircuitCode", "AgentThrottle"]
+        )
+
+    def test_both_opening_packets_are_reliable(self) -> None:
+        # Nothing else in this class retries, so if the first packet is lost
+        # unreliably the circuit is simply never opened and the region next
+        # door stays dark.
+        for packet in self.circuit().start():
+            header = split_packet(decode_zerocode(packet)).header
+            self.assertTrue(header.is_reliable)
+
+    def test_it_never_says_hello_twice(self) -> None:
+        # `EnableSimulator` can arrive more than once for the same region --
+        # on a second crossing, or simply resent -- and a second
+        # UseCircuitCode on a live circuit is a new session to the simulator.
+        circuit = self.circuit()
+        self.assertEqual(len(circuit.start()), 2)
+        self.assertEqual(circuit.start(), [])
+
+    def test_it_does_not_move_the_avatar(self) -> None:
+        # CompleteAgentMovement is what makes an agent root in a region. If
+        # this circuit ever sent one, opening a neighbour would teleport the
+        # avatar into it.
+        self.assertNotIn("CompleteAgentMovement", self.names(self.circuit().start()))
+
+    def test_every_packet_gets_its_own_sequence_number(self) -> None:
+        circuit = self.circuit()
+        packets = circuit.start() + circuit.drain_acks()
+        circuit.queued_acks.append(7)
+        packets += circuit.drain_acks()
+        sequences = [split_packet(decode_zerocode(p)).header.sequence for p in packets]
+        self.assertEqual(sequences, sorted(set(sequences)))
+
+
+class AnsweringTheRegionTests(NeighbourCircuitTestCase):
+    def test_a_handshake_names_the_region_and_its_water(self) -> None:
+        circuit = self.circuit()
+        circuit.handle_incoming(
+            self.inbound(REGION_HANDSHAKE_LOW + _handshake_body())
+        )
+        self.assertEqual(circuit.region_name, "Vibestorm North")
+        self.assertEqual(circuit.water_height, 20.0)
+        self.assertEqual(circuit.handshakes_seen, 1)
+
+    def test_a_handshake_is_answered(self) -> None:
+        circuit = self.circuit()
+        replies = circuit.handle_incoming(
+            self.inbound(REGION_HANDSHAKE_LOW + _handshake_body())
+        )
+        self.assertIn("RegionHandshakeReply", self.names(replies))
+
+    def test_every_handshake_is_answered_and_not_just_the_first(self) -> None:
+        # Measured: an unanswered handshake was resent twenty-nine times in
+        # thirty seconds. Answering only the first leaves the region resending
+        # for as long as the reply keeps going missing.
+        circuit = self.circuit()
+        for sequence in (1, 2, 3):
+            replies = circuit.handle_incoming(
+                self.inbound(
+                    REGION_HANDSHAKE_LOW + _handshake_body(), sequence=sequence
+                )
+            )
+            self.assertIn("RegionHandshakeReply", self.names(replies))
+        self.assertEqual(circuit.handshakes_seen, 3)
+
+    def test_the_handshake_reply_is_sent_reliably(self) -> None:
+        # The simulator latches `m_gotRegionHandShake` on the first reply it
+        # receives, and that latch is half of what unblocks the region's
+        # initial data. A reply sent unreliably and then dropped is never
+        # retried, and the region stays a name with no ground under it.
+        circuit = self.circuit()
+        replies = circuit.handle_incoming(
+            self.inbound(REGION_HANDSHAKE_LOW + _handshake_body())
+        )
+        self.assertEqual(len(replies), 1)
+        self.assertTrue(split_packet(decode_zerocode(replies[0])).header.is_reliable)
+
+    def test_a_ping_is_answered_with_the_id_it_carried(self) -> None:
+        from vibestorm.udp.messages import parse_complete_ping_check
+
+        circuit = self.circuit()
+        replies = circuit.handle_incoming(
+            self.inbound(START_PING_HIGH + bytes([37]) + (0).to_bytes(4, "little"))
+        )
+        pongs = [
+            parse_complete_ping_check(
+                self.dispatcher.dispatch(split_packet(decode_zerocode(p)).message)
+            )
+            for p in replies
+        ]
+        self.assertEqual([pong.ping_id for pong in pongs], [37])
+
+
+class RememberingTheTerrainTests(NeighbourCircuitTestCase):
+    def test_a_land_patch_reaches_the_heightmap(self) -> None:
+        from vibestorm.world.terrain import LAYER_TYPE_LAND
+
+        circuit = self.circuit()
+        circuit.handle_incoming(
+            self.inbound(_layer_data_message(_land_blob(21.0), LAYER_TYPE_LAND))
+        )
+        self.assertEqual(circuit.terrain_packets, 1)
+        self.assertEqual(circuit.heightmap.patch_count, 1)
+        # An all-zero patch is flat, and the decoder puts it half a metre of
+        # quantisation range above its DC offset. What matters is that the
+        # ground the neighbour describes is the ground that is remembered, so
+        # the assertion is on the difference rather than on that constant.
+        first = circuit.heightmap.height_at(8.0, 8.0)
+        self.assertAlmostEqual(circuit.heightmap.height_at(2.0, 13.0), first, places=6)
+
+        higher = self.circuit()
+        higher.handle_incoming(
+            self.inbound(_layer_data_message(_land_blob(31.0), LAYER_TYPE_LAND))
+        )
+        self.assertAlmostEqual(higher.heightmap.height_at(8.0, 8.0) - first, 10.0, places=3)
+
+    def test_cloud_is_not_counted_as_terrain(self) -> None:
+        # Measured: a child circuit with no seed fetch receives layer type
+        # 0x37 (cloud) and nothing else, so "did any terrain arrive" has to
+        # mean land specifically -- otherwise the count says yes to a circuit
+        # that in fact got no ground at all.
+        from vibestorm.world.terrain import LAYER_TYPE_CLOUD
+
+        circuit = self.circuit()
+        circuit.handle_incoming(
+            self.inbound(
+                _layer_data_message(
+                    _land_blob(layer_type=LAYER_TYPE_CLOUD), LAYER_TYPE_CLOUD
+                )
+            )
+        )
+        self.assertEqual(circuit.terrain_packets, 0)
+        self.assertEqual(circuit.received["LayerData"], 1)
+
+
+class NothingGetsThroughTests(NeighbourCircuitTestCase):
+    """Whatever the region next door sends, the viewer stays up."""
+
+    BAD = (
+        b"",
+        b"\x00",
+        b"\x00\x00\x00\x00\x00\x00",
+        b"\xff" * 32,
+        b"\x80\x00\x00\x00\x01\x00\xff\xff\xff\xff",
+    )
+
+    def test_rubbish_is_counted_and_dropped(self) -> None:
+        circuit = self.circuit()
+        for payload in self.BAD:
+            with self.subTest(payload=payload.hex()):
+                self.assertEqual(circuit.handle_incoming(payload), [])
+        self.assertEqual(sum(circuit.received.values()), len(self.BAD))
+
+    def test_a_truncated_handshake_does_not_raise(self) -> None:
+        # A message this client knows, cut off mid-field: the dispatcher is
+        # happy and the parser is not.
+        circuit = self.circuit()
+        body = _handshake_body()
+        self.assertEqual(
+            circuit.handle_incoming(
+                self.inbound(REGION_HANDSHAKE_LOW + body[: len(body) // 2])
+            ),
+            [],
+        )
+        self.assertEqual(circuit.received["RegionHandshake:undecodable"], 1)
+        self.assertEqual(circuit.region_name, "")
+
+    def test_a_truncated_layer_blob_does_not_raise(self) -> None:
+        from vibestorm.world.terrain import LAYER_TYPE_LAND
+
+        circuit = self.circuit()
+        blob = _land_blob()
+        circuit.handle_incoming(
+            self.inbound(_layer_data_message(blob[:3], LAYER_TYPE_LAND))
+        )
+        self.assertEqual(circuit.terrain_packets, 0)
+
+    def test_an_unreliable_rubbish_packet_owes_no_ack(self) -> None:
+        circuit = self.circuit()
+        circuit.handle_incoming(b"\x00\x00\x00\x00\x01\x00")
+        self.assertEqual(circuit.queued_acks, [])
+
+
+class AckingTests(NeighbourCircuitTestCase):
+    def test_reliable_packets_are_acked_in_batches(self) -> None:
+        # One ack per terrain packet answers a burst with a burst; the
+        # simulator sends the whole heightmap the moment the circuit opens.
+        circuit = self.circuit()
+        sent: list[bytes] = []
+        for sequence in range(1, ACK_BATCH):
+            sent += circuit.handle_incoming(
+                self.inbound(START_PING_HIGH + bytes([1]) + (0).to_bytes(4, "little"),
+                             sequence=sequence)
+            )
+        self.assertNotIn("PacketAck", self.names(sent))
+        self.assertEqual(len(circuit.queued_acks), ACK_BATCH - 1)
+
+        sent = circuit.handle_incoming(
+            self.inbound(START_PING_HIGH + bytes([1]) + (0).to_bytes(4, "little"),
+                         sequence=ACK_BATCH)
+        )
+        self.assertIn("PacketAck", self.names(sent))
+        self.assertEqual(circuit.queued_acks, [])
+
+    def test_the_ack_carries_the_sequence_numbers_that_arrived(self) -> None:
+        circuit = self.circuit()
+        for sequence in (11, 22, 33):
+            circuit.handle_incoming(
+                self.inbound(REGION_HANDSHAKE_LOW + _handshake_body(), sequence=sequence)
+            )
+        packets = circuit.drain_acks()
+        acks = [
+            parse_packet_ack(
+                self.dispatcher.dispatch(split_packet(decode_zerocode(p)).message)
+            )
+            for p in packets
+        ]
+        self.assertEqual([tuple(a.packets) for a in acks], [(11, 22, 33)])
+
+    def test_an_unreliable_packet_is_not_acked(self) -> None:
+        circuit = self.circuit()
+        circuit.handle_incoming(
+            self.inbound(REGION_HANDSHAKE_LOW + _handshake_body(), reliable=False)
+        )
+        self.assertEqual(circuit.queued_acks, [])
+        self.assertEqual(circuit.drain_acks(), [])
+
+    def test_draining_nothing_sends_nothing(self) -> None:
+        self.assertEqual(self.circuit().drain_acks(), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,243 @@
+"""A child circuit to the region next door.
+
+`EnableSimulator` names an address and a region handle, and a viewer that
+wants the world to continue past its own region's edge dials it. The circuit
+it opens is a *child* one: the agent is root somewhere else, so this sends
+`UseCircuitCode` and nothing more. `CompleteAgentMovement` is what makes an
+agent root in a region, and sending it here would move the avatar.
+
+**UDP alone is not enough, and the reason is not on the wire.** A circuit
+that connects, answers every `RegionHandshake` and acks everything it is
+sent still receives no terrain -- only the region name, the water height and
+a trickle of cloud. `EnableSimulator` arrives beside an
+`EstablishAgentCommunication` carrying the neighbour's *seed capability*,
+and the neighbour will not send its initial data until that URL has been
+POSTed to. OpenSim's `ScenePresence.SendInitialData` returns early unless
+both `m_gotRegionHandShake` and `Caps.CapsFlags.SentSeeds` are set, and
+`SentSeeds` is set at the end of `BunchOfCaps.SeedCapRequest` -- the handler
+for that POST. So whoever opens one of these must fetch the neighbour's seed
+caps too; this class cannot, because it has no HTTP.
+
+Measured against the local grid on 2026-09-06, with a second region
+(`Vibestorm North`) standing beside the first. Forty seconds on the child
+circuit, without the seed fetch and with it:
+
+                          no seed fetch    seed fetch
+      LayerData                       3            14
+      ParcelOverlay                   0             4
+      StartPingCheck                  8             7
+      PacketAck                       2             2
+      RegionHandshake                 1             1
+      CoarseLocationUpdate            1             1
+
+      terrain patches                 0           256
+      layer types             cloud only   land + cloud
+
+Not a difference of degree. Without the POST the region sends cloud and
+nothing else; with it, the whole 256x256 heightmap arrives in eleven
+packets. (A bare circuit that also never *answers* the handshake sees it
+twenty-nine times in thirty seconds, because an unanswered handshake is
+resent -- which is why the reply below goes out every time, not once.)
+
+Deliberately *not* a `LiveCircuitSession`. That class logs in, dresses the
+avatar, drives the camera, fetches capabilities and keeps a `WorldView`; none
+of that has any meaning on a circuit whose agent is somewhere else, and
+threading a "child" flag through it would put a second, quieter shape inside
+the one piece of code the whole client depends on. This is a small object that
+answers what it is asked and remembers the terrain.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import dataclass, field
+from uuid import UUID
+
+from vibestorm.udp.dispatch import MessageDispatcher
+from vibestorm.udp.messages import (
+    MessageDecodeError,
+    encode_agent_throttle,
+    encode_complete_ping_check,
+    encode_packet_ack,
+    encode_region_handshake_reply,
+    encode_use_circuit_code,
+    parse_layer_data,
+    parse_region_handshake,
+    parse_start_ping_check,
+)
+from vibestorm.udp.packet import LL_RELIABLE_FLAG, PacketView, build_packet, split_packet
+from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
+from vibestorm.world.terrain import RegionHeightmap, TerrainDecodeError
+
+#: How many sequence numbers to hold before sending them back as one
+#: `PacketAck`. The root circuit does the same; a child gets a burst of
+#: terrain on connect and acking each packet separately would answer a burst
+#: with a burst.
+ACK_BATCH = 10
+
+
+@dataclass(slots=True)
+class NeighbourCircuit:
+    """One child circuit, to one neighbouring region.
+
+    `handle` is the region handle `EnableSimulator` gave, which is also where
+    the region sits: its high word is the region's x in metres and its low
+    word its y, so the offset from the region the avatar is in is arithmetic
+    rather than a lookup. See `offset_from`.
+    """
+
+    handle: int
+    address: tuple[str, int]
+    agent_id: UUID
+    session_id: UUID
+    circuit_code: int
+    dispatcher: MessageDispatcher
+
+    heightmap: RegionHeightmap = field(default_factory=RegionHeightmap)
+    region_name: str = ""
+    water_height: float | None = None
+    #: Counted rather than logged: a child circuit is quiet and the useful
+    #: question about one is "did anything arrive at all".
+    received: Counter[str] = field(default_factory=Counter)
+    handshakes_seen: int = 0
+    terrain_packets: int = 0
+
+    started: bool = False
+    next_sequence: int = 1
+    queued_acks: list[int] = field(default_factory=list)
+
+    @property
+    def region_x_meters(self) -> int:
+        return (self.handle >> 32) & 0xFFFFFFFF
+
+    @property
+    def region_y_meters(self) -> int:
+        return self.handle & 0xFFFFFFFF
+
+    def offset_from(self, handle: int) -> tuple[float, float]:
+        """Where this region's origin sits, in the frame of region `handle`.
+
+        Metres, and signed: the region directly north of a 256 m region is at
+        (0, 256). Everything drawn from this circuit is drawn at its own
+        region coordinates plus this.
+        """
+        return (
+            float(self.region_x_meters - ((handle >> 32) & 0xFFFFFFFF)),
+            float(self.region_y_meters - (handle & 0xFFFFFFFF)),
+        )
+
+    # ------------------------------------------------------------- outbound
+
+    def start(self) -> list[bytes]:
+        """`UseCircuitCode`, and nothing else. Idempotent."""
+        if self.started:
+            return []
+        self.started = True
+        return [
+            self._packet(
+                encode_use_circuit_code(
+                    self.circuit_code, self.session_id, self.agent_id
+                ),
+                reliable=True,
+            ),
+            self._packet(
+                encode_agent_throttle(
+                    self.agent_id, self.session_id, self.circuit_code
+                ),
+                reliable=True,
+            ),
+        ]
+
+    def _packet(
+        self, message: bytes, *, reliable: bool = False, zerocoded: bool = False
+    ) -> bytes:
+        sequence = self.next_sequence
+        self.next_sequence += 1
+        packet = build_packet(
+            message,
+            sequence=sequence,
+            flags=LL_RELIABLE_FLAG if reliable else 0,
+        )
+        return encode_zerocode(packet) if zerocoded else packet
+
+    def drain_acks(self) -> list[bytes]:
+        """Whatever acks are owed, as at most one packet."""
+        if not self.queued_acks:
+            return []
+        owed = tuple(self.queued_acks)
+        self.queued_acks = []
+        return [self._packet(encode_packet_ack(owed))]
+
+    # -------------------------------------------------------------- inbound
+
+    def handle_incoming(self, payload: bytes) -> list[bytes]:
+        """One packet in, whatever it is owed out.
+
+        Never raises on the packet: a neighbour is a nicety, and a circuit
+        that took the viewer down because the region next door sent something
+        odd would be worse than no neighbour at all. Undecodable packets are
+        counted and dropped.
+        """
+        try:
+            view = _view(payload)
+        except ValueError:
+            self.received["<undecodable>"] += 1
+            return []
+
+        if view.header.is_reliable:
+            self.queued_acks.append(view.header.sequence)
+
+        try:
+            dispatched = self.dispatcher.dispatch(view.message)
+        except Exception:  # noqa: BLE001 - see the docstring
+            self.received["<unknown message>"] += 1
+            return self._acks_if_full()
+
+        name = dispatched.summary.name
+        self.received[name] += 1
+        replies: list[bytes] = []
+        try:
+            if name == "RegionHandshake":
+                replies = self._on_handshake(dispatched)
+            elif name == "LayerData":
+                self._on_layer_data(dispatched)
+            elif name == "StartPingCheck":
+                replies = self._on_ping(dispatched)
+        except (MessageDecodeError, TerrainDecodeError, ValueError):
+            self.received[f"{name}:undecodable"] += 1
+        return replies + self._acks_if_full()
+
+    def _acks_if_full(self) -> list[bytes]:
+        return self.drain_acks() if len(self.queued_acks) >= ACK_BATCH else []
+
+    def _on_handshake(self, dispatched: object) -> list[bytes]:
+        handshake = parse_region_handshake(dispatched)
+        self.handshakes_seen += 1
+        self.region_name = handshake.sim_name
+        self.water_height = handshake.water_height
+        # Replied to every time, not only the first. The measurement above is
+        # what says why: an unanswered handshake is resent, and twenty-nine
+        # copies of it arrived in thirty seconds.
+        return [self._packet(
+            encode_region_handshake_reply(self.agent_id, self.session_id, 0),
+            reliable=True,
+            zerocoded=True,
+        )]
+
+    def _on_layer_data(self, dispatched: object) -> None:
+        layer = parse_layer_data(dispatched)
+        before = self.heightmap.revision
+        self.heightmap.apply_layer_blob(layer.data)
+        if self.heightmap.revision != before:
+            self.terrain_packets += 1
+
+    def _on_ping(self, dispatched: object) -> list[bytes]:
+        ping = parse_start_ping_check(dispatched)
+        return [self._packet(encode_complete_ping_check(ping.ping_id))]
+
+
+def _view(payload: bytes) -> PacketView:
+    return split_packet(decode_zerocode(payload))
+
+
+__all__ = ["ACK_BATCH", "NeighbourCircuit"]
