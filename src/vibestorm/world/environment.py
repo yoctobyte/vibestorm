@@ -98,6 +98,16 @@ class SkySettings:
     cloud_color: Color3 = (0.41, 0.41, 0.41)
     cloud_shadow: float = 0.27
     cloud_scale: float = 0.42
+    #: ``cloud_pos_density1`` and ``cloud_pos_density2``, verbatim. Each is
+    #: (x, y, density): the first two are an offset into the cloud texture and
+    #: the third is how much of it there is. The pair are the coarse layer and
+    #: the fine one, and only their densities are read here -- there is no
+    #: cloud texture to offset into.
+    cloud_pos_density1: Vec3 = (1.0, 0.53, 0.88)
+    cloud_pos_density2: Vec3 = (1.0, 0.53, 0.125)
+    #: How fast the two layers drift, in whatever units the document means.
+    cloud_scroll_rate: Vec2 = (0.5, 0.011)
+    cloud_variance: float = 0.0
     sunlight_color: Color3 = (0.734, 0.782, 0.9)
     gamma: float = 1.0
     max_y: float = 1605.0
@@ -248,6 +258,16 @@ def _read_sky(frame: Mapping[str, object]) -> SkySettings:
         cloud_color=_color(frame.get("cloud_color"), default.cloud_color),
         cloud_shadow=_float(frame.get("cloud_shadow"), default.cloud_shadow),
         cloud_scale=_float(frame.get("cloud_scale"), default.cloud_scale),
+        cloud_pos_density1=_color(
+            frame.get("cloud_pos_density1"), default.cloud_pos_density1
+        ),
+        cloud_pos_density2=_color(
+            frame.get("cloud_pos_density2"), default.cloud_pos_density2
+        ),
+        cloud_scroll_rate=_vec2(
+            frame.get("cloud_scroll_rate"), default.cloud_scroll_rate
+        ),
+        cloud_variance=_float(frame.get("cloud_variance"), default.cloud_variance),
         sunlight_color=_color(frame.get("sunlight_color"), default.sunlight_color),
         gamma=_float(frame.get("gamma"), default.gamma),
         max_y=_float(frame.get("max_y"), default.max_y),
@@ -317,6 +337,10 @@ def _blend_sky(a: SkySettings, b: SkySettings, t: float) -> SkySettings:
         cloud_color=_lerp3(a.cloud_color, b.cloud_color, t),
         cloud_shadow=_lerp(a.cloud_shadow, b.cloud_shadow, t),
         cloud_scale=_lerp(a.cloud_scale, b.cloud_scale, t),
+        cloud_pos_density1=_lerp3(a.cloud_pos_density1, b.cloud_pos_density1, t),
+        cloud_pos_density2=_lerp3(a.cloud_pos_density2, b.cloud_pos_density2, t),
+        cloud_scroll_rate=_lerp2(a.cloud_scroll_rate, b.cloud_scroll_rate, t),
+        cloud_variance=_lerp(a.cloud_variance, b.cloud_variance, t),
         sunlight_color=_lerp3(a.sunlight_color, b.sunlight_color, t),
         gamma=_lerp(a.gamma, b.gamma, t),
         max_y=_lerp(a.max_y, b.max_y, t),

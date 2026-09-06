@@ -236,6 +236,79 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the sky has weather in it (2026-09-06).** Every cloud parameter was in
+the day cycle and none was drawn. Four of them were not even parsed:
+`cloud_pos_density1`, `cloud_pos_density2`, `cloud_scroll_rate` and
+`cloud_variance` are all in every sky frame, and `cloud_scroll_rate` is the
+one worth noting -- it is a **pair** where nearly every other vector in the
+document is a triple, so a reader that assumes three either raises or pads a
+zero into a real axis.
+
+Three of the four choices in this are choices, and the module says so:
+
+- **Coverage.** The third component of each `cloud_pos_density` is how much
+  cloud there is; the other two are an offset into `cloud_id`, a texture
+  nothing here has fetched. Taken literally the coarse density is permanent
+  overcast -- it never drops below 0.88 anywhere in the default cycle -- and
+  that is because in the document it multiplies a *texture*, and the texture
+  is what has the holes in it. With no texture, four octaves of value noise
+  stand in for it and `CLOUD_EDGE_LOW`/`HIGH` say where its edge falls.
+- **Scale and altitude.** `cloud_scale` is a bare number with no unit and
+  `max_y` reads like an altitude without saying whose, so `CLOUD_SCALE_METRES`
+  and `CLOUD_ALTITUDE_METRES` turn them into a size and a height. The layer is
+  flat and the ray crosses it, which is what gives it perspective; near the
+  horizon the crossing distance runs away, so it fades out before it can
+  alias -- also where real cloud goes into the haze.
+- **Drift.** `cloud_scroll_rate` has no unit either. Read as cells per second
+  the default cycle's 0.5 blows the sky past in a blink; `CLOUD_DRIFT_PER_
+  SECOND` puts it at about a minute to a cell, which is weather. It is
+  accumulated **per frame**, not derived from the region's clock: that clock is
+  a real time and would give the right answer, but it arrives with a time
+  message every few seconds, so a layer driven by it sits still and jumps.
+
+The fourth is not a choice, it is a fix. **`cloud_color` is an albedo, not a
+drawn colour.** It is 0.41 grey at noon, against a sky this same module puts at
+about 0.5 blue -- so used raw the clouds are *darker than what is behind them*,
+which is a permanent thunderstorm over every region. Lit by the two lights the
+frame already has (`ambient + sunlight_color`) it behaves: white with some blue
+in it at noon, bright and warm at dusk when `sunlight_color` reaches 2.84, and
+a dark blue-grey at midnight. None of that is chosen; all of it falls out of the
+region's own numbers.
+
+**It costs about five milliseconds of a 1280x800 frame on llvmpipe**, which is
+what this machine renders with. The first version cost thirteen. Three things
+got it down: three octaves rather than four, a two-component hash instead of
+packing a vec2 into the three-component one, and -- the largest -- not
+evaluating a whole noise field to multiply it by zero, which is what the
+variance term was doing in every keyframe of the default cycle. Five
+milliseconds is still real money at fourteen frames a second, so there is a
+**Clouds** toggle in the render settings beside Sky and Water, and it is spent
+at the uniform rather than in the shader: a zero cover skips the noise
+entirely.
+
+Twenty-five mutations, all killed -- but only after three survived the first
+pass, and all three were the same blind spot: **the tests could see that there
+were clouds and not what shape they were.** Brightness, colour, drift and
+screen-independence were all covered; the layer's *geometry* was not. So
+`dir.xy * altitude` instead of `dir.xy / dir.z * altitude` -- a flat sheet
+pasted on the sky with no perspective at all -- passed everything, as did
+removing the horizon fade, as did dividing by a hard-coded 100 instead of by
+the region's own cell size.
+
+What closes them is one measurement: how many pixels differ sharply from the
+pixel to their left, counted in a band of the frame. It is a proxy for how
+*fine* the cloud is there, and the three cases separate cleanly:
+
+| | near the horizon | high up |
+| --- | --- | --- |
+| with perspective | 1004 | 17 |
+| flat sheet | 0 | 0 |
+
+and a 109-metre cell gives 1479 edges where a 400-metre one gives none, where
+the hard-coded divide gives the same number for both. The horizon fade is the
+same measurement read as brightness: eleven levels away from a clear sky just
+above the horizon with the fade, a hundred and thirty-six without.
+
 **A -- the night sky has a moon and stars in it (2026-09-06).** Both were in
 the day cycle already, parsed and unread. `star_brightness` is the emphatic
 one: the default cycle writes exactly **500** in both night keyframes and
@@ -778,11 +851,12 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
 3. **A's remaining visual gaps are smaller than the last one was.** Water and
    sky now come from the region's own day cycle (sixth pass). What is still
    this client's own idea rather than the region's:
-   - **Clouds.** Every sky keyframe names a `cloud_id` texture and carries
-     `cloud_color`, `cloud_scale`, `cloud_shadow`, `cloud_variance` and two
-     scroll rates. None is drawn; the sky is a clean gradient. This is the
-     largest of what is left and it is ordinary work -- the parameters are
-     already parsed and sitting on `SkySettings`.
+   - ~~**Clouds.**~~ Done in the seventh pass, procedurally. What is left of
+     it is `cloud_shadow`, which is not the clouds at all -- it is how much
+     they darken the *ground*, and nothing casts it yet. The two position
+     components of each `cloud_pos_density` are also still unused: they are an
+     offset into `cloud_id`, and there is no `cloud_id` texture here to offset
+     into.
    - ~~**Stars and the moon.**~~ Done in the seventh pass. What is left of it
      is that both are drawn *procedurally*: `star_id` and `moon_id` name
      textures nobody here has fetched, so the moon is a plain disc with no

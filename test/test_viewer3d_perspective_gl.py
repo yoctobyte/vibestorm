@@ -3564,6 +3564,206 @@ class RegionWeatherGLTests(_GLTestBase):
         gradient = sum(round(c * 255) for c in self._expected_sky(scene))
         self.assertLess(sum(centre[:3]), gradient + 40)
 
+    #: Where the cloud camera looks: 40 degrees up and due north.
+    #:
+    #: The layer is flat and at a fixed height, so a ray straight up crosses
+    #: one cell of it and a level ray never leaves the horizon fade. Forty
+    #: degrees is where the perspective is, which is where the drawing is.
+    CLOUD_EYE = (128.0, 128.0, 30.0)
+    CLOUD_TARGET = (128.0, 228.0, 30.0 + 100.0 * math.tan(math.radians(40.0)))
+
+    def _cloud_frame(self, scene):
+        return self._star_frame(scene, target=self.CLOUD_TARGET)
+
+    def _cloudy(self, day_fraction: float):
+        scene = self._scene_at(day_fraction)
+        scene.moon_level = 0.0
+        scene.star_level = 0.0
+        scene.render_water = False
+        scene.render_terrain = False
+        return scene
+
+    def _spread(self, frame) -> int:
+        """How far apart the brightest and dimmest pixels of a frame are.
+
+        A cloudless sky is a gradient plus a sun glow, both smooth and both
+        narrow across a 40-degree view. Cloud is the thing that puts a bright
+        patch next to a dark one.
+        """
+        sums = [r + g + b for r, g, b, _ in frame]
+        return max(sums) - min(sums)
+
+    def test_the_region_draws_clouds(self) -> None:
+        with_clouds = self._cloud_frame(self._cloudy(0.5))
+        clear = self._cloudy(0.5)
+        clear.cloud_cover = (0.0, 0.0, 0.0)
+        without = self._cloud_frame(clear)
+
+        self.assertGreater(
+            self._spread(with_clouds),
+            self._spread(without) + 60,
+            "the sky looks the same with and without cloud",
+        )
+
+    def test_the_cloud_toggle_gives_the_sky_back(self) -> None:
+        # Not decoration: the layer costs about five milliseconds of a
+        # 1280x800 frame on llvmpipe, which is what this runs on.
+        scene = self._cloudy(0.5)
+        cloudy = self._spread(self._cloud_frame(scene))
+
+        scene.render_clouds = False
+        clear = self._spread(self._cloud_frame(scene))
+
+        self.assertGreater(cloudy, clear + 60)
+
+    def test_clouds_are_brighter_than_the_sky_at_noon(self) -> None:
+        """The bug this catches is using `cloud_color` raw.
+
+        It is 0.41 grey, against a noon sky near 0.5 blue, so drawn as-is the
+        clouds are darker than what is behind them -- a permanent thunderstorm
+        over every region. Lit, they are the brightest thing in a daytime sky.
+        """
+        frame = self._cloud_frame(self._cloudy(0.5))
+        scene = self._cloudy(0.5)
+        scene.cloud_cover = (0.0, 0.0, 0.0)
+        clear = self._cloud_frame(scene)
+
+        brightest_cloud = max(r + g + b for r, g, b, _ in frame)
+        brightest_sky = max(r + g + b for r, g, b, _ in clear)
+
+        self.assertGreater(brightest_cloud, brightest_sky)
+
+    def test_the_night_clouds_are_darker_than_the_day_clouds(self) -> None:
+        day = max(r + g + b for r, g, b, _ in self._cloud_frame(self._cloudy(0.5)))
+        night = max(r + g + b for r, g, b, _ in self._cloud_frame(self._cloudy(0.0)))
+
+        self.assertLess(night, day / 2)
+
+    def test_the_clouds_drift_across_the_sky(self) -> None:
+        # The drift reaches the shader, which no still frame can show.
+        scene = self._cloudy(0.5)
+        before = self._cloud_frame(scene)
+
+        for _frame in range(600):
+            scene.advance_clouds(1.0 / 60.0)
+        after = self._cloud_frame(scene)
+
+        moved = sum(
+            1
+            for a, b in zip(before, after, strict=True)
+            if max(abs(a[i] - b[i]) for i in range(3)) > 6
+        )
+        self.assertGreater(moved, len(before) // 20, "the clouds did not move")
+
+    def test_the_clouds_do_not_move_with_the_screen(self) -> None:
+        # Same trap as the stars, and the same isolation: shifting the
+        # viewport changes `gl_FragCoord` and nothing else, so a layer that
+        # is a function of the view ray must come out identical.
+        scene = self._cloudy(0.5)
+        shift = 16
+        width, height = self.STAR_FBO_SIZE
+
+        square = self._star_frame(scene, target=self.CLOUD_TARGET)
+        shifted = self._star_frame(
+            scene, target=self.CLOUD_TARGET, viewport_offset=shift
+        )
+
+        differing = sum(
+            1
+            for y in range(height - shift)
+            for x in range(width - shift)
+            if max(
+                abs(square[y * width + x][i] - shifted[(y + shift) * width + (x + shift)][i])
+                for i in range(3)
+            )
+            > 3
+        )
+        self.assertEqual(differing, 0, "the cloud layer follows the screen")
+
+    def _cloud_target(self, elevation_degrees: float):
+        """A target that puts the frame's centre at this elevation."""
+        return (
+            self.STAR_EYE[0],
+            self.STAR_EYE[1] + 100.0,
+            self.STAR_EYE[2] + 100.0 * math.tan(math.radians(elevation_degrees)),
+        )
+
+    def _horizontal_edges(self, frame, low_row: int, high_row: int, threshold: int = 18):
+        """How many pixels differ sharply from the one to their left.
+
+        A proxy for how *fine* the cloud is in a band of the frame, which is
+        the only thing that separates a layer with perspective from one
+        without. Rows count from the bottom of the buffer, so a low row is a
+        low patch of sky.
+        """
+        width = self.STAR_FBO_SIZE[0]
+        total = 0
+        for y in range(low_row, high_row):
+            for x in range(1, width):
+                here = sum(frame[y * width + x][:3])
+                left = sum(frame[y * width + x - 1][:3])
+                if abs(here - left) > threshold:
+                    total += 1
+        return total
+
+    def _band_deviation(self, frame, other, low_row: int, high_row: int) -> int:
+        width = self.STAR_FBO_SIZE[0]
+        return max(
+            abs(sum(frame[y * width + x][:3]) - sum(other[y * width + x][:3]))
+            for y in range(low_row, high_row)
+            for x in range(width)
+        )
+
+    def test_the_cloud_layer_has_perspective(self) -> None:
+        """A flat sheet of noise pasted on the sky is not weather.
+
+        The layer is a plane at a fixed height and the view ray crosses it, so
+        the further down the frame you look the further across the plane the
+        ray lands and the finer the cloud gets -- which is the whole reason it
+        reads as sky. Dropping the divide by `dir.z` still draws convincing
+        cloud in the middle of the frame; what it cannot do is compress it
+        towards the horizon.
+        """
+        frame = self._star_frame(self._cloudy(0.5), target=self._cloud_target(21.5))
+
+        near_horizon = self._horizontal_edges(frame, 70, 110)
+        high_up = self._horizontal_edges(frame, 200, 240)
+
+        self.assertGreater(
+            near_horizon,
+            high_up * 5,
+            "the cloud is no finer near the horizon than overhead",
+        )
+
+    def test_the_clouds_fade_out_at_the_horizon(self) -> None:
+        # Where the ray's crossing distance runs away, the noise runs past
+        # what the pixels can sample and turns to fizz. Fading the layer out
+        # before that is both the fix and what real cloud does into the haze.
+        cloudy = self._cloudy(0.5)
+        clear = self._cloudy(0.5)
+        clear.cloud_cover = (0.0, 0.0, 0.0)
+        target = self._cloud_target(21.5)
+
+        frame = self._star_frame(cloudy, target=target)
+        empty = self._star_frame(clear, target=target)
+
+        self.assertLess(self._band_deviation(frame, empty, 40, 55), 40)
+        # And it is a fade, not a curtain: higher up the same frame is cloud.
+        self.assertGreater(self._band_deviation(frame, empty, 150, 200), 100)
+
+    def test_the_cell_size_sets_how_big_the_clouds_are(self) -> None:
+        # `cloud_scale` is the region's only say in this, and a shader that
+        # divides by a constant instead draws the same sky for every region.
+        target = self._cloud_target(21.5)
+        small = self._cloudy(0.5)
+        large = self._cloudy(0.5)
+        large.cloud_scale_drift = (400.0, *large.cloud_scale_drift[1:])
+
+        fine = self._horizontal_edges(self._star_frame(small, target=target), 70, 240)
+        coarse = self._horizontal_edges(self._star_frame(large, target=target), 70, 240)
+
+        self.assertGreater(fine, coarse * 4, "the cell size did not reach the shader")
+
     def test_the_drawn_horizon_is_the_horizon_colour(self) -> None:
         """The other half of the gradient, and it needed its own test.
 

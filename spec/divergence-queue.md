@@ -43,6 +43,9 @@ reference item, not a divergence.
 | Environment | The `ExtEnvironment` capability answers **503** until the agent is actually in the region. Resolving it from the seed capability straight after login succeeds, and the fetch then fails in a way that reads like a broken URL rather than like being early | `udp/session.py`, `world/environment.py` |
 | Environment | An `ExtEnvironment` day cycle's five tracks are **positional** -- 0 water, 1 the sky at ground level, 2 to 4 the sky above each `track_altitudes` entry. Nothing labels a track; only a frame carries a `type`, so the two can disagree | `world/environment.py` |
 | Environment | The colour fields a person sees are nested under `legacy_haze`, beside `rayleigh_config` / `mie_config` / `absorption_config`, which describe the same sky as a physical model. OpenSim writes **both**, so a reader must choose rather than detect | `viewer3d/atmosphere.py` |
+| Environment | Only *some* of a sky frame's fields are under `legacy_haze`. The cloud, star, moon and sun fields sit at the frame root beside it, so a reader that finds `ambient` nested and concludes the frame is nested reads every cloud field as absent and gets the defaults, silently | `world/environment.py` |
+| Environment | `cloud_scroll_rate` is a **two**-component vector where nearly every other vector in a sky frame is three. A reader that assumes three either raises or pads a zero into a real axis | `world/environment.py` |
+| Environment | `star_brightness` is not a continuum in OpenSim's default cycle: it is exactly 500 in both night keyframes and exactly 0 in all six daytime ones, with nothing in between. The 500 is not documented anywhere as a maximum, so a client has to pick a normalising constant and cannot infer one from a single frame | `viewer3d/atmosphere.py` |
 
 ## Not divergences
 

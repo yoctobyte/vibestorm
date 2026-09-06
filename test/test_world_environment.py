@@ -140,6 +140,35 @@ class LiveDocumentTests(unittest.TestCase):
             self.assertAlmostEqual(length, 1.0, places=5, msg=f"at {step / 20.0}")
 
 
+    def test_the_cloud_fields_come_off_the_frame_root(self) -> None:
+        # Not from `legacy_haze`, where the sky colours live. Reading them
+        # from there gives the defaults and nothing complains.
+        midday = self.env.sky_at(0.5)
+
+        self.assertAlmostEqual(midday.cloud_pos_density1[2], 1.0, places=4)
+        self.assertAlmostEqual(midday.cloud_pos_density2[2], 0.125, places=4)
+        self.assertAlmostEqual(midday.cloud_scroll_rate[0], 0.2, places=4)
+        self.assertAlmostEqual(midday.cloud_variance, 0.0, places=5)
+
+    def test_the_cloud_scroll_rate_is_a_pair_and_stays_one(self) -> None:
+        # `cloud_scroll_rate` has two components where nearly every other
+        # vector in the document has three, so a reader that assumes three
+        # either raises or pads a zero into a real axis.
+        rate = self.env.sky_at(0.5).cloud_scroll_rate
+
+        self.assertEqual(len(rate), 2)
+
+    def test_the_cloud_densities_interpolate_between_keyframes(self) -> None:
+        # The coarse density is one of the few cloud numbers that actually
+        # moves across this cycle -- 0.88 at night, 1.0 by mid-morning -- so
+        # it is the one that says the blend reaches these fields at all.
+        before = self.env.sky_at(0.125).cloud_pos_density1[2]
+        after = self.env.sky_at(0.3).cloud_pos_density1[2]
+        middle = self.env.sky_at((0.125 + 0.3) / 2.0).cloud_pos_density1[2]
+
+        self.assertNotAlmostEqual(before, after, places=3)
+        self.assertAlmostEqual(middle, (before + after) / 2.0, places=5)
+
 class DayFractionTests(unittest.TestCase):
     def test_the_offset_moves_where_the_day_starts(self) -> None:
         env = RegionEnvironment(day_length=100.0, day_offset=25.0)

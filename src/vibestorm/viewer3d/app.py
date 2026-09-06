@@ -841,6 +841,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             "render_water",
             "render_objects",
             "render_sky",
+            "render_clouds",
         }:
             setattr(scene, name, bool(value))
         elif name == "water_alpha":
@@ -1032,6 +1033,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             # After the refresh: the gait is derived from how far each avatar
             # moved since the last frame, so it needs this frame's positions.
             scene.advance_avatar_poses(dt)
+            scene.advance_clouds(dt)
             refresh_avatar_camera_preset()
             _m1 = _t()
             renderer.update(dt, scene)

@@ -220,6 +220,7 @@ class HUD:
             "render_water": True,
             "render_objects": True,
             "render_sky": True,
+            "render_clouds": True,
             "water_alpha": 0.72,
         }
         self.quit_requested = False
@@ -517,6 +518,7 @@ class HUD:
             "render_water": "Water",
             "render_objects": "Objects",
             "render_sky": "Sky",
+            "render_clouds": "Clouds",
         }
         buttons = {
             "render_terrain": self.render_terrain_button,
@@ -524,6 +526,7 @@ class HUD:
             "render_water": self.render_water_button,
             "render_objects": self.render_objects_button,
             "render_sky": self.render_sky_button,
+            "render_clouds": self.render_clouds_button,
         }
         for key, button in buttons.items():
             marker = "x" if bool(self._render_setting_values.get(key, True)) else " "
@@ -670,14 +673,20 @@ class HUD:
             manager=self.manager,
             container=rs_container,
         )
+        self.render_clouds_button = UIButton(
+            relative_rect=pygame.Rect(self._s(10), self._s(192), self._s(220), self._s(28)),
+            text="",
+            manager=self.manager,
+            container=rs_container,
+        )
         self.water_alpha_label = UILabel(
-            relative_rect=pygame.Rect(self._s(10), self._s(202), self._s(300), self._s(24)),
+            relative_rect=pygame.Rect(self._s(10), self._s(238), self._s(300), self._s(24)),
             text="Water opacity: 72%",
             manager=self.manager,
             container=rs_container,
         )
         self.water_alpha_slider = UIHorizontalSlider(
-            relative_rect=pygame.Rect(self._s(10), self._s(234), self._s(300), self._s(28)),
+            relative_rect=pygame.Rect(self._s(10), self._s(270), self._s(300), self._s(28)),
             start_value=72,
             value_range=(10, 100),
             manager=self.manager,
@@ -1003,6 +1012,9 @@ class HUD:
                 return True
             if event.ui_element is self.render_terrain_lines_button:
                 self._toggle_render_bool("render_terrain_lines")
+                return True
+            if event.ui_element is self.render_clouds_button:
+                self._toggle_render_bool("render_clouds")
                 return True
             if event.ui_element is self.render_sky_button:
                 self._toggle_render_bool("render_sky")

@@ -21,11 +21,15 @@ from pathlib import Path
 
 from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
+    CLOUD_SCALE_METRES,
     DEFAULT_SKY_HORIZON_COLOR,
     MOON_REFERENCE_DIRECTION,
     NIGHT_LIGHT_FLOOR,
     STAR_BRIGHTNESS_FULL,
     SUN_REFERENCE_DIRECTION,
+    cloud_cover,
+    cloud_hue,
+    cloud_size,
     daylight_scale,
     light_hues,
     moon_direction,
@@ -367,3 +371,69 @@ class NightSkyTests(unittest.TestCase):
         """
         for _fraction, sky in self.env.sky_track:
             self.assertAlmostEqual(moon_level(sky), 0.5, places=4)
+
+
+class CloudTests(unittest.TestCase):
+    """The cloud layer's parameters, all of which were parsed and unread."""
+
+    def setUp(self) -> None:
+        self.env = _live_environment()
+
+    def test_the_coverage_is_the_third_component_of_each_density(self) -> None:
+        # The other two are an offset into a cloud texture nothing here has
+        # fetched. Reading the wrong component of the triple is the easy
+        # mistake and gives a plausible number.
+        for _fraction, sky in self.env.sky_track:
+            with self.subTest(cloud=sky.cloud_pos_density1):
+                coarse, fine = cloud_cover(sky)
+                self.assertAlmostEqual(coarse, sky.cloud_pos_density1[2], places=5)
+                self.assertAlmostEqual(fine, sky.cloud_pos_density2[2], places=5)
+
+    def test_the_default_cycle_is_a_cloudy_one(self) -> None:
+        # Worth pinning: the coarse density never drops below 0.88 anywhere in
+        # the default cycle, which is why taking it literally as "this much of
+        # the sky is cloud" would give permanent overcast.
+        coarse = [cloud_cover(sky)[0] for _fraction, sky in self.env.sky_track]
+
+        # 32-bit floats: the document's 0.88 arrives as 0.8799999952.
+        self.assertGreaterEqual(round(min(coarse), 3), 0.88)
+        self.assertLessEqual(max(coarse), 1.0)
+
+    def test_clouds_are_lit_rather_than_drawn_in_their_own_colour(self) -> None:
+        """`cloud_color` is an albedo, and using it raw is the bug.
+
+        At noon it is 0.41 grey against a sky this same module puts at about
+        0.5 blue -- cloud darker than the sky behind it, which reads as a
+        storm. Lit by the two lights the frame already has, it comes out
+        brighter than the sky, which is what a cloud is.
+        """
+        noon = dict(self.env.sky_track)[0.5]
+
+        drawn = cloud_hue(noon)
+        horizon, zenith = sky_gradient(noon)
+
+        self.assertGreater(sum(drawn), sum(noon.cloud_color))
+        self.assertGreater(sum(drawn), sum(zenith), "cloud darker than the sky")
+
+    def test_the_clouds_take_the_colour_of_the_hour(self) -> None:
+        # Bright and slightly warm at dusk, when `sunlight_color` reaches
+        # 2.84; dark and blue at midnight. Neither is chosen here -- both fall
+        # out of the region's own numbers.
+        dusk = cloud_hue(dict(self.env.sky_track)[0.875])
+        midnight = cloud_hue(dict(self.env.sky_track)[0.0])
+
+        self.assertGreater(sum(dusk), sum(midnight) * 3.0)
+        self.assertGreater(dusk[0], dusk[2], "dusk cloud is not warm")
+        self.assertGreater(midnight[2], midnight[0], "midnight cloud is not cold")
+
+    def test_the_cell_size_is_the_scale_in_metres(self) -> None:
+        noon = dict(self.env.sky_track)[0.5]
+
+        self.assertAlmostEqual(
+            cloud_size(noon), noon.cloud_scale * CLOUD_SCALE_METRES, places=3
+        )
+
+    def test_a_zero_scale_does_not_collapse_the_layer(self) -> None:
+        # A region that writes 0 would otherwise divide the sky into cells of
+        # no width, which in the shader is every pixel sampling one hash.
+        self.assertGreater(cloud_size(SkySettings(cloud_scale=0.0)), 0.0)

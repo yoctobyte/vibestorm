@@ -64,6 +64,38 @@ MOON_REFERENCE_DIRECTION: Vec3 = SUN_REFERENCE_DIRECTION
 #: so this converts the one to "all of them" and leaves the other at none.
 STAR_BRIGHTNESS_FULL: float = 500.0
 
+#: How high above the viewer the cloud layer is drawn, in metres.
+#:
+#: A rendering choice. `max_y` sits in every sky frame at 1605 and reads like
+#: an altitude, but nothing says it is the clouds' -- so this is a number
+#: picked to look like weather rather than one taken off the wire. Low enough
+#: that the layer has visible perspective, high enough not to sit on the
+#: rooftops.
+CLOUD_ALTITUDE_METRES: float = 320.0
+
+#: How many metres of sky one unit of cloud noise spans at `cloud_scale` 1.
+#: The other half of a choice: `cloud_scale` is a bare number in the document
+#: with no unit attached, and this is what turns it into a size.
+CLOUD_SCALE_METRES: float = 260.0
+
+#: Where the coverage numbers land on the noise.
+#:
+#: `cloud_pos_density1`'s third component runs 0.88 to 1.0 across the default
+#: cycle. Taken literally as "this fraction of the sky is cloud" that is
+#: permanent overcast, which is not what the default sky looks like -- because
+#: in the document it multiplies a *texture*, and the texture is what has the
+#: holes in it. With no texture fetched, the noise stands in for it and these
+#: two say where its edge falls.
+#: What one unit of `cloud_scroll_rate` means, in cell widths per second.
+#:
+#: The rate is a bare pair of numbers with no unit in the document. At one
+#: cell a second the default cycle's 0.5 would blow the sky past in a blink;
+#: at this it crosses a cell in about a minute, which is weather.
+CLOUD_DRIFT_PER_SECOND: float = 0.017
+
+CLOUD_EDGE_LOW: float = 0.46
+CLOUD_EDGE_HIGH: float = 0.78
+
 #: What a region that says nothing looks like: the colours this viewer picked
 #: by eye before any of them came off the wire. Kept as the fallback rather
 #: than deleted -- a region whose environment cannot be read is still a region
@@ -138,6 +170,44 @@ def moon_level(sky: SkySettings) -> float:
     how it looks.
     """
     return _clamp(sky.moon_brightness)
+
+
+def cloud_cover(sky: SkySettings) -> tuple[float, float]:
+    """How much coarse and fine cloud there is, both 0 to 1.
+
+    The third component of each `cloud_pos_density` pair. The other two are an
+    offset into a cloud texture this tree has never fetched, so they are
+    parsed and not used.
+    """
+    return _clamp(sky.cloud_pos_density1[2]), _clamp(sky.cloud_pos_density2[2])
+
+
+def cloud_hue(sky: SkySettings) -> Color3:
+    """What colour the clouds are: `cloud_color` as an albedo, lit.
+
+    Taken raw, `cloud_color` draws storm clouds at noon -- it is 0.41 grey,
+    against a sky the same derivation puts at about 0.5 blue, and cloud that
+    is darker than the sky behind it is cloud in front of a thunderstorm. It
+    is a surface colour, not a drawn one.
+
+    Lit by the sum of the two lights the frame already has, it behaves: white
+    with a little blue in it at noon, warm and bright at dusk when
+    `sunlight_color` reaches 2.84, and a dark blue-grey at midnight. Every one
+    of those comes out of the region's own numbers rather than being chosen.
+    """
+    lit = tuple(a + b for a, b in zip(sky.ambient, sky.sunlight_color, strict=True))
+    return _clamped(
+        tuple(
+            albedo * light
+            for albedo, light in zip(sky.cloud_color, lit, strict=True)
+        )
+    )
+
+
+def cloud_size(sky: SkySettings) -> float:
+    """How many metres across one cell of cloud is."""
+    scale = sky.cloud_scale if sky.cloud_scale > 0.0 else 1.0
+    return scale * CLOUD_SCALE_METRES
 
 
 def sky_gradient(sky: SkySettings) -> tuple[Color3, Color3]:

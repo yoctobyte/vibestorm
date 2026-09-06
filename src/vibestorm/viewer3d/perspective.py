@@ -45,6 +45,9 @@ from vibestorm.assets.sl_mesh import (
     smooth_vertex_normals,
 )
 from vibestorm.viewer3d.atmosphere import (
+    CLOUD_ALTITUDE_METRES,
+    CLOUD_EDGE_HIGH,
+    CLOUD_EDGE_LOW,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
     DEFAULT_WATER_TINT,
@@ -702,6 +705,12 @@ uniform vec3 u_sun_dir;
 uniform vec3 u_moon_dir;
 uniform float u_moon_level;
 uniform float u_star_level;
+uniform vec3 u_cloud_color;
+// x: coarse coverage, y: fine coverage, z: variance.
+uniform vec3 u_cloud_cover;
+// x: metres across one cell, y and z: how far the layer has drifted.
+uniform vec3 u_cloud_scale_drift;
+uniform float u_cloud_altitude;
 
 in vec3 v_ray;
 
@@ -740,6 +749,43 @@ float star_field(vec3 dir) {
     return smoothstep(0.18, 0.0, distance_to) * magnitude;
 }
 
+// Value noise on a plane, and the sum of four octaves of it. This is what
+// stands in for `cloud_id`: the document names a cloud texture, nothing here
+// has fetched one, and four octaves of value noise is the shape such a texture
+// holds.
+// Its own hash rather than `cell_hash` above: this one runs four times per
+// octave per pixel across half the screen, and the two-component version is
+// measurably cheaper than packing a vec2 into a vec3 to reuse the other.
+float plane_hash(vec2 p) {
+    p = fract(p * vec2(0.1031, 0.1030));
+    p += dot(p, p.yx + 33.33);
+    return fract((p.x + p.y) * p.x);
+}
+
+float value_noise(vec2 p) {
+    vec2 cell = floor(p);
+    vec2 f = fract(p);
+    // Smoothstep the interpolant, or the cells show as diamonds.
+    f = f * f * (3.0 - 2.0 * f);
+    float a = plane_hash(cell);
+    float b = plane_hash(cell + vec2(1.0, 0.0));
+    float c = plane_hash(cell + vec2(0.0, 1.0));
+    float d = plane_hash(cell + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Three octaves, not four. A fourth costs another quarter of the cloud pass
+// and adds detail at a scale the layer's own perspective has already
+// compressed below a pixel over most of the sky. This runs on llvmpipe on the
+// machine that matters, where the whole frame is a budget of tens of
+// milliseconds.
+float cloud_noise(vec2 p) {
+    float total = value_noise(p) * 0.5;
+    total += value_noise(p * 2.03) * 0.25;
+    total += value_noise(p * 4.11) * 0.125;
+    return total / 0.875;
+}
+
 void main() {
     vec3 dir = normalize(v_ray);
     // Z is up. Below the horizon keeps the horizon colour: the water plane
@@ -770,9 +816,37 @@ void main() {
         rgb += vec3(0.96, 0.95, 0.90) * disc * u_moon_level;
     }
 
+    // Clouds, over the stars and the moon and under the sun.
+    //
+    // A flat layer at a fixed height, hit by the view ray: the further from
+    // straight up the ray points, the further across the layer it lands, which
+    // is the perspective that makes a flat sheet read as sky rather than as
+    // wallpaper. Near the horizon that distance runs away, so the layer fades
+    // out before it can alias -- which is also where real cloud disappears
+    // into the haze.
+    if (u_cloud_cover.x > 0.0 && dir.z > 0.001) {
+        vec2 ground = (dir.xy / dir.z) * u_cloud_altitude;
+        vec2 uv = ground / max(u_cloud_scale_drift.x, 1.0) + u_cloud_scale_drift.yz;
+        float amount = cloud_noise(uv) * u_cloud_cover.x;
+        // Both of these are a whole extra noise field each, and the default
+        // cycle asks for the second one not at all -- `cloud_variance` is 0
+        // in every keyframe of it. Paying for a field multiplied by zero is
+        // a third of the cloud pass for nothing.
+        if (u_cloud_cover.y > 0.002) {
+            amount += cloud_noise(uv * 3.7 + 11.0) * u_cloud_cover.y;
+        }
+        if (u_cloud_cover.z > 0.002) {
+            amount += (cloud_noise(uv * 0.31 - 7.0) - 0.5) * u_cloud_cover.z;
+        }
+        float cover = smoothstep(CLOUD_EDGE_LOW, CLOUD_EDGE_HIGH, amount);
+        cover *= smoothstep(0.02, 0.22, dir.z);
+        rgb = mix(rgb, u_cloud_color, cover);
+    }
+
     // The sun, and the haze around it. Both are pure falloff on the angle to
     // the light direction the day cycle gives us -- no disc geometry, so it
-    // costs one dot product.
+    // costs one dot product. Drawn after the clouds, so a cloud in front of
+    // the sun still glows rather than reading as a hole.
     float alignment = max(dot(dir, normalize(u_sun_dir)), 0.0);
     rgb += vec3(1.0, 0.95, 0.80) * pow(alignment, 900.0);
     rgb += vec3(1.0, 0.90, 0.72) * pow(alignment, 18.0) * 0.28;
@@ -780,6 +854,13 @@ void main() {
     frag_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);
 }
 """
+
+# GLSL cannot import a Python constant, and two copies of the cloud edge would
+# drift apart the first time either moved. Substituted in once, here, so
+# `atmosphere.py` stays the only place either number is written down.
+_SKY_FRAGMENT_SHADER = _SKY_FRAGMENT_SHADER.replace(
+    "CLOUD_EDGE_LOW", f"{CLOUD_EDGE_LOW:.6f}"
+).replace("CLOUD_EDGE_HIGH", f"{CLOUD_EDGE_HIGH:.6f}")
 
 #: A quad in clip space. Two triangles rather than the usual oversized single
 #: triangle, because the ray is interpolated across it and a triangle reaching
@@ -1305,6 +1386,18 @@ class PerspectiveRenderer:
                     ),
                     moon_level=float(getattr(scene, "moon_level", 0.0) or 0.0),
                     star_level=float(getattr(scene, "star_level", 0.0) or 0.0),
+                    cloud_color=getattr(scene, "cloud_color", (0.41, 0.41, 0.41)),
+                    # The toggle is spent here rather than in the shader: a
+                    # zero cover skips the whole noise field, which is the
+                    # five milliseconds the setting exists to give back.
+                    cloud_cover=(
+                        getattr(scene, "cloud_cover", (0.0, 0.0, 0.0))
+                        if getattr(scene, "render_clouds", True)
+                        else (0.0, 0.0, 0.0)
+                    ),
+                    cloud_scale_drift=getattr(
+                        scene, "cloud_scale_drift", (900.0, 0.0, 0.0)
+                    ),
                 )
             if scene.render_terrain:
                 self._upload_terrain_mesh(ctx, scene)
@@ -2487,6 +2580,9 @@ class PerspectiveRenderer:
         moon_direction: tuple[float, float, float] = (0.0, 0.0, -1.0),
         moon_level: float = 0.0,
         star_level: float = 0.0,
+        cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41),
+        cloud_cover: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        cloud_scale_drift: tuple[float, float, float] = (900.0, 0.0, 0.0),
     ) -> None:
         """Paint the sky before anything else in the frame.
 
@@ -2507,6 +2603,10 @@ class PerspectiveRenderer:
         self._sky_program["u_moon_dir"].value = moon_direction
         self._sky_program["u_moon_level"].value = float(moon_level)
         self._sky_program["u_star_level"].value = float(star_level)
+        self._sky_program["u_cloud_color"].value = cloud_color
+        self._sky_program["u_cloud_cover"].value = cloud_cover
+        self._sky_program["u_cloud_scale_drift"].value = cloud_scale_drift
+        self._sky_program["u_cloud_altitude"].value = CLOUD_ALTITUDE_METRES
         ctx.disable(ctx.DEPTH_TEST)
         try:
             self._sky_vao.render()

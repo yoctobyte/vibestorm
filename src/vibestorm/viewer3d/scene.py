@@ -20,9 +20,13 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from vibestorm.viewer3d.atmosphere import (
+    CLOUD_DRIFT_PER_SECOND,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
     DEFAULT_WATER_TINT,
+    cloud_cover,
+    cloud_hue,
+    cloud_size,
     daylight_scale,
     light_hues,
     moon_level,
@@ -437,6 +441,11 @@ class Scene:
     render_water: bool = True
     render_objects: bool = True
     render_sky: bool = True
+    # The cloud layer costs about five milliseconds of a 1280x800 frame on
+    # llvmpipe, which is what this runs on. That is worth having and worth
+    # being able to turn off, which is why it is a setting rather than a
+    # constant.
+    render_clouds: bool = True
     water_alpha: float = 0.72
     object_entities: dict[int, SceneEntity] = field(default_factory=dict)
     avatar_entities: dict[int, SceneEntity] = field(default_factory=dict)
@@ -478,6 +487,16 @@ class Scene:
     moon_direction: tuple[float, float, float] | None = None
     moon_level: float = 0.0
     star_level: float = 0.0
+    # The cloud layer. `cloud_cover` is (coarse, fine, variance) and
+    # `cloud_scale_drift` is (metres across a cell, drift x, drift y).
+    cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41)
+    cloud_cover: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    cloud_scale_drift: tuple[float, float, float] = (900.0, 0.0, 0.0)
+    # How far the layer has drifted since the viewer started, in cell widths.
+    # Accumulated per frame rather than derived from the simulator's clock:
+    # that clock arrives every few seconds, and clouds that jump once a second
+    # look worse than clouds that do not move at all.
+    _cloud_drift: tuple[float, float] = (0.0, 0.0)
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
     # Who is currently typing, from the start/stop-typing chat types. Kept as a
     # dict rather than a set so insertion order gives a stable display order.
@@ -512,6 +531,7 @@ class Scene:
             self.moon_direction = None
             self.moon_level = 0.0
             self.star_level = 0.0
+            self.cloud_cover = (0.0, 0.0, 0.0)
             return
 
         clock = (
@@ -539,6 +559,10 @@ class Scene:
         self.moon_direction = moon_direction_for(sky)
         self.moon_level = moon_level(sky)
         self.star_level = star_level(sky)
+        coarse, fine = cloud_cover(sky)
+        self.cloud_color = cloud_hue(sky)
+        self.cloud_cover = (coarse, fine, max(0.0, sky.cloud_variance))
+        self.cloud_scale_drift = (cloud_size(sky), *self._cloud_drift)
 
     def apply_region_changed(self, event: RegionChanged) -> None:
         debug_heightmap = self.terrain_heightmap if self.debug_terrain_source is not None else None
@@ -854,6 +878,30 @@ class Scene:
             return
 
     # ---- WorldView snapshot ----------------------------------------------
+
+    def advance_clouds(self, dt_seconds: float) -> None:
+        """Drift the cloud layer by this frame's share of its scroll rate.
+
+        `cloud_scroll_rate` is a bare pair of numbers in the document with no
+        unit attached, so `CLOUD_DRIFT_PER_SECOND` turns it into a speed. Read
+        as a fraction of a cell per second it would be a gale; read as this,
+        the default cycle's 0.5 crosses one cell of cloud in about a minute.
+
+        Accumulated rather than computed from the region's clock. The clock is
+        a real time and would give the right answer, but it only arrives with a
+        time message every few seconds, so the layer would sit still and then
+        jump.
+        """
+        environment = self.environment
+        if environment is None or self.day_fraction is None:
+            return
+        rate = environment.sky_at(self.day_fraction).cloud_scroll_rate
+        step = max(0.0, float(dt_seconds)) * CLOUD_DRIFT_PER_SECOND
+        self._cloud_drift = (
+            self._cloud_drift[0] + rate[0] * step,
+            self._cloud_drift[1] + rate[1] * step,
+        )
+        self.cloud_scale_drift = (self.cloud_scale_drift[0], *self._cloud_drift)
 
     def advance_avatar_poses(self, dt_seconds: float) -> None:
         """Fold this frame's avatar positions into their gaits.

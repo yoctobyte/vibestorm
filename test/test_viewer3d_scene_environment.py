@@ -143,6 +143,65 @@ class EnvironmentRefreshTests(unittest.TestCase):
         self.assertIsNone(scene.moon_direction)
 
 
+    def test_the_cloud_layer_reaches_the_scene(self) -> None:
+        scene = Scene()
+        scene.refresh_from_world_view(_world_view(clock=_at(0.5)))
+
+        coarse, fine, variance = scene.cloud_cover
+        self.assertAlmostEqual(coarse, 1.0, places=3)
+        self.assertAlmostEqual(fine, 0.125, places=3)
+        self.assertEqual(variance, 0.0)
+        self.assertGreater(scene.cloud_scale_drift[0], 0.0)
+
+    def test_losing_the_environment_clears_the_clouds(self) -> None:
+        scene = Scene()
+        scene.refresh_from_world_view(_world_view(clock=_at(0.5)))
+
+        scene.refresh_from_world_view(_world_view(environment=False))
+
+        self.assertEqual(scene.cloud_cover, (0.0, 0.0, 0.0))
+
+    def test_the_clouds_drift(self) -> None:
+        """And the drift is accumulated, not read off the region's clock.
+
+        The clock would give the right answer and arrives every few seconds,
+        so a layer driven by it sits still and then jumps. This is the seam
+        that has to be per frame.
+        """
+        scene = Scene()
+        scene.refresh_from_world_view(_world_view(clock=_at(0.5)))
+        started = scene.cloud_scale_drift[1:]
+        cell = scene.cloud_scale_drift[0]
+
+        for _frame in range(120):
+            scene.advance_clouds(1.0 / 60.0)
+
+        self.assertGreater(scene.cloud_scale_drift[1], started[0])
+        # The cell size shares the triple with the drift, so an advance that
+        # rebuilt it carelessly would resize the clouds every frame.
+        self.assertAlmostEqual(scene.cloud_scale_drift[0], cell, places=6)
+
+    def test_drifting_without_a_region_is_not_an_error(self) -> None:
+        # The 2D renderer and the seconds before the fetch lands both hit this.
+        scene = Scene()
+
+        scene.advance_clouds(0.016)
+
+        self.assertEqual(scene.cloud_scale_drift[1:], (0.0, 0.0))
+
+    def test_time_never_runs_backwards_for_the_clouds(self) -> None:
+        # A negative frame delta is what a clock adjustment looks like, and
+        # clouds that reverse on one are worse than clouds that pause.
+        scene = Scene()
+        scene.refresh_from_world_view(_world_view(clock=_at(0.5)))
+        for _frame in range(10):
+            scene.advance_clouds(1.0 / 60.0)
+        forward = scene.cloud_scale_drift[1]
+
+        scene.advance_clouds(-5.0)
+
+        self.assertAlmostEqual(scene.cloud_scale_drift[1], forward, places=9)
+
 class LightingDirectionTests(unittest.TestCase):
     """Which of the four sun sources wins."""
 
