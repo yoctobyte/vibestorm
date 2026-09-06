@@ -9,6 +9,7 @@ reading pixels back. Tests skip cleanly when no GL is available
 
 import math
 import os
+import shutil
 import statistics
 import tempfile
 import unittest
@@ -5146,6 +5147,245 @@ class RegionWeatherGLTests(_GLTestBase):
         self.assertGreater(
             larger, ordinary * 3, f"a three-times moon is not bigger: {ordinary} {larger}"
         )
+
+    def _moon_frame(self, scene) -> bytes:
+        """A frame looking straight at the moon, whole, for counting."""
+        direction = scene.moon_direction
+        return self._moon_frame_from(
+            scene,
+            tuple(128.0 + direction[i] * 100.0 for i in range(2))
+            + (30.0 + direction[2] * 100.0,),
+        )
+
+    def _moon_frame_from(self, scene, target) -> bytes:
+        """The same, aimed by hand.
+
+        Needed because a camera cannot look straight up: `look_at` crosses the
+        view direction with the world up and a view along that axis makes the
+        cross product zero, which collapses the matrix and quietly shows the
+        horizon.
+        """
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(
+            mode="eye", eye_position=(128.0, 128.0, 30.0), target=target
+        )
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self.fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+
+    def _moon_scene(self):
+        from vibestorm.world.environment import SkySettings
+
+        scene = self._scene_at(0.0)
+        scene.render_clouds = False
+        scene.star_level = 0.0
+        # Full brightness against a black sky, so the face's own colours are
+        # what the pixels are rather than the face plus whatever is behind it.
+        scene.moon_level = 1.0
+        scene.sky_horizon_color = (0.0, 0.0, 0.0)
+        scene.sky_zenith_color = (0.0, 0.0, 0.0)
+        # Large, because the point here is what is *on* the disc and the
+        # region's own moon is a dozen pixels across at this resolution.
+        scene.moon_disc = moon_disc(SkySettings(moon_scale=8.0))
+        return scene
+
+    #: A face with a corner in each quadrant and a patch in the middle.
+    #:
+    #: Painted rather than photographed, because what these tests assert is
+    #: where each part of the face lands: which corner is which says the two
+    #: axes across the disc are two different axes, and how much of the disc
+    #: the middle patch covers says the face is stretched to the size of the
+    #: disc rather than to some other size.
+    MOON_QUARTERS = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0))
+    MOON_MIDDLE = (255, 255, 255)
+
+    def _moon_face(self, path, *, middle_alpha: int = 255) -> None:
+        import pygame
+
+        size = 64
+        surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        half = size // 2
+        for index, color in enumerate(self.MOON_QUARTERS):
+            surface.fill(
+                (*color, 255),
+                pygame.Rect((index % 2) * half, (index // 2) * half, half, half),
+            )
+        # The middle eighth in each direction, so a quarter of the width. Its
+        # colour stays white however transparent it is, so that a shader which
+        # ignored the alpha would draw something visibly wrong rather than
+        # something that happens to look like the sky.
+        surface.fill(
+            (*self.MOON_MIDDLE, middle_alpha),
+            pygame.Rect(size * 3 // 8, size * 3 // 8, size // 4, size // 4),
+        )
+        pygame.image.save(surface, str(path))
+
+    def _face_counts(self, data: bytes) -> dict[str, int]:
+        counts = {name: 0 for name in ("red", "green", "blue", "yellow", "white")}
+        for i in range(0, len(data), 4):
+            r, g, b = data[i], data[i + 1], data[i + 2]
+            if r > 180 and g > 180 and b > 180:
+                counts["white"] += 1
+            elif r > 180 and g > 180:
+                counts["yellow"] += 1
+            elif r > 180 and g < 90 and b < 90:
+                counts["red"] += 1
+            elif g > 180 and r < 90 and b < 90:
+                counts["green"] += 1
+            elif b > 180 and r < 90 and g < 90:
+                counts["blue"] += 1
+        return counts
+
+    def test_the_moon_wears_the_face_the_region_names(self) -> None:
+        """`moon_id`, which nobody had fetched.
+
+        It is an ordinary texture asset behind the ordinary GetTexture
+        capability -- fetched live from this OpenSim (2026-09-06) -- so the
+        moon does not have to be a disc of one colour. Painted here in two
+        halves rather than with a photograph, because "not one colour" is what
+        is being asserted and the exact colours make the assertion legible: a
+        moon sampling the wrong texture unit would find the ground.
+        """
+        counts = self._face_counts(self._moon_frame(self._faced_moon()))
+
+        for corner in ("red", "green", "blue", "yellow"):
+            self.assertGreater(
+                counts[corner], 10, f"the moon has no {corner} quarter: {counts}"
+            )
+
+    def test_the_face_is_stretched_to_the_size_of_the_disc(self) -> None:
+        """The disc is an angle and the face is a square; one has to be fitted.
+
+        The document gives the size as `moon_scale` and the shader has the
+        cosine of it, so the radius the face spans is that cosine's sine.
+        Getting it wrong does not shift the face or rotate it -- it magnifies
+        it about the centre, which no test of *which* colour is where can see,
+        because scaling about the middle leaves every quadrant a quadrant. The
+        middle patch is a quarter of the face's width, so it should cover
+        about an sixteenth of the disc's area and cannot be most of it.
+        """
+        counts = self._face_counts(self._moon_frame(self._faced_moon()))
+        disc = sum(counts.values())
+
+        self.assertGreater(disc, 100, f"there is no moon to measure: {counts}")
+        self.assertLess(
+            counts["white"],
+            disc // 4,
+            f"the middle of the face fills the moon: {counts} of {disc}",
+        )
+
+    def _faced_moon(self, *, middle_alpha: int = 255):
+        """A scene whose moon wears `MOON_QUARTERS`, from a real file."""
+        scene = self._moon_scene()
+        moon_id = UUID(int=0xB0B)
+        # Written into a directory cleaned up after the test rather than a
+        # `with` block: the renderer loads it during `render_gl`, not here.
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = Path(directory) / f"moon-{middle_alpha}.png"
+        self._moon_face(path, middle_alpha=middle_alpha)
+        scene.moon_texture_id = moon_id
+        scene.texture_paths[moon_id] = path
+        return scene
+
+    def _middle_brightness(self, data: bytes) -> float:
+        """The average level of the grey part of the face.
+
+        Grey rather than white, because what is being measured is *how* bright
+        the middle came out. The four quarters are saturated and the sky is
+        black, so anything neutral and lit is the middle patch.
+        """
+        levels = [
+            (data[i] + data[i + 1] + data[i + 2]) / 3.0
+            for i in range(0, len(data), 4)
+            if max(data[i : i + 3]) - min(data[i : i + 3]) < 24
+            and sum(data[i : i + 3]) > 90
+        ]
+        return sum(levels) / len(levels) if levels else 0.0
+
+    def test_a_transparent_face_shows_the_sky_and_not_a_paler_moon(self) -> None:
+        """What the alpha channel of a moon texture is for.
+
+        The asset that prompted all this is a photograph inscribed in its own
+        square, so its four corners are transparent -- and if transparency
+        faded toward the fallback colour instead of cutting the disc, those
+        corners would draw as four pale spurs off the moon. Asserted with the
+        hole in the middle instead, where the disc is unambiguously drawn and
+        the sky behind it is unambiguously black.
+        """
+        solid = self._face_counts(self._moon_frame(self._faced_moon()))
+        hollow = self._face_counts(self._moon_frame(self._faced_moon(middle_alpha=0)))
+
+        self.assertGreater(solid["white"], 20, f"nothing in the middle: {solid}")
+        self.assertEqual(hollow["white"], 0, f"the hole is still lit: {hollow}")
+        self.assertLess(
+            sum(hollow.values()),
+            sum(solid.values()) - 20,
+            f"the hole did not take any moon with it: {solid} against {hollow}",
+        )
+
+    def test_a_half_transparent_face_is_half_as_bright(self) -> None:
+        """Alpha applied once, which is not obvious from a cut-out alone.
+
+        A face whose alpha is only ever 0 or 255 cannot tell "the alpha cuts
+        the disc" from "the alpha is multiplied into the colour" or from both
+        happening at once. The real asset's rim is neither, so this asks a
+        half-transparent white for the level it comes back at: 128 if the
+        alpha is spent once, 255 if it is ignored, 64 if it is spent twice.
+        """
+        level = self._middle_brightness(
+            self._moon_frame(self._faced_moon(middle_alpha=128))
+        )
+
+        self.assertGreater(level, 96, f"the middle is too dark: {level:.0f}")
+        self.assertLess(level, 176, f"the middle is too bright: {level:.0f}")
+
+    def test_a_moon_directly_overhead_still_has_a_face(self) -> None:
+        """The one direction where the obvious pair of axes is not a pair.
+
+        Two axes across the face come from crossing the moon's direction with
+        world up, and a moon straight up crossed with up is nothing --
+        normalised, that is a NaN in every texture coordinate on the disc.
+        Nothing in the day cycle stops a region putting its moon there.
+        """
+        scene = self._faced_moon()
+        scene.moon_direction = (0.0, 0.0, 1.0)
+
+        counts = self._face_counts(self._moon_frame_from(scene, (128.0, 145.0, 128.0)))
+
+        for corner in ("red", "green", "blue", "yellow"):
+            self.assertGreater(
+                counts[corner], 10, f"the moon overhead has no {corner}: {counts}"
+            )
+
+    def test_a_moon_whose_texture_has_not_arrived_is_still_a_moon(self) -> None:
+        """The asset is fetched over the network in the middle of a session.
+
+        Between the day cycle naming it and the bytes landing there are
+        several seconds, and a sky with a hole in it for that long is worse
+        than a plain disc. Measured as the same disc either way, because the
+        fallback is the shape the texture goes on to fill.
+        """
+        scene = self._moon_scene()
+
+        def lit() -> int:
+            data = self._moon_frame(scene)
+            return sum(
+                1 for i in range(0, len(data), 4) if sum(data[i : i + 3]) > 250
+            )
+
+        nameless = lit()
+        scene.moon_texture_id = UUID(int=0xB0B)  # named, never delivered
+        awaiting = lit()
+
+        self.assertGreater(nameless, 20, f"there is no moon to measure: {nameless}")
+        self.assertEqual(nameless, awaiting)
 
     def test_cloud_shadow_takes_the_sun_and_leaves_the_sky(self) -> None:
         """`cloud_shadow`, parsed a pass ago and never spent.

@@ -39,6 +39,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from uuid import UUID
 
 Color3 = tuple[float, float, float]
 Vec2 = tuple[float, float]
@@ -156,6 +157,48 @@ class RegionEnvironment:
         if self.day_length <= 0.0:
             return 0.0
         return ((seconds + self.day_offset) % self.day_length) / self.day_length
+
+    def texture_assets(self) -> tuple[UUID, ...]:
+        """Every texture the day cycle names, once each, in keyframe order.
+
+        A day cycle is not only numbers. `moon_id`, `cloud_id` and the water's
+        `normal_map` are asset ids, and they are ordinary textures behind the
+        ordinary `GetTexture` capability -- fetched from OpenSim's own asset
+        service, not a viewer's install. A client that reads the numbers and
+        ignores these has to invent a moon, a cloud layer and a wave shape,
+        and its sky is then its own rather than the region's.
+
+        Collected across the whole track rather than from one keyframe,
+        because nothing says a region uses one moon all day; the default cycle
+        does, and a hand-written one need not.
+
+        `sun_id` is in the document too and is the null id in every keyframe of
+        the default cycle, which is the document's way of saying *no texture*
+        rather than a missing field -- so a null is skipped here like any
+        other absent asset, and the caller draws its own.
+        """
+        found: list[UUID] = []
+        seen: set[UUID] = set()
+        for _, water in self.water_track:
+            _collect_asset(water.normal_map, found, seen)
+        for _, sky in self.sky_track:
+            for raw in (sky.moon_id, sky.cloud_id, sky.sun_id):
+                _collect_asset(raw, found, seen)
+        return tuple(found)
+
+
+def _collect_asset(raw: str, found: list[UUID], seen: set[UUID]) -> None:
+    """Add one asset id if it is a real one and not already listed."""
+    if not raw:
+        return
+    try:
+        asset_id = UUID(raw)
+    except ValueError:
+        return
+    if asset_id.int == 0 or asset_id in seen:
+        return
+    seen.add(asset_id)
+    found.append(asset_id)
 
 
 def parse_environment_document(value: object) -> RegionEnvironment:

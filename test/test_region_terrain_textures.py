@@ -154,6 +154,72 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
             session.texture_fetch_attempted.add(texture_id)
         self.assertEqual(_next_pending_object_texture_id(session), prim_texture)
 
+    def test_the_day_cycles_textures_come_after_the_ground_and_before_prims(
+        self,
+    ) -> None:
+        """The moon, the clouds and the water's normal map.
+
+        Same argument as the ground above, only stronger: there is one of each
+        and they cover the whole sky and the whole sea, against a region's
+        worth of prims that each cover a few square metres. But *after* the
+        ground, because a viewer standing on untextured terrain looking at a
+        textured moon has its priorities backwards.
+        """
+        from types import SimpleNamespace
+
+        from vibestorm.udp.session import _next_pending_object_texture_id
+        from vibestorm.world.environment import RegionEnvironment, SkySettings
+        from vibestorm.world.models import WorldView
+
+        moon = UUID(int=0xB0B)
+        view = WorldView()
+        view.set_region(name="TestSim", grid_x=1, grid_y=2, terrain_detail=DETAIL)
+        view.environment = RegionEnvironment(
+            sky_track=((0.0, SkySettings(moon_id=str(moon))),),
+        )
+        prim_texture = UUID(int=0xEEEE)
+        view.objects[UUID(int=1)] = SimpleNamespace(
+            default_texture_id=prim_texture,
+            texture_entry=None,
+            extra_params_entries=(),
+        )
+        session = SimpleNamespace(
+            world_view=view,
+            texture_paths={},
+            texture_fetch_attempted=set(),
+            region_map_image_id=None,
+        )
+
+        self.assertEqual(_next_pending_object_texture_id(session), DETAIL[0])
+        session.texture_fetch_attempted.update(DETAIL)
+        self.assertEqual(_next_pending_object_texture_id(session), moon)
+        session.texture_fetch_attempted.add(moon)
+        self.assertEqual(_next_pending_object_texture_id(session), prim_texture)
+
+    def test_a_region_with_no_day_cycle_does_not_stall_the_queue(self) -> None:
+        from types import SimpleNamespace
+
+        from vibestorm.udp.session import _next_pending_object_texture_id
+        from vibestorm.world.models import WorldView
+
+        view = WorldView()
+        view.set_region(name="TestSim", grid_x=1, grid_y=2, terrain_detail=DETAIL)
+        prim_texture = UUID(int=0xEEEE)
+        view.objects[UUID(int=1)] = SimpleNamespace(
+            default_texture_id=prim_texture,
+            texture_entry=None,
+            extra_params_entries=(),
+        )
+        session = SimpleNamespace(
+            world_view=view,
+            texture_paths={},
+            texture_fetch_attempted=set(),
+            region_map_image_id=None,
+        )
+        session.texture_fetch_attempted.update(DETAIL)
+
+        self.assertEqual(_next_pending_object_texture_id(session), prim_texture)
+
     def test_a_region_naming_no_textures_does_not_stall_the_queue(self) -> None:
         from types import SimpleNamespace
 

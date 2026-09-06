@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import unittest
 from pathlib import Path
+from uuid import UUID
 
 from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
@@ -308,6 +309,41 @@ class SunAndMoonRefreshTests(unittest.TestCase):
             math.acos(scene.moon_disc[0]), math.acos(DEFAULT_MOON_DISC[0])
         )
         self.assertAlmostEqual(scene.cloud_shadow, 0.1, places=5)
+
+    def test_the_moons_own_texture_reaches_the_frame(self) -> None:
+        moon = UUID(int=0xB0B)
+        scene = Scene()
+        view = WorldView()
+        view.environment = self._sky_cycle(moon_id=str(moon))
+
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.moon_texture_id, moon)
+
+    def test_a_null_moon_id_is_no_texture_rather_than_a_null_one(self) -> None:
+        """Which is what the document writes when it means "draw your own".
+
+        `sun_id` is the null UUID in all eight keyframes of the live cycle, so
+        this is the shape a client meets rather than a hypothetical: a null id
+        queued for fetch is a request that can never be answered.
+        """
+        scene = Scene()
+        view = WorldView()
+        view.environment = self._sky_cycle(moon_id=str(UUID(int=0)))
+
+        scene.refresh_from_world_view(view)
+
+        self.assertIsNone(scene.moon_texture_id)
+
+    def test_a_lost_environment_takes_the_moons_face_with_it(self) -> None:
+        scene = Scene()
+        loaded = WorldView()
+        loaded.environment = self._sky_cycle(moon_id=str(UUID(int=0xB0B)))
+        scene.refresh_from_world_view(loaded)
+
+        scene.refresh_from_world_view(_world_view(environment=False))
+
+        self.assertIsNone(scene.moon_texture_id)
 
 
 class WaterSurfaceRefreshTests(unittest.TestCase):

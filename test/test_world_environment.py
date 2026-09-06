@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import unittest
 from pathlib import Path
+from uuid import UUID
 
 from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.world.environment import (
@@ -194,6 +195,68 @@ class LiveDocumentTests(unittest.TestCase):
 
         self.assertNotAlmostEqual(before, after, places=3)
         self.assertAlmostEqual(middle, (before + after) / 2.0, places=5)
+
+class DayCycleTextureTests(unittest.TestCase):
+    """A day cycle names textures, and they are real assets.
+
+    `moon_id`, `cloud_id` and the water's `normal_map` are ordinary texture
+    ids behind the ordinary `GetTexture` capability -- fetched live from this
+    OpenSim's own asset service (2026-09-06), so a client that ignores them is
+    inventing a moon, a cloud layer and a wave shape it could have downloaded.
+    """
+
+    def test_the_live_document_names_three_textures(self) -> None:
+        found = _live_environment().texture_assets()
+
+        self.assertEqual(
+            [str(asset) for asset in found],
+            [
+                "822ded49-9a6c-f61c-cb89-6df54f42cdf4",  # water normal_map
+                "d07f6eed-b96a-47cd-b51d-400ad4a1c428",  # moon_id
+                "1dc1368f-e8fe-f02d-a08d-9d9f11c1af6b",  # cloud_id
+            ],
+        )
+
+    def test_the_null_sun_id_is_not_an_asset(self) -> None:
+        """Which the live document is the evidence for.
+
+        `sun_id` is present in all eight of its sky keyframes and is the null
+        UUID in every one. That is the document saying *no texture*, not a
+        field it forgot; a client that queues it fetches nothing forever.
+        """
+        found = _live_environment().texture_assets()
+
+        self.assertNotIn(UUID(int=0), found)
+
+    def test_one_texture_used_all_day_is_listed_once(self) -> None:
+        # The live cycle names the same moon in all eight keyframes.
+        found = _live_environment().texture_assets()
+
+        self.assertEqual(len(found), len(set(found)))
+
+    def test_a_cycle_that_changes_its_moon_lists_both(self) -> None:
+        # Nothing says a region keeps one moon all day, and the default cycle
+        # doing so is not evidence that another cannot.
+        first, second = UUID(int=0x11), UUID(int=0x22)
+        environment = RegionEnvironment(
+            sky_track=(
+                (0.0, SkySettings(moon_id=str(first))),
+                (0.5, SkySettings(moon_id=str(second))),
+            ),
+        )
+
+        self.assertEqual(environment.texture_assets(), (first, second))
+
+    def test_an_unreadable_id_is_skipped_rather_than_raising(self) -> None:
+        environment = RegionEnvironment(
+            sky_track=((0.0, SkySettings(moon_id="not-a-uuid")),),
+        )
+
+        self.assertEqual(environment.texture_assets(), ())
+
+    def test_a_cycle_that_names_nothing_asks_for_nothing(self) -> None:
+        self.assertEqual(RegionEnvironment().texture_assets(), ())
+
 
 class DayFractionTests(unittest.TestCase):
     def test_the_offset_moves_where_the_day_starts(self) -> None:

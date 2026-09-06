@@ -236,6 +236,71 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the day cycle names textures, and they are real (2026-09-06).** The
+handoff has been saying for three passes that the moon is "procedural because
+`moon_id` names a texture nobody here has fetched", and the same for `cloud_id`
+and the water's `normal_map`. Nobody had tried. All three are **ordinary
+textures behind the ordinary `GetTexture` capability**, served by this
+OpenSim's own asset service, and all three fetch in a few milliseconds:
+`822ded49` is a 256x256 tangent-space water normal map, `1dc1368f` a 512x512
+cloud field, `d07f6eed` a 256x256 moon with maria and an alpha cut-out.
+`bloom_id`, `halo_id` and `rainbow_id` are there too and fetch as well.
+
+So a client that reads the day cycle's numbers and skips its ids is inventing
+three things it could have downloaded. `RegionEnvironment.texture_assets()`
+lists them and the session queues them **after the ground and before the
+prims** -- the ground argument again, only stronger: there is one moon and one
+cloud layer, against a region's worth of prims covering a few square metres
+each.
+
+`sun_id` is in the same document and is the **null UUID in all eight
+keyframes**. That is the document writing *no texture*, not a field it forgot,
+and a client that queues it waits forever for an answer that cannot come. Null
+reads as absent here, everywhere.
+
+This pass spends the moon. The disc's size still comes from `moon_scale`; what
+is new is what is drawn inside it. There is no disc geometry in the sky -- the
+whole moon is a dot product against a direction -- so the face needs two axes
+across it, and the document says nothing about which way up a moon hangs. It
+takes world up, and swings to world north for a moon directly overhead, where
+up and the moon are the same direction and their cross product is nothing.
+
+Two things worth keeping:
+
+- **The texture is bound to unit 4, not unit 0.** The terrain pass owns 0
+  through 3 for its four ground textures. The two passes never run together,
+  but a sampler left pointing at unit 0 reads whatever was bound there last,
+  which on a frame with terrain in it is the ground -- stretched across the
+  moon. The GL test paints the moon in two flat halves rather than using a
+  photograph, so that "the moon is not one colour" and "the moon is not the
+  ground" are the same assertion.
+- **A named texture that has not arrived is not a hole in the sky.** It is
+  fetched over the network in the middle of a session and there are seconds
+  between the day cycle naming it and the bytes landing. The plain disc is the
+  shape the texture goes on to fill, and it is drawn until then.
+- **The face's alpha cuts the disc rather than fading toward the fallback.**
+  Where a moon texture is transparent what is behind it is the sky, not a
+  paler moon -- and this asset is a photograph inscribed in its own square, so
+  its four corners are transparent and the wrong reading puts four pale spurs
+  off the moon. Costing a test: a face whose alpha is only ever 0 or 255
+  cannot tell "the alpha cuts the disc" from "the alpha multiplies the colour"
+  from both at once, and the real asset's rim is neither. A half-transparent
+  white patch answers all three at once -- 128 if the alpha is spent once, 255
+  if it is ignored, 64 if it is spent twice.
+
+Twenty-four mutations, all killed, but seven of them only after the tests grew.
+Three were the same shape: **the moon's face is a square mapped onto a circle,
+and most ways of getting that wrong are invisible to most tests.** Scaling the
+face about its centre leaves every quadrant a quadrant, so a test asking which
+colour is where cannot see it; collapsing the two axes onto one still shows
+both halves of a two-tone texture. The face the tests paint has a corner in
+each quadrant *and* a patch in the middle, which answers "are the axes two
+axes" and "is the face the size of the disc" separately.
+
+The cloud field and the normal map are fetched and cached by this change and
+not yet drawn -- they are the next two passes, and both replace inventions this
+handoff has been apologising for.
+
 **A -- the two waves were secretly the same wave (2026-09-06).** Screenshot
 the sea from forty metres up and it is a woven mesh: a regular diamond lattice
 running to the horizon, which reads as a broken renderer rather than as water.
@@ -1165,24 +1230,28 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
 3. **A's remaining visual gaps are smaller than the last one was.** Water and
    sky now come from the region's own day cycle (sixth pass). What is still
    this client's own idea rather than the region's:
-   - ~~**Clouds.**~~ Done in the seventh pass, procedurally, and
-     `cloud_shadow` with them. The two position components of each
-     `cloud_pos_density` are what is left: they are an offset into `cloud_id`,
-     and there is no `cloud_id` texture here to offset into.
-   - ~~**Stars and the moon.**~~ Done in the seventh pass, and both the moon
-     and the sun are drawn at `moon_scale` and `sun_scale` since. What is left
-     of it is that both are drawn *procedurally*: `star_id` and `moon_id` name
-     textures nobody here has fetched, so the moon is a plain disc with no
-     phase and no maria, and the stars are a hash rather than a catalogue.
-     Neither turns with the night, either -- the field is fixed to the world
-     axes rather than to a celestial pole.
+   - **Clouds.** Drawn in the seventh pass and `cloud_shadow` with them, but
+     drawn *procedurally* -- and `cloud_id` turns out to be a real 512x512
+     texture this client now fetches and does not yet use. Spending it is the
+     next pass, and it brings the two position components of each
+     `cloud_pos_density` with it: they are an offset into `cloud_id`, which
+     until now there was nothing to offset into.
+   - ~~**Stars and the moon.**~~ Done in the seventh pass; both are drawn at
+     `moon_scale` and `sun_scale` since, and the moon wears its own `moon_id`
+     texture. What is left of it is the **stars**, which are a hash rather
+     than a catalogue -- and note that the live document names no `star_id` at
+     all, so unlike the moon there is nothing to fetch. Neither turns with the
+     night, either: the field is fixed to the world axes rather than to a
+     celestial pole.
    - ~~**The water surface itself.**~~ Done in the seventh pass: the two wave
      directions and both Fresnel fields are read and drawn, and the fixed
      sky-reflection mixture in `water_tint` is gone from the 3D path (it stays
      for the 2D one, which has no angle to measure). What is left of it is
-     `normal_map`, which names a texture asset nobody here has fetched -- so
-     the wavelength and the steepness of the waves are this viewer's constants
-     rather than the region's. There is also no sun glitter: a specular
+     `normal_map`: the wavelength and the steepness of the waves are this
+     viewer's constants
+     rather than the region's -- though `normal_map` is now fetched and
+     cached, so what is left is sampling it rather than finding it. There is
+     also no sun glitter: a specular
      highlight off the wave crests is the most recognisable thing about the SL
      sea from a low camera, and nothing draws one. Screenshot the sea before
      believing any change to it -- the GL tests read single pixels, and an

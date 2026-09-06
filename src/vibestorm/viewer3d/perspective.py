@@ -781,6 +781,12 @@ uniform float u_moon_level;
 // asks for the sun and the moon to be drawn.
 uniform vec2 u_sun_disc;
 uniform vec2 u_moon_disc;
+// The moon's own face, and whether one has arrived. `moon_id` is an ordinary
+// texture behind the ordinary GetTexture capability, so the moon is a
+// photograph rather than a disc of one colour -- but it is fetched over the
+// network mid-session, and until it lands there has to be something up there.
+uniform sampler2D u_moon_tex;
+uniform float u_moon_textured;
 uniform float u_star_level;
 uniform vec3 u_cloud_color;
 // x: coarse coverage, y: fine coverage, z: variance.
@@ -917,9 +923,39 @@ void main() {
     // degree across, which at this field of view is a few pixels and reads as
     // a speck.
     if (u_moon_level > 0.0) {
-        float moon_alignment = dot(dir, normalize(u_moon_dir));
+        vec3 moon = normalize(u_moon_dir);
+        float moon_alignment = dot(dir, moon);
         float disc = smoothstep(u_moon_disc.x, u_moon_disc.y, moon_alignment);
-        rgb += vec3(0.96, 0.95, 0.90) * disc * u_moon_level;
+        vec3 face = vec3(0.96, 0.95, 0.90);
+        if (u_moon_textured > 0.0 && disc > 0.0) {
+            // Two axes across the moon's own face. Any pair perpendicular to
+            // the moon would do -- there is nothing in the document saying
+            // which way up it hangs -- so this takes world up, and swings to
+            // world north for a moon overhead, where up and the moon are the
+            // same direction and their cross product is nothing.
+            vec3 across = abs(moon.z) > 0.999
+                ? normalize(cross(vec3(0.0, 1.0, 0.0), moon))
+                : normalize(cross(vec3(0.0, 0.0, 1.0), moon));
+            vec3 upward = cross(moon, across);
+            // The disc's outer edge as a sine, which is the radius the face
+            // has to span: u_moon_disc.x is its cosine.
+            float reach = max(sqrt(1.0 - u_moon_disc.x * u_moon_disc.x), 1e-5);
+            vec2 uv = clamp(
+                0.5 + vec2(dot(dir, across), dot(dir, upward)) / (2.0 * reach),
+                0.0,
+                1.0
+            );
+            vec4 sampled = texture(u_moon_tex, uv);
+            face = sampled.rgb;
+            // The face's own alpha cuts the disc rather than fading toward
+            // the fallback colour: where a moon texture is transparent what
+            // is behind it is the sky, not a paler moon. The asset that
+            // prompted this is a photograph inscribed in its own square, so
+            // its corners are transparent and the disc would otherwise put
+            // four dark spurs on them.
+            disc *= sampled.a;
+        }
+        rgb += face * disc * u_moon_level;
     }
 
     // Clouds, over the stars and the moon and under the sun.
@@ -999,6 +1035,14 @@ _SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 #: **under** the surface, which is a different quantity in a different medium,
 #: and using it here would be reading the document to mean something it does
 #: not say.
+#: Which texture unit the sky pass binds the moon's face to.
+#:
+#: Not zero. The terrain pass owns units 0 through 3 for its four ground
+#: textures, and although the two passes never run together, a sampler left
+#: pointing at unit 0 reads whatever was bound there last -- which on a frame
+#: with terrain in it is the ground, stretched across the moon.
+_MOON_TEXTURE_UNIT: int = 4
+
 WATER_HAZE_NEAR_M: float = 260.0
 WATER_HAZE_FAR_M: float = 900.0
 
@@ -1817,6 +1861,7 @@ class PerspectiveRenderer:
                     star_level=float(getattr(scene, "star_level", 0.0) or 0.0),
                     sun_disc=getattr(scene, "sun_disc", DEFAULT_SUN_DISC),
                     moon_disc=getattr(scene, "moon_disc", DEFAULT_MOON_DISC),
+                    moon_texture=self._moon_texture(ctx, scene),
                     cloud_color=getattr(scene, "cloud_color", (0.41, 0.41, 0.41)),
                     # The toggle is spent here rather than in the shader: a
                     # zero cover skips the whole noise field, which is the
@@ -3057,6 +3102,7 @@ class PerspectiveRenderer:
         star_level: float = 0.0,
         sun_disc: tuple[float, float] = DEFAULT_SUN_DISC,
         moon_disc: tuple[float, float] = DEFAULT_MOON_DISC,
+        moon_texture: object | None = None,
         cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41),
         cloud_cover: tuple[float, float, float] = (0.0, 0.0, 0.0),
         cloud_scale_drift: tuple[float, float, float] = (900.0, 0.0, 0.0),
@@ -3081,6 +3127,13 @@ class PerspectiveRenderer:
         self._sky_program["u_moon_level"].value = float(moon_level)
         self._sky_program["u_sun_disc"].value = sun_disc
         self._sky_program["u_moon_disc"].value = moon_disc
+        # Unit 3: the terrain pass owns 0 through 3 but never runs beside this
+        # one, and leaving the moon on 0 would have it read whatever the last
+        # pass bound there.
+        self._sky_program["u_moon_tex"].value = _MOON_TEXTURE_UNIT
+        self._sky_program["u_moon_textured"].value = 1.0 if moon_texture is not None else 0.0
+        if moon_texture is not None:
+            moon_texture.use(location=_MOON_TEXTURE_UNIT)
         self._sky_program["u_star_level"].value = float(star_level)
         self._sky_program["u_cloud_color"].value = cloud_color
         self._sky_program["u_cloud_cover"].value = cloud_cover
@@ -3156,6 +3209,18 @@ class PerspectiveRenderer:
             texture.use(location=index)
         assert self._terrain_texture_vao is not None
         self._terrain_texture_vao.render()
+
+    def _moon_texture(self, ctx: moderngl.Context, scene: Scene) -> object | None:
+        """The moon's face, if the day cycle named one and it has arrived.
+
+        Goes through the object texture cache rather than a cache of its own:
+        it is one texture from the same capability with the same lifetime, and
+        asking for it each frame is also what keeps it off the eviction list.
+        """
+        texture_id = getattr(scene, "moon_texture_id", None)
+        if texture_id is None:
+            return None
+        return self._upload_object_texture(ctx, scene, texture_id)
 
     def _upload_object_texture(
         self, ctx: moderngl.Context, scene: Scene, texture_id: UUID

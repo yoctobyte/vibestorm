@@ -3603,6 +3603,16 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
             if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
                 continue
             return texture_id
+    # Then the day cycle's own: the moon's face, the cloud layer and the
+    # water's normal map are asset ids like any other, and they cover the
+    # whole sky and the whole sea. Same argument as the ground textures above,
+    # only more so -- there is one of each and a region's worth of prims.
+    environment = session.world_view.environment
+    if environment is not None:
+        for texture_id in environment.texture_assets():
+            if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
+                continue
+            return texture_id
     for obj in session.world_view.objects.values():
         texture_ids = [obj.default_texture_id]
         if obj.texture_entry is not None:

@@ -534,6 +534,10 @@ class Scene:
     # product against.
     sun_disc: tuple[float, float] = DEFAULT_SUN_DISC
     moon_disc: tuple[float, float] = DEFAULT_MOON_DISC
+    # The moon's own face. `moon_id` is an ordinary texture asset behind the
+    # ordinary GetTexture capability, so the disc need not be a flat circle:
+    # this is the id, and `texture_paths` says whether it has arrived yet.
+    moon_texture_id: UUID | None = None
     # How much of the direct sun the region's cloud layer leaves on the
     # ground. 1.0 is a clear sky.
     cloud_shadow: float = 1.0
@@ -590,6 +594,7 @@ class Scene:
             self.star_level = 0.0
             self.sun_disc = DEFAULT_SUN_DISC
             self.moon_disc = DEFAULT_MOON_DISC
+            self.moon_texture_id = None
             self.cloud_shadow = 1.0
             self.cloud_cover = (0.0, 0.0, 0.0)
             return
@@ -629,6 +634,7 @@ class Scene:
         self.star_level = star_level(sky)
         self.sun_disc = sun_disc(sky)
         self.moon_disc = moon_disc(sky)
+        self.moon_texture_id = _asset_id(sky.moon_id)
         self.cloud_shadow = cloud_shadow_scale(sky)
         coarse, fine = cloud_cover(sky)
         self.cloud_color = cloud_hue(sky)
@@ -1208,6 +1214,22 @@ def _self_avatar_position(world_view: object) -> tuple[float, float, float] | No
         if getattr(terse, "is_avatar", False):
             return getattr(terse, "position", None)
     return None
+
+
+def _asset_id(raw: str) -> UUID | None:
+    """A day cycle's texture id, or None where there is not one.
+
+    The null id is the document's way of writing "no texture" -- `sun_id` is
+    null in every keyframe of the default cycle -- so it reads the same here as
+    an absent field or an unparsable one: draw the client's own.
+    """
+    if not raw:
+        return None
+    try:
+        asset_id = UUID(raw)
+    except ValueError:
+        return None
+    return None if asset_id.int == 0 else asset_id
 
 
 def _as_vec3(value: object | None) -> tuple[float, float, float] | None:
