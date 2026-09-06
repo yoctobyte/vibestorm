@@ -564,7 +564,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         sculpt = UUID("99999999-1111-2222-3333-aaaaaaaaaaaa")
         session.texture_fetch_attempted.add(first)
         session.texture_fetch_attempted.add(second)
-        session.world_view.objects[UUID(int=1)] = WorldObject(
+        session.world_view.remember_object(WorldObject(
             full_id=UUID(int=1), local_id=1, parent_id=0, pcode=9,
             material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
             update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
@@ -573,8 +573,8 @@ class LiveCircuitSessionTests(unittest.TestCase):
             texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
             ps_block_size=0, extra_params_size=0, extra_params_entries=(),
             default_texture_id=first,
-        )
-        session.world_view.objects[UUID(int=2)] = WorldObject(
+        ))
+        session.world_view.remember_object(WorldObject(
             full_id=UUID(int=2), local_id=2, parent_id=0, pcode=9,
             material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
             update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
@@ -584,11 +584,11 @@ class LiveCircuitSessionTests(unittest.TestCase):
             ps_block_size=0, extra_params_size=0, extra_params_entries=(),
             default_texture_id=second,
             texture_entry=TextureEntry(default_texture_id=second, face_texture_ids=((4, face),)),
-        )
+        ))
 
         self.assertEqual(_next_pending_object_texture_id(session), face)
         session.texture_fetch_attempted.add(face)
-        session.world_view.objects[UUID(int=3)] = WorldObject(
+        session.world_view.remember_object(WorldObject(
             full_id=UUID(int=3), local_id=3, parent_id=0, pcode=9,
             material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
             update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
@@ -604,7 +604,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                 ),
             ),
             default_texture_id=None,
-        )
+        ))
 
         self.assertEqual(_next_pending_object_texture_id(session), sculpt)
 

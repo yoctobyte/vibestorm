@@ -260,7 +260,7 @@ class NeighbourObjectAssetTests(NeighbourTestCase):
     TEXTURE = UUID("cccccccc-dddd-eeee-ffff-000000000011")
     MESH = UUID("cccccccc-dddd-eeee-ffff-000000000022")
 
-    def _prim(self, *, texture_id=None, mesh_id=None, face_texture_id=None):
+    def _prim(self, *, texture_id=None, mesh_id=None, face_texture_id=None, full_id=None):
         from vibestorm.world.models import ExtraParamEntry, WorldObject
         from vibestorm.world.texture_entry import TextureEntry
 
@@ -280,7 +280,7 @@ class NeighbourObjectAssetTests(NeighbourTestCase):
                 ),
             )
         return WorldObject(
-            full_id=UUID(int=7),
+            full_id=full_id or UUID(int=7),
             local_id=7,
             parent_id=0,
             pcode=9,
@@ -313,7 +313,7 @@ class NeighbourObjectAssetTests(NeighbourTestCase):
         session = self.session()
         circuit = session.open_neighbour(NORTH)
         prim = self._prim(**kwargs)
-        circuit.world_view.objects[prim.full_id] = prim
+        circuit.world_view.remember_object(prim)
         return session
 
     def test_a_prim_next_door_gets_its_texture_fetched(self) -> None:
@@ -336,8 +336,7 @@ class NeighbourObjectAssetTests(NeighbourTestCase):
 
         here = UUID("cccccccc-dddd-eeee-ffff-000000000033")
         session = self._with_prim(texture_id=self.TEXTURE)
-        ours = self._prim(texture_id=here)
-        session.world_view.objects[UUID(int=8)] = ours
+        session.world_view.remember_object(self._prim(texture_id=here, full_id=UUID(int=8)))
         self.assertEqual(_next_pending_object_texture_id(session), here)
 
     def test_a_texture_already_fetched_is_not_asked_for_again(self) -> None:
@@ -369,7 +368,7 @@ class NeighbourObjectAssetTests(NeighbourTestCase):
 
         here = UUID("cccccccc-dddd-eeee-ffff-000000000044")
         session = self._with_prim(mesh_id=self.MESH)
-        session.world_view.objects[UUID(int=8)] = self._prim(mesh_id=here)
+        session.world_view.remember_object(self._prim(mesh_id=here, full_id=UUID(int=8)))
         self.assertEqual(_next_pending_mesh_asset_id(session), here)
 
     def test_a_mesh_already_fetched_is_not_asked_for_again(self) -> None:
@@ -389,6 +388,203 @@ class NeighbourObjectAssetTests(NeighbourTestCase):
         session.open_neighbour(NORTH)
         self.assertIsNone(_next_pending_object_texture_id(session))
         self.assertIsNone(_next_pending_mesh_asset_id(session))
+
+
+class TheAssetQueueTests(NeighbourTestCase):
+    """The queue behind the two fetches, and why it is a queue.
+
+    Both drains run inside the receive loop, once per tick. They used to find
+    their next asset by walking every object in view, which measured 135 ms a
+    tick at 15,000 prims and 1.15 s with a region announced on every side --
+    time the session spends not acking and not sending `AgentUpdate`, which a
+    simulator reads as a viewer that has gone away. That is the same failure
+    the awaited seed-cap POST had, and it would have shown up in the same
+    place: a real grid, near a corner.
+    """
+
+    TEXTURE = UUID("cccccccc-dddd-eeee-ffff-000000000011")
+
+    def _prim(self, full_id: UUID, texture_id: UUID):
+        from vibestorm.world.models import WorldObject
+
+        return WorldObject(
+            full_id=full_id, local_id=full_id.int & 0xFFFF, parent_id=0, pcode=9,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), state=0, crc=0,
+            update_flags=0, region_handle=0, time_dilation=0, object_data_size=0,
+            position=(1.0, 1.0, 1.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+            default_texture_id=texture_id,
+        )
+
+    def test_an_object_that_arrives_joins_both_queues(self) -> None:
+        session = self.session()
+        prim = self._prim(UUID(int=1), self.TEXTURE)
+        session.world_view.remember_object(prim)
+        self.assertIn(prim.full_id, session.world_view.objects_pending_textures)
+        self.assertIn(prim.full_id, session.world_view.objects_pending_meshes)
+
+    def test_an_object_with_nothing_left_to_fetch_leaves_the_queue(self) -> None:
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        session.world_view.remember_object(self._prim(UUID(int=1), self.TEXTURE))
+        session.texture_fetch_attempted.add(self.TEXTURE)
+        self.assertIsNone(_next_pending_object_texture_id(session))
+        self.assertEqual(session.world_view.objects_pending_textures, set())
+
+    def test_an_object_still_owing_a_texture_stays_queued(self) -> None:
+        # A prim names a texture per face, so one answer is not the end of it.
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        prim = self._prim(UUID(int=1), self.TEXTURE)
+        session.world_view.remember_object(prim)
+        self.assertEqual(_next_pending_object_texture_id(session), self.TEXTURE)
+        self.assertIn(prim.full_id, session.world_view.objects_pending_textures)
+
+    def test_the_mesh_drain_does_not_empty_the_texture_queue(self) -> None:
+        # One queue for both would let whichever drain ran first hide every
+        # object from the other.
+        from vibestorm.udp.session import _next_pending_mesh_asset_id
+
+        session = self.session()
+        prim = self._prim(UUID(int=1), self.TEXTURE)
+        session.world_view.remember_object(prim)
+        self.assertIsNone(_next_pending_mesh_asset_id(session))
+        self.assertIn(prim.full_id, session.world_view.objects_pending_textures)
+
+    def test_a_prim_that_was_killed_leaves_the_queues(self) -> None:
+        from vibestorm.udp.messages import KillObjectMessage
+
+        session = self.session()
+        prim = self._prim(UUID(int=1), self.TEXTURE)
+        session.world_view.remember_object(prim)
+        session.world_view.local_id_to_full_id[prim.local_id] = prim.full_id
+        session.world_view.apply_kill_object(
+            KillObjectMessage(local_ids=(prim.local_id,))
+        )
+        self.assertEqual(session.world_view.objects_pending_textures, set())
+        self.assertEqual(session.world_view.objects_pending_meshes, set())
+
+    def test_a_prim_that_left_the_world_does_not_stop_the_drain(self) -> None:
+        # A queued id whose object has gone is ordinary -- `KillObject` takes
+        # linksets away wholesale -- and stopping there would leave every prim
+        # behind it in the queue untextured for as long as the session runs.
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        session.world_view.objects_pending_textures.add(UUID(int=99))
+        session.world_view.remember_object(self._prim(UUID(int=1), self.TEXTURE))
+        self.assertEqual(_next_pending_object_texture_id(session), self.TEXTURE)
+
+    def test_prims_that_left_the_world_all_leave_the_queue(self) -> None:
+        # More than one, deliberately. A drain that gave up at the first id
+        # whose object had gone would take exactly one of these off and leave
+        # the rest -- and `KillObject` takes whole linksets away at once, so
+        # a run of them is the ordinary case rather than a contrived one.
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        for index in range(5):
+            session.world_view.objects_pending_textures.add(UUID(int=90 + index))
+        self.assertIsNone(_next_pending_object_texture_id(session))
+        self.assertEqual(session.world_view.objects_pending_textures, set())
+
+    def test_one_tick_looks_at_a_bounded_number_of_prims(self) -> None:
+        # The bound is the whole point: the cost of a tick cannot be allowed
+        # to grow with the size of the region. The budget is patched rather
+        # than read, so the test says what it wants instead of restating
+        # whatever the constant happens to be.
+        from vibestorm.udp import session as session_module
+
+        session = self.session()
+        session.texture_fetch_attempted.add(self.TEXTURE)
+        for index in range(10):
+            session.world_view.remember_object(
+                self._prim(UUID(int=index + 1), self.TEXTURE)
+            )
+        with self._budget_of(4):
+            self.assertIsNone(
+                session_module._next_pending_object_texture_id(session)
+            )
+        self.assertEqual(len(session.world_view.objects_pending_textures), 6)
+
+    def test_the_budget_is_shared_between_regions(self) -> None:
+        # Otherwise a corner with eight neighbours costs nine budgets a tick,
+        # which is the cost this bound exists to stop.
+        from vibestorm.udp import session as session_module
+
+        session = self.session()
+        circuit = session.open_neighbour(NORTH)
+        session.texture_fetch_attempted.add(self.TEXTURE)
+        for index in range(4):
+            session.world_view.remember_object(
+                self._prim(UUID(int=index + 1), self.TEXTURE)
+            )
+            circuit.world_view.remember_object(
+                self._prim(UUID(int=index + 1), self.TEXTURE)
+            )
+        with self._budget_of(4):
+            self.assertIsNone(
+                session_module._next_pending_object_texture_id(session)
+            )
+        self.assertEqual(len(session.world_view.objects_pending_textures), 0)
+        self.assertEqual(len(circuit.world_view.objects_pending_textures), 4)
+
+    def test_the_budget_that_ships_is_a_small_one(self) -> None:
+        # The tests above patch it, so that they say what they mean rather
+        # than restating the constant. Something still has to hold the shipped
+        # value to a number a receive-loop tick can afford -- a budget large
+        # enough to reach the end of a mainland region is the same as no
+        # budget at all.
+        from vibestorm.udp.session import ASSET_SCAN_BUDGET
+
+        self.assertGreater(ASSET_SCAN_BUDGET, 0)
+        self.assertLessEqual(ASSET_SCAN_BUDGET, 256)
+
+    def _update_entry(self, full_id: UUID, texture_id: UUID):
+        from vibestorm.udp.messages import ObjectUpdateEntry
+
+        return ObjectUpdateEntry(
+            local_id=full_id.int & 0xFFFF, state=0, full_id=full_id, crc=0, pcode=9,
+            material=0, click_action=0, scale=(1.0, 1.0, 1.0), object_data_size=0,
+            parent_id=0, update_flags=0, position=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0), variant="prim_basic", name_values={},
+            texture_entry_size=0, texture_anim_size=0, data_size=0, text_size=0,
+            media_url_size=0, ps_block_size=0, extra_params_size=0,
+            default_texture_id=texture_id, texture_entry=None,
+            interesting_payloads=(),
+        )
+
+    def _budget_of(self, budget: int):
+        from unittest.mock import patch
+
+        from vibestorm.udp import session as session_module
+
+        return patch.object(session_module, "ASSET_SCAN_BUDGET", budget)
+
+    def test_an_object_update_off_the_wire_reaches_the_queue(self) -> None:
+        """The path that actually happens, rather than the door beside it.
+
+        Every other test here puts an object in with `remember_object`. This
+        one drives a real `ObjectUpdate` through the model, which is the only
+        way a prim ever arrives -- and the only thing that would catch
+        `apply_object_update` going back to assigning ``objects[...]``.
+        """
+        from vibestorm.udp.messages import ObjectUpdateMessage
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self.session()
+        session.world_view.apply_object_update(
+            ObjectUpdateMessage(
+                region_handle=7,
+                time_dilation=42,
+                objects=(self._update_entry(UUID(int=5), self.TEXTURE),),
+            )
+        )
+        self.assertEqual(_next_pending_object_texture_id(session), self.TEXTURE)
 
 
 class DiallingDoesNotStopThePumpTests(unittest.IsolatedAsyncioTestCase):

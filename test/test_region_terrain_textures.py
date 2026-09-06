@@ -134,11 +134,12 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
             terrain_detail=DETAIL,
         )
         prim_texture = UUID(int=0xEEEE)
-        view.objects[UUID(int=1)] = SimpleNamespace(
+        view.remember_object(SimpleNamespace(
+            full_id=UUID(int=1),
             default_texture_id=prim_texture,
             texture_entry=None,
             extra_params_entries=(),
-        )
+        ))
         session = SimpleNamespace(
             world_view=view,
             texture_paths={},
@@ -180,11 +181,12 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
             sky_track=((0.0, SkySettings(moon_id=str(moon))),),
         )
         prim_texture = UUID(int=0xEEEE)
-        view.objects[UUID(int=1)] = SimpleNamespace(
+        view.remember_object(SimpleNamespace(
+            full_id=UUID(int=1),
             default_texture_id=prim_texture,
             texture_entry=None,
             extra_params_entries=(),
-        )
+        ))
         session = SimpleNamespace(
             world_view=view,
             texture_paths={},
@@ -209,11 +211,12 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
         view = WorldView()
         view.set_region(name="TestSim", grid_x=1, grid_y=2, terrain_detail=DETAIL)
         prim_texture = UUID(int=0xEEEE)
-        view.objects[UUID(int=1)] = SimpleNamespace(
+        view.remember_object(SimpleNamespace(
+            full_id=UUID(int=1),
             default_texture_id=prim_texture,
             texture_entry=None,
             extra_params_entries=(),
-        )
+        ))
         session = SimpleNamespace(
             world_view=view,
             texture_paths={},
@@ -235,11 +238,12 @@ class TerrainTextureFetchOrderTests(unittest.TestCase):
         view = WorldView()
         view.set_region(name="TestSim", grid_x=1, grid_y=2)
         prim_texture = UUID(int=0xEEEE)
-        view.objects[UUID(int=1)] = SimpleNamespace(
+        view.remember_object(SimpleNamespace(
+            full_id=UUID(int=1),
             default_texture_id=prim_texture,
             texture_entry=None,
             extra_params_entries=(),
-        )
+        ))
         session = SimpleNamespace(
             world_view=view,
             texture_paths={},

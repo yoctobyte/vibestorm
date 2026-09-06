@@ -183,6 +183,22 @@ class WorldView:
     coarse_location_updates: int = 0
     object_update_events: int = 0
     object_properties_family_events: int = 0
+    #: Objects whose textures and mesh assets nobody has looked at yet: the
+    #: queue behind the two asset fetches, which drain one asset per tick.
+    #:
+    #: A queue rather than a scan because a scan does not fit in a tick. The
+    #: fetches used to find their next asset by walking every object in the
+    #: region, which at 15,000 prims measured 135 ms a tick -- and once the
+    #: regions next door were being walked too, 1.15 s with a region on every
+    #: side. That is time the session spends not reading UDP and not sending
+    #: `AgentUpdate`, which a simulator reads as a viewer that has gone away.
+    #:
+    #: Only `remember_object` adds to these, and so only a full `ObjectUpdate`
+    #: does. A terse update replaces the object but carries its asset fields
+    #: over by reference, and so does `ObjectPropertiesFamily`; neither can
+    #: introduce an asset that was not already queued.
+    objects_pending_textures: set[UUID] = field(default_factory=set)
+    objects_pending_meshes: set[UUID] = field(default_factory=set)
     #: Long-form properties per object, from `ObjectProperties`. Only ever
     #: populated for objects that have been selected.
     object_properties: dict[UUID, ObjectPropertiesEntry] = field(default_factory=dict)
@@ -293,6 +309,18 @@ class WorldView:
         )
         self.object_update_events += 1
 
+    def remember_object(self, obj: WorldObject) -> None:
+        """Put an object in the world, and in the queue behind the asset fetches.
+
+        The one door for a *new or re-described* object. Assigning
+        ``objects[...]`` directly puts a prim in the world that the texture
+        and mesh fetches will never look at, because they read the queue
+        rather than walking the region.
+        """
+        self.objects[obj.full_id] = obj
+        self.objects_pending_textures.add(obj.full_id)
+        self.objects_pending_meshes.add(obj.full_id)
+
     def apply_object_update(self, message: ObjectUpdateMessage) -> None:
         self.apply_object_update_summary(
             ObjectUpdateSummary(
@@ -347,7 +375,7 @@ class WorldView:
                     else None
                 ),
             )
-            self.objects[obj.full_id] = new_obj
+            self.remember_object(new_obj)
             self.local_id_to_full_id[obj.local_id] = obj.full_id
             self.terse_objects.pop(obj.local_id, None)
 
@@ -448,6 +476,8 @@ class WorldView:
             full_id = self.local_id_to_full_id.pop(local_id, None)
             if full_id is not None:
                 self.objects.pop(full_id, None)
+                self.objects_pending_textures.discard(full_id)
+                self.objects_pending_meshes.discard(full_id)
             self.terse_objects.pop(local_id, None)
 
     def apply_object_properties(self, message: ObjectPropertiesMessage) -> None:

@@ -8,7 +8,7 @@ import math
 import random
 import socket
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -3826,21 +3826,78 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
             if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
                 continue
             return texture_id
-    for obj in session.world_view.objects.values():
-        texture_id = _first_unfetched_texture(session, _object_texture_ids(obj))
-        if texture_id is not None:
-            return texture_id
-    # Last of all, the prims standing in the regions next door. Last because
-    # the nearest of them is 256 m away and the furthest over seven hundred:
-    # a prim underfoot is worth more pixels than any of them, and this drains
-    # one texture per tick. They go through the same GetTexture capability --
-    # asset ids are grid-wide, so a neighbour's prims need no pipeline of
-    # their own either.
+    # Then the prims: this region's first, then the ones next door. Last
+    # because the nearest of those is 256 m away and the furthest over seven
+    # hundred, and a prim underfoot is worth more pixels than any of them.
+    # They go through the same GetTexture capability -- asset ids are
+    # grid-wide, so a neighbour's prims need no pipeline of their own either.
+    #
+    # Read off `objects_pending_textures` rather than by walking the region.
+    # Walking it cost 135 ms a tick at 15,000 prims, and 1.15 s with a region
+    # announced on every side -- time the session spends not acking and not
+    # sending `AgentUpdate`.
+    return _drain_pending_textures(session)
+
+
+def _asset_world_views(session: LiveCircuitSession) -> Iterator[WorldView]:
+    """This region's world, then every region next door, in that order."""
+    yield session.world_view
     for circuit in session.neighbours.values():
-        for obj in circuit.world_view.objects.values():
+        yield circuit.world_view
+
+
+#: How many objects one drain looks at, across every region, before giving up
+#: for this tick.
+#:
+#: The drains run inside the receive loop, so their cost has to be bounded by
+#: something other than the size of the region. Whatever a drain looks at
+#: leaves the queue, so a budget delays the last asset of a freshly loaded
+#: region by a few ticks and costs nothing else -- and in the ordinary case it
+#: is never reached, because a drain returns the moment it finds something to
+#: fetch. It bites only when a great many queued prims have nothing left to
+#: ask for, which is what a region of already-cached textures looks like.
+ASSET_SCAN_BUDGET = 64
+
+
+def _drain_pending_textures(session: LiveCircuitSession) -> UUID | None:
+    """The next unfetched texture anywhere in view, emptying the queues as it goes.
+
+    ``pop`` rather than ``next(iter(...))``: CPython remembers where the last
+    pop left off, while a fresh iterator rescans the table from the start
+    every time, which turns emptying a large queue into quadratic work. An
+    object is put back while it still has an unfetched texture, because a
+    prim can name one per face; the caller marks each id attempted, so the
+    next call moves past it and the queue still empties.
+    """
+    budget = ASSET_SCAN_BUDGET
+    for view in _asset_world_views(session):
+        while budget > 0 and view.objects_pending_textures:
+            budget -= 1
+            full_id = view.objects_pending_textures.pop()
+            obj = view.objects.get(full_id)
+            if obj is None:
+                continue
             texture_id = _first_unfetched_texture(session, _object_texture_ids(obj))
             if texture_id is not None:
+                view.objects_pending_textures.add(full_id)
                 return texture_id
+    return None
+
+
+def _drain_pending_meshes(session: LiveCircuitSession) -> UUID | None:
+    """The next unfetched mesh asset anywhere in view. Same shape as above."""
+    budget = ASSET_SCAN_BUDGET
+    for view in _asset_world_views(session):
+        while budget > 0 and view.objects_pending_meshes:
+            budget -= 1
+            full_id = view.objects_pending_meshes.pop()
+            obj = view.objects.get(full_id)
+            if obj is None:
+                continue
+            mesh_id = _first_unfetched_mesh(session, obj)
+            if mesh_id is not None:
+                view.objects_pending_meshes.add(full_id)
+                return mesh_id
     return None
 
 
@@ -3933,20 +3990,13 @@ def _next_pending_physics_object_id(session: LiveCircuitSession) -> UUID | None:
 
 
 def _next_pending_mesh_asset_id(session: LiveCircuitSession) -> UUID | None:
-    for obj in session.world_view.objects.values():
-        mesh_id = _first_unfetched_mesh(session, obj)
-        if mesh_id is not None:
-            return mesh_id
-    # Then the regions next door. A mesh prim whose asset never arrives is
-    # drawn as the fallback cube, which next door means a skyline of boxes
-    # where the buildings are -- more conspicuous than an untextured face,
-    # not less.
-    for circuit in session.neighbours.values():
-        for obj in circuit.world_view.objects.values():
-            mesh_id = _first_unfetched_mesh(session, obj)
-            if mesh_id is not None:
-                return mesh_id
-    return None
+    """The next mesh asset to fetch: this region's first, then next door's.
+
+    A mesh prim whose asset never arrives is drawn as the fallback cube,
+    which next door means a skyline of boxes where the buildings are -- more
+    conspicuous than an untextured face, not less.
+    """
+    return _drain_pending_meshes(session)
 
 
 def _first_unfetched_mesh(session: LiveCircuitSession, obj: object) -> UUID | None:

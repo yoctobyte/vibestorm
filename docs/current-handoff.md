@@ -543,6 +543,54 @@ a neighbour's terrain starts is not the client doing anything wrong.
 `ScenePresence.cs` was added to `referencedocs/` for it. Three lines are
 queued in `spec/divergence-queue.md`.
 
+**And a defect the neighbours only made visible (2026-09-06).** Walking
+the regions next door for their prims' textures was nine times a cost that
+was already too large, so it got measured, which is the first time anyone
+had measured it: `_next_pending_object_texture_id` found its next asset by
+walking **every object in view, once per receive-loop tick**. At 15,000
+prims that is 135 ms a tick; with a region announced on every side, 1.15 s.
+Both numbers are time the session spends not acking and not sending
+`AgentUpdate`, which is the same failure the awaited seed-cap POST had and
+would have shown up in the same place -- a real grid, near a corner.
+
+`WorldView` now carries `objects_pending_textures` and
+`objects_pending_meshes`, and `remember_object` is the one door a new or
+re-described object comes through. Only a full `ObjectUpdate` queues
+anything: a terse update replaces the object but carries its asset fields
+over by reference, and so does `ObjectPropertiesFamily`, so neither can
+introduce an asset that was not already queued. `KillObject` takes ids back
+out. Two queues rather than one, because whichever drain ran first would
+otherwise hide every object from the other.
+
+Two things were needed beyond the queue itself, and one of them was a
+surprise. `pop()` rather than `next(iter(...))`: CPython remembers where the
+last pop left off, while a fresh iterator rescans the set's table from the
+start every time, which made emptying a large queue quadratic -- the first
+tick after a region of already-cached prims arrived measured **29 seconds**,
+far worse than the scan it replaced. And a budget, `ASSET_SCAN_BUDGET = 64`,
+shared across every region rather than per region: a drain returns the
+moment it finds something to fetch, so the bound only bites when a great
+many queued prims have nothing left to ask for, which is exactly what a
+region of cached textures looks like.
+
+    15,000 prims, no neighbours    135 ms a tick  ->  0.7 ms
+    135,000 prims, eight of them  1149 ms a tick  ->  0.7 ms
+
+Flat in both, which is the point: a tick's cost no longer grows with the
+world. Eleven tests; twelve mutants planted and eleven killed, the survivor
+equivalent (a prim carries one mesh asset, so putting it back in the queue
+after answering for it changes nothing). One of those tests exists because
+of a survivor worth naming: every other test here puts a prim in with
+`remember_object`, and none of them noticed `apply_object_update` going back
+to assigning `objects[...]` -- the only path a prim ever actually arrives
+by. Two others hold the budget: the tests patch it so they say what they
+mean, so something separate has to hold the shipped value to a number a tick
+can afford.
+
+The tests that inserted straight into `world_view.objects` now go through
+`remember_object`, which is the better test anyway: a prim put into the
+world around the model's own door is one the fetches will never look at.
+
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
 eighteen seconds since 2026-09-05 23:26 -- 2970 times by the time anyone
