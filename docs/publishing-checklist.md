@@ -31,7 +31,10 @@ git grep -n -I -E '(ghp_|github_pat_|sk-[A-Za-z0-9]|xox[baprs]-|AKIA[0-9A-Z]{16}
   open source.
 - Review bundled reference material before publication:
   - `referencedocs/` contains OpenSim source excerpts with BSD-style headers.
-  - `third_party/secondlife/llviewerregion.cpp` is LGPL 2.1-only viewer source.
+  - No viewer implementation source is bundled. `llviewerregion.cpp` was, from
+    the initial import until 2026-09-06; it was LGPL 2.1-only, and AGENTS.md
+    forbids consulting viewer source at all, so it is deleted rather than
+    caveated. `tools/fetch_protocol_artifacts.sh` no longer fetches it.
   - `third_party/secondlife/message_template.msg` and related artifacts should
     retain provenance and any applicable upstream license/notice material.
 - If the public repo should avoid license complexity, remove or replace bundled
