@@ -2106,7 +2106,11 @@ class PerspectiveRenderer:
         # that has not moved packs to exactly what it packed to last frame.
         # ``Scene`` hands back the same ``SceneEntity`` object for anything
         # unchanged, so ``is`` is what says whether this is still good.
-        self._instance_blobs: dict[int, tuple[SceneEntity, bytes]] = {}
+        # Keyed by ``(region handle, local id)``, not by local id alone:
+        # local ids are assigned per region, so a prim next door can carry the
+        # same id as one underfoot and the cache would hand it that prim's
+        # model matrix.
+        self._instance_blobs: dict[tuple[int, int], tuple[SceneEntity, bytes]] = {}
         #: This frame's daylight, 1.0 until a region's day cycle says otherwise.
         self._light_level: float = 1.0
         self._ambient_light: tuple[float, float, float] = (AMBIENT_LIGHT,) * 3
@@ -2534,6 +2538,14 @@ class PerspectiveRenderer:
             ctx.disable(ctx.DEPTH_TEST)
 
     def pick(self, x: int, y: int, scene: Scene, *, aspect: float) -> int | None:
+        """The local id under the cursor, or None.
+
+        Walks ``scene.object_entities`` and so never returns a prim from the
+        region next door, which is deliberate: the id it would return is only
+        meaningful on that region's circuit, and every selection this client
+        sends goes out on the root one -- it would select whichever prim
+        happens to hold that id underfoot.
+        """
         if aspect <= 0.0:
             return None
 
@@ -3086,6 +3098,10 @@ class PerspectiveRenderer:
         Two sources share one billboard pass: prim hover text, which carries
         its own colour, and avatar name tags, which do not and get
         ``AVATAR_NAME_COLOR``. Both are opt-out via a scene flag.
+
+        The regions next door are left out. Their nearest prim is 256 m away
+        and their far one over 700 m; text that reads as a label up close is
+        a smear of pixels at that range, and every one of them is drawn.
         """
         labels: list[tuple[SceneEntity, str, tuple[int, int, int, int]]] = []
         if getattr(scene, "render_hover_text", True):
@@ -3176,10 +3192,7 @@ class PerspectiveRenderer:
         the on-screen layout is deterministic frame to frame.
         """
         groups: dict[str, list[SceneEntity]] = {}
-        for entity in (
-            *scene.object_entities.values(),
-            *scene.avatar_entities.values(),
-        ):
+        for entity in scene.drawable_entities():
             if (
                 entity.mesh_source_kind == "mesh"
                 and entity.mesh_asset_id is not None
@@ -3248,7 +3261,7 @@ class PerspectiveRenderer:
             self._mesh_asset_paths[mesh_id] = path
 
     def _upload_scene_sculpt_assets(self, ctx: moderngl.Context, scene: Scene) -> None:
-        for entity in (*scene.object_entities.values(), *scene.avatar_entities.values()):
+        for entity in scene.drawable_entities():
             if entity.mesh_source_kind != "sculpt" or entity.mesh_asset_id is None:
                 continue
             sculpt_id = entity.mesh_asset_id
@@ -3482,9 +3495,14 @@ class PerspectiveRenderer:
             mesh.vao.render(instances=count)
 
     def _pose_for(self, scene: Scene, entity: SceneEntity) -> dict[str, float]:
-        """The bone pitches this avatar should be drawn with, or an empty rest pose."""
+        """The bone pitches this avatar should be drawn with, or an empty rest pose.
+
+        Keyed by local id, and local ids are per region -- so an avatar next
+        door is given the rest pose rather than whichever pose belongs to the
+        prim or avatar holding that id in the region underfoot.
+        """
         poses = getattr(scene, "avatar_poses", None)
-        if not poses:
+        if not poses or entity.region_handle:
             return {}
         return poses.get(entity.local_id) or {}
 
@@ -3513,7 +3531,7 @@ class PerspectiveRenderer:
         was six times the work for the same bytes; and neither changes while
         the prim sits still, which is what most of a region does.
         """
-        cached = self._instance_blobs.get(entity.local_id)
+        cached = self._instance_blobs.get((entity.region_handle, entity.local_id))
         if cached is not None and cached[0] is entity:
             return cached[1]
         quat = entity.rotation if entity.rotation is not None else (0.0, 0.0, 0.0, 1.0)
@@ -3525,17 +3543,18 @@ class PerspectiveRenderer:
             g / 255.0,
             b / 255.0,
         )
-        self._instance_blobs[entity.local_id] = (entity, packed)
+        self._instance_blobs[(entity.region_handle, entity.local_id)] = (entity, packed)
         return packed
 
     def _prune_instance_blobs(self, scene: Scene) -> None:
         """Forget packed instances for prims no longer in view.
 
-        Keyed by local id, so an id reused by a different prim is caught by
-        the identity check rather than by this; what this stops is a session
-        that walks a grid holding one record per prim it has ever seen.
+        Keyed by region handle and local id, so an id reused by a different
+        prim is caught by the identity check rather than by this; what this
+        stops is a session that walks a grid holding one record per prim it
+        has ever seen.
         """
-        in_view = len(scene.object_entities) + len(scene.avatar_entities)
+        in_view = scene.drawable_entity_count()
         if len(self._instance_blobs) > 2 * in_view + 64:
             self._instance_blobs.clear()
 

@@ -201,6 +201,54 @@ class RenderModeMenuTests(unittest.TestCase):
         # a blank line would read as "the region is fine".
         self.assertIn("sim: (no stats yet)", text)
 
+    def test_diagnostics_window_counts_the_regions_next_door(self) -> None:
+        """Announced, drawn, populated -- the two failures look alike without it.
+
+        Regions announced with no ground is the seed capability never being
+        POSTed to; ground with no prims is a circuit nobody listened to. From
+        a camera at the border both read as "the neighbour is empty".
+        """
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import NeighbourTerrain, Scene
+        from vibestorm.world.terrain import RegionHeightmap
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+            show_diagnostics=True,
+        )
+        handle = (256000 << 32) | 256512
+        scene = Scene()
+        scene.neighbour_regions[handle] = "127.0.0.1:9001"
+        scene.neighbour_terrain = (
+            NeighbourTerrain(
+                handle=handle,
+                offset=(0.0, 256.0),
+                heightmap=RegionHeightmap(width=2, height=2, samples=[1.0] * 4),
+            ),
+        )
+
+        hud.update(0.05, scene)
+
+        self.assertIn(
+            "neighbours: 1 announced, 1 with ground, 0 prims, 0 avatars",
+            "\n".join(hud.diagnostics_lines),
+        )
+
+    def test_diagnostics_window_says_when_none_were_announced(self) -> None:
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+            show_diagnostics=True,
+        )
+        hud.update(0.05, Scene())
+        self.assertIn("neighbours: none announced", "\n".join(hud.diagnostics_lines))
+
     def test_diagnostics_window_reports_sim_health(self) -> None:
         from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
         from vibestorm.viewer3d.scene import Scene
@@ -427,6 +475,48 @@ class RenderModeMenuTests(unittest.TestCase):
         self.assertEqual(calls, [("render_terrain_lines", not before)])
         expected_mark = "[x] Mesh Lines" if not before else "[ ] Mesh Lines"
         self.assertIn(expected_mark, hud.render_terrain_lines_button.text)
+
+    def test_the_regions_next_door_can_be_turned_off(self) -> None:
+        # The one setting here that can cost a region's worth of geometry
+        # each, and on a mainland corner there are eight of them.
+        from vibestorm.viewer3d.hud import HUD
+
+        calls: list[tuple[str, object]] = []
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            on_render_setting_change=lambda name, value: calls.append((name, value)),
+        )
+        before = hud._render_setting_values["render_neighbours"]
+
+        consumed = self._click(hud, hud.render_neighbours_button)
+
+        self.assertTrue(consumed)
+        self.assertEqual(calls, [("render_neighbours", not before)])
+
+    def test_a_setting_the_scene_owns_is_read_back_from_it(self) -> None:
+        """Every toggle here, not just the four that used to be listed.
+
+        The refresh *replaces* the dict the buttons are drawn from, and a
+        missing key reads as on -- so a setting left out of it changed the
+        world and left its own button saying [x]. Sky and clouds did exactly
+        that.
+        """
+        from vibestorm.viewer3d.hud import HUD
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD((640, 480), on_chat_submit=lambda text: None)
+        hud.render_settings_window.show()
+        scene = Scene()
+        scene.render_sky = False
+        scene.render_clouds = False
+        scene.render_neighbours = False
+
+        hud.update(0.05, scene)
+
+        self.assertIn("[ ] Sky", hud.render_sky_button.text)
+        self.assertIn("[ ] Clouds", hud.render_clouds_button.text)
+        self.assertIn("[ ] Regions Next Door", hud.render_neighbours_button.text)
 
     def test_water_opacity_slider_calls_callback(self) -> None:
         from vibestorm.viewer3d.hud import HUD

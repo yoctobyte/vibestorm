@@ -842,6 +842,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             "render_objects",
             "render_sky",
             "render_clouds",
+            "render_neighbours",
         }:
             setattr(scene, name, bool(value))
         elif name == "water_alpha":

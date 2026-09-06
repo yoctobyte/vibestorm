@@ -93,6 +93,91 @@ def _land_blob(
     return writer.to_bytes()
 
 
+OBJECT_UPDATE_HIGH = bytes([0x0C])
+OBJECT_UPDATE_CACHED_HIGH = bytes([0x0E])
+KILL_OBJECT_HIGH = bytes([0x10])
+
+
+def _object_update_message(local_id: int, full_id: UUID, x: float = 1.0) -> bytes:
+    """One prim in one ObjectUpdate, laid out from the message template."""
+    body = (
+        (7).to_bytes(8, "little")            # RegionHandle
+        + (42).to_bytes(2, "little")         # TimeDilation
+        + bytes([1])                         # one ObjectData block
+        + local_id.to_bytes(4, "little")
+        + bytes([3])                         # State
+        + full_id.bytes
+        + (99).to_bytes(4, "little")         # CRC
+        + bytes([9, 3, 1])                   # PCode, Material, ClickAction
+        + pack("<fff", 1.0, 2.0, 3.0)        # Scale
+        + bytes([60])                        # ObjectData length
+        + pack("<fff", x, 2.0, 3.0)          # position
+        + (b"\x00" * 28)
+        + pack("<ffff", 0.0, 0.0, 0.0, 1.0)  # rotation
+        + (b"\x00" * 4)
+        + (0).to_bytes(4, "little")          # ParentID
+        + (5).to_bytes(4, "little")          # UpdateFlags
+        + (b"\x00" * 23)                     # shape block
+        + (0).to_bytes(2, "little")          # TextureEntry length
+        + bytes([0])                         # TextureAnim length
+        + (0).to_bytes(2, "little")          # NameValue length
+        + (0).to_bytes(2, "little")          # Data length
+        + bytes([0])                         # Text length
+        + (b"\x00" * 4)
+        + bytes([0, 0, 0])
+        + (b"\x00" * 66)
+    )
+    return OBJECT_UPDATE_HIGH + body
+
+
+def _object_update_cached_message(local_ids: tuple[int, ...]) -> bytes:
+    body = bytearray((7).to_bytes(8, "little") + (42).to_bytes(2, "little"))
+    body += bytes([len(local_ids)])
+    for local_id in local_ids:
+        body += local_id.to_bytes(4, "little")
+        body += (0x11111111).to_bytes(4, "little")   # CRC
+        body += (5).to_bytes(4, "little")            # UpdateFlags
+    return OBJECT_UPDATE_CACHED_HIGH + bytes(body)
+
+
+IMPROVED_TERSE_HIGH = bytes([0x0F])
+
+
+def _kill_object_message(local_ids: tuple[int, ...]) -> bytes:
+    body = bytes([len(local_ids)])
+    for local_id in local_ids:
+        body += local_id.to_bytes(4, "little")
+    return KILL_OBJECT_HIGH + body
+
+
+def _terse_update_message(local_id: int, x: float = 5.0) -> bytes:
+    """One non-avatar prim in one ImprovedTerseObjectUpdate.
+
+    The Data blob is 44 bytes for a prim -- the parser recognises 44 and 60
+    and treats anything else as truncated, so the length is load-bearing.
+    """
+    data = (
+        local_id.to_bytes(4, "little")
+        + bytes([0])                          # State
+        + bytes([0])                          # not an avatar
+        + pack("<fff", x, 2.0, 3.0)           # position
+        + (b"\x80\x00" * 3)                   # velocity, packed U16s
+        + (b"\x80\x00" * 3)                   # acceleration
+        + (b"\x80\x00" * 4)                   # rotation
+        + (b"\x80\x00" * 3)                   # angular velocity
+    )
+    assert len(data) == 44, len(data)
+    body = (
+        (7).to_bytes(8, "little")             # RegionHandle
+        + (42).to_bytes(2, "little")          # TimeDilation
+        + bytes([1])                          # one ObjectData block
+        + bytes([len(data)])
+        + data
+        + (0).to_bytes(2, "little")           # TextureEntry length
+    )
+    return IMPROVED_TERSE_HIGH + body
+
+
 def _layer_data_message(blob: bytes, layer_type: int) -> bytes:
     return (
         LAYER_DATA_HIGH
@@ -328,6 +413,141 @@ class RememberingTheTerrainTests(NeighbourCircuitTestCase):
         )
         self.assertEqual(circuit.terrain_packets, 0)
         self.assertEqual(circuit.received["LayerData"], 1)
+
+
+class WhatTheRegionHoldsTests(NeighbourCircuitTestCase):
+    """A neighbour's objects, in a world of the neighbour's own."""
+
+    PRIM = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+
+    def test_an_object_update_reaches_this_region_s_world(self) -> None:
+        circuit = self.circuit()
+        circuit.handle_incoming(self.inbound(_object_update_message(4242, self.PRIM)))
+        self.assertIn(self.PRIM, circuit.world_view.objects)
+        self.assertEqual(circuit.object_messages, 1)
+
+    def test_two_regions_keep_their_own_objects(self) -> None:
+        # Local ids are assigned per region, so object 42 next door and
+        # object 42 underfoot are two different prims. One dictionary for
+        # both silently loses one of them.
+        north, east = self.circuit(), self.circuit()
+        other = UUID("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+        north.handle_incoming(self.inbound(_object_update_message(42, self.PRIM, x=10.0)))
+        east.handle_incoming(self.inbound(_object_update_message(42, other, x=20.0)))
+
+        self.assertEqual(list(north.world_view.objects), [self.PRIM])
+        self.assertEqual(list(east.world_view.objects), [other])
+        self.assertAlmostEqual(north.world_view.objects[self.PRIM].position[0], 10.0)
+        self.assertAlmostEqual(east.world_view.objects[other].position[0], 20.0)
+
+    def test_a_cached_update_is_asked_for_in_full(self) -> None:
+        # A cached update is the simulator saying "you already know these".
+        # A circuit that has just opened knows nothing, so every one is a
+        # miss -- and unasked, the region's contents are named and never
+        # described.
+        circuit = self.circuit()
+        replies = circuit.handle_incoming(
+            self.inbound(_object_update_cached_message((7, 9, 11)))
+        )
+        self.assertEqual(self.names(replies), ["RequestMultipleObjects"])
+
+    def test_the_request_names_the_ids_that_were_cached(self) -> None:
+        # No parser for this one -- it is a message this client only ever
+        # sends -- so the assertion reads the wire bytes: a U8 count, then a
+        # CacheMissType byte and a little-endian U32 per object.
+        circuit = self.circuit()
+        replies = circuit.handle_incoming(
+            self.inbound(_object_update_cached_message((7, 9, 11)))
+        )
+        body = self.dispatcher.dispatch(
+            split_packet(decode_zerocode(replies[0])).message
+        ).body
+        objects = body[32:]  # past AgentID and SessionID
+        self.assertEqual(objects[0], 3)
+        self.assertEqual(
+            [
+                int.from_bytes(objects[1 + index * 5 + 1 : 1 + index * 5 + 5], "little")
+                for index in range(3)
+            ],
+            [7, 9, 11],
+        )
+
+    def test_a_cached_update_naming_nothing_asks_for_nothing(self) -> None:
+        # The encoder refuses an empty request, so an empty cached update has
+        # to be dropped here rather than turned into one.
+        circuit = self.circuit()
+        self.assertEqual(
+            circuit.handle_incoming(self.inbound(_object_update_cached_message(()))),
+            [],
+        )
+
+    def test_one_request_always_holds_what_one_cached_update_named(self) -> None:
+        # Both counts are U8s, so the limit is reachable but never exceeded.
+        from vibestorm.udp.neighbour import REQUEST_LIMIT
+
+        circuit = self.circuit()
+        replies = circuit.handle_incoming(
+            self.inbound(_object_update_cached_message(tuple(range(1, 256))))
+        )
+        self.assertEqual(self.names(replies), ["RequestMultipleObjects"])
+        self.assertEqual(REQUEST_LIMIT, 255)
+
+    def test_the_request_for_the_missing_prims_is_sent_reliably(self) -> None:
+        # The one packet in this whole exchange that cannot be re-derived. A
+        # cached update is sent once; if the request it provokes is dropped,
+        # nothing asks again and those prims are named and never described --
+        # a neighbouring region with holes in it and no error anywhere.
+        circuit = self.circuit()
+        replies = circuit.handle_incoming(
+            self.inbound(_object_update_cached_message((7, 9, 11)))
+        )
+        self.assertTrue(split_packet(decode_zerocode(replies[0])).header.is_reliable)
+
+    def test_an_empty_cached_update_is_dropped_and_not_a_failed_encode(self) -> None:
+        # Dropping it and letting the encoder raise both send nothing, so the
+        # reply list cannot tell them apart. The counter can: a region that
+        # says "you know about nothing" is ordinary, and logging it as an
+        # undecodable message would bury the ones that matter.
+        circuit = self.circuit()
+        circuit.handle_incoming(self.inbound(_object_update_cached_message(())))
+        self.assertEqual(
+            [name for name in circuit.received if "undecodable" in name], []
+        )
+
+    def test_a_killed_prim_next_door_is_taken_off_the_map(self) -> None:
+        # Without this the region next door only ever accumulates. Prims are
+        # deleted, returned and walked out of view constantly, and the failure
+        # is a neighbour that slowly fills with buildings nobody can see the
+        # far side of.
+        circuit = self.circuit()
+        circuit.handle_incoming(self.inbound(_object_update_message(4242, self.PRIM)))
+        circuit.handle_incoming(self.inbound(_kill_object_message((4242,))))
+        self.assertEqual(circuit.world_view.objects, {})
+
+    def test_a_prim_next_door_that_moves_moves(self) -> None:
+        # Terse updates are how anything that moves reports it: vehicles,
+        # physical objects, and every avatar after the first full update.
+        # Dropping them leaves the region next door frozen at the moment the
+        # circuit opened.
+        circuit = self.circuit()
+        circuit.handle_incoming(self.inbound(_terse_update_message(4242, x=5.0)))
+        self.assertIn(4242, circuit.world_view.terse_objects)
+        self.assertAlmostEqual(
+            circuit.world_view.terse_objects[4242].position[0], 5.0, places=3
+        )
+
+    def test_an_object_update_owes_no_reply(self) -> None:
+        circuit = self.circuit()
+        self.assertEqual(
+            circuit.handle_incoming(self.inbound(_object_update_message(1, self.PRIM))),
+            [],
+        )
+
+    def test_a_truncated_object_update_does_not_raise(self) -> None:
+        circuit = self.circuit()
+        message = _object_update_message(1, self.PRIM)
+        circuit.handle_incoming(self.inbound(message[: len(message) // 2]))
+        self.assertEqual(circuit.world_view.objects, {})
 
 
 class NothingGetsThroughTests(NeighbourCircuitTestCase):

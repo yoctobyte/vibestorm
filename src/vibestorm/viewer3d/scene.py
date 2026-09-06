@@ -376,6 +376,13 @@ class SceneEntity:
     #: 0 for a root. Kept after composition because the inspector and the
     #: sync path both address objects by their root.
     parent_id: int = 0
+    #: Which region this prim belongs to, and 0 for the one the avatar is
+    #: standing in. Local ids are assigned per region, so 42 next door and 42
+    #: underfoot are two different prims: anything that remembers an entity by
+    #: its local id has to remember this beside it. A non-zero value also
+    #: means "not addressable" -- the root circuit is the only one that sends
+    #: `ObjectSelect`, and it would select the wrong prim.
+    region_handle: int = 0
 
     @property
     def color(self) -> tuple[int, int, int]:
@@ -523,6 +530,21 @@ class Scene:
     _placement: dict[int, tuple[tuple[float, float, float], tuple[float, float, float, float]]] = (
         field(default_factory=dict, repr=False)
     )
+    #: The prims and avatars standing in the regions next door, keyed by
+    #: ``(region handle, local id)``. Deliberately not merged into
+    #: ``object_entities``: that dict is keyed by a bare local id, and it is
+    #: what ``pick()`` walks -- a neighbour prim is drawn but not selectable,
+    #: because the only circuit that sends ``ObjectSelect`` is the root one
+    #: and it would select whatever prim holds that id underfoot.
+    neighbour_object_entities: dict[tuple[int, int], SceneEntity] = field(default_factory=dict)
+    neighbour_avatar_entities: dict[tuple[int, int], SceneEntity] = field(default_factory=dict)
+    #: One entity cache and one placement map per neighbouring region, kept
+    #: beside the offset they were built at. Per region because both are keyed
+    #: by local id, and thrown away when the offset moves -- which is what
+    #: walking across a region boundary does to every one of them.
+    _neighbour_caches: dict[
+        int, tuple[tuple[float, float], dict, dict]
+    ] = field(default_factory=dict, repr=False)
     sun_phase: float | None = None
     sun_direction: tuple[float, float, float] | None = None
     # The region's own weather, from the ExtEnvironment capability, and where
@@ -1102,23 +1124,53 @@ class Scene:
             for local_id, motion in self.avatar_motion.items()
         }
 
+    def drawable_entities(self) -> list[SceneEntity]:
+        """Everything with geometry this frame: here first, then next door.
+
+        The renderer groups by shape and by texture, and neither grouping
+        cares which region a prim came from, so the neighbours ride through
+        the same passes rather than getting a second set of their own.
+        ``render_neighbours`` is honoured here, so turning them off costs
+        nothing further down.
+        """
+        entities = [*self.object_entities.values(), *self.avatar_entities.values()]
+        if self.render_neighbours:
+            entities.extend(self.neighbour_object_entities.values())
+            entities.extend(self.neighbour_avatar_entities.values())
+        return entities
+
+    def drawable_entity_count(self) -> int:
+        """How many of those there are, without building the list."""
+        count = len(self.object_entities) + len(self.avatar_entities)
+        if self.render_neighbours:
+            count += len(self.neighbour_object_entities)
+            count += len(self.neighbour_avatar_entities)
+        return count
+
     def refresh_neighbours(self, session: object | None) -> None:
         """Re-derive the regions next door from the live session.
 
-        A neighbour only counts once its ground has actually arrived. The
-        circuit opens, is answered, and stays empty for a second or two while
-        the patches come in; drawing it at that point paints a flat sheet at
-        zero metres over the sea, which looks far more broken than the sea
-        did.
+        Two halves, on different conditions. The *ground* only counts once
+        its patches have actually arrived: the circuit opens, is answered,
+        and stays empty for a second or two, and drawing it at that point
+        paints a flat sheet at zero metres over the sea, which looks far more
+        broken than the sea did. The *objects* have no such wait -- a prim
+        arrives when it arrives, and one standing over ground that has not
+        landed yet is still in the right place.
         """
+        self.neighbour_object_entities = {}
+        self.neighbour_avatar_entities = {}
         neighbours = getattr(session, "neighbours", None)
         if not neighbours:
             self.neighbour_terrain = ()
+            self._neighbour_caches = {}
             return
         root = getattr(session, "region_handle", None)
         if root is None:
             self.neighbour_terrain = ()
+            self._neighbour_caches = {}
             return
+        self._refresh_neighbour_entities(neighbours, root)
         paths = getattr(session, "texture_paths", {})
         self.neighbour_terrain = tuple(
             NeighbourTerrain(
@@ -1136,6 +1188,37 @@ class Scene:
             for handle, circuit in sorted(neighbours.items())
             if circuit.heightmap.patch_count > 0
         )
+
+    def _refresh_neighbour_entities(self, neighbours: dict, root: int) -> None:
+        """Build every neighbouring region's prims, in this region's frame.
+
+        Each region is walked with its own cache and its own placement map.
+        Sharing the root region's would be wrong twice over: the caches are
+        keyed by local id, which is per region, and the ``is`` fast path would
+        hand a neighbour's entity back for a prim underfoot.
+        """
+        fresh: dict[int, tuple[tuple[float, float], dict, dict]] = {}
+        for handle, circuit in sorted(neighbours.items()):
+            offset = circuit.offset_from(root)
+            remembered = self._neighbour_caches.get(handle)
+            if remembered is None or remembered[0] != offset:
+                cache: dict = {}
+                placement: dict = {}
+            else:
+                _, cache, placement = remembered
+            built = _build_entities(
+                getattr(circuit, "world_view", None),
+                cache=cache,
+                previous_placement=placement,
+                offset=offset,
+                region_handle=handle,
+            )
+            fresh[handle] = (offset, built.cache, built.placement)
+            for local_id, entity in built.objects.items():
+                self.neighbour_object_entities[(handle, local_id)] = entity
+            for local_id, entity in built.avatars.items():
+                self.neighbour_avatar_entities[(handle, local_id)] = entity
+        self._neighbour_caches = fresh
 
     def refresh_from_world_view(self, world_view: object | None) -> None:
         """Re-derive entities from the current WorldView. Called once per frame.
@@ -1173,134 +1256,15 @@ class Scene:
         self.sun_direction = _as_vec3(raw_sun_direction)
         self._refresh_environment(world_view, time_snapshot)
 
-        objects = getattr(world_view, "objects", {})
-        terse_objects = getattr(world_view, "terse_objects", {})
-        # Empty unless something in view has a parent, so a region of
-        # unlinked prims never pays for this.
-        placed = _region_frame_transforms(
-            objects, terse_objects, cache=self._entity_cache, previous=self._placement
+        built = _build_entities(
+            world_view,
+            cache=self._entity_cache,
+            previous_placement=self._placement,
         )
-        self._placement = placed
-
-        # Full ObjectUpdate-derived objects (have rich data).
-        #
-        # Rebuilding all of these every frame is what a 15,000-prim region
-        # costs: decoding extra params, classifying the shape and constructing
-        # the entity came to a quarter of a second per frame, for a world in
-        # which a couple of dozen objects had actually moved. So each entity is
-        # kept beside the ``WorldObject`` it came from. Every update replaces
-        # that object with a new instance (``WorldView`` holds frozen
-        # dataclasses and never edits one in place), so ``is`` is an exact
-        # answer to "has anything about this prim changed?" -- and a child also
-        # has to be rebuilt when its *parent* moved, which the placement
-        # carries.
-        cache = self._entity_cache
-        fresh_cache: dict[int, tuple[object, object, SceneEntity]] = {}
-        for obj in objects.values():
-            local_id = obj.local_id
-            cached = cache.get(local_id)
-            if cached is not None and cached[0] is obj:
-                # Its own data is untouched. A root is then finished -- nothing
-                # else feeds its transform -- and only a child has to check
-                # whether its parent moved underneath it.
-                was_placed = cached[1]
-                if was_placed is None or placed.get(local_id) == was_placed:
-                    entity = cached[2]
-                    fresh_cache[local_id] = cached
-                    if obj.pcode == PCODE_AVATAR:
-                        self.avatar_entities[local_id] = entity
-                    else:
-                        self.object_entities[local_id] = entity
-                    continue
-
-            position = getattr(obj, "position", None)
-            if position is None:
-                continue
-            rot = getattr(obj, "rotation", None)
-            parent_id = int(getattr(obj, "parent_id", 0) or 0)
-            if parent_id:
-                lifted = placed.get(local_id)
-                if lifted is None:
-                    # Its parent has not arrived. Updates are not ordered, so
-                    # this happens for a frame or two routinely; the next frame
-                    # has the parent, and drawing the child at the raw
-                    # parent-relative position it reported would put it by the
-                    # region corner, which is the bug being avoided.
-                    continue
-                position, rot = lifted
-            else:
-                lifted = None
-
-            scale = getattr(obj, "scale", (1.0, 1.0, 1.0))
-            yaw = _quat_to_yaw(rot)
-            name = None
-            properties = getattr(obj, "properties_family", None)
-            if properties is not None:
-                name = getattr(properties, "name", None) or None
-            if name is None:
-                # Avatars never get an ObjectPropertiesFamily; their name
-                # rides the ObjectUpdate NameValue block instead.
-                name = avatar_display_name(getattr(obj, "name_values", None))
-            shape_data = getattr(obj, "shape", None)
-            shape: PrimShape | None = None
-            if shape_data is not None:
-                shape = classify_prim_shape(shape_data.path_curve, shape_data.profile_curve)
-            extra_param_entries = getattr(obj, "extra_params_entries", ())
-            mesh_hint = decode_sculpt_mesh_hint(extra_param_entries)
-            extra_params = decode_extra_params(extra_param_entries)
-            if mesh_hint is not None:
-                shape = mesh_hint.shape
-            entity = SceneEntity(
-                local_id=obj.local_id,
-                pcode=obj.pcode,
-                kind=_kind_for_pcode(obj.pcode),
-                position=position,
-                scale=scale,
-                rotation=rot,
-                rotation_z_radians=yaw,
-                name=name,
-                default_texture_id=getattr(obj, "default_texture_id", None),
-                texture_entry=getattr(obj, "texture_entry", None),
-                shape=shape,
-                mesh_source_kind=mesh_hint.source_kind if mesh_hint is not None else "primitive",
-                mesh_asset_id=mesh_hint.asset_id if mesh_hint is not None else None,
-                sculpt_type=mesh_hint.sculpt_type if mesh_hint is not None else None,
-                extra_params=extra_params,
-                hover_text=getattr(obj, "hover_text", None),
-                hover_text_color=getattr(obj, "hover_text_color", None),
-                tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
-                parent_id=parent_id,
-            )
-            fresh_cache[local_id] = (obj, lifted, entity)
-            if obj.pcode == PCODE_AVATAR:
-                self.avatar_entities[local_id] = entity
-            else:
-                self.object_entities[local_id] = entity
-        self._entity_cache = fresh_cache
-
-        # Terse-only objects (no full ObjectUpdate seen yet) — render a placeholder.
-        for terse in terse_objects.values():
-            if terse.local_id in self.object_entities or terse.local_id in self.avatar_entities:
-                continue
-            yaw = _quat_to_yaw(terse.rotation)
-            pcode = PCODE_AVATAR if terse.is_avatar else PCODE_PRIM
-            entity = SceneEntity(
-                local_id=terse.local_id,
-                pcode=pcode,
-                kind=_kind_for_pcode(pcode),
-                position=terse.position,
-                scale=(0.5, 0.5, 0.5),  # terse-only: minimal placeholder
-                rotation=terse.rotation,
-                rotation_z_radians=yaw,
-                name=None,
-                default_texture_id=None,
-                shape=None,
-                tint=PCODE_COLORS.get(pcode, DEFAULT_MARKER_COLOR),
-            )
-            if terse.is_avatar:
-                self.avatar_entities[terse.local_id] = entity
-            else:
-                self.object_entities[terse.local_id] = entity
+        self.object_entities = built.objects
+        self.avatar_entities = built.avatars
+        self._entity_cache = built.cache
+        self._placement = built.placement
 
         sim_stats = getattr(world_view, "latest_sim_stats", None)
         if sim_stats is not None:
@@ -1349,6 +1313,189 @@ def _as_vec3(value: object | None) -> tuple[float, float, float] | None:
         return (float(x), float(y), float(z))
     except (TypeError, ValueError):
         return None
+
+
+@dataclass(slots=True)
+class _BuiltEntities:
+    """What one region's `WorldView` came to this frame.
+
+    `cache` and `placement` are what the next frame is handed back: keeping
+    them beside the entities is what lets a second region be walked with the
+    same code and its own memory, rather than sharing the root region's.
+    """
+
+    objects: dict[int, SceneEntity]
+    avatars: dict[int, SceneEntity]
+    cache: dict[int, tuple[object, object, SceneEntity]]
+    placement: dict[int, tuple[tuple[float, float, float], tuple[float, float, float, float]]]
+
+
+def _build_entities(
+    world_view: object,
+    *,
+    cache: dict[int, tuple[object, object, SceneEntity]],
+    previous_placement: dict,
+    offset: tuple[float, float] = (0.0, 0.0),
+    region_handle: int = 0,
+) -> _BuiltEntities:
+    """Turn one region's objects into entities, in the root region's frame.
+
+    `offset` is where this region's origin sits relative to the one the
+    avatar is in, in metres -- (0, 0) for that region itself, and straight
+    from `NeighbourCircuit.offset_from` for the ones next door. It is added
+    to the *final* position, after a child has been composed through its
+    parent, because a child's parent-relative position is in its own region's
+    frame either way.
+
+    `region_handle` is stamped on every entity built here. Local ids are
+    assigned per region, so 42 next door and 42 underfoot are different
+    prims; anything keyed by local id downstream -- the renderer's packed
+    instance cache above all -- has to key by the pair or it hands one prim's
+    model matrix to the other.
+    """
+    object_entities: dict[int, SceneEntity] = {}
+    avatar_entities: dict[int, SceneEntity] = {}
+    objects = getattr(world_view, "objects", {})
+    terse_objects = getattr(world_view, "terse_objects", {})
+    offset_x, offset_y = offset
+    shifted = bool(offset_x or offset_y)
+    # Empty unless something in view has a parent, so a region of
+    # unlinked prims never pays for this.
+    placed = _region_frame_transforms(
+        objects, terse_objects, cache=cache, previous=previous_placement
+    )
+
+    # Full ObjectUpdate-derived objects (have rich data).
+    #
+    # Rebuilding all of these every frame is what a 15,000-prim region
+    # costs: decoding extra params, classifying the shape and constructing
+    # the entity came to a quarter of a second per frame, for a world in
+    # which a couple of dozen objects had actually moved. So each entity is
+    # kept beside the ``WorldObject`` it came from. Every update replaces
+    # that object with a new instance (``WorldView`` holds frozen
+    # dataclasses and never edits one in place), so ``is`` is an exact
+    # answer to "has anything about this prim changed?" -- and a child also
+    # has to be rebuilt when its *parent* moved, which the placement
+    # carries.
+    fresh_cache: dict[int, tuple[object, object, SceneEntity]] = {}
+    for obj in objects.values():
+        local_id = obj.local_id
+        cached = cache.get(local_id)
+        if cached is not None and cached[0] is obj:
+            # Its own data is untouched. A root is then finished -- nothing
+            # else feeds its transform -- and only a child has to check
+            # whether its parent moved underneath it.
+            was_placed = cached[1]
+            if was_placed is None or placed.get(local_id) == was_placed:
+                entity = cached[2]
+                fresh_cache[local_id] = cached
+                if obj.pcode == PCODE_AVATAR:
+                    avatar_entities[local_id] = entity
+                else:
+                    object_entities[local_id] = entity
+                continue
+
+        position = getattr(obj, "position", None)
+        if position is None:
+            continue
+        rot = getattr(obj, "rotation", None)
+        parent_id = int(getattr(obj, "parent_id", 0) or 0)
+        if parent_id:
+            lifted = placed.get(local_id)
+            if lifted is None:
+                # Its parent has not arrived. Updates are not ordered, so
+                # this happens for a frame or two routinely; the next frame
+                # has the parent, and drawing the child at the raw
+                # parent-relative position it reported would put it by the
+                # region corner, which is the bug being avoided.
+                continue
+            position, rot = lifted
+        else:
+            lifted = None
+        if shifted:
+            position = (position[0] + offset_x, position[1] + offset_y, position[2])
+
+        scale = getattr(obj, "scale", (1.0, 1.0, 1.0))
+        yaw = _quat_to_yaw(rot)
+        name = None
+        properties = getattr(obj, "properties_family", None)
+        if properties is not None:
+            name = getattr(properties, "name", None) or None
+        if name is None:
+            # Avatars never get an ObjectPropertiesFamily; their name
+            # rides the ObjectUpdate NameValue block instead.
+            name = avatar_display_name(getattr(obj, "name_values", None))
+        shape_data = getattr(obj, "shape", None)
+        shape: PrimShape | None = None
+        if shape_data is not None:
+            shape = classify_prim_shape(shape_data.path_curve, shape_data.profile_curve)
+        extra_param_entries = getattr(obj, "extra_params_entries", ())
+        mesh_hint = decode_sculpt_mesh_hint(extra_param_entries)
+        extra_params = decode_extra_params(extra_param_entries)
+        if mesh_hint is not None:
+            shape = mesh_hint.shape
+        entity = SceneEntity(
+            local_id=obj.local_id,
+            pcode=obj.pcode,
+            kind=_kind_for_pcode(obj.pcode),
+            position=position,
+            scale=scale,
+            rotation=rot,
+            rotation_z_radians=yaw,
+            name=name,
+            default_texture_id=getattr(obj, "default_texture_id", None),
+            texture_entry=getattr(obj, "texture_entry", None),
+            shape=shape,
+            mesh_source_kind=mesh_hint.source_kind if mesh_hint is not None else "primitive",
+            mesh_asset_id=mesh_hint.asset_id if mesh_hint is not None else None,
+            sculpt_type=mesh_hint.sculpt_type if mesh_hint is not None else None,
+            extra_params=extra_params,
+            hover_text=getattr(obj, "hover_text", None),
+            hover_text_color=getattr(obj, "hover_text_color", None),
+            tint=PCODE_COLORS.get(obj.pcode, DEFAULT_MARKER_COLOR),
+            parent_id=parent_id,
+            region_handle=region_handle,
+        )
+        fresh_cache[local_id] = (obj, lifted, entity)
+        if obj.pcode == PCODE_AVATAR:
+            avatar_entities[local_id] = entity
+        else:
+            object_entities[local_id] = entity
+
+    # Terse-only objects (no full ObjectUpdate seen yet) — render a placeholder.
+    for terse in terse_objects.values():
+        if terse.local_id in object_entities or terse.local_id in avatar_entities:
+            continue
+        yaw = _quat_to_yaw(terse.rotation)
+        pcode = PCODE_AVATAR if terse.is_avatar else PCODE_PRIM
+        position = terse.position
+        if shifted:
+            position = (position[0] + offset_x, position[1] + offset_y, position[2])
+        entity = SceneEntity(
+            local_id=terse.local_id,
+            pcode=pcode,
+            kind=_kind_for_pcode(pcode),
+            position=position,
+            scale=(0.5, 0.5, 0.5),  # terse-only: minimal placeholder
+            rotation=terse.rotation,
+            rotation_z_radians=yaw,
+            name=None,
+            default_texture_id=None,
+            shape=None,
+            tint=PCODE_COLORS.get(pcode, DEFAULT_MARKER_COLOR),
+            region_handle=region_handle,
+        )
+        if terse.is_avatar:
+            avatar_entities[terse.local_id] = entity
+        else:
+            object_entities[terse.local_id] = entity
+
+    return _BuiltEntities(
+        objects=object_entities,
+        avatars=avatar_entities,
+        cache=fresh_cache,
+        placement=placed,
+    )
 
 
 def _region_frame_transforms(

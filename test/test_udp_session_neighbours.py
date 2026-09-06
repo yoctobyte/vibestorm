@@ -247,6 +247,150 @@ class NeighbourGroundTextureTests(NeighbourTestCase):
         self.assertIsNone(_next_pending_object_texture_id(session))
 
 
+class NeighbourObjectAssetTests(NeighbourTestCase):
+    """A neighbour's *prims* go through this region's capabilities too.
+
+    Not for tidiness: a prim drawn without its texture is a grey box and a
+    mesh prim drawn without its asset is a cube, and next door that is a
+    skyline of cubes where the buildings are. Asset ids are grid-wide, so the
+    only thing standing between them and the same pipeline is somebody
+    walking the neighbour's world view.
+    """
+
+    TEXTURE = UUID("cccccccc-dddd-eeee-ffff-000000000011")
+    MESH = UUID("cccccccc-dddd-eeee-ffff-000000000022")
+
+    def _prim(self, *, texture_id=None, mesh_id=None, face_texture_id=None):
+        from vibestorm.world.models import ExtraParamEntry, WorldObject
+        from vibestorm.world.texture_entry import TextureEntry
+
+        entry = None
+        if face_texture_id is not None:
+            entry = TextureEntry(
+                default_texture_id=texture_id,
+                face_texture_ids=((3, face_texture_id),),
+            )
+        entries = ()
+        if mesh_id is not None:
+            entries = (
+                ExtraParamEntry(
+                    param_type=0x30,
+                    param_in_use=True,
+                    param_data=mesh_id.bytes + bytes([5]),
+                ),
+            )
+        return WorldObject(
+            full_id=UUID(int=7),
+            local_id=7,
+            parent_id=0,
+            pcode=9,
+            material=0,
+            click_action=0,
+            scale=(1.0, 1.0, 1.0),
+            state=0,
+            crc=0,
+            update_flags=0,
+            region_handle=0,
+            time_dilation=0,
+            object_data_size=0,
+            position=(1.0, 1.0, 1.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic",
+            name_values={},
+            texture_entry_size=0,
+            texture_anim_size=0,
+            data_size=0,
+            text_size=0,
+            media_url_size=0,
+            ps_block_size=0,
+            extra_params_size=0,
+            extra_params_entries=entries,
+            default_texture_id=texture_id,
+            texture_entry=entry,
+        )
+
+    def _with_prim(self, **kwargs):
+        session = self.session()
+        circuit = session.open_neighbour(NORTH)
+        prim = self._prim(**kwargs)
+        circuit.world_view.objects[prim.full_id] = prim
+        return session
+
+    def test_a_prim_next_door_gets_its_texture_fetched(self) -> None:
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self._with_prim(texture_id=self.TEXTURE)
+        self.assertEqual(_next_pending_object_texture_id(session), self.TEXTURE)
+
+    def test_the_ground_next_door_is_still_asked_for_first(self) -> None:
+        # It covers every square metre of the region; a prim covers a few.
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        ground = UUID("cccccccc-dddd-eeee-ffff-000000000001")
+        session = self._with_prim(texture_id=self.TEXTURE)
+        session.neighbours[NORTH_HANDLE].terrain_detail = (ground,) * 4
+        self.assertEqual(_next_pending_object_texture_id(session), ground)
+
+    def test_our_own_prims_are_asked_for_before_the_neighbour_s(self) -> None:
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        here = UUID("cccccccc-dddd-eeee-ffff-000000000033")
+        session = self._with_prim(texture_id=self.TEXTURE)
+        ours = self._prim(texture_id=here)
+        session.world_view.objects[UUID(int=8)] = ours
+        self.assertEqual(_next_pending_object_texture_id(session), here)
+
+    def test_a_texture_already_fetched_is_not_asked_for_again(self) -> None:
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        session = self._with_prim(texture_id=self.TEXTURE)
+        session.texture_fetch_attempted.add(self.TEXTURE)
+        self.assertIsNone(_next_pending_object_texture_id(session))
+
+    def test_a_prim_s_other_faces_are_asked_for_too(self) -> None:
+        # A prim's `TextureEntry` names a texture per face, and the default
+        # is only the one the rest fall back to. Reading the default alone
+        # draws a six-sided prim in one texture and nothing says so.
+        from vibestorm.udp.session import _next_pending_object_texture_id
+
+        face = UUID("cccccccc-dddd-eeee-ffff-000000000055")
+        session = self._with_prim(texture_id=self.TEXTURE, face_texture_id=face)
+        session.texture_fetch_attempted.add(self.TEXTURE)
+        self.assertEqual(_next_pending_object_texture_id(session), face)
+
+    def test_a_mesh_prim_next_door_gets_its_asset_fetched(self) -> None:
+        from vibestorm.udp.session import _next_pending_mesh_asset_id
+
+        session = self._with_prim(mesh_id=self.MESH)
+        self.assertEqual(_next_pending_mesh_asset_id(session), self.MESH)
+
+    def test_our_own_meshes_are_asked_for_before_the_neighbour_s(self) -> None:
+        from vibestorm.udp.session import _next_pending_mesh_asset_id
+
+        here = UUID("cccccccc-dddd-eeee-ffff-000000000044")
+        session = self._with_prim(mesh_id=self.MESH)
+        session.world_view.objects[UUID(int=8)] = self._prim(mesh_id=here)
+        self.assertEqual(_next_pending_mesh_asset_id(session), here)
+
+    def test_a_mesh_already_fetched_is_not_asked_for_again(self) -> None:
+        from vibestorm.udp.session import _next_pending_mesh_asset_id
+
+        session = self._with_prim(mesh_id=self.MESH)
+        session.mesh_fetch_attempted.add(self.MESH)
+        self.assertIsNone(_next_pending_mesh_asset_id(session))
+
+    def test_a_region_with_nothing_in_it_asks_for_nothing(self) -> None:
+        from vibestorm.udp.session import (
+            _next_pending_mesh_asset_id,
+            _next_pending_object_texture_id,
+        )
+
+        session = self.session()
+        session.open_neighbour(NORTH)
+        self.assertIsNone(_next_pending_object_texture_id(session))
+        self.assertIsNone(_next_pending_mesh_asset_id(session))
+
+
 class DiallingDoesNotStopThePumpTests(unittest.IsolatedAsyncioTestCase):
     """Opening a neighbour must not hold up the region we are standing in.
 

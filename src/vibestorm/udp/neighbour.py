@@ -39,6 +39,22 @@ packets. (A bare circuit that also never *answers* the handshake sees it
 twenty-nine times in thirty seconds, because an unanswered handshake is
 resent -- which is why the reply below goes out every time, not once.)
 
+**Its objects arrive too, and they are worth having.** With three prims
+standing in `Vibestorm North`, a child circuit to it received six object
+messages in forty seconds -- `ObjectUpdate`, `ObjectUpdateCompressed` and
+`ObjectUpdateCached`, two of each -- so a simulator does describe its
+contents to an agent who is only looking. They are folded into a
+`WorldView` of this circuit's own rather than the root region's, because
+local ids are assigned per region: object 42 next door and object 42
+underfoot are two different prims, and merging the two dictionaries
+silently loses one of them.
+
+`SendInitialData` also waits four heartbeats past both its gates on
+purpose, so the pause before any of this starts is the simulator being
+careful rather than the client being wrong. Pinned in
+`test/test_opensim_source_pins.py`, along with the seed-capability chain
+above.
+
 Deliberately *not* a `LiveCircuitSession`. That class logs in, dresses the
 avatar, drives the camera, fetches capabilities and keeps a `WorldView`; none
 of that has any meaning on a circuit whose agent is somewhere else, and
@@ -60,20 +76,46 @@ from vibestorm.udp.messages import (
     encode_complete_ping_check,
     encode_packet_ack,
     encode_region_handshake_reply,
+    encode_request_multiple_objects,
     encode_use_circuit_code,
     parse_layer_data,
+    parse_object_update_cached,
     parse_region_handshake,
     parse_start_ping_check,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, PacketView, build_packet, split_packet
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
+from vibestorm.world.models import WorldView
 from vibestorm.world.terrain import RegionHeightmap, TerrainDecodeError
+from vibestorm.world.updater import WorldUpdater
 
 #: How many sequence numbers to hold before sending them back as one
 #: `PacketAck`. The root circuit does the same; a child gets a burst of
 #: terrain on connect and acking each packet separately would answer a burst
 #: with a burst.
 ACK_BATCH = 10
+
+#: The object messages a child circuit is worth listening to. Measured: with
+#: one prim standing in `Vibestorm North`, a child circuit to it received
+#: `ObjectUpdate` -- so a simulator does describe its contents to an agent
+#: who is only looking. Everything here goes to a `WorldUpdater` unchanged,
+#: because a neighbouring region's objects arrive in exactly the same shapes
+#: as the ones underfoot.
+OBJECT_MESSAGES = frozenset(
+    {
+        "ObjectUpdate",
+        "ObjectUpdateCompressed",
+        "ObjectUpdateCached",
+        "ImprovedTerseObjectUpdate",
+        "KillObject",
+    }
+)
+
+#: How many local ids fit in one `RequestMultipleObjects`. Never reached
+#: from here: `ObjectUpdateCached` counts its own blocks in a U8 too, so one
+#: message can never name more ids than one request can carry. Kept as a
+#: guard rather than as a loop, because the encoder raises above it.
+REQUEST_LIMIT = 255
 
 
 @dataclass(slots=True)
@@ -110,9 +152,20 @@ class NeighbourCircuit:
     handshakes_seen: int = 0
     terrain_packets: int = 0
 
+    #: This region's objects, in *its* local-id space. Deliberately a world
+    #: of its own rather than a corner of the root region's: local ids are
+    #: assigned per region, so object 42 here and object 42 underfoot are two
+    #: different prims and merging the two dictionaries silently loses one.
+    world_view: WorldView = field(default_factory=WorldView)
+    world_updater: WorldUpdater = field(init=False, repr=False)
+    object_messages: int = 0
+
     started: bool = False
     next_sequence: int = 1
     queued_acks: list[int] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.world_updater = WorldUpdater(self.world_view)
 
     @property
     def region_x_meters(self) -> int:
@@ -211,6 +264,8 @@ class NeighbourCircuit:
                 self._on_layer_data(dispatched)
             elif name == "StartPingCheck":
                 replies = self._on_ping(dispatched)
+            elif name in OBJECT_MESSAGES:
+                replies = self._on_object_message(name, dispatched)
         except (MessageDecodeError, TerrainDecodeError, ValueError):
             self.received[f"{name}:undecodable"] += 1
         return replies + self._acks_if_full()
@@ -242,6 +297,28 @@ class NeighbourCircuit:
         if self.heightmap.revision != before:
             self.terrain_packets += 1
 
+    def _on_object_message(self, name: str, dispatched: object) -> list[bytes]:
+        self.world_updater.apply_dispatch(dispatched)
+        self.object_messages += 1
+        if name != "ObjectUpdateCached":
+            return []
+        # A cached update is the simulator saying "you already know these".
+        # A circuit that has just opened knows nothing, so every one of them
+        # is a miss and has to be asked for in full, or the region's contents
+        # are named and never described.
+        local_ids = [obj.local_id for obj in parse_object_update_cached(dispatched).objects]
+        if not local_ids:
+            return []
+        return [
+            self._packet(
+                encode_request_multiple_objects(
+                    self.agent_id, self.session_id, local_ids[:REQUEST_LIMIT]
+                ),
+                reliable=True,
+                zerocoded=True,
+            )
+        ]
+
     def _on_ping(self, dispatched: object) -> list[bytes]:
         ping = parse_start_ping_check(dispatched)
         return [self._packet(encode_complete_ping_check(ping.ping_id))]
@@ -251,4 +328,4 @@ def _view(payload: bytes) -> PacketView:
     return split_packet(decode_zerocode(payload))
 
 
-__all__ = ["ACK_BATCH", "NeighbourCircuit"]
+__all__ = ["ACK_BATCH", "OBJECT_MESSAGES", "REQUEST_LIMIT", "NeighbourCircuit"]

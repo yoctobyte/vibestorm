@@ -3827,24 +3827,56 @@ def _next_pending_object_texture_id(session: LiveCircuitSession) -> UUID | None:
                 continue
             return texture_id
     for obj in session.world_view.objects.values():
-        texture_ids = [obj.default_texture_id]
-        if obj.texture_entry is not None:
-            texture_ids.extend(texture_id for _face, texture_id in obj.texture_entry.face_texture_ids)
-        for entry in obj.extra_params_entries:
-            if entry.param_type != 0x30 or not entry.param_in_use or len(entry.param_data) < 17:
-                continue
-            texture_id = UUID(bytes=entry.param_data[:16])
-            sculpt_type = entry.param_data[16] & 0x0F
-            if sculpt_type in (1, 2, 3, 4):
-                texture_ids.append(texture_id)
-        for texture_id in texture_ids:
-            if texture_id is None or texture_id.int == 0:
-                continue
-            if texture_id == session.region_map_image_id:
-                continue
-            if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
-                continue
+        texture_id = _first_unfetched_texture(session, _object_texture_ids(obj))
+        if texture_id is not None:
             return texture_id
+    # Last of all, the prims standing in the regions next door. Last because
+    # the nearest of them is 256 m away and the furthest over seven hundred:
+    # a prim underfoot is worth more pixels than any of them, and this drains
+    # one texture per tick. They go through the same GetTexture capability --
+    # asset ids are grid-wide, so a neighbour's prims need no pipeline of
+    # their own either.
+    for circuit in session.neighbours.values():
+        for obj in circuit.world_view.objects.values():
+            texture_id = _first_unfetched_texture(session, _object_texture_ids(obj))
+            if texture_id is not None:
+                return texture_id
+    return None
+
+
+def _object_texture_ids(obj: object) -> list[UUID | None]:
+    """Every texture asset one prim references, in the order worth fetching.
+
+    Its default face first, then whatever the texture entry names per face,
+    then a sculpt map -- which is geometry rather than a surface, but arrives
+    down the same pipe. Sculpt type 5 is a mesh asset and belongs to
+    `_next_pending_mesh_asset_id` instead.
+    """
+    texture_ids: list[UUID | None] = [obj.default_texture_id]
+    if obj.texture_entry is not None:
+        texture_ids.extend(texture_id for _face, texture_id in obj.texture_entry.face_texture_ids)
+    for entry in obj.extra_params_entries:
+        if entry.param_type != 0x30 or not entry.param_in_use or len(entry.param_data) < 17:
+            continue
+        texture_id = UUID(bytes=entry.param_data[:16])
+        sculpt_type = entry.param_data[16] & 0x0F
+        if sculpt_type in (1, 2, 3, 4):
+            texture_ids.append(texture_id)
+    return texture_ids
+
+
+def _first_unfetched_texture(
+    session: LiveCircuitSession, texture_ids: list[UUID | None]
+) -> UUID | None:
+    """The first of these nobody has asked for yet, or None."""
+    for texture_id in texture_ids:
+        if texture_id is None or texture_id.int == 0:
+            continue
+        if texture_id == session.region_map_image_id:
+            continue
+        if texture_id in session.texture_paths or texture_id in session.texture_fetch_attempted:
+            continue
+        return texture_id
     return None
 
 
@@ -3902,16 +3934,33 @@ def _next_pending_physics_object_id(session: LiveCircuitSession) -> UUID | None:
 
 def _next_pending_mesh_asset_id(session: LiveCircuitSession) -> UUID | None:
     for obj in session.world_view.objects.values():
-        for entry in obj.extra_params_entries:
-            if entry.param_type != 0x30 or not entry.param_in_use or len(entry.param_data) < 17:
-                continue
-            mesh_id = UUID(bytes=entry.param_data[:16])
-            sculpt_type = entry.param_data[16] & 0x0F
-            if sculpt_type != 5 or mesh_id.int == 0:
-                continue
-            if mesh_id in session.mesh_paths or mesh_id in session.mesh_fetch_attempted:
-                continue
+        mesh_id = _first_unfetched_mesh(session, obj)
+        if mesh_id is not None:
             return mesh_id
+    # Then the regions next door. A mesh prim whose asset never arrives is
+    # drawn as the fallback cube, which next door means a skyline of boxes
+    # where the buildings are -- more conspicuous than an untextured face,
+    # not less.
+    for circuit in session.neighbours.values():
+        for obj in circuit.world_view.objects.values():
+            mesh_id = _first_unfetched_mesh(session, obj)
+            if mesh_id is not None:
+                return mesh_id
+    return None
+
+
+def _first_unfetched_mesh(session: LiveCircuitSession, obj: object) -> UUID | None:
+    """This prim's mesh asset, if it has one nobody has asked for yet."""
+    for entry in obj.extra_params_entries:
+        if entry.param_type != 0x30 or not entry.param_in_use or len(entry.param_data) < 17:
+            continue
+        mesh_id = UUID(bytes=entry.param_data[:16])
+        sculpt_type = entry.param_data[16] & 0x0F
+        if sculpt_type != 5 or mesh_id.int == 0:
+            continue
+        if mesh_id in session.mesh_paths or mesh_id in session.mesh_fetch_attempted:
+            continue
+        return mesh_id
     return None
 
 

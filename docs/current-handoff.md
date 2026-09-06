@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (twelfth pass)
+Last updated: 2026-09-06 (thirteenth pass)
 
 ## The Owner's Priorities
 
@@ -441,6 +441,107 @@ tests, one of which asserts the strongest available form of "nobody
 waited": immediately after the call the request has not started at all.
 Nine mutants planted, eight killed; the survivor swaps `ensure_future` for
 `create_task`, which is the same thing.
+
+**A -- and then its buildings, which is where the local ids bite
+(2026-09-06).** A child circuit was already being sent them and throwing them
+away. Measured against `Vibestorm North` with three prims standing in it: six
+object messages in forty seconds, `ObjectUpdate`, `ObjectUpdateCompressed`
+and `ObjectUpdateCached` all arriving on a circuit that had never done
+anything but look. A neighbouring region showing as an empty hillside was
+never a limit of the protocol.
+
+`NeighbourCircuit` now owns a `WorldView` and a `WorldUpdater` of its own and
+hands the five object messages straight to it -- the shapes are identical to
+the ones underfoot, so there is nothing to translate. `ObjectUpdateCached` is
+answered with a `RequestMultipleObjects`, reliably: a cached update is the
+simulator saying "you already know these", a circuit that has just opened
+knows nothing, and the request is the one packet in the exchange that cannot
+be re-derived. Lose it and those prims are named and never described -- a
+region with holes in it and no error anywhere.
+
+**A world of its own rather than a corner of the root region's, because local
+ids are assigned per region.** Object 42 next door and object 42 underfoot
+are two different prims; one dictionary keyed by local id silently loses one
+of them, and every cache downstream keyed the same way hands one prim the
+other's data. That shaped the whole drawing half:
+
+- `SceneEntity` gained `region_handle`, 0 for the region the avatar is in.
+- The renderer's packed-instance cache is now keyed by `(region_handle,
+  local_id)`. It was keyed by local id alone, and the failure that would have
+  produced is a prim drawn at another prim's position -- which reads as a
+  physics glitch, not as a cache bug.
+- The avatar pose lookup is keyed the same way and now refuses a neighbour
+  outright, rather than bending it into whatever pose belongs to that id here.
+- `pick()` still walks `object_entities` only, so a neighbour prim is drawn
+  and not selectable. Deliberate: the id it would return means something only
+  on that region's circuit, and every selection this client sends goes out on
+  the root one. It would select whatever prim holds that id underfoot.
+- Hover text and name tags skip the neighbours. Their nearest prim is 256 m
+  away and their furthest over seven hundred; text that reads as a label up
+  close is a smear at that range, and every one of them is drawn.
+
+The entity-building loop came out of `refresh_from_world_view` as
+`_build_entities`: one region's `WorldView`, one cache, one placement map,
+and an `offset` added to the **final** position. The order is load-bearing. A
+child reports where it is relative to its parent, so offsetting before
+composing puts the offset in twice for a child and once for a root, which
+scatters every linkset next door across half a region. Each neighbour keeps
+its own cache, thrown away when its offset moves -- crossing a border
+renumbers every offset at once while every handle and revision stays exactly
+as it was.
+
+Their textures and their mesh assets go through this region's capabilities
+too, last in the queue behind our own prims. Not tidiness: an untextured prim
+is a grey box and a mesh prim without its asset is the fallback cube, and
+next door that is a skyline of boxes where the buildings are. Asset ids are
+grid-wide, so the only thing between them and the existing pipeline was
+somebody walking the neighbour's world view.
+
+Ground waits for its patches; prims do not. A flat sheet at zero metres over
+the sea looks worse than the sea did, but a prim is at the height it reported
+whether or not the hill under it has arrived.
+
+Two smaller things came out of the same pass. The render-settings panel
+gained a **Regions Next Door** toggle -- the one setting there that can cost
+a region's worth of geometry each, and on a mainland corner there are eight
+of them. And the panel's read-back from the scene was dropping `render_sky`
+and `render_clouds`: it *replaces* the dict the buttons are drawn from, and a
+missing key reads as on, so turning the sky off changed the world and left
+the button saying `[x]`. The diagnostics line for neighbours now reads
+"announced, with ground, prims, avatars", because the two ways this can break
+are indistinguishable from the picture -- announced with no ground is the
+seed capability never being POSTed to, ground with no prims is a circuit
+nobody listened to, and from a camera at the border both are "the neighbour
+is empty".
+
+Live, against the two local regions: three prims rezzed into `Vibestorm
+North` at (125-132, 125-130, 28) in its frame arrive on the child circuit,
+reach the scene at (125-132, 381-386) in ours, and have their textures
+fetched -- and a pair of frames rendered from just inside the north border,
+one with `render_neighbours` on and one with it off, is the difference
+between the neighbour's island with its prims standing on it and open sea.
+
+63 tests. Twenty-nine mutants in the first battery, twenty-four killed; the
+five survivors are five of those tests now (the request's reliable flag,
+`KillObject`, `ImprovedTerseObjectUpdate`, a prim's per-face textures, and an
+empty cached update being *dropped* rather than turned into a failed encode
+-- which sends nothing either way, so only the error counter can tell them
+apart). A second battery of twelve, over those five plus the HUD and the pose
+guard, killed twelve.
+
+**And the seed-capability finding is now pinned to the source it rests on.**
+`test/test_opensim_source_pins.py` is the first of its kind here: seven tests
+that find the exact lines the claim quotes in the committed copies under
+`referencedocs/`, and fail if a later copy drops them. It cannot tell whether
+the reasoning is still right, only whether the lines are still there, which
+is the whole ambition -- a claim whose source moved underneath it has to be
+re-read by a person, and a green test matching nothing is the one outcome
+worth ruling out. It also pinned something the live runs had been showing
+without anyone naming it: after both gates open, `SendInitialData` waits four
+more heartbeats on purpose (`if (++NeedInitialData < 6)`), so the pause before
+a neighbour's terrain starts is not the client doing anything wrong.
+`ScenePresence.cs` was added to `referencedocs/` for it. Three lines are
+queued in `spec/divergence-queue.md`.
 
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
@@ -2066,14 +2167,14 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
-   - **A neighbour holds nothing but ground.** Its terrain is drawn, and
-     textured with its own four ground textures, but its objects, its
-     avatars and its own water level are not read at all -- a neighbouring
-     region with a building on it shows as an empty hillside. Objects are
-     the big one: `ObjectUpdate` on a child circuit would have to go into
-     the world view under that region's local-id space and be drawn at the
-     neighbour's offset, and local ids are per region, so they cannot simply
-     be merged.
+   - ~~**A neighbour holds nothing but ground.**~~ Spent, except for the
+     water. Its prims and its avatars arrive on the child circuit, go into
+     a `WorldView` of that region's own, and are drawn at its offset; its
+     textures and mesh assets go through this region's capabilities behind
+     our own prims. What is left is the neighbour's **water level**, which
+     is in its handshake and unread: a region with a different sea level
+     from ours draws its sea at ours, and along the border that is a visible
+     step.
    - **The neighbour resends its handshake a few times an hour.** Measured
      over ninety seconds: four `RegionHandshake` packets, each answered
      reliably, with terrain flowing throughout -- so the first reply plainly

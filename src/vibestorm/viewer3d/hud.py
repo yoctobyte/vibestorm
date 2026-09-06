@@ -235,6 +235,7 @@ class HUD:
             "render_objects": True,
             "render_sky": True,
             "render_clouds": True,
+            "render_neighbours": True,
             "water_alpha": 0.72,
         }
         self.quit_requested = False
@@ -533,6 +534,7 @@ class HUD:
             "render_objects": "Objects",
             "render_sky": "Sky",
             "render_clouds": "Clouds",
+            "render_neighbours": "Regions Next Door",
         }
         buttons = {
             "render_terrain": self.render_terrain_button,
@@ -541,6 +543,7 @@ class HUD:
             "render_objects": self.render_objects_button,
             "render_sky": self.render_sky_button,
             "render_clouds": self.render_clouds_button,
+            "render_neighbours": self.render_neighbours_button,
         }
         for key, button in buttons.items():
             marker = "x" if bool(self._render_setting_values.get(key, True)) else " "
@@ -651,7 +654,7 @@ class HUD:
         self.options_window.hide()
 
         self.render_settings_window = UIWindow(
-            rect=pygame.Rect(self._s(110), self._s(90), self._s(360), self._s(346)),
+            rect=pygame.Rect(self._s(110), self._s(90), self._s(360), self._s(382)),
             manager=self.manager,
             window_display_title="Render Settings",
             resizable=False,
@@ -693,14 +696,24 @@ class HUD:
             manager=self.manager,
             container=rs_container,
         )
+        # The regions next door are the one setting here that can cost a
+        # region's worth of geometry each: on a mainland corner there are
+        # eight of them, and being able to see the frame without them is how
+        # anyone tells a slow neighbour pass from a slow region.
+        self.render_neighbours_button = UIButton(
+            relative_rect=pygame.Rect(self._s(10), self._s(228), self._s(220), self._s(28)),
+            text="",
+            manager=self.manager,
+            container=rs_container,
+        )
         self.water_alpha_label = UILabel(
-            relative_rect=pygame.Rect(self._s(10), self._s(238), self._s(300), self._s(24)),
+            relative_rect=pygame.Rect(self._s(10), self._s(274), self._s(300), self._s(24)),
             text="Water opacity: 72%",
             manager=self.manager,
             container=rs_container,
         )
         self.water_alpha_slider = UIHorizontalSlider(
-            relative_rect=pygame.Rect(self._s(10), self._s(270), self._s(300), self._s(28)),
+            relative_rect=pygame.Rect(self._s(10), self._s(306), self._s(300), self._s(28)),
             start_value=72,
             value_range=(10, 100),
             manager=self.manager,
@@ -1033,6 +1046,9 @@ class HUD:
             if event.ui_element is self.render_sky_button:
                 self._toggle_render_bool("render_sky")
                 return True
+            if event.ui_element is self.render_neighbours_button:
+                self._toggle_render_bool("render_neighbours")
+                return True
             if event.ui_element is self.render_water_button:
                 self._toggle_render_bool("render_water")
                 return True
@@ -1294,6 +1310,7 @@ class HUD:
             self.render_terrain_lines_button,
             self.render_water_button,
             self.render_objects_button,
+            self.render_neighbours_button,
             self.water_alpha_label,
             self.water_alpha_slider,
             self.inventory_window,
@@ -1655,7 +1672,7 @@ class HUD:
             # this line is the other half of that comparison.
             f"sim: {scene.sim_health or '(no stats yet)'}",
             f"parcel flags: {parcel_flags}",
-            f"neighbours: {len(scene.neighbour_regions) or 'none announced'}",
+            f"neighbours: {_neighbour_summary(scene)}",
             f"map: {map_path}",
             terrain_text,
             height_text,
@@ -1766,6 +1783,13 @@ class HUD:
             "render_terrain_lines": bool(scene.render_terrain_lines),
             "render_water": bool(scene.render_water),
             "render_objects": bool(scene.render_objects),
+            # Sky and clouds were missing here, which is not a cosmetic
+            # omission: this dict *replaces* the one the buttons are drawn
+            # from, and a key that is absent reads as on. Turning the sky off
+            # changed the world and left the button saying [x].
+            "render_sky": bool(scene.render_sky),
+            "render_clouds": bool(scene.render_clouds),
+            "render_neighbours": bool(scene.render_neighbours),
             "water_alpha": max(0.1, min(1.0, float(scene.water_alpha))),
         }
         if values == self._render_setting_values:
@@ -2389,6 +2413,25 @@ class HUD:
             return
         self.on_teleport(position)
         self.teleport_status.set_text("Teleport requested.")
+
+
+def _neighbour_summary(scene: Scene) -> str:
+    """One diagnostics line for the regions next door, in four numbers.
+
+    Announced, drawn, populated -- because the two ways this can be broken
+    fail quietly and look identical from the picture. Regions announced with
+    no ground is the seed capability never being POSTed to; ground with no
+    prims is a circuit that connected and was never listened to. Both read as
+    "the neighbour is empty" from a camera at the border.
+    """
+    announced = len(scene.neighbour_regions)
+    if not announced:
+        return "none announced"
+    return (
+        f"{announced} announced, {len(scene.neighbour_terrain)} with ground, "
+        f"{len(scene.neighbour_object_entities)} prims, "
+        f"{len(scene.neighbour_avatar_entities)} avatars"
+    )
 
 
 def _kind_color_html(kind: str) -> str:
