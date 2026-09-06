@@ -316,6 +316,45 @@ the horizon, where `dir.xy / dir.z` runs away and every neighbouring pixel
 reads a different part of the field.
 
 
+**The client could crash the simulator two ways, and now cannot
+(2026-09-06).** The local sim had been failing to persist one object every
+eighteen seconds since 2026-09-05 23:26 -- 2970 times by the time anyone
+looked. `SceneGraph.DelinkObjects` had thrown a `NullReferenceException`
+part-way through a delink *this client sent*, leaving the object half
+delinked and un-storable for as long as the region runs.
+
+`tools/delete_prims.py` already carried a comment blaming a duplicated local
+id, and deduplicated. The guard was in the one caller that remembered, which
+is not where a guard belongs -- and nobody had checked that the duplicate was
+actually the cause.
+
+Both were settled by measurement, each on its own freshly rezzed two-prim
+linkset, with the simulator's console log as the evidence:
+
+- **`ObjectDelink` with a local id named twice** -> `NullReferenceException`
+  in `SceneObjectGroup.ScheduleGroupForFullAnimUpdate` (SceneObjectGroup.cs
+  2980), via `SceneGraph.DelinkObjects` (2067). Reproduced exactly, including
+  the permanent un-storable object it leaves behind.
+- **A local id that is not in the region at all** -> nothing. Harmless.
+- **An honest pair** -> nothing. Harmless.
+- **`ObjectLink` with a local id named twice** -> a *different* crash,
+  `ArgumentException: An item with the same key has already been added` out of
+  `MapAndArray.Add` in `SceneObjectGroup.LinkToGroup` (3305). Tested rather
+  than assumed by symmetry, and it is a good thing it was: the same guard is
+  needed, but the evidence for it is its own.
+
+So it is the repeat and nothing else, and both encoders refuse one now --
+raising rather than quietly deduplicating, because a caller that asks to
+delink the same prim twice has a bug of its own and rewriting the request
+would hide it. `delete_prims.py` keeps its own dedup: choosing *which* of two
+entries to keep is a decision the caller has to make. Four mutations, four
+killed.
+
+The lesson is the one about where a guard lives. A crash caused by a message
+this client sends belongs to the encoder, not to whichever tool happened to
+learn about it.
+
+
 **A -- rubbish into every decoder, before anyone logs in to the main grid
 (2026-09-06).** The other half of the first priority is *without crashes*, and
 the largest single source of one is still ahead of this project: B. A grid

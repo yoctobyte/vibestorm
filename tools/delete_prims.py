@@ -195,6 +195,10 @@ async def main(argv: list[str]) -> int:
         # line and found as a named root's child appeared twice, and OpenSim
         # answered the duplicate with a NullReferenceException inside
         # SceneGraph.DelinkObjects -- a crash in the simulator, caused here.
+        # `encode_object_delink` refuses a repeat outright now, so this is no
+        # longer the only thing standing between a duplicate and the sim; it
+        # stays because deduplicating is a decision about *which* of the two
+        # entries to keep, and that is this tool's to make, not the encoder's.
         linked = list(
             {obj.local_id: obj for obj in [*(o for o in found if o.parent_id), *family]}.values()
         )

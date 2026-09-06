@@ -15,7 +15,8 @@ Use local OpenSim for:
 ## Current Local Defaults
 
 - login URI: `http://127.0.0.1:9000/`
-- region name: `Vibestorm Test`
+- region name: `Vibestorm Test` at grid location 1000,1000 (UDP port 9000)
+- neighbour region: `Vibestorm North` at 1000,1001 (UDP port 9001)
 - start location: `uri:Vibestorm Test&128&128&25`
 - default test avatar: `Vibestorm Admin`
 - built-in tester profile avatar: `Vibestorm Tester`
@@ -27,6 +28,49 @@ Localhost/OpenSim test passwords are allowed in tracked docs or fixtures only
 when they are trivial, disposable, and clearly scoped to local testing. Never
 track credentials for OSgrid, Second Life, GitHub, hosting providers, or other
 real services.
+
+## Two Regions, Since 2026-09-06
+
+`local/opensim/runtime/bin/Regions/` holds one `.ini` per region and OpenSim
+loads all of them. `Vibestorm Test` was alone there until 2026-09-06, so
+nothing this client does about *neighbours* had ever been exercised against
+anything: no `EnableSimulator`, no child agent, no region crossing. The second
+file adds a region directly to the north:
+
+```ini
+[Vibestorm North]
+RegionUUID = 73d6255a-5aac-46cc-a1aa-1848162e7eeb
+Location = 1000,1001
+SizeX = 256
+SizeY = 256
+SizeZ = 256
+InternalAddress = 0.0.0.0
+InternalPort = 9001
+ResolveAddress = False
+ExternalHostName = 127.0.0.1
+MaptileStaticUUID = 00000000-0000-0000-0000-000000000000
+TargetEstate = Vibestorm Estate
+```
+
+`TargetEstate` is not optional for an unattended start: without it OpenSim
+stops at *"Do you wish to join region Vibestorm North to an existing estate?"*
+and, with no terminal to answer, dies. The estate name has to be one that
+already exists -- `Vibestorm Estate` here, which is what `estate_settings` in
+`bin/OpenSim.db` holds.
+
+`InternalPort` is the region's **UDP** port. In standalone there is still one
+HTTP server, on 9000, for both regions; 9001 answers nothing over HTTP and it
+is not a fault.
+
+With both up, logging in to `Vibestorm Test` gets this from the simulator's
+own log, which is the thing that was missing before:
+
+    [ENTITY TRANSFER MODULE]: Informing Vibestorm Tester about neighbour
+      Vibestorm North 127.0.0.1:9001 at (1000,1001)
+    [SCENE Vibestorm North]: authorized child agent Vibestorm Tester
+    [ENTITY TRANSFER MODULE] Vibestorm Test is sending Vibestorm Tester
+      EnableSimulator for neighbour region Vibestorm North and
+      EstablishAgentCommunication with seed cap http://127.0.0.1:9000/CAPS/...
 
 ## Runtime Prerequisites
 
@@ -70,6 +114,22 @@ Start OpenSim:
 ```bash
 ./run.sh opensim
 ```
+
+**Headless, it needs `-console=rest`.** OpenSim's default console calls
+`Console.KeyAvailable`, which throws when stdin is not a terminal, and the
+prompt loop then spins on the exception -- measured at 96% of a core, forever.
+Giving it a pseudo-terminal instead (`script`) is worse rather than better: the
+console reads uninitialised bytes off it, prints them back as `Invalid
+command`, and within a minute one of them matches `quit` and the simulator
+shuts itself down. That happened twice while a second region was being added.
+The remote console has no local prompt loop at all:
+
+```bash
+./tools/start_opensim.sh -console=rest 2>&1 | tee /tmp/opensim.log
+```
+
+Settles at about 4% of a core with two regions up, and takes no console
+commands -- which is the trade, and the right one for an unattended run.
 
 Run a normal session:
 

@@ -3488,11 +3488,37 @@ def encode_object_delink(agent_id: UUID, session_id: UUID, local_ids: Sequence[i
 
     Low 116, Unencoded. The same block layout as ``ObjectLink``, which it
     undoes.
+
+    **A repeated local id crashes the simulator, and this refuses to send
+    one.** Measured against the local OpenSim on 2026-09-06: delinking a
+    two-prim linkset with the child named twice answers
+
+        Job ObjectDelink failed, continuing. Exception
+        System.NullReferenceException
+          at SceneObjectGroup.ScheduleGroupForFullAnimUpdate() SceneObjectGroup.cs:2980
+          at SceneGraph.DelinkObjects(List`1 prims) SceneGraph.cs:2067
+          at Scene.DelinkObjects(List`1 primIds, IClientAPI client) Scene.Inventory.cs:3008
+
+    and the object is left half-delinked: the region then fails to persist it
+    every eighteen seconds for as long as it runs. One such object had been
+    doing that 2970 times when this guard was written. The same run showed a
+    local id that is *not in the region* to be harmless, and an honest pair to
+    be harmless, so it is the repeat and nothing else.
+
+    Raising rather than quietly deduplicating: a caller that asks to delink
+    the same prim twice has a bug of its own, and silently rewriting the
+    request would hide it. ``tools/delete_prims.py`` deduplicates before
+    calling, which is the shape a caller wants -- it knows *which* of the two
+    entries to keep.
     """
     if not local_ids:
         raise ValueError("delinking needs at least one object")
     if len(local_ids) > 0xFF:
         raise ValueError("object count must fit in U8")
+    if len(set(local_ids)) != len(local_ids):
+        raise ValueError(
+            "ObjectDelink names a local id twice, which crashes the simulator"
+        )
     for local_id in local_ids:
         if not 0 <= local_id <= 0xFFFFFFFF:
             raise ValueError("local id must fit in U32")
@@ -3514,9 +3540,25 @@ def encode_object_link(agent_id: UUID, session_id: UUID, local_ids: Sequence[int
     Which of the ids becomes the root is the simulator's decision, not this
     encoder's, and nothing here assumes an answer: the caller reads it back off
     the ``ObjectUpdate`` that follows.
+
+    **A repeated local id crashes the simulator here too**, in a different
+    place from `encode_object_delink`'s and with a different exception, so it
+    was measured rather than assumed. Linking two prims with the second named
+    twice, against the local OpenSim on 2026-09-06:
+
+        Job ObjectLink failed, continuing. Exception
+        System.ArgumentException: An item with the same key has already been added
+          at MapAndArray`2.Add(TKey key, TValue value) MapAndArray.cs:105
+          at SceneObjectGroup.LinkToGroup(SceneObjectGroup objectGroup, Boolean insert)
+            SceneObjectGroup.cs:3305
+          at SceneGraph.LinkObjects(SceneObjectPart root, List`1 children) SceneGraph.cs:1979
     """
     if not local_ids:
         raise ValueError("linking needs at least one object")
+    if len(set(local_ids)) != len(local_ids):
+        raise ValueError(
+            "ObjectLink names a local id twice, which crashes the simulator"
+        )
     if len(local_ids) > 0xFF:
         raise ValueError("object count must fit in U8")
     for local_id in local_ids:

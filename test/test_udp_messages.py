@@ -1950,3 +1950,69 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.agent_id, agent_id)
         self.assertTrue(parsed.modal)
         self.assertEqual(parsed.message, "You cannot do that here")
+
+
+class LinkAndDelinkGuardTests(unittest.TestCase):
+    """A local id named twice crashes the simulator, so it is not sent.
+
+    Both were reproduced against the local OpenSim on 2026-09-06, each on its
+    own freshly rezzed two-prim linkset, with the simulator's own console log
+    as the evidence:
+
+    - ``ObjectDelink`` with the child named twice raises a
+      `NullReferenceException` in
+      ``SceneObjectGroup.ScheduleGroupForFullAnimUpdate`` and leaves the
+      object half-delinked -- the region then fails to persist it every
+      eighteen seconds for as long as it runs.
+    - ``ObjectLink`` with a child named twice raises an `ArgumentException`
+      from ``MapAndArray.Add`` in ``SceneObjectGroup.LinkToGroup``.
+
+    The same run showed a local id that is not in the region at all to be
+    harmless, and an honest pair to be harmless, so it is the repeat and
+    nothing else. `tools/delete_prims.py` already deduplicated; the guard was
+    in the one caller that remembered, which is not where a guard belongs.
+    """
+
+    AGENT = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    SESSION = UUID("11111111-2222-3333-4444-555555555555")
+
+    def setUp(self) -> None:
+        from vibestorm.udp.dispatch import MessageDispatcher
+
+        self.dispatcher = MessageDispatcher.from_repo_root(Path.cwd())
+
+    def test_delinking_the_same_prim_twice_is_refused(self) -> None:
+        from vibestorm.udp.messages import encode_object_delink
+
+        with self.assertRaises(ValueError):
+            encode_object_delink(self.AGENT, self.SESSION, [7, 7])
+        with self.assertRaises(ValueError):
+            encode_object_delink(self.AGENT, self.SESSION, [7, 8, 7])
+
+    def test_linking_the_same_prim_twice_is_refused(self) -> None:
+        from vibestorm.udp.messages import encode_object_link
+
+        with self.assertRaises(ValueError):
+            encode_object_link(self.AGENT, self.SESSION, [7, 8, 8])
+
+    def test_distinct_ids_still_go_out(self) -> None:
+        from vibestorm.udp.messages import encode_object_delink, encode_object_link
+
+        for name, encode in (
+            ("ObjectDelink", encode_object_delink),
+            ("ObjectLink", encode_object_link),
+        ):
+            with self.subTest(message=name):
+                payload = encode(self.AGENT, self.SESSION, [7, 8, 9])
+                self.assertEqual(self.dispatcher.dispatch(payload).summary.name, name)
+
+    def test_one_prim_on_its_own_is_not_a_duplicate(self) -> None:
+        # The guard is about repeats, not about counts: a single id is the
+        # ordinary way to break one prim out of a linkset.
+        from vibestorm.udp.messages import encode_object_delink
+
+        payload = encode_object_delink(self.AGENT, self.SESSION, [7])
+
+        self.assertEqual(
+            self.dispatcher.dispatch(payload).summary.name, "ObjectDelink"
+        )
