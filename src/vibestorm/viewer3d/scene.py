@@ -501,11 +501,13 @@ class Scene:
     # flat plane needs, the first is what a Fresnel term needs. `water_fresnel`
     # is (straight down, grazing) reflectance, `water_waves` is the two wave
     # directions as unit vectors, and `water_ripple` is (radians of wave per
-    # metre, how far the surface leans at the steepest).
+    # metre for each of the two waves, how far the surface leans at the
+    # steepest). Two wave numbers rather than one because the two waves are
+    # not the same length -- see `water_wave_number`.
     water_fog: tuple[float, float, float] = DEFAULT_WATER_FOG
     water_fresnel: tuple[float, float] = DEFAULT_WATER_FRESNEL
     water_waves: tuple[float, float, float, float] = DEFAULT_WATER_WAVES
-    water_ripple: tuple[float, float] = DEFAULT_WATER_RIPPLE
+    water_ripple: tuple[float, float, float] = DEFAULT_WATER_RIPPLE
     # How far the surface leans seen from *below*, which the document gives
     # separately and larger, and how far a viewer under it can see.
     water_ripple_below: float = DEFAULT_WATER_RIPPLE_BELOW
@@ -615,7 +617,7 @@ class Scene:
         self.water_fog = water_fog(water)
         self.water_fresnel = water_fresnel(water)
         self.water_waves = water_waves(water)
-        self.water_ripple = (water_wave_number(water), water_wave_slope(water))
+        self.water_ripple = (*water_wave_number(water), water_wave_slope(water))
         self.water_ripple_below = water_wave_slope_below(water)
         self.water_reach = underwater_reach(water)
         self.water_wave_speed = water_wave_speed(water)

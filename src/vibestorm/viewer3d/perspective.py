@@ -1002,22 +1002,44 @@ _SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 WATER_HAZE_NEAR_M: float = 260.0
 WATER_HAZE_FAR_M: float = 900.0
 
-#: The second wave drawn for each of the document's two: how many times finer
-#: it is, how far off its parent's heading it runs, and how tall it is beside
-#: it.
+#: Each further wave drawn for each of the document's two: how many times
+#: finer it is than the one before, how far off that one's heading it runs,
+#: and how tall it is beside it.
 #:
-#: Entirely a rendering choice, and a necessary one. The document gives two
-#: wave directions, and a surface made of two sines is a cross-hatch -- a
-#: regular diamond grid that reads as corrugated iron. Real water has no
-#: period. Deriving the extra pair from the two the region gave, rather than
-#: picking two more headings, keeps the sea pointing where the region said
-#: even though the shape of it is this viewer's invention.
+#: Entirely a rendering choice, and a necessary one. Real water has no period
+#: and a small sum of sines has one, which draws as a regular grid. Deriving
+#: the extra waves from the two the region gave, rather than picking new
+#: headings, keeps the sea pointing where the region said even though the
+#: shape of it is this viewer's invention.
 #:
-#: Not an octave: 2.0 would put every second crest of the harmonic on a crest
-#: of its parent and the grid would come back at half the spacing.
+#: Not an octave: 2.0 would put every second crest of a harmonic on a crest of
+#: its parent and the grid would come back at half the spacing.
 WAVE_HARMONIC: float = 2.3
 WAVE_HARMONIC_TURN_RAD: float = 0.7
 WAVE_HARMONIC_HEIGHT: float = 0.45
+
+#: How many times over to do that, counting the region's own pair as the
+#: first. Measured against screenshots rather than reasoned about, because the
+#: artefact this is here to remove is an interference pattern and a GL test
+#: reads one pixel: from a camera at eye height a wave is seen almost edge on
+#: and one harmonic is plenty, but from above the surface is seen in plan and
+#: four sines still read as woven mesh. Each term turns another
+#: `WAVE_HARMONIC_TURN_RAD` off the last, so three of them span two radians of
+#: heading rather than one, which is what stops the crests lining up into
+#: rows.
+#:
+#: Three rather than more because the fourth is under four per cent of the
+#: slope and costs as much as any other: on llvmpipe the water pass measures
+#: 4.0 ms at one octave and 5.2 at three, and 6.5 at four for a difference
+#: nobody can see.
+WAVE_OCTAVES: int = 3
+
+
+#: What the octaves add up to, so a sea with more of them in it is not a
+#: steeper sea. Summed from the unfaded heights: an octave that has faded out
+#: with distance takes its share of the slope with it, which is what makes the
+#: far water flatten rather than merely coarsen.
+WAVE_SLOPE_TOTAL: float = sum(WAVE_HARMONIC_HEIGHT**n for n in range(WAVE_OCTAVES))
 
 
 _WATER_VERTEX_SHADER = """
@@ -1049,7 +1071,7 @@ uniform vec3 u_eye;
 // The two wave directions, as unit vectors: (d1.xy, d2.xy).
 uniform vec4 u_wave_dirs;
 // x: radians of wave per metre. y: how far the surface leans at its steepest.
-uniform vec2 u_ripple;
+uniform vec3 u_ripple;
 // How far each of the two waves has travelled, in radians.
 uniform vec2 u_wave_phase;
 // x: how much sky is reflected looking straight down. y: how much more of it
@@ -1097,49 +1119,53 @@ void main() {
     // wire is which way the waves run, how fast, and how steep, and that is
     // what is being used.
     vec3 normal = vec3(0.0, 0.0, 1.0);
-    if (u_ripple.y > 0.0) {
-        float first = dot(ground, u_wave_dirs.xy) * u_ripple.x + u_wave_phase.x;
-        float second = dot(ground, u_wave_dirs.zw) * u_ripple.x + u_wave_phase.y;
-        // How much of each wave survives being drawn at this distance. Waves
-        // are about four metres long and the plane runs for two kilometres,
-        // so most of it is being asked for a ripple narrower than a pixel;
-        // sampled once per pixel that is not a ripple, it is moire, which is
-        // the one artefact that reads as a broken renderer rather than as
-        // rough water. The two harmonics below are scaled from their parents'
-        // widths rather than measured -- their headings differ by less than a
-        // radian, and this is a fade rather than a filter.
-        vec2 width = vec2(fwidth(first), fwidth(second));
-        vec4 fade = vec4(
-            1.0 - smoothstep(1.0, 3.0, width.x),
-            1.0 - smoothstep(1.0, 3.0, width.y),
-            1.0 - smoothstep(1.0, 3.0, width.x * __WAVE_HARMONIC__),
-            1.0 - smoothstep(1.0, 3.0, width.y * __WAVE_HARMONIC__)
+    if (u_ripple.z > 0.0) {
+        // How wide one pixel is in wave phase, for each of the region's two
+        // directions. Waves are about nine metres long and the plane runs for
+        // two kilometres, so most of it is being asked for a ripple narrower
+        // than a pixel; sampled once per pixel that is not a ripple, it is
+        // moire, which is the one artefact that reads as a broken renderer
+        // rather than as rough water. Measured once on the base term and
+        // multiplied for the harmonics, which is a fade rather than a filter.
+        vec2 width = vec2(
+            fwidth(dot(ground, u_wave_dirs.xy) * u_ripple.x),
+            fwidth(dot(ground, u_wave_dirs.zw) * u_ripple.y)
         );
-        // Four waves, not the document's two. Two alone draw a cross-hatch:
-        // a regular diamond grid that reads as corrugated iron, because a sea
-        // is not periodic and two sines are. The other two are those same
-        // waves at __WAVE_HARMONIC__ times the frequency, turned off their
-        // parent's heading and at a fraction of its height -- which breaks
-        // the pattern without inventing a direction the region never gave.
-        vec2 slope = u_ripple.y / (1.0 + __WAVE_HARMONIC_HEIGHT__) * (
-            u_wave_dirs.xy * cos(first) * fade.x
-            + u_wave_dirs.zw * cos(second) * fade.y
-            + crest(
+        // Two waves per octave, not the document's two in total. Two alone
+        // draw a cross-hatch: a regular diamond grid that reads as corrugated
+        // iron, because a sea is not periodic and two sines are. Each octave
+        // is the pair before it at __WAVE_HARMONIC__ times the frequency,
+        // turned another __WAVE_TURN_RAD__ radians and at a fraction of the
+        // height -- which breaks the pattern without inventing a heading the
+        // region never gave.
+        vec2 first = u_wave_dirs.xy;
+        vec2 second = u_wave_dirs.zw;
+        float step_up = 1.0;
+        float height = 1.0;
+        vec2 slope = vec2(0.0);
+        for (int octave = 0; octave < __WAVE_OCTAVES__; octave++) {
+            // The two offsets are there so the octaves do not all start their
+            // cycle together at the origin, which would put a seam through it.
+            slope += crest(
                 ground,
-                turned(u_wave_dirs.xy),
-                u_ripple.x * __WAVE_HARMONIC__,
-                u_wave_phase.x * __WAVE_HARMONIC__ + 1.7,
-                __WAVE_HARMONIC_HEIGHT__ * fade.z
-            )
-            + crest(
+                first,
+                u_ripple.x * step_up,
+                u_wave_phase.x * step_up + 1.7 * float(octave),
+                height * (1.0 - smoothstep(1.0, 3.0, width.x * step_up))
+            );
+            slope += crest(
                 ground,
-                turned(-u_wave_dirs.zw),
-                u_ripple.x * __WAVE_HARMONIC__,
-                u_wave_phase.y * __WAVE_HARMONIC__ + 4.1,
-                __WAVE_HARMONIC_HEIGHT__ * fade.w
-            )
-        );
-        normal = normalize(vec3(-slope, 1.0));
+                second,
+                u_ripple.y * step_up,
+                u_wave_phase.y * step_up + 4.1 * float(octave),
+                height * (1.0 - smoothstep(1.0, 3.0, width.y * step_up))
+            );
+            first = turned(first);
+            second = turned(-second);
+            step_up *= __WAVE_HARMONIC__;
+            height *= __WAVE_HARMONIC_HEIGHT__;
+        }
+        normal = normalize(vec3(-slope * u_ripple.z / __WAVE_SLOPE_TOTAL__, 1.0));
     }
 
     // Seen from underneath, the surface is a ceiling: the same plane with its
@@ -1229,6 +1255,12 @@ void main() {
     "__WAVE_TURN_COS__", f"{math.cos(WAVE_HARMONIC_TURN_RAD):f}"
 ).replace(
     "__WAVE_TURN_SIN__", f"{math.sin(WAVE_HARMONIC_TURN_RAD):f}"
+).replace(
+    "__WAVE_TURN_RAD__", f"{WAVE_HARMONIC_TURN_RAD:g}"
+).replace(
+    "__WAVE_OCTAVES__", f"{WAVE_OCTAVES:d}"
+).replace(
+    "__WAVE_SLOPE_TOTAL__", f"{WAVE_SLOPE_TOTAL:f}"
 )
 
 _WATER_INDICES: tuple[int, ...] = (
@@ -1923,6 +1955,7 @@ class PerspectiveRenderer:
                     # same swell bends the view much further.
                     ripple = (
                         ripple[0],
+                        ripple[1],
                         float(
                             getattr(
                                 scene, "water_ripple_below", DEFAULT_WATER_RIPPLE_BELOW

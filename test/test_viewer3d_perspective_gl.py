@@ -634,7 +634,7 @@ class PerspectiveRendererWaterTests(_GLTestBase):
             # Waves off, so the normal is +Z everywhere and the expected
             # colour is a closed expression rather than a sampled one. What
             # the waves do is asserted on its own further down.
-            scene.water_ripple = (scene.water_ripple[0], 0.0)
+            scene.water_ripple = (*scene.water_ripple[:2], 0.0)
             renderer.render_gl(scene, aspect=1.0)
 
             r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
@@ -656,7 +656,7 @@ class PerspectiveRendererWaterTests(_GLTestBase):
         camera = self._looking_down_camera()
         scene = Scene(water_alpha=0.9)
         scene.render_sky = False  # water over the clear colour, not over sky
-        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
 
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
@@ -2725,7 +2725,7 @@ class SeaHorizonGLTests(_GLTestBase):
         """
         scene = self._sea_scene()
         scene.water_fresnel = (0.0, 0.0)
-        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
         return scene
 
     def _worst_step(self, column, low_row: int, high_row: int) -> int:
@@ -2958,7 +2958,7 @@ class SeaSurfaceGLTests(_GLTestBase):
         scene = self._scene()
         scene.sky_horizon_color = (1.0, 1.0, 1.0)
         scene.sky_zenith_color = (1.0, 1.0, 1.0)
-        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
 
         straight_down = self._middle(self._frame(scene, *self.STEEP))
         along_it = self._middle(self._frame(scene, *self.GRAZING))
@@ -2981,7 +2981,7 @@ class SeaSurfaceGLTests(_GLTestBase):
         scene = self._scene()
         scene.sky_horizon_color = (1.0, 0.0, 0.0)
         scene.sky_zenith_color = (0.0, 0.0, 1.0)
-        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
 
         straight_down = self._middle(self._frame(scene, *self.STEEP))
         along_it = self._middle(self._frame(scene, *self.GRAZING))
@@ -3013,7 +3013,7 @@ class SeaSurfaceGLTests(_GLTestBase):
                 scene.sky_horizon_color = scene.water_fog
                 scene.sky_zenith_color = scene.water_fog
                 scene.water_fresnel = fresnel
-                scene.water_ripple = (scene.water_ripple[0], 0.0)
+                scene.water_ripple = (*scene.water_ripple[:2], 0.0)
                 seen.append(self._middle(self._frame(scene, *self.STEEP))[1])
             self.assertGreater(
                 seen[0] - seen[1],
@@ -3037,7 +3037,7 @@ class SeaSurfaceGLTests(_GLTestBase):
         eye, target = (128.0, 128.0, 26.0), (168.0, 128.0, 20.0)
 
         rippled = self._frame(scene, eye, target)
-        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
         flat = self._frame(scene, eye, target)
 
         self.assertGreater(
@@ -3118,8 +3118,10 @@ class SeaSurfaceGLTests(_GLTestBase):
 
         The document gives two wave directions; a surface built from those two
         alone is periodic in both, which draws as regular diamonds -- corrugated
-        iron rather than a sea. Each is drawn with a second, finer wave turned
-        off its heading, and this is what says so.
+        iron rather than a sea. Two things are done about it: the two waves are
+        given different lengths (see `water_wave_number`), and each is drawn
+        with further, finer waves turned off its heading. This test can only
+        speak for the second of them, since it hands both waves one heading.
 
         Handed one heading for both documented waves, a sea built only from
         them varies along that heading and *not at all* across it. So the
@@ -3139,7 +3141,7 @@ class SeaSurfaceGLTests(_GLTestBase):
         scene.water_fresnel = (1.0, 0.0)
         # A steep sea: near the vertical the reflected ray swings with the
         # slope, and the document's own 0.18 is too gentle to swing it far.
-        scene.water_ripple = (scene.water_ripple[0], 1.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 1.0)
         scene.water_waves = (1.0, 0.0, 1.0, 0.0)
 
         frame = self._frame(scene, *self.STEEP)
@@ -3150,6 +3152,48 @@ class SeaSurfaceGLTests(_GLTestBase):
             30,
             f"the sea is flat along one axis: rows {across}, columns {down}",
         )
+
+    def test_the_second_wave_is_drawn_at_its_own_length(self) -> None:
+        """The half of the fix this class cannot see in a single pixel.
+
+        A lattice is an interference pattern and a pixel is not a pattern, so
+        what is testable is the plumbing under it: the shader is handed two
+        wave numbers and has to use both. Handed the same heading twice, a
+        shader that used the first number for both draws one wave at double
+        height and nothing else; using both draws a beat between them, which
+        is a different picture.
+        """
+        scene = self._scene()
+        scene.water_waves = (1.0, 0.0, 1.0, 0.0)
+        # Very long waves -- 126 metres and 42 -- because the distance fade is
+        # measured per wave *number*, and at 64 by 64 one pixel of this frame
+        # is most of a metre. With any ordinary wave here the two frames would
+        # differ through the fade alone, on a shader that had drawn both
+        # crests at the first wave's length; measured, that is exactly what
+        # happens. Only where every octave is far inside the fade does a
+        # difference have to have come from the crest.
+        both = self._frame(
+            self._steep_scene(scene, (0.05, 0.15, 1.0)), *self.STEEP
+        )
+        one = self._frame(
+            self._steep_scene(scene, (0.05, 0.05, 1.0)), *self.STEEP
+        )
+
+        self.assertGreater(self._worst_difference(both, one), 20)
+
+    def _steep_scene(self, scene, ripple):
+        """The same scene with a full mirror on it and the given wave numbers.
+
+        A mirror because straight down Schlick's fifth power is nearly flat --
+        a ripple hardly changes *how much* sky comes back, only which sky -- so
+        the horizon and the zenith are opposite colours here and the surface
+        reflects all of it.
+        """
+        scene.sky_horizon_color = (1.0, 0.0, 0.0)
+        scene.sky_zenith_color = (0.0, 1.0, 0.0)
+        scene.water_fresnel = (1.0, 0.0)
+        scene.water_ripple = ripple
+        return scene
 
     def test_ripples_too_small_to_draw_are_not_drawn(self) -> None:
         """The one artefact that reads as a broken renderer.
@@ -3170,10 +3214,10 @@ class SeaSurfaceGLTests(_GLTestBase):
         scene.sky_zenith_color = (1.0, 1.0, 1.0)
         eye, target = (128.0, 128.0, 26.0), (168.0, 128.0, 20.0)
 
-        number, slope = scene.water_ripple
-        scene.water_ripple = (number * 400.0, slope)
+        first, second, slope = scene.water_ripple
+        scene.water_ripple = (first * 400.0, second * 400.0, slope)
         far_too_fine = self._frame(scene, eye, target)
-        scene.water_ripple = (number, 0.0)
+        scene.water_ripple = (first, second, 0.0)
         flat = self._frame(scene, eye, target)
 
         self.assertLess(
@@ -3513,7 +3557,7 @@ class UnderwaterGLTests(_GLTestBase):
         scene.water_fog = (0.0, 0.0, 0.4)
         scene.sky_horizon_color = (1.0, 0.2, 0.0)
         scene.sky_zenith_color = (1.0, 0.2, 0.0)
-        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
 
         overhead = self._middle(
             self._frame(scene, (128.0, 128.0, 17.0), (128.5, 128.0, 24.0))
@@ -4954,7 +4998,7 @@ class RegionWeatherGLTests(_GLTestBase):
         scene.render_sky = False  # water over the clear colour, not over sky
         # Waves off: with them on the centre pixel is on some part of a ripple
         # and the prediction would have to guess which.
-        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
         camera = Camera3D(
             target=(128.0, 128.0, 0.0),
             distance=200.0,

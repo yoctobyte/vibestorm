@@ -27,6 +27,7 @@ from vibestorm.viewer3d.atmosphere import (
     NIGHT_LIGHT_FLOOR,
     STAR_BRIGHTNESS_FULL,
     SUN_REFERENCE_DIRECTION,
+    WATER_WAVE_LENGTH_SPREAD,
     cloud_cover,
     cloud_hue,
     cloud_shadow_scale,
@@ -375,10 +376,20 @@ class WaterSurfaceTests(unittest.TestCase):
             self.assertEqual(component, component)
 
     def test_a_longer_direction_vector_is_a_faster_wave(self) -> None:
-        slow = water_wave_speed(WaterSettings(wave1_direction=(0.5, 0.0)))
-        fast = water_wave_speed(WaterSettings(wave1_direction=(2.0, 0.0)))
+        """Faster across the sea, which is not the same as more often.
 
-        self.assertGreater(fast[0], slow[0] * 3.5)
+        A phase rate alone cannot say this any more: a wave that is four times
+        as fast is also four times as long, and takes just as long to cross
+        its own length. What the direction's length sets is how fast the
+        crests travel, which is the phase rate over the wave number.
+        """
+        slow = WaterSettings(wave1_direction=(0.5, 0.0))
+        fast = WaterSettings(wave1_direction=(2.0, 0.0))
+
+        crawl = water_wave_speed(slow)[0] / water_wave_number(slow)[0]
+        race = water_wave_speed(fast)[0] / water_wave_number(fast)[0]
+
+        self.assertAlmostEqual(race, crawl * 4.0, places=5)
 
     def test_a_wave_that_stands_still_does_not_move(self) -> None:
         speed = water_wave_speed(WaterSettings(wave1_direction=(0.0, 0.0)))
@@ -395,14 +406,67 @@ class WaterSurfaceTests(unittest.TestCase):
         coarse = water_wave_number(WaterSettings(normal_scale=(1.0, 1.0, 1.0)))
         fine = water_wave_number(WaterSettings(normal_scale=(4.0, 4.0, 4.0)))
 
-        self.assertGreater(fine, coarse)
-        self.assertAlmostEqual(fine, coarse * 4.0, places=5)
+        # Both waves, because `normal_scale` sets the scale of the sea and not
+        # of one wave in it.
+        for wave in (0, 1):
+            self.assertGreater(fine[wave], coarse[wave])
+            self.assertAlmostEqual(fine[wave], coarse[wave] * 4.0, places=5)
 
     def test_a_zero_normal_scale_does_not_divide_by_zero(self) -> None:
-        number = water_wave_number(WaterSettings(normal_scale=(0.0, 0.0, 0.0)))
+        numbers = water_wave_number(WaterSettings(normal_scale=(0.0, 0.0, 0.0)))
 
-        self.assertGreater(number, 0.0)
-        self.assertLess(number, float("inf"))
+        for number in numbers:
+            self.assertGreater(number, 0.0)
+            self.assertLess(number, float("inf"))
+
+    def test_the_two_waves_are_not_the_same_length(self) -> None:
+        """Which is the whole reason the sea does not read as woven mesh.
+
+        Two sines of one length crossing at an angle are a perfect diamond
+        lattice. The document's two directions are 1.13 and 1.61 long and that
+        length is a speed, so deep-water dispersion says the second wave is
+        about twice the first -- and nothing about the pair repeats.
+        """
+        first, second = water_wave_number(self.env.water_at(0.5))
+
+        self.assertGreater(first / second, 1.5)
+
+    def test_the_slower_wave_is_the_shorter_one(self) -> None:
+        # Dispersion's direction, and the one thing about it a captured
+        # document cannot contradict: it is a relation, not a value.
+        water = WaterSettings(wave1_direction=(0.5, 0.0), wave2_direction=(0.0, 2.0))
+
+        first, second = water_wave_number(water)
+
+        self.assertGreater(first, second)
+
+    def test_two_equal_speeds_are_two_equal_lengths(self) -> None:
+        water = WaterSettings(wave1_direction=(0.0, 1.5), wave2_direction=(1.5, 0.0))
+
+        first, second = water_wave_number(water)
+
+        self.assertAlmostEqual(first, second, places=6)
+
+    def test_a_nearly_still_wave_cannot_stretch_the_other_across_the_region(
+        self,
+    ) -> None:
+        """The clamp, and why there is one.
+
+        Nothing bounds the ratio: a document whose second wave barely moves
+        asks for a first one hundreds of metres long, which is not a wave any
+        more but a tilt in the whole sea.
+        """
+        stalled = WaterSettings(wave1_direction=(3.0, 0.0), wave2_direction=(0.001, 0.0))
+        # And the other way round, which is a different branch of the same
+        # clamp and would otherwise be a wave hundreds of metres long in the
+        # other direction.
+        reversed_ = WaterSettings(wave1_direction=(0.001, 0.0), wave2_direction=(3.0, 0.0))
+
+        first, second = water_wave_number(stalled)
+        back, forth = water_wave_number(reversed_)
+
+        self.assertAlmostEqual(second / first, WATER_WAVE_LENGTH_SPREAD**2, places=5)
+        self.assertAlmostEqual(back / forth, WATER_WAVE_LENGTH_SPREAD**2, places=5)
 
     def test_scale_above_is_how_far_the_surface_leans(self) -> None:
         water = self.env.water_at(0.5)

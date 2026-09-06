@@ -119,13 +119,23 @@ WATER_SKY_REFLECTANCE: float = 0.35
 DEFAULT_WATER_FOG: Color3 = WaterSettings().fog_color
 
 #: How long one ripple is, in metres, before `normal_scale` divides it down.
+#: The *mean* of the two waves' lengths; how far apart the two are is off the
+#: wire, see `water_wave_number`.
 #:
 #: A rendering choice, and it has to be: `normal_map` names a texture nobody
 #: here has fetched, so there is no map to scale and the waves are made out of
-#: two sines instead. What *is* off the wire is which way they run and how
+#: sines instead. What *is* off the wire is which way they run and how
 #: fast -- `wave1_direction` and `wave2_direction` -- and how steep the surface
 #: gets, from `scale_above`.
 WATER_WAVE_LENGTH_M: float = 9.0
+
+#: How far apart the two waves' lengths are allowed to get, as a ratio.
+#:
+#: The dispersion relation below has no upper bound in it: a document whose
+#: second wave barely moves asks for a wave hundreds of metres long, which is
+#: not a wave any more but a tilt in the whole sea. Three is about where a
+#: swell stops reading as the same sea as the one crossing it.
+WATER_WAVE_LENGTH_SPREAD: float = 3.0
 
 #: How fast a wave travels, in metres per second per unit of a wave direction.
 #: The default cycle's two directions are about 1.1 and 1.6 long, so this puts
@@ -246,25 +256,56 @@ def water_waves(water: WaterSettings) -> tuple[float, float, float, float]:
 
 
 def water_wave_speed(water: WaterSettings) -> tuple[float, float]:
-    """How fast each wave's phase advances, in radians per second."""
-    number = water_wave_number(water)
+    """How fast each wave's phase advances, in radians per second.
+
+    Each wave against its own wave number, so the faster wave is not also the
+    busier one -- it is the longer one, and it comes round *less* often.
+    """
+    first, second = water_wave_number(water)
     return (
-        _length(water.wave1_direction) * WATER_WAVE_SPEED_M_PER_S * number,
-        _length(water.wave2_direction) * WATER_WAVE_SPEED_M_PER_S * number,
+        _length(water.wave1_direction) * WATER_WAVE_SPEED_M_PER_S * first,
+        _length(water.wave2_direction) * WATER_WAVE_SPEED_M_PER_S * second,
     )
 
 
-def water_wave_number(water: WaterSettings) -> float:
-    """Radians of wave per metre of sea.
+def water_wave_number(water: WaterSettings) -> Vec2:
+    """Radians of wave per metre of sea, for each of the two waves.
 
     `normal_scale` is how many times the normal map repeats across whatever it
     repeats across; with no map to repeat, it is read here as how fine the
     ripples are, larger being finer. Averaged over the three components, which
-    are the three layers the map would have been sampled at.
+    are the three layers the map would have been sampled at. That fixes the
+    mean of the two lengths.
+
+    What separates them is the one piece of physics the document supports.
+    The two wave *directions* have different lengths -- 1.1 and 1.6 in the
+    default cycle -- and that length is a speed. In deep water a wave's phase
+    speed goes as the square root of its wavelength, so a wave half again as
+    fast is more than twice as long, and the ratio of the two lengths is the
+    square of the ratio of the two speeds.
+
+    This is worth doing for more than tidiness. Two sines of the *same* length
+    crossing at an angle are a perfect diamond lattice, and a lattice is what
+    a sea most obviously is not; seen from above it reads as woven mesh. Two
+    of different lengths are not periodic in any direction a camera looks
+    along. The regularity was never a filtering problem, it was two waves
+    being secretly the same wave.
     """
     scale = sum(water.normal_scale) / 3.0
-    metres = WATER_WAVE_LENGTH_M / max(scale, 1e-3)
-    return 2.0 * math.pi / max(metres, 1e-3)
+    metres = max(WATER_WAVE_LENGTH_M / max(scale, 1e-3), 1e-3)
+    # The speed ratio. The length ratio is its square, so the first wave is
+    # this much longer than the mean and the second this much shorter, which
+    # keeps the mean where `normal_scale` put it. Clamped both ways so that one
+    # nearly still wave cannot stretch the other across the whole region.
+    stretch = min(
+        max(
+            max(_length(water.wave1_direction), 1e-3)
+            / max(_length(water.wave2_direction), 1e-3),
+            1.0 / WATER_WAVE_LENGTH_SPREAD,
+        ),
+        WATER_WAVE_LENGTH_SPREAD,
+    )
+    return (2.0 * math.pi / (metres * stretch), 2.0 * math.pi * stretch / metres)
 
 
 def water_wave_slope(water: WaterSettings) -> float:
@@ -486,8 +527,8 @@ _DEFAULT_WATER = WaterSettings()
 DEFAULT_WATER_FRESNEL: Vec2 = water_fresnel(_DEFAULT_WATER)
 DEFAULT_WATER_WAVES: tuple[float, float, float, float] = water_waves(_DEFAULT_WATER)
 DEFAULT_WATER_WAVE_SPEED: Vec2 = water_wave_speed(_DEFAULT_WATER)
-DEFAULT_WATER_RIPPLE: Vec2 = (
-    water_wave_number(_DEFAULT_WATER),
+DEFAULT_WATER_RIPPLE: tuple[float, float, float] = (
+    *water_wave_number(_DEFAULT_WATER),
     water_wave_slope(_DEFAULT_WATER),
 )
 DEFAULT_WATER_RIPPLE_BELOW: float = water_wave_slope_below(_DEFAULT_WATER)

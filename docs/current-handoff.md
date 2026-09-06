@@ -236,6 +236,65 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the two waves were secretly the same wave (2026-09-06).** Screenshot
+the sea from forty metres up and it is a woven mesh: a regular diamond lattice
+running to the horizon, which reads as a broken renderer rather than as water.
+From a camera at eye height it looks fine, which is why it survived the pass
+that drew it -- a wave seen almost edge on shows only its profile.
+
+The cause was not filtering. Both of the document's waves were being drawn at
+one wave number, and **two sines of the same length crossing at an angle are a
+perfect lattice.** No amount of fading or harmonics removes that; it is what
+the surface *is*.
+
+The document does say how far apart the two lengths are, in the same place it
+says the speeds. `wave1_direction` and `wave2_direction` are 1.13 and 1.61
+long, and that length is a speed -- and in deep water a wave's phase speed goes
+as the square root of its length. So the ratio of the two lengths is the square
+of the ratio of the two speeds: about two to one, and nothing about the pair
+repeats in any direction a camera looks along. `normal_scale` still sets the
+scale of the sea; what is new is that it sets the *mean* of the two rather
+than both.
+
+Only the ratio is physical, and deliberately so. Taken absolutely, dispersion
+puts a 0.6 m/s wave at 23 centimetres long, which is a puddle -- the absolute
+scale has to stay the viewer's, because it comes from `normal_scale` and
+`normal_scale` is a texture repeat count and not a length. The clamp exists for
+the same reason in reverse: a document whose second wave barely moves asks for
+a first one hundreds of metres long, which is not a wave any more but a tilt in
+the whole sea.
+
+One consequence is worth stating because it looks like a bug: **making a wave
+faster no longer makes it come round more often.** It is also longer, by
+exactly enough that the period is unchanged. What the direction's length sets
+is the speed the crests travel at, which is the phase rate over the wave
+number, and that is what the test asserts now.
+
+The harmonics from the previous pass stay and became a loop: three octaves
+rather than two extra terms, each the pair before it at 2.3 times the frequency
+and 0.7 radians off its heading. Dispersion alone still leaves a fine lattice
+from above -- screenshotted at one octave to check -- and three octaves span
+two radians of heading rather than one. Not four: on llvmpipe the water pass
+measures 4.0 ms at one octave, 5.2 at three and 6.5 at four, for a difference
+nobody can see.
+
+**This whole class of defect is invisible to the tests here.** A GL test reads
+single pixels and an interference pattern is not a pixel; the sea passed every
+one of them while looking like woven mesh. What the tests can hold is the
+plumbing under it, and one of those needed care: a frame drawn with the second
+wave number wrong differs from a correct one *anyway*, through the distance
+fade, which is measured per wave number. At 64 by 64 one pixel of that frame is
+most of a metre, so the test uses 126-metre and 42-metre waves -- far enough
+inside the fade that a difference has to have come from the crest.
+
+Seventeen mutations, fifteen killed. One survivor was a badly written mutation
+rather than a gap; the other is `WAVE_SLOPE_TOTAL`, the divisor that keeps a
+sea with more octaves in it from being a steeper sea, and it is **not
+observable**: `WATER_WAVE_STEEPNESS` is itself an invented constant, so a
+uniform 1.65 factor between the two is a change no document can contradict.
+The divisor stays because `WAVE_OCTAVES` is meant to be a number someone can
+turn without re-tuning the steepness beside it.
+
 **A -- the sun is the size the region asks for, and cloud finally casts
 (2026-09-06).** Three more fields spent. `sun_scale` and `moon_scale` had never
 even been parsed; `cloud_shadow` had been parsed a pass ago and read by
@@ -1125,11 +1184,10 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      the wavelength and the steepness of the waves are this viewer's constants
      rather than the region's. There is also no sun glitter: a specular
      highlight off the wave crests is the most recognisable thing about the SL
-     sea from a low camera, and nothing draws one. **And there is still moire
-     in it**: from a normal eye height the middle distance cross-hatches, which
-     the `fwidth` fade catches further out and not there. Screenshot it before
-     believing any change to it -- the GL tests read single pixels and an
-     interference pattern is the one defect a single pixel cannot see.
+     sea from a low camera, and nothing draws one. Screenshot the sea before
+     believing any change to it -- the GL tests read single pixels, and an
+     interference pattern is the one defect a single pixel cannot see. That is
+     how a lattice in it went unnoticed for a whole pass.
    - ~~**Under the water.**~~ Done in the seventh pass: every pass that draws
      the world fogs, the sky comes through the surface only where the water is
      thin enough, and the surface from below is a ceiling. `blur_multiplier`

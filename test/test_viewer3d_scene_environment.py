@@ -381,23 +381,30 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
         self.assertAlmostEqual(scene.water_fresnel[0], 0.11, places=6)
         self.assertAlmostEqual(scene.water_fresnel[1], 0.22, places=6)
         self.assertEqual(scene.water_waves, (0.0, 1.0, -1.0, 0.0))
-        # `normal_scale` three where the fallback's is two, so half again as
-        # many radians of wave per metre; and `scale_above` is a lean.
+        # `normal_scale` three against `WATER_WAVE_LENGTH_M`'s nine puts the
+        # mean wave at three metres, and the two speeds -- two and three --
+        # put the waves either side of it at two and four and a half. Asserted
+        # as lengths rather than as wave numbers because a length is the thing
+        # anyone can picture.
+        first, second, lean = scene.water_ripple
+        self.assertAlmostEqual(math.tau / first, 2.0, places=5)
+        self.assertAlmostEqual(math.tau / second, 4.5, places=5)
+        self.assertAlmostEqual(math.sqrt(2.0 * 4.5), 3.0, places=5)
+        # `scale_above` is a lean, and this region's is much steeper.
+        self.assertGreater(lean, DEFAULT_WATER_RIPPLE[2] * 2.0)
+        # Each wave's crests travel at its own direction's length, and the
+        # second's is half again the first's.
         self.assertAlmostEqual(
-            scene.water_ripple[0], DEFAULT_WATER_RIPPLE[0] * 1.5, places=5
-        )
-        self.assertGreater(scene.water_ripple[1], DEFAULT_WATER_RIPPLE[1] * 2.0)
-        # The second wave is half again as long as the first, so it is that
-        # much faster.
-        self.assertAlmostEqual(
-            scene.water_wave_speed[1], scene.water_wave_speed[0] * 1.5, places=5
+            scene.water_wave_speed[1] / second,
+            (scene.water_wave_speed[0] / first) * 1.5,
+            places=5,
         )
         # A sea four times as dense as the fallback's is seen a quarter as
         # far into.
         self.assertAlmostEqual(
             scene.water_reach, DEFAULT_UNDERWATER_REACH / 4.0, places=5
         )
-        self.assertGreater(scene.water_ripple_below, scene.water_ripple[1])
+        self.assertGreater(scene.water_ripple_below, scene.water_ripple[2])
         for index in range(7):
             self.assertNotEqual(
                 (
