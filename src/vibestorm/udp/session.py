@@ -53,6 +53,8 @@ from vibestorm.caps.viewer_asset_client import (
 )
 from vibestorm.event_queue.client import EventQueueClient, EventQueueError
 from vibestorm.event_queue.events import (
+    EnableSimulatorEvent,
+    EstablishAgentCommunicationEvent,
     EventQueueBatch,
     EventQueueDecodeError,
     ParcelPropertiesEvent,
@@ -160,6 +162,7 @@ from vibestorm.udp.messages import (
     parse_update_create_inventory_item,
     yaw_to_packed_quaternion,
 )
+from vibestorm.udp.neighbour import NeighbourCircuit
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
 from vibestorm.udp.template import (
     DecodedMessageNumber,
@@ -253,6 +256,10 @@ class SessionConfig:
     # message (ParcelProperties, TeleportFinish, ScriptRunningReply).
     event_queue_polling: bool = True
     event_queue_timeout_seconds: float = 15.0
+    #: Open a child circuit to each region `EnableSimulator` announces, so the
+    #: world does not stop at this region's edge. Needs the event queue: the
+    #: seed capability that unlocks a neighbour's terrain arrives only there.
+    open_neighbours: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -474,6 +481,18 @@ class LiveCircuitSession:
     create_script_probe_at: float | None = None
     create_script_probe_baseline: frozenset[str] = frozenset()
     create_script_probe_result: str | None = None
+    #: The regions next door, and the two halves of what it takes to open one.
+    #: `EnableSimulator` names the address and the handle;
+    #: `EstablishAgentCommunication` carries the seed capability, and the
+    #: neighbour sends no terrain until that URL has been POSTed to (see
+    #: `vibestorm.udp.neighbour`). The two events arrive in either order, so
+    #: both are kept and the run loop opens the circuit once it has a pair.
+    neighbour_announcements: dict[int, EnableSimulatorEvent] = field(default_factory=dict)
+    neighbour_seed_caps: dict[str, str] = field(default_factory=dict)
+    neighbours: dict[int, NeighbourCircuit] = field(default_factory=dict)
+    #: Handles that will not be tried again, and why. A neighbour whose seed
+    #: cap refuses is a region that is not drawn, not a session that ends.
+    neighbour_failures: dict[int, str] = field(default_factory=dict)
     started: bool = False
     started_at: float | None = None
     events: list[SessionEvent] = field(default_factory=list)
@@ -3164,6 +3183,63 @@ class LiveCircuitSession:
 
         return self._flush_transport_packets(now)
 
+    # ----------------------------------------------------------- neighbours
+
+    @property
+    def region_handle(self) -> int:
+        """This region's handle: its x in metres in the high word, y in the low."""
+        return (self.bootstrap.region_x << 32) | self.bootstrap.region_y
+
+    def neighbours_ready_to_open(self) -> list[tuple[EnableSimulatorEvent, str]]:
+        """Announced regions that have a seed capability and no circuit yet."""
+        ready: list[tuple[EnableSimulatorEvent, str]] = []
+        for handle, announcement in self.neighbour_announcements.items():
+            if handle in self.neighbours or handle in self.neighbour_failures:
+                continue
+            seed = self.neighbour_seed_caps.get(f"{announcement.ip}:{announcement.port}")
+            if seed:
+                ready.append((announcement, seed))
+        return ready
+
+    def open_neighbour(self, announcement: EnableSimulatorEvent) -> NeighbourCircuit:
+        """Register a circuit for an announced region. Does not send anything."""
+        circuit = NeighbourCircuit(
+            handle=announcement.handle,
+            address=(announcement.ip, announcement.port),
+            agent_id=self.bootstrap.agent_id,
+            session_id=self.bootstrap.session_id,
+            circuit_code=self.bootstrap.circuit_code,
+            dispatcher=self.dispatcher,
+        )
+        self.neighbours[announcement.handle] = circuit
+        return circuit
+
+    def neighbour_at(self, address: tuple[str, int]) -> NeighbourCircuit | None:
+        """The circuit a packet from `address` belongs to, if any.
+
+        One socket carries every simulator, so the source address is the only
+        thing that says which region spoke. There are at most eight of these,
+        so a scan is cheaper than keeping a second index in step.
+        """
+        for circuit in self.neighbours.values():
+            if circuit.address == address:
+                return circuit
+        return None
+
+    def _note_neighbour(self, event: object, now: float) -> None:
+        if isinstance(event, EnableSimulatorEvent):
+            self.neighbour_announcements[event.handle] = event
+            self._record_event(
+                now,
+                "neighbour.announced",
+                f"handle={event.handle:#018x} at {event.ip}:{event.port}",
+            )
+        elif isinstance(event, EstablishAgentCommunicationEvent):
+            self.neighbour_seed_caps[event.sim_ip_and_port] = event.seed_capability
+            self._record_event(
+                now, "neighbour.seed", f"{event.sim_ip_and_port} seed capability"
+            )
+
     def handle_event_queue_batch(self, batch: EventQueueBatch, now: float) -> None:
         """Fold one decoded EventQueueGet poll into session state.
 
@@ -3189,6 +3265,10 @@ class LiveCircuitSession:
                         f"area={parcel.area} owner={parcel.owner_id}"
                     ),
                 )
+            elif isinstance(event, (EnableSimulatorEvent, EstablishAgentCommunicationEvent)):
+                self.latest_event_queue_event = event
+                self._note_neighbour(event, now)
+                self._record_event(now, "eventqueue.event", type(event).__name__)
             elif isinstance(event, UnknownEvent):
                 self.latest_event_queue_event = event
                 self._record_event(now, "eventqueue.unknown", event.message)
@@ -3262,6 +3342,8 @@ async def run_live_session(
 
         while _should_continue():
             now = loop.time()
+            if session_config.open_neighbours:
+                await _open_announced_neighbours(session, sock, loop)
             for _, packet in client.drain_outbound_packets(session_handle):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
             for packet in session.drain_due_packets(now):
@@ -3276,11 +3358,23 @@ async def run_live_session(
                 recv_timeout = session_config.receive_timeout_seconds
 
             try:
-                payload, _ = await asyncio.wait_for(
+                payload, source = await asyncio.wait_for(
                     loop.sock_recvfrom(sock, 65535),
                     timeout=recv_timeout,
                 )
             except TimeoutError:
+                await _pump_neighbours(session, sock, loop)
+                continue
+
+            # One socket carries every simulator, so the source address is
+            # the only thing that says who spoke. A packet from a neighbour
+            # answered as if it came from the region the avatar is in would
+            # be decoded against the wrong sequence space and the wrong
+            # world.
+            neighbour = session.neighbour_at(source)
+            if neighbour is not None:
+                for packet in neighbour.handle_incoming(payload):
+                    await loop.sock_sendto(sock, packet, neighbour.address)
                 continue
 
             for packet in session.handle_incoming(payload, loop.time()):
@@ -3498,6 +3592,71 @@ _APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
 _MAP_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "map-cache"
 _TEXTURE_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "texture-cache"
 _MESH_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "mesh-cache"
+
+
+#: What to ask a neighbour's seed capability for. The list barely matters --
+#: what unlocks the region's terrain is that the POST happened at all, since
+#: OpenSim sets `Caps.CapsFlags.SentSeeds` at the end of the handler whatever
+#: was asked for. These are the ones a child region can actually answer, so
+#: the request is a real one rather than a knock.
+NEIGHBOUR_CAPABILITIES: tuple[str, ...] = (
+    "EventQueueGet",
+    "GetTexture",
+    "GetMesh2",
+    "ViewerAsset",
+    "SimulatorFeatures",
+)
+
+
+async def _open_announced_neighbours(
+    session: LiveCircuitSession,
+    sock: socket.socket,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Dial every region that has been announced and has a seed capability.
+
+    The POST comes first and the circuit second, because the POST is what the
+    simulator waits on: `ScenePresence.SendInitialData` returns early until
+    both the handshake reply and the seed request have arrived, and a circuit
+    opened without one gets a region name, a water height and no ground.
+    """
+    for announcement, seed_url in session.neighbours_ready_to_open():
+        handle = announcement.handle
+        try:
+            await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
+                seed_url,
+                list(NEIGHBOUR_CAPABILITIES),
+                udp_listen_port=int(sock.getsockname()[1]),
+            )
+        except (CapabilityError, OSError) as exc:
+            # A neighbour is a nicety. One that will not answer is a region
+            # that stays undrawn, not a session that ends -- and it is not
+            # retried, or a dead region costs an HTTP timeout every pass.
+            session.neighbour_failures[handle] = str(exc)
+            session._record_event(
+                loop.time(), "neighbour.failed", f"{handle:#018x}: {exc}"
+            )
+            continue
+
+        circuit = session.open_neighbour(announcement)
+        for packet in circuit.start():
+            await loop.sock_sendto(sock, packet, circuit.address)
+        session._record_event(
+            loop.time(),
+            "neighbour.opened",
+            f"handle={handle:#018x} at {circuit.address[0]}:{circuit.address[1]}",
+        )
+
+
+async def _pump_neighbours(
+    session: LiveCircuitSession,
+    sock: socket.socket,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Send whatever the neighbours owe. Acks batch, so they need flushing."""
+    for circuit in session.neighbours.values():
+        for packet in circuit.drain_acks():
+            await loop.sock_sendto(sock, packet, circuit.address)
 
 
 async def _fetch_region_environment(

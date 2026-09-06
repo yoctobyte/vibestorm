@@ -353,11 +353,23 @@ is not a fix, because a real grid will not have it.
 battery that killed twenty (the survivor, "the handshake reply goes out
 unreliably", is now a test: the simulator latches that flag once and never
 asks again, so a lost reply is a region that stays a name with no ground
-under it). **It is not wired into the viewer yet.** Doing that needs the
-seed-cap POST beside it, which is `CapabilityClient.resolve_seed_caps`
-against `EstablishAgentCommunicationEvent.seed_capability` -- both of which
-this client already has, and neither of which it currently calls for a
-neighbour.
+under it).
+
+`run_live_session` now opens them. `LiveCircuitSession` keeps the two
+halves -- `neighbour_announcements` keyed by region handle,
+`neighbour_seed_caps` keyed by "ip:port" -- because the two events arrive in
+either order and share no key at all: one names a handle, an ip and a port,
+the other names a string and no handle. The run loop POSTs the seed cap,
+dials the circuit, and routes inbound packets by **source address**, since
+one socket carries every simulator. A neighbour that will not answer is
+recorded in `neighbour_failures` and never retried, so a dead region costs
+one HTTP timeout rather than one per pass. Live, against the two local
+regions: `Vibestorm North` opens, 256 patches, heights -0.13 to 25.0,
+offset (0, 256) m. 18 more tests in `test/test_udp_session_neighbours.py`,
+thirteen mutants planted and thirteen killed.
+
+**What is still missing is the drawing.** The heightmap arrives and nothing
+renders it; standing at the north edge you still see sea.
 
 **The client could crash the simulator two ways, and now cannot
 (2026-09-06).** The local sim had been failing to persist one object every
@@ -1983,15 +1995,13 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
-   - **The world still stops at the region edge.** `NeighbourCircuit` opens a
-     child circuit and brings back the region next door's heightmap, and the
-     seed-cap POST that unlocks it is measured and understood, but nothing in
-     the viewer opens one. Standing at the north edge of `Vibestorm Test` you
-     see sea where `Vibestorm North` is. What is missing is the wiring, not
-     the protocol: on `EnableSimulator`, POST
-     `EstablishAgentCommunicationEvent.seed_capability`, open the circuit,
-     pump it on the session's socket, and draw its terrain at
-     `offset_from(root_handle)`.
+   - **The world still stops at the region edge, but only in the picture.**
+     The session opens a child circuit to each announced neighbour and its
+     heightmap arrives complete; nothing draws it. Standing at the north
+     edge of `Vibestorm Test` you still see sea where `Vibestorm North` is.
+     What is left is one terrain mesh per neighbour, translated by
+     `NeighbourCircuit.offset_from(session.region_handle)`, and a decision
+     about how far out to keep them.
    - **The camera does not see round anything.** It is held out of the
      ground since the eleventh pass, but nothing stops it looking *through* a
      hill or a prim standing between it and the avatar. That is a raycast
