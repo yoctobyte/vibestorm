@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (ninth pass)
+Last updated: 2026-09-06 (tenth pass)
 
 ## The Owner's Priorities
 
@@ -314,6 +314,48 @@ water leaves at a steep angle over most of the sea, so the samples land close
 together, where the sky pass fans its rays across a whole hemisphere including
 the horizon, where `dir.xy / dir.z` runs away and every neighbouring pixel
 reads a different part of the field.
+
+
+**A -- and the moon, which is what a night sea is recognised by
+(2026-09-06).** The third and last application of the same argument, in the
+same shape: `_MOON_IN_SKY_GLSL` beside `_SUN_IN_SKY_GLSL` and
+`_CLOUD_IN_SKY_GLSL`, one string compiled into both programs, with
+`_moon_in_sky(scene)` the one reading of the scene and `_bind_moon_in_sky` the
+one place its seven uniforms are set. `_render_sky` lost five more loose
+keyword arguments. The water pass binds the moon itself rather than living off
+whatever the sky pass left on unit 4 -- that pass may not have run at all, and
+an inherited sampler would put the terrain in the sea.
+
+Order matters and is now stated once instead of twice: gradient, then moon,
+then the cloud layer over both, then the sun over everything. The sea builds
+the same stack along the reflected ray. Folding the sun in was algebraically
+free -- `mix(colour, sky, m) + m*sun` is `mix(colour, sky + sun, m)` -- and the
+moon and the cloud join it there.
+
+**The stars are deliberately left out, and that is now asserted.**
+`star_field` is a field of points a twentieth of a degree across, sampled once
+per pixel with no filter of any kind. In the sky that is fine, because the ray
+varies smoothly from pixel to pixel. Off a rippled sea it does not: the
+surface turns the reflected ray by degrees between neighbours, so the field
+would be sampled at random and come back as white speckle -- worse than no
+stars. The moon has no such problem; a disc smeared along a rippled surface is
+a moonpath, which is exactly what a moonlit sea looks like. There is a test
+that says the sea is unchanged between `star_level` 0 and 500, so a future
+reading of *"the sea shows the sky back"* cannot quietly put them in.
+
+Ten mutations, and the tenth pass is the reason to keep running these: nine
+died and **one survived every single test in the file**. Deleting the
+`* u_moon_level` from `moon_in_sky` -- drawing the disc at full brightness
+whatever the region asked for -- passed 218 of 218. The cause is that every
+test ran the moon at nine tenths, and at nine tenths the middle of the disc
+already clamps at 255, so nine tenths and a full moon are the same pixel. The
+test that closes it compares the *peak rise over a moonless frame* at levels
+0.1 and 0.3, where nothing clamps: measured 25 and 74 levels, and a third of
+the light has to arrive as a third of the rise. Under the mutation both come
+back as 138. This is the same failure as the `u_horizon` survivor recorded
+above -- a test that measures where the quantity saturates cannot see the
+quantity -- and it is the second time in two passes that it has been the one
+survivor.
 
 
 **A -- the moon hangs the way the document hangs it (2026-09-06).** A
@@ -1567,11 +1609,12 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      string, seen in a mirror. What is left here is `transparent_texture` --
      a fourth asset id in the water frame that nothing parses; it fetches, and
      it is an opaque blue sheet rather than anything transparent. The sea shows
-     back the region's cloud layer as well as its sun since the ninth pass,
-     off the same one shared GLSL string, and there is a test that compares
-     the two passes against each other rather than against a prediction. What
-     it still does not show back is the **moon** -- the one thing left in the
-     sky the sea has not got. Screenshot
+     back the region's cloud layer as well as its sun since the ninth pass
+     and the moon since the tenth, all three off the same one shared GLSL
+     string each, and there is a test that compares the two passes against
+     each other rather than against a prediction. The only thing in the sky
+     the sea does not show back now is the **stars**, and that is deliberate
+     -- see below. Screenshot
      the sea before believing any change to it -- the GL tests read single
      pixels, and an interference pattern is the one defect a single pixel
      cannot see. That is how a lattice in it went unnoticed for a whole pass.

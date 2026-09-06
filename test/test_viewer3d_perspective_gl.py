@@ -4929,6 +4929,9 @@ class SeaShowsTheSkyBackGLTests(_GLTestBase):
     #: Twenty degrees up and along the way the camera points, so the sun and
     #: its reflection are both in frame and the pair of them is checked too.
     SUN = (0.9397, 0.0, 0.3420)
+    #: Fifteen degrees up and twenty round from the sun, for the same reason
+    #: and so that the two do not sit on top of each other.
+    MOON = (0.9077, 0.3303, 0.2588)
     #: How far in from the top and the bottom of the frame to compare. Not the
     #: rows beside the horizon: those are looking at sea a long way off, which
     #: is where the haze turns it into sky by a different route and the mirror
@@ -4956,11 +4959,12 @@ class SeaShowsTheSkyBackGLTests(_GLTestBase):
         # over. A ripple would aim each pixel somewhere else in the sky.
         scene.water_ripple = (*scene.water_ripple[:2], 0.0)
         scene.sun_direction = self.SUN
-        # Nothing in the sky the sea does not have: the stars and the moon are
-        # drawn by the sky pass alone, and a moon in frame would be a
-        # difference this test could not tell from a bug.
+        scene.moon_direction = self.MOON
+        scene.moon_level = 0.9
+        # The stars, and only the stars, are in the sky and not in the sea --
+        # on purpose, see `_MOON_IN_SKY_GLSL`. So they are off here: with them
+        # on, this comparison would fail by design and say nothing.
         scene.star_level = 0.0
-        scene.moon_level = 0.0
         return scene
 
     def _clouded(self, scene):
@@ -5000,13 +5004,17 @@ class SeaShowsTheSkyBackGLTests(_GLTestBase):
             sky = self._row(frame, height - 1 - row)
             yield from zip(sea, sky, strict=True)
 
+    def _sea_greens(self, frame) -> list[int]:
+        """The green channel of every sea pixel the comparison looks at."""
+        return [sea[1] for sea, _ in self._mirrored_pairs(frame)]
+
     def _spread(self, frame) -> int:
         """How much the sea being compared varies, in levels of green.
 
         A frame with a flat sea in it would pass the comparison below for the
         wrong reason, so the test says how much sky it is looking at.
         """
-        greens = [sea[1] for sea, _ in self._mirrored_pairs(frame)]
+        greens = self._sea_greens(frame)
         return max(greens) - min(greens)
 
     def test_the_sea_shows_back_the_sky_the_sky_pass_draws(self) -> None:
@@ -5038,11 +5046,8 @@ class SeaShowsTheSkyBackGLTests(_GLTestBase):
         clear.render_clouds = False
         overcast = self._clouded(self._scene())
 
-        def greens(frame):
-            return [sea[1] for sea, _ in self._mirrored_pairs(frame)]
-
-        without = greens(self._frame(clear))
-        with_cloud = greens(self._frame(overcast))
+        without = self._sea_greens(self._frame(clear))
+        with_cloud = self._sea_greens(self._frame(overcast))
 
         moved = sum(
             1 for a, b in zip(without, with_cloud, strict=True) if abs(a - b) > 6
@@ -5051,6 +5056,134 @@ class SeaShowsTheSkyBackGLTests(_GLTestBase):
             moved,
             len(without) // 4,
             "the region's cloud layer never reached the water",
+        )
+
+    def test_the_moon_reaches_the_sea(self) -> None:
+        """And the same for the moon, which the mirror alone cannot see.
+
+        A sea and a sky that agree there is no moon pass the comparison above
+        perfectly. What is asserted here is that the moon is in the water at
+        all -- which is a moonpath, and the one thing anyone recognises a night
+        sea by.
+        """
+        moonless = self._scene()
+        moonless.moon_level = 0.0
+
+        without = self._sea_greens(self._frame(moonless))
+        with_moon = self._sea_greens(self._frame(self._scene()))
+
+        # Fifty-seven pixels of the nineteen hundred compared, by as much as
+        # ninety-nine levels: a moonpath off a small disc is a narrow thing,
+        # and the number is here so that a moon which merely dimmed would not
+        # pass by drawing one pixel.
+        moved = sum(
+            1 for a, b in zip(without, with_moon, strict=True) if abs(a - b) > 6
+        )
+        self.assertGreater(moved, 25, "the region's moon never reached the water")
+
+    def test_the_moon_is_as_bright_as_the_region_says(self) -> None:
+        """Not merely there: there at the brightness `moon_level` asks for.
+
+        Every other test in this class runs the moon at nine tenths, and at
+        nine tenths the middle of the disc already clamps at 255 -- so a
+        shader that drew the face and threw the level away came out pixel for
+        pixel identical and passed all of them. These two levels are low
+        enough that nothing clamps, and then a third of the light has to
+        arrive as a third of the rise over a moonless sky.
+
+        Asserted in both halves of the frame, because both of them read the
+        one `moon_in_sky` and either could be the copy that stopped scaling.
+        """
+
+        def reds(level: float) -> list[tuple[int, int]]:
+            scene = self._scene()
+            scene.moon_level = level
+            return [
+                (sea[0], sky[0]) for sea, sky in self._mirrored_pairs(self._frame(scene))
+            ]
+
+        moonless = reds(0.0)
+
+        def peak_rise(level: float) -> list[int]:
+            lit = reds(level)
+            return [
+                max(a[half] - b[half] for a, b in zip(lit, moonless, strict=True))
+                for half in (0, 1)
+            ]
+
+        dim, bright = peak_rise(0.1), peak_rise(0.3)
+
+        for half, name in enumerate(("water", "sky")):
+            self.assertGreater(
+                dim[half], 10, f"a tenth of a moon never reached the {name}"
+            )
+            # A full moon peaks a hundred and thirty-eight levels over this
+            # sky, so anything near that is a shader drawing the disc at
+            # whatever brightness it likes.
+            self.assertLess(
+                dim[half],
+                60,
+                f"a tenth of a moon is as bright as a full one in the {name}",
+            )
+            self.assertAlmostEqual(
+                bright[half] / dim[half],
+                3.0,
+                delta=0.4,
+                msg=f"three times the moonlight is not three times as bright in the {name}",
+            )
+
+    def test_the_sea_leaves_the_stars_in_the_sky(self) -> None:
+        """The one piece of sky the sea deliberately does not show back.
+
+        `star_field` is a field of points a twentieth of a degree across with
+        no filter on it. Reflected off a rippled surface it is sampled at
+        random from pixel to pixel and comes back as white speckle rather than
+        as stars, which is worse than no stars at all. Asserted rather than
+        left implicit, because a future reading of "the sea shows the sky
+        back" would otherwise put them in.
+        """
+        starless, starry = self._scene(), self._scene()
+        starless.render_sky = starry.render_sky = False
+        starry.star_level = 500.0
+
+        self.assertEqual(
+            self._sea_greens(self._frame(starless)),
+            self._sea_greens(self._frame(starry)),
+            "the sea drew the star field",
+        )
+
+    def test_the_sea_fetches_the_moons_face_for_itself(self) -> None:
+        """With the sky pass off, so nothing else has bound unit 4.
+
+        The same argument as the cloud field below: left to inherit whatever
+        the sky pass bound last, the moon in the water would be right in every
+        frame that has a sky in it and the terrain in every frame that has not.
+        """
+        import pygame
+
+        def painted(level: int):
+            scene = self._scene()
+            scene.render_sky = False
+            # A moon large enough to cover a good share of the reflected sky,
+            # so what is in its face decides many pixels rather than a few.
+            scene.moon_disc = (0.90, 0.98)
+            moon_id = UUID(int=0xB00)
+            directory = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, directory, True)
+            path = Path(directory) / f"moon-{level}.png"
+            surface = pygame.Surface((64, 64))
+            surface.fill((level, level, level))
+            pygame.image.save(surface, str(path))
+            scene.moon_texture_id = moon_id
+            scene.texture_paths[moon_id] = path
+            return self._sea_greens(self._frame(scene))
+
+        bright, dark = painted(255), painted(0)
+        moved = sum(1 for a, b in zip(bright, dark, strict=True) if abs(a - b) > 20)
+        self.assertGreater(
+            moved,
+            len(bright) // 4,
+            "the sea did not read the region's own moon texture",
         )
 
     def test_the_sea_fetches_the_cloud_field_for_itself(self) -> None:
@@ -5080,17 +5213,11 @@ class SeaShowsTheSkyBackGLTests(_GLTestBase):
         # A flat field either way, so the difference cannot be the pattern:
         # one says the sky is covered and the other says it is clear, and both
         # of them arrive through the water pass's own sampler.
-        overcast = painted(255)
-        clear = painted(0)
+        overcast = self._sea_greens(painted(255))
+        clear = self._sea_greens(painted(0))
 
         moved = sum(
-            1
-            for sea, other in zip(
-                (sea for sea, _ in self._mirrored_pairs(overcast)),
-                (sea for sea, _ in self._mirrored_pairs(clear)),
-                strict=True,
-            )
-            if abs(sea[1] - other[1]) > 20
+            1 for a, b in zip(overcast, clear, strict=True) if abs(a - b) > 20
         )
         self.assertGreater(
             moved,

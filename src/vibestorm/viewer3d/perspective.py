@@ -922,23 +922,28 @@ _CLOUD_IN_SKY_GLSL = (
     .replace("__CLOUD_NOISE_CELLS__", f"{CLOUD_NOISE_CELLS_PER_TILE:f}")
 )
 
-
-
-
-_SKY_FRAGMENT_SHADER = """
-#version 330
-
-uniform vec3 u_horizon;
-uniform vec3 u_zenith;
-uniform vec3 u_sun_dir;
+#: The moon as the sky draws it, as GLSL, shared with the water shader.
+#:
+#: The third of these, after `_SUN_IN_SKY_GLSL` and `_CLOUD_IN_SKY_GLSL`, and
+#: for the same reason: the sea is showing this sky back, and a moon drawn from
+#: two copies is two moons the first time either one moves.
+#:
+#: The stars are deliberately not in here, and that is the one thing in the sky
+#: the sea does not show back. `star_field` is a field of points a twentieth of
+#: a degree across, sampled once per pixel with no filter of any kind. In the
+#: sky that is fine, because the ray varies smoothly from pixel to pixel; off a
+#: rippled sea it does not -- the surface turns the reflected ray by degrees
+#: between neighbours, so the field would be sampled at random and come back as
+#: white speckle rather than as stars. The moon has no such problem: it is a
+#: disc, and a disc smeared along a rippled surface is a moonpath, which is
+#: what a moonlit sea looks like.
+_MOON_IN_SKY_GLSL = """
 uniform vec3 u_moon_dir;
 uniform float u_moon_level;
-// The cosines of each disc's outer and inner edge -- how large the region
-// asks for the sun and the moon to be drawn.
-uniform vec2 u_sun_disc;
+// The cosines of the moon's disc's outer and inner edge.
 uniform vec2 u_moon_disc;
-// The two world axes across the moon's face, which is what makes the
-// face have a way up at all. See `moon_face_axes`.
+// The two world axes across the moon's face, which is what makes the face have
+// a way up at all. See `moon_face_axes`.
 uniform vec3 u_moon_across;
 uniform vec3 u_moon_up;
 // The moon's own face, and whether one has arrived. `moon_id` is an ordinary
@@ -947,6 +952,60 @@ uniform vec3 u_moon_up;
 // network mid-session, and until it lands there has to be something up there.
 uniform sampler2D u_moon_tex;
 uniform float u_moon_textured;
+
+// The moon: a disc with a soft edge, about the angular size of the sun
+// blob below it. Both are drawn a little large -- the real pair are half a
+// degree across, which at this field of view is a few pixels and reads as
+// a speck.
+vec3 moon_in_sky(vec3 dir) {
+    if (u_moon_level <= 0.0) {
+        return vec3(0.0);
+    }
+    vec3 moon = normalize(u_moon_dir);
+    float moon_alignment = dot(dir, moon);
+    float disc = smoothstep(u_moon_disc.x, u_moon_disc.y, moon_alignment);
+    vec3 face = vec3(0.96, 0.95, 0.90);
+    if (u_moon_textured > 0.0 && disc > 0.0) {
+        // Two axes across the moon's own face, from the same quaternion
+        // that says where the moon is: `moon_rotation` takes the moon's
+        // own +Y and +Z to these. Not a cross product with world up,
+        // which was here before and turns the face a half circle in one
+        // frame as the moon crosses the meridian, because that is where
+        // the cross product changes sign.
+        vec3 across = u_moon_across;
+        vec3 upward = u_moon_up;
+        // The disc's outer edge as a sine, which is the radius the face
+        // has to span: u_moon_disc.x is its cosine.
+        float reach = max(sqrt(1.0 - u_moon_disc.x * u_moon_disc.x), 1e-5);
+        vec2 uv = clamp(
+            0.5 + vec2(dot(dir, across), dot(dir, upward)) / (2.0 * reach),
+            0.0,
+            1.0
+        );
+        vec4 sampled = texture(u_moon_tex, uv);
+        face = sampled.rgb;
+        // The face's own alpha cuts the disc rather than fading toward
+        // the fallback colour: where a moon texture is transparent what
+        // is behind it is the sky, not a paler moon. The asset that
+        // prompted this is a photograph inscribed in its own square, so
+        // its corners are transparent and the disc would otherwise put
+        // four dark spurs on them.
+        disc *= sampled.a;
+    }
+    return face * disc * u_moon_level;
+}
+"""
+
+
+_SKY_FRAGMENT_SHADER = """
+#version 330
+
+uniform vec3 u_horizon;
+uniform vec3 u_zenith;
+uniform vec3 u_sun_dir;
+// The cosine of the sun's disc's outer and inner edge -- how large the region
+// asks for it to be drawn. The moon's is in `_MOON_IN_SKY_GLSL`.
+uniform vec2 u_sun_disc;
 uniform float u_star_level;
 // The sea's own colour, and (reach, surface height, eye height) -- see the
 // water shader. Only the reach is read here: a viewer under the surface has
@@ -959,6 +1018,7 @@ in vec3 v_ray;
 out vec4 frag_color;
 
 __SUN_IN_SKY_GLSL__
+__MOON_IN_SKY_GLSL__
 __CLOUD_IN_SKY_GLSL__
 
 // One float in 0..1 from a cell of the sky. Deterministic and view
@@ -1039,44 +1099,7 @@ void main() {
         rgb += vec3(0.92, 0.94, 1.0) * star_field(dir) * u_star_level * rise;
     }
 
-    // The moon: a disc with a soft edge, about the angular size of the sun
-    // blob below it. Both are drawn a little large -- the real pair are half a
-    // degree across, which at this field of view is a few pixels and reads as
-    // a speck.
-    if (u_moon_level > 0.0) {
-        vec3 moon = normalize(u_moon_dir);
-        float moon_alignment = dot(dir, moon);
-        float disc = smoothstep(u_moon_disc.x, u_moon_disc.y, moon_alignment);
-        vec3 face = vec3(0.96, 0.95, 0.90);
-        if (u_moon_textured > 0.0 && disc > 0.0) {
-            // Two axes across the moon's own face, from the same quaternion
-            // that says where the moon is: `moon_rotation` takes the moon's
-            // own +Y and +Z to these. Not a cross product with world up,
-            // which was here before and turns the face a half circle in one
-            // frame as the moon crosses the meridian, because that is where
-            // the cross product changes sign.
-            vec3 across = u_moon_across;
-            vec3 upward = u_moon_up;
-            // The disc's outer edge as a sine, which is the radius the face
-            // has to span: u_moon_disc.x is its cosine.
-            float reach = max(sqrt(1.0 - u_moon_disc.x * u_moon_disc.x), 1e-5);
-            vec2 uv = clamp(
-                0.5 + vec2(dot(dir, across), dot(dir, upward)) / (2.0 * reach),
-                0.0,
-                1.0
-            );
-            vec4 sampled = texture(u_moon_tex, uv);
-            face = sampled.rgb;
-            // The face's own alpha cuts the disc rather than fading toward
-            // the fallback colour: where a moon texture is transparent what
-            // is behind it is the sky, not a paler moon. The asset that
-            // prompted this is a photograph inscribed in its own square, so
-            // its corners are transparent and the disc would otherwise put
-            // four dark spurs on them.
-            disc *= sampled.a;
-        }
-        rgb += face * disc * u_moon_level;
-    }
+    rgb += moon_in_sky(dir);
 
     rgb = cloud_over(rgb, dir);
 
@@ -1091,11 +1114,16 @@ void main() {
 }
 """
 
-# The two pieces of sky the sea also shows back, compiled in from the one copy
-# of each. Both carry their own numbers already; see `_CLOUD_IN_SKY_GLSL`.
-_SKY_FRAGMENT_SHADER = _SKY_FRAGMENT_SHADER.replace(
-    "__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL
-).replace("__CLOUD_IN_SKY_GLSL__", _CLOUD_IN_SKY_GLSL)
+# The three pieces of sky the sea also shows back, compiled in from the one
+# copy of each. They carry their own numbers already; see
+# `_CLOUD_IN_SKY_GLSL`. What is left in this shader is the gradient, which the
+# water has its own `sky_at_height` for, and the stars, which it deliberately
+# has not -- see `_MOON_IN_SKY_GLSL`.
+_SKY_FRAGMENT_SHADER = (
+    _SKY_FRAGMENT_SHADER.replace("__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL)
+    .replace("__MOON_IN_SKY_GLSL__", _MOON_IN_SKY_GLSL)
+    .replace("__CLOUD_IN_SKY_GLSL__", _CLOUD_IN_SKY_GLSL)
+)
 
 #: A quad in clip space. Two triangles rather than the usual oversized single
 #: triangle, because the ray is interpolated across it and a triangle reaching
@@ -1164,6 +1192,49 @@ def _cloud_layer(scene: Scene) -> _CloudLayer:
         scale_drift=getattr(scene, "cloud_scale_drift", (900.0, 0.0, 0.0)),
         offsets=getattr(scene, "cloud_offsets", (0.0, 0.0, 0.0, 0.0)),
     )
+
+
+@dataclass(frozen=True)
+class _MoonInSky:
+    """Where the moon is, how big, how bright and which way up.
+
+    Two passes draw it -- the sky, and the sea showing that sky back -- off
+    one reading of the scene, for the same reason as `_CloudLayer`.
+    """
+
+    direction: tuple[float, float, float]
+    level: float
+    disc: tuple[float, float]
+    face_axes: tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
+def _moon_in_sky(scene: Scene) -> _MoonInSky:
+    """The scene's moon, or a moon of no brightness if it has not got one."""
+    return _MoonInSky(
+        direction=_a_direction_or(
+            getattr(scene, "moon_direction", None), (0.0, 0.0, -1.0)
+        ),
+        level=float(getattr(scene, "moon_level", 0.0) or 0.0),
+        disc=getattr(scene, "moon_disc", DEFAULT_MOON_DISC),
+        face_axes=getattr(scene, "moon_face_axes", DEFAULT_MOON_FACE_AXES),
+    )
+
+
+def _bind_moon_in_sky(program, moon: _MoonInSky, texture: object | None) -> None:
+    """Hand a program the moon `_MOON_IN_SKY_GLSL` reads."""
+    program["u_moon_dir"].value = moon.direction
+    program["u_moon_level"].value = moon.level
+    program["u_moon_disc"].value = moon.disc
+    program["u_moon_across"].value = moon.face_axes[0]
+    program["u_moon_up"].value = moon.face_axes[1]
+    # Not unit 0: the terrain pass owns 0 through 3, and although it never runs
+    # beside the sky, a sampler left pointing at 0 reads whatever was bound
+    # there last -- which on a frame with terrain in it is the ground,
+    # stretched across the moon.
+    program["u_moon_tex"].value = _MOON_TEXTURE_UNIT
+    program["u_moon_textured"].value = 1.0 if texture is not None else 0.0
+    if texture is not None:
+        texture.use(location=_MOON_TEXTURE_UNIT)
 
 
 def _bind_cloud_layer(
@@ -1304,6 +1375,7 @@ vec3 sky_at_height(float height) {
 }
 
 __SUN_IN_SKY_GLSL__
+__MOON_IN_SKY_GLSL__
 __CLOUD_IN_SKY_GLSL__
 
 // One wave's contribution to the slope of the surface: the derivative of a
@@ -1483,12 +1555,16 @@ void main() {
     // water is the one thing anyone recognises a sea by.
     vec3 reflected = 2.0 * facing * normal - view;
     // The sky along the reflected ray, built the way the sky pass builds it:
-    // the gradient, then the cloud layer over it, then the sun over that. Not
-    // a reflection model and deliberately not -- it is the sky that is being
-    // drawn overhead, seen in a mirror, and a mirror does not need a model of
-    // the thing in front of it. The order is the sky's own, too: a cloud in
-    // front of the sun still glows there, and a sea that put the sun under
-    // the cloud would show back a sky its own sky disagrees with.
+    // the gradient, the moon over that, the cloud layer over both, and the sun
+    // over everything. Not a reflection model and deliberately not -- it is
+    // the sky that is being drawn overhead, seen in a mirror, and a mirror
+    // does not need a model of the thing in front of it. The order is the
+    // sky's own, too: a cloud in front of the sun still glows there, and a sea
+    // that put the sun under the cloud would show back a sky its own sky
+    // disagrees with.
+    //
+    // Everything the sky pass draws is in here except the stars, and that is
+    // on purpose -- see `_MOON_IN_SKY_GLSL`.
     //
     // The cloud layer is hit from the eye rather than from this patch of
     // surface. The sky pass anchors it at the eye as well, so this is exactly
@@ -1499,7 +1575,9 @@ void main() {
     // What breaks the sun in it into a glittering path rather than one round
     // highlight is the surface, which is the region's own normal map; six
     // sines gave a row of repeating blobs instead.
-    vec3 mirrored = cloud_over(sky_at_height(reflected.z), reflected);
+    vec3 mirrored = cloud_over(
+        sky_at_height(reflected.z) + moon_in_sky(reflected), reflected
+    );
     mirrored += sun_in_sky(reflected, normalize(u_sun_dir), u_sun_disc);
     // Weighted by `mirror`, so the reflection strengthens toward the horizon
     // the way the sky does: `mix(colour, sky, m) + m * sun` is this same
@@ -1564,6 +1642,8 @@ void main() {
     "__WATER_RIPPLES_PER_TILE__", f"{WATER_NORMAL_RIPPLES_PER_TILE:f}"
 ).replace(
     "__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL
+).replace(
+    "__MOON_IN_SKY_GLSL__", _MOON_IN_SKY_GLSL
 ).replace(
     "__CLOUD_IN_SKY_GLSL__", _CLOUD_IN_SKY_GLSL
 )
@@ -2119,16 +2199,9 @@ class PerspectiveRenderer:
                     sun_direction=sun_direction,
                     horizon=getattr(scene, "sky_horizon_color", DEFAULT_SKY_HORIZON_COLOR),
                     zenith=getattr(scene, "sky_zenith_color", DEFAULT_SKY_ZENITH_COLOR),
-                    moon_direction=_a_direction_or(
-                        getattr(scene, "moon_direction", None), (0.0, 0.0, -1.0)
-                    ),
-                    moon_level=float(getattr(scene, "moon_level", 0.0) or 0.0),
                     star_level=float(getattr(scene, "star_level", 0.0) or 0.0),
                     sun_disc=getattr(scene, "sun_disc", DEFAULT_SUN_DISC),
-                    moon_disc=getattr(scene, "moon_disc", DEFAULT_MOON_DISC),
-                    moon_face_axes=getattr(
-                        scene, "moon_face_axes", DEFAULT_MOON_FACE_AXES
-                    ),
+                    moon=_moon_in_sky(scene),
                     moon_texture=self._moon_texture(ctx, scene),
                     cloud=_cloud_layer(scene),
                     cloud_texture=self._cloud_texture(ctx, scene),
@@ -2285,10 +2358,16 @@ class PerspectiveRenderer:
                 self._water_program["u_sun_disc"].value = getattr(
                     scene, "sun_disc", DEFAULT_SUN_DISC
                 )
-                # And the same cloud layer, for the same reason. Bound here
-                # rather than left over from the sky pass: that pass may not
-                # have run at all, and a sampler pointing at whatever unit 5
-                # held last would put the terrain in the sea.
+                # And the same moon and the same cloud layer, for the same
+                # reason. Bound here rather than left over from the sky pass:
+                # that pass may not have run at all, and a sampler pointing at
+                # whatever units 4 and 5 held last would put the terrain in
+                # the sea.
+                _bind_moon_in_sky(
+                    self._water_program,
+                    _moon_in_sky(scene),
+                    self._moon_texture(ctx, scene),
+                )
                 _bind_cloud_layer(
                     self._water_program,
                     _cloud_layer(scene),
@@ -3384,14 +3463,9 @@ class PerspectiveRenderer:
         sun_direction,
         horizon: tuple[float, float, float] = DEFAULT_SKY_HORIZON_COLOR,
         zenith: tuple[float, float, float] = DEFAULT_SKY_ZENITH_COLOR,
-        moon_direction: tuple[float, float, float] = (0.0, 0.0, -1.0),
-        moon_level: float = 0.0,
         star_level: float = 0.0,
         sun_disc: tuple[float, float] = DEFAULT_SUN_DISC,
-        moon_disc: tuple[float, float] = DEFAULT_MOON_DISC,
-        moon_face_axes: tuple[
-            tuple[float, float, float], tuple[float, float, float]
-        ] = DEFAULT_MOON_FACE_AXES,
+        moon: _MoonInSky,
         moon_texture: object | None = None,
         cloud: _CloudLayer,
         cloud_texture: object | None = None,
@@ -3412,20 +3486,9 @@ class PerspectiveRenderer:
         self._sky_program["u_horizon"].value = horizon
         self._sky_program["u_zenith"].value = zenith
         self._sky_program["u_sun_dir"].value = sun_direction
-        self._sky_program["u_moon_dir"].value = moon_direction
-        self._sky_program["u_moon_level"].value = float(moon_level)
         self._sky_program["u_sun_disc"].value = sun_disc
-        self._sky_program["u_moon_disc"].value = moon_disc
-        self._sky_program["u_moon_across"].value = moon_face_axes[0]
-        self._sky_program["u_moon_up"].value = moon_face_axes[1]
-        # Unit 3: the terrain pass owns 0 through 3 but never runs beside this
-        # one, and leaving the moon on 0 would have it read whatever the last
-        # pass bound there.
-        self._sky_program["u_moon_tex"].value = _MOON_TEXTURE_UNIT
-        self._sky_program["u_moon_textured"].value = 1.0 if moon_texture is not None else 0.0
-        if moon_texture is not None:
-            moon_texture.use(location=_MOON_TEXTURE_UNIT)
         self._sky_program["u_star_level"].value = float(star_level)
+        _bind_moon_in_sky(self._sky_program, moon, moon_texture)
         _bind_cloud_layer(self._sky_program, cloud, cloud_texture)
         ctx.disable(ctx.DEPTH_TEST)
         try:
