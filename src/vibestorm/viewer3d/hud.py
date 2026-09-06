@@ -1640,6 +1640,7 @@ class HUD:
             f"objects: {objects}",
             f"avatars: {avatars}",
             f"textures: {len(textures)}",
+            scene.texture_vram_summary or "texture vram: (2D mode)",
             f"chat: {len(scene.chat_lines)}",
         )
         self.diagnostics_lines = lines

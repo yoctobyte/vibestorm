@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (sixth pass)
+Last updated: 2026-09-06 (seventh pass)
 
 ## The Owner's Priorities
 
@@ -230,11 +230,57 @@ every unit test still passes. Seven GL tests read the pixels back.
 warns about.** Restoring a file with `cp` between mutations gives it the same
 mtime to the second, and Python reuses the cached `.pyc` -- so a mutation reads
 as caught when it is not. Re-run with `PYTHONDONTWRITEBYTECODE=1`, one of the
-twenty-four survived: sending **only** `u_horizon` back to its constant passed
+twenty-three survived: sending **only** `u_horizon` back to its constant passed
 every test. The sky camera looks 80 degrees up, where the gradient is 99 per
 cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
+
+**A -- prim textures have a memory ceiling (2026-09-06).** The renderer had a
+prune and no bound. `_prune_object_textures` released whatever the region had
+stopped referencing, which is exactly right and is not a limit: a region may
+reference as much as it likes, and the uploaded set grew with every texture the
+camera had *ever* passed over rather than with what was on screen. A mainland
+region with a few thousand distinct 512-square textures is gigabytes.
+
+The reason it had gone unfixed is a good one, and it is written into
+`test/test_viewer3d_label_cache.py`: a least-recently-used *count* cap was
+tried twice (4e8de78, 782c9f4) and reverted, because uploads happen inside the
+per-frame draw loop, so the moment a region holds more than the cap it evicts
+things that are still on screen and re-decodes them every single frame,
+forever. That objection is right. It is answered here rather than ignored:
+
+- The bound is in **bytes**, `OBJECT_TEXTURE_BUDGET_BYTES`, not in count.
+- **Nothing the previous frame drew is eligible for eviction.** A frame's
+  visible set barely moves from one frame to the next, so what that protects
+  is, to within one frame, exactly what is about to be asked for again.
+- If the previous frame's own set is over budget there is nothing safe to
+  release, and the prune **stops rather than thrashing** -- and says so.
+- `MAX_OBJECT_TEXTURE_EDGE` is the other half, and the half that cannot
+  thrash at all: a 2048-square texture is 22 MB once mipmapped, and the
+  simulator advertises `MaxTextureResolution: 2048`. Downscaling happens once,
+  on upload, with `smoothscale` rather than `scale` -- the nearest-neighbour
+  reduction throws away three texels in four and aliases, which is the same
+  mistake as sampling without mipmaps.
+
+**The budget is on the diagnostics panel**, which is not decoration. Its
+failure mode is a viewer that gets slow and stays slow, indistinguishable from
+a heavy region; `OVER BUDGET` is the line that separates them. The summary is
+published at the *end* of the frame, not with the prune at the start, or it
+would report the state the frame began in and never count what the frame
+uploaded -- on the first frame of a region, zero megabytes.
+
+Eighteen mutations, all killed, run with `PYTHONDONTWRITEBYTECODE=1` from the
+start this time. Two were worth the trouble on their own: *the frame counter
+never advances*, which makes every texture look like frame zero and quietly
+disables eviction entirely, and *the summary is never published*, which leaves
+a budget that is enforced perfectly and reported to nobody.
+
+**Do not edit a source file while a mutation battery is running against it.**
+The harness restores from a snapshot taken at its start, so an edit made
+mid-run is silently reverted on the next restore -- and if the run is killed
+part-way, the file is left holding whichever mutation was in flight. Both
+happened here. `git diff` against the snapshot is the check.
 
 **A -- textures stopped crawling (2026-09-06).** `Texture.filter` is
 `(minification, magnification)` and every world texture set the first half to
@@ -684,13 +730,17 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    region scale, texture filtering, and the sky and sea themselves, which used
    to be this entry in various forms, are done -- see the fourth, fifth and
    sixth passes.)
-4. **A's next unknown is memory, not speed.** `_prune_object_textures` bounds
-   the uploaded set by what the region references, which is right -- nothing
-   visible is ever evicted -- but nothing bounds how much a region can
-   reference. A mainland region with a few thousand distinct 512x512 textures
-   is gigabytes of VRAM, and there is no budget, no eviction and no resolution
-   cap. Nothing has observed it, because the local region has a handful of
-   textures; it wants a real grid to measure before it is worth building.
+4. **A's memory is bounded now, and the bound has never been tested against a
+   real grid.** This entry used to say there was no budget, no eviction and no
+   resolution cap. There are all three -- `OBJECT_TEXTURE_BUDGET_BYTES` at
+   384 MB, `MAX_OBJECT_TEXTURE_EDGE` at 512, and an eviction that never touches
+   the previous frame's set -- and the numbers in them are guesses. The local
+   region holds a handful of textures, so nothing here has ever been near the
+   ceiling; what would say whether 384 MB and a 512 edge are right is a mainland
+   region, which needs B. Until then the honest position is that the failure is
+   *visible* rather than *solved*: the diagnostics panel says `OVER BUDGET` when
+   the visible set alone will not fit, which is the condition that would
+   otherwise show up only as a viewer that got slow and stayed slow.
 
 **The local test prim `d7f47f7e-4328-4d17-a665-19feaec7b1e9` now carries
 several `vibestorm-sync-*`, `e2e-sync-*` and `verify-note-*` items** left by

@@ -2545,6 +2545,12 @@ class LargeRegionTextureGLTests(_GLTestBase):
     evicts textures that are still on screen and re-uploads them every frame,
     forever. Nothing in the test region comes close to that size, so the case
     is constructed here rather than observed in-world.
+
+    `OBJECT_TEXTURE_BUDGET_BYTES` later put a ceiling back on top of the
+    reference pruning, and the last two tests here are what says it did not
+    reintroduce the thrash: they patch the budget below the visible set and
+    render repeatedly, through the real draw loop rather than by calling the
+    evictor.
     """
 
     #: Comfortably above the 256 cap those reverted commits used.
@@ -2617,6 +2623,124 @@ class LargeRegionTextureGLTests(_GLTestBase):
                 texture,
                 f"texture {texture_id} was re-uploaded on the second frame",
             )
+
+    def _budgeted_renderer(self, budget: int):
+        from unittest.mock import patch
+
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        patcher = patch(
+            "vibestorm.viewer3d.perspective.OBJECT_TEXTURE_BUDGET_BYTES", budget
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        camera = Camera3D(target=(0.0, 0.0, 0.0), distance=30.0, yaw=0.0, pitch=0.5)
+        camera.set_mode("orbit")
+        camera.screen_size = self.FBO_SIZE
+        return PerspectiveRenderer(camera, ctx=self.ctx)
+
+    def test_a_visible_set_over_budget_is_kept_rather_than_thrashed(self) -> None:
+        """Every texture here is drawn every frame, and the budget is tiny.
+
+        There is nothing safe to release, so the right answer is to hold the
+        set and say so. Releasing any of it would decode and re-upload a PNG
+        inside the draw loop on every frame from here on -- the collapse the
+        reverted caps caused, arriving through a different door.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene = self._scene_with_many_textures(tmpdir)
+            renderer = self._budgeted_renderer(1)
+            try:
+                renderer.render_gl(scene, aspect=1.0)
+                first = dict(renderer._object_textures)
+                renderer.render_gl(scene, aspect=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                second = dict(renderer._object_textures)
+                exceeded = renderer._object_texture_budget_exceeded
+            finally:
+                renderer.clear_caches()
+
+        self.assertEqual(len(second), self.TEXTURE_COUNT)
+        for texture_id, texture in first.items():
+            self.assertIs(
+                second.get(texture_id),
+                texture,
+                f"texture {texture_id} was re-uploaded under budget pressure",
+            )
+        self.assertTrue(exceeded, "falling short of the budget was not recorded")
+
+    def test_textures_that_stopped_being_drawn_are_evicted(self) -> None:
+        """The case the budget exists for.
+
+        The region still *references* all 300 -- `texture_paths` is untouched,
+        so reference pruning frees nothing -- but only half are still on a
+        prim. Walking away from a building leaves exactly this: the camera
+        will never ask for those textures again, and nothing before this
+        released them.
+        """
+        import tempfile
+
+        from vibestorm.viewer3d.perspective import _texture_memory_bytes
+
+        keep = self.TEXTURE_COUNT // 2
+        # Room for the half still drawn, and not a texture more.
+        budget = _texture_memory_bytes((2, 2)) * keep
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene = self._scene_with_many_textures(tmpdir)
+            renderer = self._budgeted_renderer(budget)
+            try:
+                renderer.render_gl(scene, aspect=1.0)
+                self.assertEqual(len(renderer._object_textures), self.TEXTURE_COUNT)
+
+                for local_id in list(scene.object_entities)[keep:]:
+                    del scene.object_entities[local_id]
+                renderer.render_gl(scene, aspect=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+
+                still_drawn = {
+                    entity.default_texture_id
+                    for entity in scene.object_entities.values()
+                }
+                held = set(renderer._object_textures)
+                evicted = renderer._object_textures_evicted
+                exceeded = renderer._object_texture_budget_exceeded
+            finally:
+                renderer.clear_caches()
+
+        self.assertLessEqual(len(held), keep)
+        self.assertGreater(evicted, 0)
+        self.assertFalse(exceeded)
+        self.assertEqual(
+            still_drawn - held, set(), "a texture still on a prim was evicted"
+        )
+
+    def test_the_budget_reaches_the_scene_through_a_real_frame(self) -> None:
+        # The plumbing, not the policy: a budget computed perfectly and never
+        # published tells nobody anything, and every unit test still passes.
+        #
+        # Two frames, because the prune runs at the top of one: the first
+        # frame's prune sees an empty cache and cannot know the frame is about
+        # to fill it. The verdict is always the previous frame's, which is the
+        # most a per-frame budget can honestly say.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scene = self._scene_with_many_textures(tmpdir)
+            renderer = self._budgeted_renderer(1)
+            try:
+                renderer.render_gl(scene, aspect=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                summary = scene.texture_vram_summary
+            finally:
+                renderer.clear_caches()
+
+        self.assertIn("texture vram:", summary)
+        self.assertIn("OVER BUDGET", summary)
 
     def test_leaving_the_region_releases_all_of_them(self) -> None:
         import tempfile

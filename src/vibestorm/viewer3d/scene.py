@@ -400,6 +400,12 @@ class Scene:
     )
     map_tile_path: Path | None = None
     texture_paths: dict[UUID, Path] = field(default_factory=dict)
+    #: What the renderer's uploaded prim textures are costing, written back
+    #: by the 3D pass once a frame. It reads oddly on a scene -- everything
+    #: else here comes from the simulator -- but the diagnostics panel is
+    #: built from the scene and nothing else, and a memory budget nobody can
+    #: see is a budget nobody notices thrashing against.
+    texture_vram_summary: str = ""
     mesh_paths: dict[UUID, Path] = field(default_factory=dict)
     inventory_snapshot: InventoryFetchSnapshot | None = None
     object_inventory_snapshots: dict[int, ObjectInventorySnapshot] = field(default_factory=dict)

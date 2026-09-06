@@ -221,6 +221,51 @@ class RenderModeMenuTests(unittest.TestCase):
         self.assertIn("fps:", text)
         self.assertIn("sim: sim fps=12.50 agents=1", text)
 
+    def test_diagnostics_window_reports_texture_memory(self) -> None:
+        """The VRAM budget has to be readable, not just enforced.
+
+        Its failure mode is a slow viewer, not a crash: a region whose visible
+        textures do not fit spends every frame decoding PNGs. Without a line
+        saying so, that is indistinguishable from the region simply being
+        heavy.
+        """
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+            show_diagnostics=True,
+        )
+        scene = Scene(region_name="TestSim")
+        scene.texture_vram_summary = "texture vram: 12.0 MB of 384 MB evicted=3"
+
+        hud.update(0.05, scene)
+
+        self.assertIn(
+            "texture vram: 12.0 MB of 384 MB evicted=3",
+            "\n".join(hud.diagnostics_lines),
+        )
+
+    def test_the_texture_memory_line_says_so_in_2d(self) -> None:
+        # Only the 3D pass uploads prim textures, so in 2D the summary is
+        # empty. A blank line there would read as "zero megabytes", which is
+        # true and misleading.
+        from vibestorm.viewer3d.hud import HUD, RENDER_MODE_3D
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = HUD(
+            (640, 480),
+            on_chat_submit=lambda text: None,
+            initial_render_mode=RENDER_MODE_3D,
+            show_diagnostics=True,
+        )
+
+        hud.update(0.05, Scene(region_name="TestSim"))
+
+        self.assertIn("texture vram: (2D mode)", "\n".join(hud.diagnostics_lines))
+
     def test_heightmap_debug_surface_maps_samples_to_grayscale(self) -> None:
         from vibestorm.viewer3d.hud import heightmap_debug_surface
         from vibestorm.world.terrain import RegionHeightmap

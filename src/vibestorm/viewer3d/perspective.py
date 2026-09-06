@@ -148,6 +148,41 @@ def _sculpt_asset_shape_key(sculpt_id: UUID, sculpt_type: int | None) -> str:
     return f"sculpt:{sculpt_id}:{sculpt_type or 0}"
 
 
+def _texture_memory_bytes(size: tuple[int, int]) -> int:
+    """What one uploaded texture costs, mipmaps included.
+
+    An estimate, and deliberately one the renderer can compute without asking
+    the driver: four bytes a texel for the RGBA upload, and a third again for
+    the mipmap chain.
+    """
+    width, height = size
+    return int(width * height * 4 * MIPMAP_MEMORY_FACTOR)
+
+
+def _within_texture_budget(surface):
+    """Shrink a texture that is larger than `MAX_OBJECT_TEXTURE_EDGE`.
+
+    Done once, on upload, and only downward: scaling a small texture up would
+    spend memory to add nothing. The aspect ratio is kept, so a 2048x512 sign
+    becomes 512x128 rather than square.
+
+    `smoothscale` rather than `scale`: the nearest-neighbour version of a
+    quarter-size reduction throws away three texels in four and aliases badly,
+    which is the same mistake as sampling without mipmaps and would undo that
+    work at the source.
+    """
+    import pygame
+
+    width, height = surface.get_size()
+    longest = max(width, height)
+    if longest <= MAX_OBJECT_TEXTURE_EDGE or longest <= 0:
+        return surface
+    scale = MAX_OBJECT_TEXTURE_EDGE / longest
+    return pygame.transform.smoothscale(
+        surface, (max(1, int(width * scale)), max(1, int(height * scale)))
+    )
+
+
 def _minify_through_mipmaps(ctx: moderngl.Context, texture) -> None:
     """Give a world texture mipmaps, and a filter that actually uses them.
 
@@ -216,6 +251,34 @@ def _single_face_index(shape_key: str) -> int | None:
 #: squashed hard in one direction, and isotropic mipmapping answers that by
 #: blurring both.
 MAX_ANISOTROPY: float = 16.0
+#: How much GPU memory the uploaded prim textures may hold, in bytes.
+#:
+#: Nothing bounded this before. `_prune_object_textures` released what the
+#: region no longer references, which is right and is not a bound: a region
+#: can reference as much as it likes, and the local test region's handful of
+#: textures is what made the absence invisible. A mainland region with a few
+#: thousand distinct 512x512 textures is several gigabytes, and the uploaded
+#: set grows with every texture the camera has *ever* passed over, not with
+#: what is on screen.
+OBJECT_TEXTURE_BUDGET_BYTES: int = 384 * 1024 * 1024
+
+#: The largest edge a prim texture is uploaded at, in texels.
+#:
+#: The other half of the bound, and the half that cannot thrash. OpenSim's
+#: `SimulatorFeatures` advertises `MaxTextureResolution: 2048`, and one 2048
+#: square texture is 22 MB once mipmapped -- seventeen of them would spend the
+#: whole budget above. Downscaling is done once, on upload.
+#:
+#: Both numbers are guesses and should be read as such. The local test region
+#: holds a handful of textures, so nothing here has ever been near the
+#: ceiling; what would say whether 384 MB and a 512 edge are the right trade
+#: between sharpness and headroom is a mainland region. The diagnostics panel
+#: reports both, which is the point of publishing them at all.
+MAX_OBJECT_TEXTURE_EDGE: int = 512
+
+#: A mipmapped texture costs about a third more than its base level: each
+#: level is a quarter of the one above, and the series sums to 4/3.
+MIPMAP_MEMORY_FACTOR: float = 4.0 / 3.0
 
 DEFAULT_SUN_DIRECTION: tuple[float, float, float] = (0.35, -0.55, 0.76)
 AMBIENT_LIGHT: float = 0.78
@@ -1023,6 +1086,18 @@ class PerspectiveRenderer:
         self._ground_texture_path: Path | None = None
         self._object_textures: dict[UUID, object] = {}
         self._object_texture_paths: dict[UUID, Path] = {}
+        #: Bytes each uploaded texture is estimated to hold, and the frame it
+        #: was last asked for. Together these are what the budget spends.
+        self._object_texture_bytes: dict[UUID, int] = {}
+        self._object_texture_used: dict[UUID, int] = {}
+        #: Counts up once per `render_gl`. Only ever compared, never displayed.
+        self._frame_index: int = 0
+        #: Textures released for want of room since this renderer was made, and
+        #: whether the last prune had to give up. Both are for the diagnostics
+        #: panel and for tests: a budget nobody can see is a budget nobody
+        #: notices thrashing.
+        self._object_textures_evicted: int = 0
+        self._object_texture_budget_exceeded: bool = False
         self._terrain_vbo = None  # type: moderngl.Buffer | None
         self._terrain_ibo = None  # type: moderngl.Buffer | None
         self._terrain_fill_program = None  # type: moderngl.Program | None
@@ -1123,6 +1198,7 @@ class PerspectiveRenderer:
         self._light_level = max(0.0, min(1.0, float(getattr(scene, "light_level", 1.0))))
         self._ambient_light, self._diffuse_light = _light_uniforms(scene, self._light_level)
 
+        self._frame_index += 1
         self._prune_object_textures(scene)
         self._prune_mesh_assets(scene)
         self._prune_instance_blobs(scene)
@@ -1265,6 +1341,11 @@ class PerspectiveRenderer:
             # blended into by the water pass behind them.
             self._render_labels(ctx, scene, view_data, proj_data)
         finally:
+            # After the draw, not before it: the prune runs at the top of the
+            # frame, so publishing there would report the state the frame
+            # started in and never count anything this frame uploaded. On the
+            # first frame of a region that reads as zero megabytes.
+            self._publish_texture_vram(scene)
             # Leave the depth state predictable for the HUD overlay
             # quad and the next frame's compositor draws.
             ctx.disable(ctx.DEPTH_TEST)
@@ -1395,6 +1476,8 @@ class PerspectiveRenderer:
             texture.release()
         self._object_textures.clear()
         self._object_texture_paths.clear()
+        self._object_texture_bytes.clear()
+        self._object_texture_used.clear()
         self._release_terrain_textures()
         for resource in (self._sky_vao, self._sky_ibo, self._sky_vbo):
             if resource is not None:
@@ -1651,23 +1734,84 @@ class PerspectiveRenderer:
         )
 
     def _prune_object_textures(self, scene: Scene) -> None:
-        """Release uploaded textures the current region no longer references.
+        """Release uploaded textures: first what the region dropped, then, if
+        that is not enough, the oldest of what is left.
 
-        Pruning by *reference* rather than by a count cap, deliberately. These
-        uploads happen inside the per-frame draw loop, so a least-recently-used
-        cap would evict textures that are still on screen the moment a region
-        holds more of them than the cap — re-decoding a PNG and re-uploading it
-        every frame, which is far worse than the memory it saves. Nothing
-        visible can be evicted here, because `scene.texture_paths` is exactly
-        the set the draw loop is able to ask for.
+        The reference pass is the important one and comes first.
+        `scene.texture_paths` is exactly the set the draw loop is able to ask
+        for, and it is cleared on a region change, so this is what frees the
+        previous region.
 
-        `scene.texture_paths` is cleared on a region change, so this is what
-        frees the previous region's textures.
+        It is not a *bound*, though, which is what this used to assume. A
+        region may reference as much as it likes, and the uploaded set grows
+        with every texture the camera has ever passed over rather than with
+        what is on screen -- so a long session in a busy region climbs without
+        limit. `OBJECT_TEXTURE_BUDGET_BYTES` is the ceiling.
+
+        The old objection to a cap was right and is answered rather than
+        ignored: uploads happen inside the per-frame draw loop, so evicting
+        something still on screen means re-decoding and re-uploading it every
+        frame, forever, which is far worse than the memory it saves. **Nothing
+        drawn in the previous frame is eligible.** A frame's visible set barely
+        changes from one frame to the next, so what that protects is, to within
+        a frame, exactly what is about to be asked for again.
+
+        If the previous frame's own set is over budget there is nothing safe to
+        release and the prune stops rather than thrashing. That case is
+        recorded: it means `MAX_OBJECT_TEXTURE_EDGE` is too generous for the
+        region, not that the eviction failed.
         """
         live = getattr(scene, "texture_paths", {})
         for texture_id in [tid for tid in self._object_textures if tid not in live]:
-            self._object_textures.pop(texture_id).release()
-            self._object_texture_paths.pop(texture_id, None)
+            self._release_object_texture(texture_id)
+
+        total = sum(self._object_texture_bytes.values())
+        self._object_texture_budget_exceeded = False
+        if total <= OBJECT_TEXTURE_BUDGET_BYTES:
+            return
+
+        # Oldest first, and never the frame just drawn.
+        drawn_recently = self._frame_index - 1
+        evictable = sorted(
+            (
+                (used, texture_id)
+                for texture_id, used in self._object_texture_used.items()
+                if used < drawn_recently and texture_id in self._object_textures
+            ),
+        )
+        for _used, texture_id in evictable:
+            if total <= OBJECT_TEXTURE_BUDGET_BYTES:
+                return
+            total -= self._object_texture_bytes.get(texture_id, 0)
+            self._release_object_texture(texture_id)
+            self._object_textures_evicted += 1
+        self._object_texture_budget_exceeded = total > OBJECT_TEXTURE_BUDGET_BYTES
+
+    def _publish_texture_vram(self, scene: Scene) -> None:
+        """Put the budget on the diagnostics panel.
+
+        The panel is built from the `Scene` and from nothing else, so this is
+        the seam. `OVER BUDGET` is the line that matters: it means the visible
+        set alone will not fit, which no amount of eviction fixes and which is
+        otherwise invisible -- the viewer just gets slower.
+        """
+        held = sum(self._object_texture_bytes.values())
+        summary = (
+            f"texture vram: {held / (1024 * 1024):.1f} MB of "
+            f"{OBJECT_TEXTURE_BUDGET_BYTES / (1024 * 1024):.0f} MB"
+            f" evicted={self._object_textures_evicted}"
+        )
+        if self._object_texture_budget_exceeded:
+            summary += " OVER BUDGET"
+        scene.texture_vram_summary = summary
+
+    def _release_object_texture(self, texture_id: UUID) -> None:
+        texture = self._object_textures.pop(texture_id, None)
+        if texture is not None:
+            texture.release()
+        self._object_texture_paths.pop(texture_id, None)
+        self._object_texture_bytes.pop(texture_id, None)
+        self._object_texture_used.pop(texture_id, None)
 
     def _prune_label_textures(self, active_texts: set[str]) -> None:
         """Release label textures not drawn this frame.
@@ -2365,6 +2509,9 @@ class PerspectiveRenderer:
             return None
         cached = self._object_textures.get(texture_id)
         if cached is not None and self._object_texture_paths.get(texture_id) == path:
+            # Asking for it is what keeps it: the budget's eviction order is
+            # this number, so a texture drawn every frame is never a candidate.
+            self._object_texture_used[texture_id] = self._frame_index
             return cached
 
         import pygame
@@ -2374,16 +2521,17 @@ class PerspectiveRenderer:
         except (pygame.error, FileNotFoundError, OSError):
             return None
 
+        surface = _within_texture_budget(surface)
         pixels = pygame.image.tobytes(surface, "RGBA")
-        texture = self._object_textures.pop(texture_id, None)
-        if texture is not None:
-            texture.release()
+        self._release_object_texture(texture_id)
         texture = ctx.texture(surface.get_size(), components=4, data=pixels)
         texture.repeat_x = True
         texture.repeat_y = True
         _minify_through_mipmaps(ctx, texture)
         self._object_textures[texture_id] = texture
         self._object_texture_paths[texture_id] = path
+        self._object_texture_bytes[texture_id] = _texture_memory_bytes(surface.get_size())
+        self._object_texture_used[texture_id] = self._frame_index
         return texture
 
     def _upload_terrain_mesh(self, ctx: moderngl.Context, scene: Scene) -> None:
