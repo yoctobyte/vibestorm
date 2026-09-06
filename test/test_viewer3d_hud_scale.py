@@ -317,11 +317,49 @@ class LoginScreenFitsTheFrameTests(unittest.TestCase):
             "last_entry",
             "password_entry",
             "start_entry",
+            "remember_checkbox",
             "login_button",
             "quit_button",
             "status_label",
         ):
             yield name, getattr(screen, name).rect
+        # The checkbox's caption is a separate element, and pygame_gui puts it
+        # to the right of the checkbox's *rect* rather than beside the box --
+        # so it is the one thing here whose position nothing in the login
+        # screen sets directly. It was 123 pixels past the panel's edge.
+        yield "remember caption", screen.remember_checkbox.text_label.rect
+
+    def test_the_panel_is_the_rectangle_that_is_drawn(self) -> None:
+        """`draw` reads `panel_rect`, and `_build_ui` sets it.
+
+        It used to be worked out twice from the same four lines, once in
+        each, which is two layouts the first time either moves. Pinned here
+        because the test below asserts every widget *against* it: a
+        `panel_rect` that had drifted would agree with a rectangle nobody
+        can see.
+        """
+        width, height = self.SMALL
+        screen = self._screen(self.SMALL)
+
+        self.assertEqual(screen.panel_rect.size, (460, 490))
+        self.assertEqual(screen.panel_rect.centerx, width // 2)
+        self.assertEqual(screen.panel_rect.centery, height // 2)
+
+    def test_nothing_hangs_out_of_the_login_panel(self) -> None:
+        """Stronger than staying on the frame, and it is the visible claim.
+
+        The panel is the glass rectangle everything is drawn on; a widget
+        outside it is floating on the starfield whether or not it is on the
+        window.
+        """
+        screen = self._screen(self.SMALL)
+
+        for name, rect in self._rects(screen):
+            with self.subTest(element=name):
+                self.assertTrue(
+                    screen.panel_rect.contains(rect),
+                    f"{name} at {rect} is outside the panel {screen.panel_rect}",
+                )
 
     def test_the_login_panel_stays_on_the_frame(self) -> None:
         width, height = self.SMALL

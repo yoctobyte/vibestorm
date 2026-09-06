@@ -407,6 +407,15 @@ the bottom of it, and every menu-bar button hung three. The bars are 34 and 30
 now, and a test walks each bar's container and asserts every child is inside
 it, so a theme with thicker chrome fails rather than shaving the text.
 
+**And the login screen's checkbox pushed its own caption off the panel.**
+pygame_gui puts a checkbox's text to the right of the *rect*, not beside the
+box, and this one had been given the same 280-pixel width as the text entries
+above it -- so "Remember Credentials" sat a hundred and twenty pixels past the
+edge of the glass, on the starfield. It is square now. The panel's rectangle
+was also worked out twice from the same four lines, once in `_build_ui` and
+once in `draw`; it is `panel_rect`, set where the widgets are placed and read
+where the glass is drawn, and every widget is asserted to be inside it.
+
 **And `resize` on the login screen crashed.** It called
 `manager.clear()`, which pygame_gui has not got, so dragging the window while
 the login screen was up raised `AttributeError` out of the event loop. It is

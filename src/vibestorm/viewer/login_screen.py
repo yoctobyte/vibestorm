@@ -136,6 +136,10 @@ class LoginScreen:
         pheight = self._s(490)
         px = (sw - pwidth) // 2
         py = (sh - pheight) // 2
+        # Kept, because `draw` needs the same rectangle and worked it out
+        # again from the same four lines. Two copies of a layout are two
+        # layouts the first time either one moves.
+        self.panel_rect = pygame.Rect(px, py, pwidth, pheight)
 
         # A title label at the top of the container
         self.title_label = UILabel(
@@ -226,8 +230,12 @@ class LoginScreen:
 
         # Row 7: Remember Credentials Checkbox
         y_cursor += row_h + spacing
+        # Square, and deliberately not `field_w` wide like the entries above
+        # it: pygame_gui puts a checkbox's text to the right of the *rect*
+        # rather than beside the box, so a 280-wide checkbox pushed "Remember
+        # Credentials" a hundred and twenty pixels past the edge of the panel.
         self.remember_checkbox = UICheckBox(
-            relative_rect=pygame.Rect(px + self._s(150), y_cursor, field_w, row_h),
+            relative_rect=pygame.Rect(px + self._s(150), y_cursor, row_h, row_h),
             text="Remember Credentials",
             manager=self.manager,
         )
@@ -402,11 +410,7 @@ class LoginScreen:
             p.draw(surface)
 
         # 3. Draw premium glassmorphic panel frame
-        sw, sh = self.screen_size
-        pwidth = self._s(460)
-        pheight = self._s(490)
-        px = (sw - pwidth) // 2
-        py = (sh - pheight) // 2
+        px, py, pwidth, pheight = self.panel_rect
 
         # Translucent dark fill
         glass_surf = pygame.Surface((pwidth, pheight), pygame.SRCALPHA)
