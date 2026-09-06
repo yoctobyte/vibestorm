@@ -377,7 +377,7 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
     were parsed and none reached the frame.
     """
 
-    def _unlike_the_default(self):
+    def _unlike_the_default(self, *, normal_map: str = ""):
         """A day cycle whose water is nothing like `WaterSettings`' defaults.
 
         Needed for the same reason `test_the_regions_own_surface_reaches_the
@@ -400,6 +400,7 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
                         normal_scale=(3.0, 3.0, 3.0),
                         wave1_direction=(0.0, 2.0),
                         wave2_direction=(-3.0, 0.0),
+                        normal_map=normal_map,
                     ),
                 ),
             ),
@@ -408,7 +409,7 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
     def test_a_world_view_with_no_environment_keeps_the_default_sea(self) -> None:
         scene = Scene()
         loaded = WorldView()
-        loaded.environment = self._unlike_the_default()
+        loaded.environment = self._unlike_the_default(normal_map=str(UUID(int=0x5EA)))
         scene.refresh_from_world_view(loaded)
 
         scene.refresh_from_world_view(_world_view(environment=False))
@@ -420,6 +421,37 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
         self.assertEqual(scene.water_ripple_below, DEFAULT_WATER_RIPPLE_BELOW)
         self.assertEqual(scene.water_reach, DEFAULT_UNDERWATER_REACH)
         self.assertEqual(scene.water_wave_speed, DEFAULT_WATER_WAVE_SPEED)
+        self.assertIsNone(scene.water_normal_id)
+
+    def test_the_seas_own_normal_map_reaches_the_frame(self) -> None:
+        """`normal_map`, which is a fetchable asset like the moon's face.
+
+        The default cycle names one -- a wind-ripple sheet -- and until this
+        was plumbed the surface was six sines standing in for it.
+        """
+        surface = UUID(int=0x5EA)
+        view = WorldView()
+        view.environment = RegionEnvironment(
+            day_length=14400.0,
+            water_track=((0.0, WaterSettings(normal_map=str(surface))),),
+        )
+        scene = Scene()
+
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.water_normal_id, surface)
+
+    def test_a_null_normal_map_is_no_map_rather_than_a_null_one(self) -> None:
+        scene = Scene()
+        view = WorldView()
+        view.environment = RegionEnvironment(
+            day_length=14400.0,
+            water_track=((0.0, WaterSettings(normal_map=str(UUID(int=0)))),),
+        )
+
+        scene.refresh_from_world_view(view)
+
+        self.assertIsNone(scene.water_normal_id)
 
     def test_the_regions_own_surface_reaches_the_frame(self) -> None:
         """Against a sea unlike the fallback one, deliberately.

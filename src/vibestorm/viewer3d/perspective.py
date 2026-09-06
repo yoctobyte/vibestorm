@@ -823,10 +823,11 @@ float cell_hash(vec3 cell) {
     return fract((p.x + p.y) * p.z);
 }
 
-// A star field, procedural rather than a texture. `star_id` names one of a
-// handful of textures nobody here has fetched, and a sphere of points is what
-// it would hold: the sky is divided into cells, about one in thirty gets a
-// star at a hashed position inside it, and each is a small round falloff.
+// A star field, procedural because the document does not name one: unlike
+// `moon_id`, `cloud_id` and the water's `normal_map`, there is no `star_id`
+// in any keyframe of the live cycle, so there is nothing to fetch. The sky is
+// divided into cells, about one in thirty gets a star at a hashed position
+// inside it, and each is a small round falloff.
 float star_field(vec3 dir) {
     vec3 p = dir * 220.0;
     vec3 cell = floor(p);
@@ -1083,6 +1084,7 @@ _SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 #: with terrain in it is the ground, stretched across the moon.
 _MOON_TEXTURE_UNIT: int = 4
 _CLOUD_TEXTURE_UNIT: int = 5
+_WATER_NORMAL_UNIT: int = 6
 
 WATER_HAZE_NEAR_M: float = 260.0
 WATER_HAZE_FAR_M: float = 900.0
@@ -1127,6 +1129,22 @@ WAVE_OCTAVES: int = 3
 WAVE_SLOPE_TOTAL: float = sum(WAVE_HARMONIC_HEIGHT**n for n in range(WAVE_OCTAVES))
 
 
+#: How many of the region's ripples one tile of its `normal_map` holds.
+#:
+#: Measured off the asset rather than chosen: the map the default cycle names
+#: is a wind-ripple sheet whose crests run along v and travel along u, and the
+#: power spectrum of its red channel -- the slope along u -- peaks at nine
+#: cycles across the tile, with a broadband tail out to the pixel. So one tile
+#: is nine wavelengths of the wave it is laid on, and the tail underneath that
+#: is the fine chop a sum of sines has to invent.
+#:
+#: This is the same mistake the clouds made, and it is worth naming twice: a
+#: tile of a texture is not one cycle of what is drawn on it. Laid a
+#: wavelength to a tile the sea came out as a fine mesh at ten centimetres a
+#: ripple, which mips to flat sheet over all but the nearest water.
+WATER_NORMAL_RIPPLES_PER_TILE: float = 9.0
+
+
 _WATER_VERTEX_SHADER = """
 #version 330
 
@@ -1167,6 +1185,11 @@ uniform vec2 u_fresnel;
 // viewer is above the water and this is the ordinary sea.
 uniform vec3 u_water_fog;
 uniform vec3 u_water_depth;
+// The region's own surface, and whether one has arrived. `normal_map` names a
+// tangent-space normal map that repeats, which is what the sines below are
+// standing in for.
+uniform sampler2D u_water_normals;
+uniform float u_water_mapped;
 
 in vec3 v_world;
 out vec4 frag_color;
@@ -1188,6 +1211,30 @@ vec2 crest(vec2 ground, vec2 direction, float number, float phase, float height)
     return direction * (cos(dot(ground, direction) * number + phase) * height);
 }
 
+// One wave's contribution to the surface's lean, taken from the region's
+// normal map.
+//
+// The map is laid in the wave's own frame -- along its heading and across it
+// -- so that sliding it by the wave's phase moves it the way the wave runs.
+// `number` is radians of wave per metre, and one tile of the map holds
+// `WATER_NORMAL_RIPPLES_PER_TILE` wavelengths of it -- the map's own dominant
+// frequency, so that a ripple on it comes out the length the document asked
+// for.
+//
+// What comes back is the *normal's* own horizontal part, not a height
+// gradient: a normal map stores the normal, so it is added to the vertical
+// rather than subtracted from it. The sines below store a height and have to
+// be differentiated and negated, which is the sign this one does not carry.
+vec2 mapped_lean(vec2 ground, vec2 direction, float number, float phase) {
+    vec2 across = vec2(-direction.y, direction.x);
+    float tile = 6.2831853 * __WATER_RIPPLES_PER_TILE__;
+    vec2 uv = vec2(dot(ground, direction), dot(ground, across)) * number / tile;
+    uv.x -= phase / tile;
+    // Tangent space to world: x is along the wave, y across it.
+    vec2 tangent = texture(u_water_normals, uv).xy * 2.0 - 1.0;
+    return direction * tangent.x + across * tangent.y;
+}
+
 // A direction turned by a fixed angle, for the harmonics below.
 vec2 turned(vec2 direction) {
     return vec2(
@@ -1198,59 +1245,88 @@ vec2 turned(vec2 direction) {
 
 void main() {
     vec2 ground = v_world.xy;
-    // A plane leaning by (dx, dy) has normal (-dx, -dy, 1), so what the waves
-    // have to produce is the gradient of a height field. Sines, because
-    // `normal_map` names a texture nobody here has fetched -- what is off the
-    // wire is which way the waves run, how fast, and how steep, and that is
-    // what is being used.
+    // Two ways to a normal, and which one runs is whether the region's
+    // `normal_map` has arrived. With it, the map *is* the normal. Without it,
+    // sines: a plane leaning by (dx, dy) has normal (-dx, -dy, 1), so what
+    // they have to produce is the gradient of a height field. Either way what
+    // is off the wire is which way the waves run, how fast, and how steep.
     vec3 normal = vec3(0.0, 0.0, 1.0);
     if (u_ripple.z > 0.0) {
-        // How wide one pixel is in wave phase, for each of the region's two
-        // directions. Waves are about nine metres long and the plane runs for
-        // two kilometres, so most of it is being asked for a ripple narrower
-        // than a pixel; sampled once per pixel that is not a ripple, it is
-        // moire, which is the one artefact that reads as a broken renderer
-        // rather than as rough water. Measured once on the base term and
-        // multiplied for the harmonics, which is a fade rather than a filter.
-        vec2 width = vec2(
-            fwidth(dot(ground, u_wave_dirs.xy) * u_ripple.x),
-            fwidth(dot(ground, u_wave_dirs.zw) * u_ripple.y)
-        );
-        // Two waves per octave, not the document's two in total. Two alone
-        // draw a cross-hatch: a regular diamond grid that reads as corrugated
-        // iron, because a sea is not periodic and two sines are. Each octave
-        // is the pair before it at __WAVE_HARMONIC__ times the frequency,
-        // turned another __WAVE_TURN_RAD__ radians and at a fraction of the
-        // height -- which breaks the pattern without inventing a heading the
-        // region never gave.
-        vec2 first = u_wave_dirs.xy;
-        vec2 second = u_wave_dirs.zw;
-        float step_up = 1.0;
-        float height = 1.0;
-        vec2 slope = vec2(0.0);
-        for (int octave = 0; octave < __WAVE_OCTAVES__; octave++) {
-            // The two offsets are there so the octaves do not all start their
-            // cycle together at the origin, which would put a seam through it.
-            slope += crest(
-                ground,
-                first,
-                u_ripple.x * step_up,
-                u_wave_phase.x * step_up + 1.7 * float(octave),
-                height * (1.0 - smoothstep(1.0, 3.0, width.x * step_up))
+        if (u_water_mapped > 0.0) {
+            // The region's own normal map, one sample per wave. Each is laid
+            // along its own wave's heading and slid along it by that wave's
+            // phase, so the map travels the way the document says the wave
+            // does; the tangent-space lean it gives back is turned into world
+            // by the same frame it was sampled in.
+            //
+            // Two samples rather than the six sines below, and no harmonics
+            // at all: a normal map is already a whole spectrum of ripple, and
+            // the reason those exist is that a pair of sines is not.
+            vec2 lean =
+                mapped_lean(ground, u_wave_dirs.xy, u_ripple.x, u_wave_phase.x)
+                + mapped_lean(ground, u_wave_dirs.zw, u_ripple.y, u_wave_phase.y);
+            // No divisor beside the sines' __WAVE_SLOPE_TOTAL__: the map's
+            // tangent reaches about half a unit either way, so the two of
+            // them together peak at one, which is where the octaves are
+            // normalised to as well. Both paths lean by `u_ripple.z` at the
+            // steepest.
+            //
+            // And no minus sign either, for the reason in `mapped_lean`: this
+            // is the normal already, where the sines are a height field.
+            normal = normalize(vec3(lean * u_ripple.z, 1.0));
+        } else {
+            // How wide one pixel is in wave phase, for each of the region's
+            // two directions. Waves are about nine metres long and the plane
+            // runs for two kilometres, so most of it is being asked for a
+            // ripple narrower than a pixel; sampled once per pixel that is
+            // not a ripple, it is moire, which is the one artefact that reads
+            // as a broken renderer rather than as rough water. Measured once
+            // on the base term and multiplied for the harmonics, which is a
+            // fade rather than a filter. (The map above needs none of this:
+            // its mip levels are the same fade, done by the sampler.)
+            vec2 width = vec2(
+                fwidth(dot(ground, u_wave_dirs.xy) * u_ripple.x),
+                fwidth(dot(ground, u_wave_dirs.zw) * u_ripple.y)
             );
-            slope += crest(
-                ground,
-                second,
-                u_ripple.y * step_up,
-                u_wave_phase.y * step_up + 4.1 * float(octave),
-                height * (1.0 - smoothstep(1.0, 3.0, width.y * step_up))
+            // Two waves per octave, not the document's two in total. Two
+            // alone draw a cross-hatch: a regular diamond grid that reads as
+            // corrugated iron, because a sea is not periodic and two sines
+            // are. Each octave is the pair before it at __WAVE_HARMONIC__
+            // times the frequency, turned another __WAVE_TURN_RAD__ radians
+            // and at a fraction of the height -- which breaks the pattern
+            // without inventing a heading the region never gave.
+            vec2 slope = vec2(0.0);
+            vec2 first = u_wave_dirs.xy;
+            vec2 second = u_wave_dirs.zw;
+            float step_up = 1.0;
+            float height = 1.0;
+            for (int octave = 0; octave < __WAVE_OCTAVES__; octave++) {
+                // The two offsets are there so the octaves do not all start
+                // their cycle together at the origin, which would put a seam
+                // through it.
+                slope += crest(
+                    ground,
+                    first,
+                    u_ripple.x * step_up,
+                    u_wave_phase.x * step_up + 1.7 * float(octave),
+                    height * (1.0 - smoothstep(1.0, 3.0, width.x * step_up))
+                );
+                slope += crest(
+                    ground,
+                    second,
+                    u_ripple.y * step_up,
+                    u_wave_phase.y * step_up + 4.1 * float(octave),
+                    height * (1.0 - smoothstep(1.0, 3.0, width.y * step_up))
+                );
+                first = turned(first);
+                second = turned(-second);
+                step_up *= __WAVE_HARMONIC__;
+                height *= __WAVE_HARMONIC_HEIGHT__;
+            }
+            normal = normalize(
+                vec3(-slope * u_ripple.z / __WAVE_SLOPE_TOTAL__, 1.0)
             );
-            first = turned(first);
-            second = turned(-second);
-            step_up *= __WAVE_HARMONIC__;
-            height *= __WAVE_HARMONIC_HEIGHT__;
         }
-        normal = normalize(vec3(-slope * u_ripple.z / __WAVE_SLOPE_TOTAL__, 1.0));
     }
 
     // Seen from underneath, the surface is a ceiling: the same plane with its
@@ -1346,6 +1422,8 @@ void main() {
     "__WAVE_OCTAVES__", f"{WAVE_OCTAVES:d}"
 ).replace(
     "__WAVE_SLOPE_TOTAL__", f"{WAVE_SLOPE_TOTAL:f}"
+).replace(
+    "__WATER_RIPPLES_PER_TILE__", f"{WATER_NORMAL_RIPPLES_PER_TILE:f}"
 )
 
 _WATER_INDICES: tuple[int, ...] = (
@@ -1710,6 +1788,10 @@ class PerspectiveRenderer:
         self._ground_texture = None  # type: moderngl.Texture | None
         self._ground_texture_path: Path | None = None
         self._object_textures: dict[UUID, object] = {}
+        #: The water normal map as it was last handed its own filtering. See
+        #: `_water_normal_texture`; kept so the parameter is set once per
+        #: upload rather than once per frame.
+        self._water_normal_filtered: object | None = None
         self._object_texture_paths: dict[UUID, Path] = {}
         #: Bytes each uploaded texture is estimated to hold, and the frame it
         #: was last asked for. Together these are what the budget spends.
@@ -2053,6 +2135,13 @@ class PerspectiveRenderer:
                         ),
                     )
                 self._water_program["u_ripple"].value = ripple
+                surface = self._water_normal_texture(ctx, scene)
+                self._water_program["u_water_normals"].value = _WATER_NORMAL_UNIT
+                self._water_program["u_water_mapped"].value = (
+                    1.0 if surface is not None else 0.0
+                )
+                if surface is not None:
+                    surface.use(location=_WATER_NORMAL_UNIT)
                 self._water_program["u_wave_phase"].value = getattr(
                     scene, "water_phase", (0.0, 0.0)
                 )
@@ -2207,6 +2296,7 @@ class PerspectiveRenderer:
         self._object_texture_paths.clear()
         self._object_texture_bytes.clear()
         self._object_texture_used.clear()
+        self._water_normal_filtered = None
         self._release_terrain_textures()
         for resource in (self._sky_vao, self._sky_ibo, self._sky_vbo):
             if resource is not None:
@@ -2537,6 +2627,12 @@ class PerspectiveRenderer:
     def _release_object_texture(self, texture_id: UUID) -> None:
         texture = self._object_textures.pop(texture_id, None)
         if texture is not None:
+            if texture is self._water_normal_filtered:
+                # Forgotten rather than left dangling: this is compared with
+                # `is`, and a released object's identity can be handed to the
+                # next texture allocated, which would then never get its own
+                # filtering.
+                self._water_normal_filtered = None
             texture.release()
         self._object_texture_paths.pop(texture_id, None)
         self._object_texture_bytes.pop(texture_id, None)
@@ -3275,6 +3371,41 @@ class PerspectiveRenderer:
         if texture_id is None:
             return None
         return self._upload_object_texture(ctx, scene, texture_id)
+
+    def _water_normal_texture(
+        self, ctx: moderngl.Context, scene: Scene
+    ) -> object | None:
+        """The region's water normal map, if it named one and it arrived.
+
+        The one texture in the renderer drawn *without* anisotropic
+        filtering, and it is the one surface that would seem to need it most:
+        the sea is a two-kilometre plane seen almost edge on, which is the
+        exact case anisotropy exists for. Two things make it the wrong answer
+        here.
+
+        It is by far the most expensive place to spend it. Every other
+        grazing surface is a few metres of ground or a prim face; this one
+        fills half the frame, twice over -- one sample per wave. Measured in
+        one run on llvmpipe at 1280x800, the water pass alone costs 28.4 ms at
+        sixteen samples against 10.4 at one, with the three octaves of sines
+        it replaces at 8.2.
+
+        And nothing is lost. A normal map on a mirror is not read for its
+        detail, it is read for which way the surface leans, and a mip level
+        that blurs several ripples into one draws a calmer sea rather than a
+        wrong one -- which is what the far water is meant to look like
+        anyway; the sines this replaces fade themselves out with distance for
+        the same reason. Screenshotted at one sample and at sixteen from both
+        cameras, the frames are indistinguishable.
+        """
+        texture_id = getattr(scene, "water_normal_id", None)
+        if texture_id is None:
+            return None
+        texture = self._upload_object_texture(ctx, scene, texture_id)
+        if texture is not None and texture is not self._water_normal_filtered:
+            texture.anisotropy = 1.0
+            self._water_normal_filtered = texture
+        return texture
 
     def _cloud_texture(self, ctx: moderngl.Context, scene: Scene) -> object | None:
         """The region's cloud field, if it named one and it has arrived."""

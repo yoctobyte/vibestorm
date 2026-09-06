@@ -3196,6 +3196,334 @@ class SeaSurfaceGLTests(_GLTestBase):
         scene.water_ripple = ripple
         return scene
 
+    # -- the region's own surface ------------------------------------------
+
+    #: The wave number these tests hand the surface, in radians per metre.
+    #:
+    #: A tile of the map is not settable directly -- it comes out as
+    #: `WATER_NORMAL_RIPPLES_PER_TILE` wavelengths of whatever wave the
+    #: document asked for -- so this is the wavelength that puts a tile at
+    #: twenty-five metres *as shipped*. Written out rather than derived from
+    #: the constant, because a test that divided by it would move its own
+    #: camera every time the constant did and could never see it change.
+    #:
+    #: Twenty-five because the camera below sees about seventy metres of sea:
+    #: under three tiles across the frame, few enough to count and not so few
+    #: that the painted boundary falls outside it.
+    MAP_TEST_TILE_M = 25.0
+    MAP_TEST_WAVE_NUMBER = math.tau * 9.0 / MAP_TEST_TILE_M
+
+    def _mapped(self, scene, *, lean: str = "both", waves=(1.0, 0.0, 1.0, 0.0)):
+        """The same scene with a painted normal map on a real file.
+
+        A tangent-space normal map: 128 in red and green is a surface leaning
+        nowhere, 0 and 255 are a full unit either way *along* the wave and
+        *across* it. What `lean` chooses is which of those the painted sheet
+        varies in -- `along` splits the red channel across u, `across` splits
+        the green one across v, `both` does each in its own half, and `none`
+        is flat. A sea drawn from `none` is what the others are compared
+        against: it differs from them in nothing but what the texture *holds*.
+
+        The painted halves are 0 and 128 rather than 0 and 255, which matters
+        for the camera looking straight down: there a lean of a given size
+        reflects the same sky whichever way it points, so two halves leaning
+        equally hard in opposite directions draw the same sea. 0 and 128 lean
+        by different *amounts*. Telling the two ends of an axis apart is
+        `_leaning` and a camera at the waterline.
+        """
+        import pygame
+
+        surface_id = UUID(int=0x5EA)
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = Path(directory) / f"normals-{lean}.png"
+        painted = pygame.Surface((64, 64))
+        painted.fill((128, 128, 255))
+        if lean in ("along", "both", "stripes"):
+            # Across u, which is along the wave.
+            painted.fill((0, 128, 255), pygame.Rect(0, 0, 32, 64))
+        if lean == "stripes":
+            # The one place both halves lean, and hard: counting boundaries
+            # wants as many legible edges in the frame as it can get, and does
+            # not care which way either half leans.
+            painted.fill((255, 128, 255), pygame.Rect(32, 0, 32, 64))
+        if lean in ("across", "both"):
+            # Across v, which is at right angles to it.
+            painted.fill((128, 0, 255), pygame.Rect(32, 0, 32, 32))
+        pygame.image.save(painted, str(path))
+        return self._surfaced(scene, surface_id, path, waves)
+
+    def _leaning(self, scene, *, tangent, waves):
+        """The same scene under a normal map with no pattern in it at all.
+
+        The whole sheet leans one way, so what a frame of it answers is which
+        way that is -- see `_leaning_frames`, which is the only place this is
+        useful.
+        """
+        import pygame
+
+        surface_id = UUID(int=0x5EA)
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = Path(directory) / f"leaning-{tangent[0]}-{tangent[1]}.png"
+        painted = pygame.Surface((64, 64))
+        painted.fill((*tangent, 255))
+        pygame.image.save(painted, str(path))
+        return self._surfaced(scene, surface_id, path, waves)
+
+    def _surfaced(self, scene, surface_id, path, waves):
+        scene.water_normal_id = surface_id
+        scene.texture_paths[surface_id] = path
+        scene.water_waves = waves
+        return self._steep_scene(
+            scene, (self.MAP_TEST_WAVE_NUMBER, self.MAP_TEST_WAVE_NUMBER, 0.4)
+        )
+
+    def _middle_variation(self, frame) -> tuple[int, int]:
+        """How much the middle row and the middle column of a frame change.
+
+        The middle rather than the worst of all of them, which is what
+        `_line_variation` reads: a camera looking along +x sees lines parallel
+        to x converge, so a stripe that is level in the middle of the frame is
+        slanted at its edges and crosses a column there. The middle row and
+        the middle column are the two axes without that in them.
+        """
+        width, height = self.FBO_SIZE
+        row = [frame[((height // 2) * width + x) * 4 + 1] for x in range(width)]
+        return max(row) - min(row), max(self._down_column(frame)) - min(
+            self._down_column(frame)
+        )
+
+    def _down_column(self, frame) -> list[int]:
+        """The green channel down the middle of a frame taken from above.
+
+        Down rather than across, because `STEEP` looks along +x: a pattern
+        that varies along the wave's heading varies down the frame and is
+        constant across it.
+        """
+        width, height = self.FBO_SIZE
+        return [frame[(y * width + width // 2) * 4 + 1] for y in range(height)]
+
+    def _crossings(self, column, *, deadband: int = 25) -> int:
+        """How many times a column swings from one end of its range to the other.
+
+        A count rather than a period: the sea is seen in perspective, so the
+        pattern is not evenly spaced down the frame and a Fourier bin would be
+        smeared across several. The deadband is what keeps a noisy plateau
+        from counting as a swing.
+        """
+        low, high = min(column), max(column)
+        if high - low < 2 * deadband:
+            return 0
+        middle = (low + high) / 2.0
+        crossings = 0
+        state = None
+        for value in column:
+            if value > middle + deadband / 2:
+                side = 1
+            elif value < middle - deadband / 2:
+                side = -1
+            else:
+                continue
+            if state is not None and side != state:
+                crossings += 1
+            state = side
+        return crossings
+
+    def _leaning_frames(self, channel: int, waves):
+        """One frame of a sea leaning all one way, and one leaning all the other.
+
+        Seen from `GRAZING`, which looks along +x four metres over the water,
+        and that is the whole point: straight down a lean of a given size
+        reflects the same sky whichever way it points, so a camera there can
+        see *how far* the surface leans and never *which way*. Along the view
+        the two are opposite skies -- a surface leaning toward the camera
+        sends the reflected ray up into the zenith, one leaning away sends it
+        down past the horizon -- and those are set to opposite colours by
+        `_steep_scene`.
+
+        `channel` picks which half of the tangent the pair is painted in: 0
+        for the red one, which leans along the wave, 1 for the green one,
+        which leans across it.
+        """
+        pair = []
+        for level in (0, 255):
+            tangent = [128, 128]
+            tangent[channel] = level
+            pair.append(
+                self._frame(
+                    self._leaning(self._scene(), tangent=tuple(tangent), waves=waves),
+                    *self.GRAZING,
+                )
+            )
+        return tuple(pair)
+
+    def _mean_channel(self, frame, channel: int) -> float:
+        width, height = self.FBO_SIZE
+        return statistics.fmean(
+            frame[i + channel] for i in range(0, width * height * 4, 4)
+        )
+
+    def test_the_region_draws_the_sea_off_its_own_normal_map(self) -> None:
+        """`normal_map`, the last of the day cycle's textures nobody fetched.
+
+        Asserted against a *flat* map rather than against the sines: two
+        frames that differ only in what the texture holds cannot differ
+        because a texture is bound at all.
+        """
+        painted = self._frame(self._mapped(self._scene()), *self.STEEP)
+        flat = self._frame(self._mapped(self._scene(), lean="none"), *self.STEEP)
+
+        self.assertGreater(
+            self._differing_pixels(painted, flat),
+            400,
+            "the map is bound but the surface is not coming off it",
+        )
+
+    def test_the_sines_carry_the_sea_until_the_map_arrives(self) -> None:
+        """A named map is not a fetched one, and a fetch takes as long as it takes.
+
+        The scene here names a normal map whose file never lands, which is the
+        state every region is in for the first few seconds. The waves still
+        have to be there.
+        """
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+        scene.water_normal_id = UUID(int=0x5EA)
+        eye, target = (128.0, 128.0, 26.0), (168.0, 128.0, 20.0)
+
+        rippled = self._frame(scene, eye, target)
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
+        flat = self._frame(scene, eye, target)
+
+        self.assertGreater(
+            self._differing_pixels(rippled, flat),
+            400,
+            "a map that has not arrived took the waves with it",
+        )
+
+    def test_the_map_is_sampled_along_the_wave_not_along_the_ground(self) -> None:
+        """The easy way to write it is `texture(map, ground)`, and it is wrong.
+
+        Handed waves running north, a map laid in the wave's own frame varies
+        along north and is constant along east; one laid on the ground axes
+        varies along east whatever the region said. `STEEP` looks along +x
+        from above, so north runs across the frame and east runs down it, and
+        the two readings are the two screen axes.
+        """
+        scene = self._mapped(self._scene(), lean="along", waves=(0.0, 1.0, 0.0, 1.0))
+
+        across, down = self._middle_variation(self._frame(scene, *self.STEEP))
+
+        self.assertGreater(
+            across,
+            down * 4,
+            f"the map is laid on the ground: row {across}, column {down}",
+        )
+
+    def test_the_map_leans_the_surface_along_the_wave(self) -> None:
+        """Which end of the axis is which, and it is not the sines' sign.
+
+        A normal map stores the normal; the sines beside it store a height and
+        have to be differentiated *and* negated. Carrying that minus sign over
+        turns every crest into a trough, which from above is the same sea and
+        from the side is the opposite one.
+        """
+        toward, away = self._leaning_frames(0, (1.0, 0.0, 1.0, 0.0))
+
+        # Zenith is green here and the horizon is red. Red 0 is a normal
+        # tilted back along -x, which is a surface leaning into a camera
+        # looking along +x: its reflected ray goes up. Red 255 is the same
+        # lean away, and that ray goes down.
+        self.assertGreater(
+            self._mean_channel(toward, 1) - self._mean_channel(away, 1),
+            60,
+            "the surface leans the wrong way, or not along the wave at all",
+        )
+
+    def test_the_map_leans_the_surface_across_the_wave_too(self) -> None:
+        """The other half of the tangent, and the frame it is turned by.
+
+        Handed waves running north, a green channel of 0 and one of 255 lean
+        the surface east and west -- toward the camera and away from it. A
+        shader that dropped the across half of the tangent draws a flat sea
+        for both; one that used the tangent as it stands, without turning it
+        into the wave's frame, leans north and south for both, which from a
+        camera looking east is the same sea twice either way.
+        """
+        first, second = self._leaning_frames(1, (0.0, 1.0, 0.0, 1.0))
+
+        self.assertGreater(
+            abs(self._mean_channel(first, 1) - self._mean_channel(second, 1)),
+            60,
+            "the across half of the tangent is dropped or left in tangent space",
+        )
+
+    def test_the_map_travels_the_way_the_wave_does(self) -> None:
+        """The phase slides the map along its own heading, not across it.
+
+        A map painted `along` -- varying in u and constant in v -- is what
+        separates the two: slid along u the picture moves, slid across it
+        nothing changes at all, so a shader that took the phase off the wrong
+        axis draws a frozen sea rather than a differently moving one.
+        """
+        first = self._frame(self._mapped(self._scene(), lean="along"), *self.STEEP)
+        moved = self._mapped(self._scene(), lean="along")
+        moved.water_phase = (2.0, 2.0)
+        later = self._frame(moved, *self.STEEP)
+
+        self.assertGreater(
+            self._differing_pixels(first, later),
+            400,
+            "the sea is frozen: the phase is reaching the map on the wrong axis",
+        )
+
+    def test_both_of_the_regions_waves_reach_the_map(self) -> None:
+        """Two samples, not one twice over.
+
+        Handed one wave running east and one running north, a surface that
+        took both draws a pattern along each; one that sampled the first wave
+        twice draws the east one alone at double the lean, and `STEEP` puts
+        east down the frame and north across it.
+        """
+        scene = self._mapped(self._scene(), lean="along", waves=(1.0, 0.0, 0.0, 1.0))
+
+        across, down = self._middle_variation(self._frame(scene, *self.STEEP))
+
+        self.assertGreater(
+            min(across, down),
+            40,
+            f"one of the two waves never reached the map: row {across}, column {down}",
+        )
+
+    def test_one_tile_of_the_map_is_nine_ripples_long(self) -> None:
+        """A tile of a texture is not one cycle of what is drawn on it.
+
+        The mistake the clouds made first: laid a wavelength to a tile, the
+        sea came out as a mesh at ten centimetres a ripple, which mips to a
+        flat sheet over all but the nearest water. The map the default cycle
+        names is a wind-ripple sheet whose slope peaks at nine cycles across
+        the tile, so a tile is nine wavelengths and a ripple on it is the
+        length the document asked for.
+
+        Counted rather than measured: the painted map has two boundaries in
+        it, the frame holds a little under three tiles of a `MAP_TEST_TILE_M`
+        one, and perspective spreads them unevenly down it. Seven crossings is
+        what that comes to. The bounds are what rule out the readings either
+        side -- a tile of one ripple gives forty-six, a tile of four and a
+        half gives twelve, and a tile of eighteen gives four.
+        """
+        column = self._down_column(
+            self._frame(self._mapped(self._scene(), lean="stripes"), *self.STEEP)
+        )
+
+        crossings = self._crossings(column)
+        self.assertGreaterEqual(
+            crossings, 5, f"the map tiles too coarsely: {crossings}"
+        )
+        self.assertLessEqual(crossings, 9, f"the map tiles too finely: {crossings}")
+
     def test_ripples_too_small_to_draw_are_not_drawn(self) -> None:
         """The one artefact that reads as a broken renderer.
 

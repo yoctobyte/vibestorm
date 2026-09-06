@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (seventh pass)
+Last updated: 2026-09-06 (eighth pass)
 
 ## The Owner's Priorities
 
@@ -236,6 +236,96 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the sea is drawn on the region's own surface (2026-09-06).** The last
+of the three textures the day cycle names. `normal_map` is a 256x256
+tangent-space normal map -- a wind-ripple sheet whose crests run along v and
+travel along u, blue 234 to 255 so the surface is nearly flat and the slope
+lives in red -- and six sines had been standing in for it. Screenshot the sea
+from forty metres up with the sines and it is corduroy: regular stripes running
+to the horizon, which is what three octaves of two waves each still is.
+Screenshot it with the map and it is chop.
+
+The map is laid **in each wave's own frame**, along its heading and across it,
+and slid along that heading by that wave's phase -- so the region still decides
+which way its water runs and how fast, and what the texture supplies is the
+shape. Two samples replace six sines, and no harmonics at all: the harmonics
+exist because a small sum of sines is periodic, and a normal map is already a
+whole spectrum.
+
+Four things came out of it.
+
+**It is the one texture in this renderer drawn without anisotropic
+filtering**, and it is the surface that looks most like it needs it -- a
+two-kilometre plane seen almost edge on is the case anisotropy exists for. It
+is also the most expensive possible place to spend it: the sea fills half the
+frame and is sampled twice, once per wave. Measured in one run on llvmpipe at
+1280x800, the water pass alone is **28.4 ms at sixteen samples against 10.4 at
+one**, with the sines it replaces at 8.2. And nothing is lost by dropping it: a
+normal map on a mirror is read for which way the surface leans, not for its
+detail, so a mip level that blurs several ripples into one draws a calmer sea
+rather than a wrong one -- which is what the far water is meant to look like,
+and is exactly why the sines fade themselves out with distance. Screenshotted
+at one sample and at sixteen from both cameras, the frames are
+indistinguishable.
+
+**A tile of a texture is not one cycle of what is drawn on it -- again.** This
+is the cloud mistake exactly, made a second time within a day, and it is now
+the thing to check first whenever a document's number meets a texture. Laid a
+wavelength to a tile the sea came out at ten centimetres a ripple, which mips
+to a flat sheet over all but the nearest water; the first screenshot of it was
+a sea with no waves in it at all. The map's own dominant frequency is the
+answer, and it is measurable: the power spectrum of its red channel across u
+peaks at **nine cycles a tile**, with a broadband tail out to the pixel.
+`WATER_NORMAL_RIPPLES_PER_TILE` is nine, so a ripple on the map comes out the
+length `normal_scale` and the dispersion relation asked for, and the tail
+underneath it is the fine chop the sines had to invent.
+
+**A normal map is a normal, and the sines beside it are a height.** The
+mapped path inherited the sine path's minus sign -- `vec3(-slope, 1)`, which is
+right for the gradient of a height field and wrong for a stored normal. It
+turns every crest into a trough. From above that is the same sea; from the
+waterline it is the opposite one, because a surface leaning into the camera
+sends the reflected ray up into the zenith and one leaning away sends it down
+past the horizon. The mutation battery is what found it: the sign flip survived
+every test, which is a way of saying no test looked along the water.
+
+**A camera looking straight down cannot see which way a surface leans, only
+how far.** That is why the frame tests here need two cameras between them.
+Straight down, a lean of a given size reflects the same sky whichever way it
+points, so a painted map with 0 on one half and 255 on the other -- opposite
+leans, equal size -- draws exactly the same sea for both, and three separate
+mutations survived on it: the map laid on the ground axes instead of the wave's,
+the tangent never turned out of tangent space, and the across half of it
+dropped. The painted halves are 0 and 128 now, which differ in *size*, and the
+tests that ask which way a thing leans use a uniform sheet and the grazing
+camera.
+
+Twenty-four mutations, twenty-two killed, eight of them only after the tests
+grew -- and one of the eight was the real defect above rather than a missing
+assertion. Two of the eight closed by moving the assertion out of a frame:
+**a texture unit collision cannot be seen from a frame that turns terrain
+off**, and every test that reads the sky or the sea turns terrain off in order
+to read it. So the units are asserted directly, as a set: the moon's, the
+cloud field's and the sea's are distinct and none of them is one of the
+terrain pass's four.
+
+The two survivors are both accepted, and both for the same reason as
+`WAVE_SLOPE_TOTAL` before them -- **there is nothing on the wire that could
+disagree**:
+
+- *Halving the lean the map produces.* `u_ripple.z` is `scale_above` times
+  `WATER_WAVE_STEEPNESS`, and that constant is this viewer's invention, so a
+  uniform factor between the two is a sea no document contradicts. What it
+  would be visible against is the *sines*, since the two paths swap over mid
+  session and a jump in roughness as the texture lands is a real artefact --
+  but the sine path is three turned octaves and the map is a spectrum, and
+  matching their roughness in a test is matching two things neither of which
+  is defined.
+- *Turning the across axis the other way.* That is the OpenGL/DirectX
+  normal-map handedness question, green up or green down, and the document
+  says nothing at all. The test that asks about the across half of the tangent
+  therefore asserts the two leans *differ*, not which is which.
+
 **A -- the clouds are the region's now, not a hash (2026-09-06).** `cloud_id`
 is a 512x512 greyscale texture that **tiles seamlessly** -- measured: the mean
 absolute difference between its left and right edge columns is 1.1, against
@@ -353,8 +443,8 @@ axes" and "is the face the size of the disc" separately.
 
 The cloud field and the normal map are fetched and cached by this change and
 not yet drawn -- they are the next two passes, and both replace inventions this
-handoff has been apologising for. (The cloud field landed the same day, in the
-pass above.)
+handoff has been apologising for. (Both landed the same day, in the two passes
+above.)
 
 **A -- the two waves were secretly the same wave (2026-09-06).** Screenshot
 the sea from forty metres up and it is a woven mesh: a regular diamond lattice
@@ -577,11 +667,11 @@ thousand radians, where the waves visibly quantise.
 Three things about it are this viewer's invention rather than the region's, and
 two were forced:
 
-- **`normal_map` is still unused.** It names a texture asset nobody here has
-  fetched. The waves are sines instead, so the *wavelength* and the *steepness*
-  are constants in `atmosphere` (`WATER_WAVE_LENGTH_M` divided by
-  `normal_scale`, and `scale_above` times `WATER_WAVE_STEEPNESS`) rather than
-  numbers off the wire.
+- ~~**`normal_map` is still unused.**~~ Fetched and drawn in the eighth pass;
+  the sines below are the fallback until it arrives. The *wavelength* and the
+  *steepness* are still constants in `atmosphere` (`WATER_WAVE_LENGTH_M`
+  divided by `normal_scale`, and `scale_above` times `WATER_WAVE_STEEPNESS`)
+  rather than numbers off the wire.
 - **There are four waves, not two.** Two sines draw a cross-hatch: a regular
   diamond grid that reads as corrugated iron, which the first screenshot showed
   immediately. Each documented wave is drawn again at 2.3 times the frequency,
@@ -753,8 +843,9 @@ the sun, the moon's elevation is the exact negative of the sun's at every
 keyframe in the cycle, straight up at midnight and straight down at noon. That
 is what `MOON_REFERENCE_DIRECTION` rests on.
 
-Both are drawn procedurally. `star_id` and `moon_id` name textures this tree
-has never fetched, so the moon is a disc with a soft edge and no phase, and the
+Both were drawn procedurally in this pass. (`moon_id` names a real asset and
+is fetched and drawn from the eighth pass on; there is no `star_id` in the live
+document at all.) So the moon was a disc with a soft edge and no phase, and the
 stars are a hash of the view direction: the sky is cut into cells, about one in
 thirty holds a star at a hashed position inside it, and each is a small round
 falloff with a hashed magnitude so the field does not read as a pattern. The
@@ -1300,11 +1391,11 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**The water surface itself.**~~ Done in the seventh pass: the two wave
      directions and both Fresnel fields are read and drawn, and the fixed
      sky-reflection mixture in `water_tint` is gone from the 3D path (it stays
-     for the 2D one, which has no angle to measure). What is left of it is
-     `normal_map`: the wavelength and the steepness of the waves are this
-     viewer's constants
-     rather than the region's -- though `normal_map` is now fetched and
-     cached, so what is left is sampling it rather than finding it. There is
+     for the 2D one, which has no angle to measure). `normal_map` followed in
+     the eighth: the surface is the region's own sheet, laid in each wave's
+     frame, with the sines kept as the fallback until it arrives. The
+     wavelength and the steepness are still this viewer's constants rather
+     than the region's. There is
      also no sun glitter: a specular
      highlight off the wave crests is the most recognisable thing about the SL
      sea from a low camera, and nothing draws one. Screenshot the sea before

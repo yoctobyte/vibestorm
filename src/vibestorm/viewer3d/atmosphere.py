@@ -138,11 +138,13 @@ DEFAULT_WATER_FOG: Color3 = WaterSettings().fog_color
 #: The *mean* of the two waves' lengths; how far apart the two are is off the
 #: wire, see `water_wave_number`.
 #:
-#: A rendering choice, and it has to be: `normal_map` names a texture nobody
-#: here has fetched, so there is no map to scale and the waves are made out of
-#: sines instead. What *is* off the wire is which way they run and how
-#: fast -- `wave1_direction` and `wave2_direction` -- and how steep the surface
-#: gets, from `scale_above`.
+#: A rendering choice, and it has to be: `normal_scale` is a texture repeat
+#: count, not a length, so nothing on the wire says how long a wave is. What
+#: *is* off the wire is which way they run and how fast --
+#: `wave1_direction` and `wave2_direction` -- and how steep the surface gets,
+#: from `scale_above`. This length is what a repeat of the region's own
+#: `normal_map` is drawn at, and what the sines standing in for it before it
+#: arrives are drawn at too.
 WATER_WAVE_LENGTH_M: float = 9.0
 
 #: How far apart the two waves' lengths are allowed to get, as a ratio.

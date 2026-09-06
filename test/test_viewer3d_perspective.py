@@ -362,5 +362,42 @@ class FaceTextureSplitTests(unittest.TestCase):
         self.assertTrue(_has_face_textures(_cube(1, texture_entry=entry)))
 
 
+class TextureUnitTests(unittest.TestCase):
+    """No two passes may claim the same texture unit.
+
+    The terrain pass owns 0 through 3 for its four ground textures, and every
+    later pass that grew a texture of its own -- the moon's face, the cloud
+    field, the sea's normal map -- had to be given one above them. The passes
+    never run together, so a collision does not raise: a sampler left pointing
+    at unit 0 simply reads whatever was bound there last, which on a frame
+    with terrain in it is the ground, stretched across the moon.
+
+    Asserted here rather than in a frame because a frame can only see it when
+    terrain happens to be drawn beside the thing that collides, and the tests
+    that read the sky and the sea both turn terrain off to read them.
+    """
+
+    #: What the terrain pass binds, from `_build_programs`' `range(4)`.
+    TERRAIN_UNITS = (0, 1, 2, 3)
+
+    def test_every_pass_has_its_own_unit_above_the_terrains(self) -> None:
+        from vibestorm.viewer3d import perspective
+
+        units = {
+            name: getattr(perspective, name)
+            for name in (
+                "_MOON_TEXTURE_UNIT",
+                "_CLOUD_TEXTURE_UNIT",
+                "_WATER_NORMAL_UNIT",
+            )
+        }
+
+        for name, unit in units.items():
+            self.assertNotIn(unit, self.TERRAIN_UNITS, f"{name} is a terrain unit")
+        self.assertEqual(
+            len(set(units.values())), len(units), f"two passes share a unit: {units}"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

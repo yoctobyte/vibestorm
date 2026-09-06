@@ -512,6 +512,9 @@ class Scene:
     # How far the surface leans seen from *below*, which the document gives
     # separately and larger, and how far a viewer under it can see.
     water_ripple_below: float = DEFAULT_WATER_RIPPLE_BELOW
+    # The sea's own surface. `normal_map` is a tangent-space normal map that
+    # repeats, which the sines in the water shader stand in for.
+    water_normal_id: UUID | None = None
     water_reach: float = DEFAULT_UNDERWATER_REACH
     # How far each of the two waves has travelled since the viewer started, in
     # radians, and how fast it is going. Accumulated per frame for the reason
@@ -590,6 +593,7 @@ class Scene:
             self.water_waves = DEFAULT_WATER_WAVES
             self.water_ripple = DEFAULT_WATER_RIPPLE
             self.water_ripple_below = DEFAULT_WATER_RIPPLE_BELOW
+            self.water_normal_id = None
             self.water_reach = DEFAULT_UNDERWATER_REACH
             self.water_wave_speed = DEFAULT_WATER_WAVE_SPEED
             self.light_level = 1.0
@@ -632,6 +636,7 @@ class Scene:
         self.water_waves = water_waves(water)
         self.water_ripple = (*water_wave_number(water), water_wave_slope(water))
         self.water_ripple_below = water_wave_slope_below(water)
+        self.water_normal_id = _asset_id(water.normal_map)
         self.water_reach = underwater_reach(water)
         self.water_wave_speed = water_wave_speed(water)
         self.environment_sun_direction = sun_direction_for(sky)
