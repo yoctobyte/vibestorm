@@ -166,6 +166,10 @@ class PerspectiveRendererGLTests(_GLTestBase):
             name=None,
             tint=(255, 32, 32),
         )
+        # Sea level is 20 m and this camera is under it, which now means the
+        # world is drawn through water. The subject here is the cube, so the
+        # sea is moved below the scene rather than the camera above it.
+        scene.water_height = -10.0
 
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
@@ -323,6 +327,11 @@ class PerspectiveRendererGroundTests(_GLTestBase):
         ground centre — keeps the ground in view while keeping the
         water plane behind/above the camera, so the test reads the
         ground colour without water tinting it.
+
+        An eye under the surface is now also a viewer *in* the water, and the
+        world is drawn through it. So the tests that read a ground colour
+        through this camera move the sea below the scene as well; being under
+        it is no longer merely a way of getting it out of the frame.
         """
         from vibestorm.viewer3d.camera import Camera3D
 
@@ -343,6 +352,9 @@ class PerspectiveRendererGroundTests(_GLTestBase):
         try:
             scene = Scene()
             scene.map_tile_path = tile_path
+            # Out of the way entirely: this camera is below sea level, which
+            # would otherwise draw the ground through thirty metres of water.
+            scene.water_height = -10.0
 
             renderer = PerspectiveRenderer(self._ground_test_camera(), ctx=self.ctx)
             try:
@@ -385,6 +397,8 @@ class PerspectiveRendererGroundTests(_GLTestBase):
         from vibestorm.world.terrain import RegionHeightmap
 
         scene = Scene()
+        # See `_ground_test_camera`: this eye is under sea level.
+        scene.water_height = -10.0
         scene.terrain_heightmap = RegionHeightmap(
             width=2,
             height=2,
@@ -498,6 +512,9 @@ class PerspectiveRendererShapeDispatchTests(_GLTestBase):
         camera.set_mode("orbit")
 
         scene = Scene()
+        # The camera sits at Z=0, which is under the default sea. The subject
+        # is the shape, so the sea goes below the scene.
+        scene.water_height = -10.0
         scene.object_entities[1] = self._entity(1, shape)
 
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
@@ -3160,6 +3177,483 @@ class SeaSurfaceGLTests(_GLTestBase):
             self._worst_difference(far_too_fine, flat),
             8,
             "sub-pixel ripples are being drawn, which is moire",
+        )
+
+
+class UnderwaterGLTests(_GLTestBase):
+    """What the world looks like from under the sea.
+
+    It looked like a clear afternoon. A camera below the water plane got the
+    sky gradient, the sun, the clouds and every prim in the region at full
+    brightness, with the surface overhead as a faint translucent sheet -- so
+    the one state a swimmer is in was the one state the viewer could not show.
+
+    Four numbers the water frame carries had never been read:
+    `water_fog_density` and `underwater_fog_mod`, which together say how far a
+    viewer can see, and `scale_below`, which says how far the surface bends the
+    view from underneath. (`blur_multiplier` is the fourth and is still
+    unread: there is no blur pass to give it to.)
+    """
+
+    FBO_SIZE = (96, 96)
+    SURFACE = 20.0
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.water_height = self.SURFACE
+        return scene
+
+    def _prim(self, scene, local_id, position, scale, tint, shape=None):
+        from vibestorm.viewer3d.scene import SceneEntity
+
+        scene.object_entities[local_id] = SceneEntity(
+            local_id=local_id,
+            pcode=9,
+            kind="prim",
+            position=position,
+            scale=scale,
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=shape,
+            default_texture_id=None,
+            name=None,
+            tint=tint,
+        )
+
+    def _frame(self, scene, eye, target, *, aspect: float = 1.0):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(mode="eye", eye_position=eye, target=target)
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=aspect)
+            return self.fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+
+    def _middle(self, frame) -> tuple[int, int, int, int]:
+        width, height = self.FBO_SIZE
+        offset = ((height // 2) * width + width // 2) * 4
+        return tuple(frame[offset : offset + 4])
+
+    def _distance_to(self, pixel, colour) -> int:
+        return sum(abs(pixel[i] - round(colour[i] * 255)) for i in range(3))
+
+    # -- there is no sky down here -----------------------------------------
+
+    def test_a_submerged_camera_gets_water_where_the_sky_was(self) -> None:
+        """The whole point, and the reason this was worth doing.
+
+        Looking down from under the surface there is nothing in the frame but
+        the sky quad -- no terrain, no prims, and the water plane is behind the
+        camera. Above the water that quad is the sky; below it there is no sky
+        to see, because it is behind more water than anyone can see through.
+        """
+        scene = self._scene()
+
+        under = self._middle(
+            self._frame(scene, (128.0, 128.0, 14.0), (128.0, 200.0, 4.0))
+        )
+        over = self._middle(
+            self._frame(scene, (128.0, 128.0, 26.0), (128.0, 200.0, 16.0))
+        )
+
+        self.assertLess(
+            self._distance_to(under, scene.water_fog),
+            18,
+            f"the submerged frame is not the sea's colour: {under}",
+        )
+        self.assertGreater(
+            sum(abs(a - b) for a, b in zip(under[:3], over[:3], strict=True)),
+            120,
+            f"under and over the surface draw the same sky: {under} {over}",
+        )
+
+    def test_the_water_is_the_colour_this_region_says(self) -> None:
+        # Not a constant: two regions with different seas have to look
+        # different from inside them.
+        green, red = self._scene(), self._scene()
+        green.water_fog = (0.05, 0.45, 0.20)
+        red.water_fog = (0.45, 0.10, 0.05)
+
+        first = self._middle(
+            self._frame(green, (128.0, 128.0, 14.0), (128.0, 200.0, 4.0))
+        )
+        second = self._middle(
+            self._frame(red, (128.0, 128.0, 14.0), (128.0, 200.0, 4.0))
+        )
+
+        self.assertGreater(first[1], first[0] + 60, f"not a green sea: {first}")
+        self.assertGreater(second[0], second[1] + 60, f"not a red sea: {second}")
+
+    # -- how far a swimmer can see -----------------------------------------
+
+    def test_distance_swallows_things_and_being_close_does_not(self) -> None:
+        near, far = self._scene(), self._scene()
+        for scene, distance in ((near, 8.0), (far, 90.0)):
+            scene.water_fog = (0.0, 0.0, 0.0)
+            self._prim(
+                scene, 1, (128.0, 128.0 + distance, 14.0), (6.0, 6.0, 6.0), (255, 40, 40)
+            )
+
+        close = self._middle(
+            self._frame(near, (128.0, 128.0, 14.0), (128.0, 200.0, 14.0))
+        )
+        distant = self._middle(
+            self._frame(far, (128.0, 128.0, 14.0), (128.0, 200.0, 14.0))
+        )
+
+        self.assertGreater(close[0], 90, f"the near prim is already gone: {close}")
+        self.assertLess(distant[0], 20, f"the far prim is undimmed: {distant}")
+
+    def test_a_murkier_sea_swallows_the_same_prim_sooner(self) -> None:
+        """`water_fog_density` and `underwater_fog_mod`, doing their job.
+
+        The same prim at the same distance in the same water, with only the
+        reach changed. A renderer that fogged by a constant would draw both
+        the same.
+        """
+        clear, murky = self._scene(), self._scene()
+        for scene, reach in ((clear, 120.0), (murky, 12.0)):
+            scene.water_fog = (0.0, 0.0, 0.0)
+            scene.water_reach = reach
+            self._prim(scene, 1, (128.0, 158.0, 14.0), (6.0, 6.0, 6.0), (255, 40, 40))
+
+        seen = self._middle(
+            self._frame(clear, (128.0, 128.0, 14.0), (128.0, 200.0, 14.0))
+        )
+        lost = self._middle(
+            self._frame(murky, (128.0, 128.0, 14.0), (128.0, 200.0, 14.0))
+        )
+
+        self.assertGreater(seen[0] - lost[0], 80, f"{seen} against {lost}")
+
+    def test_the_fog_stops_at_the_surface(self) -> None:
+        """A tower on the shore is not seen through a hundred metres of sea.
+
+        Only the part of the line of sight actually in the water fogs. Both
+        prims here are the same size, the same colour and the same distance
+        away; one is on the seabed and one stands well clear of the water, so
+        the ray to the second leaves the sea a few metres from the eye and the
+        rest of its path is air.
+        """
+        sunk, standing = self._scene(), self._scene()
+        for scene in (sunk, standing):
+            scene.water_fog = (0.0, 0.0, 0.0)
+        self._prim(sunk, 1, (128.0, 218.0, 14.0), (24.0, 24.0, 24.0), (255, 40, 40))
+        self._prim(standing, 1, (128.0, 218.0, 96.0), (24.0, 24.0, 24.0), (255, 40, 40))
+
+        below = self._middle(
+            self._frame(sunk, (128.0, 128.0, 14.0), (128.0, 200.0, 14.0))
+        )
+        above = self._middle(
+            self._frame(standing, (128.0, 128.0, 14.0), (128.0, 200.0, 96.0))
+        )
+
+        self.assertLess(below[0], 25, f"the sunken prim is not fogged: {below}")
+        # Not "unfogged": the standing prim is still seen *through* the
+        # surface, and at this angle the surface itself keeps about half of it
+        # -- that is `fresnel_offset`, and it is the same half a diver loses
+        # looking up at anything. What has to be true is that the nine metres
+        # of water on the way out is all the water there is.
+        self.assertGreater(
+            above[0] - below[0],
+            50,
+            f"the prim in the air is fogged as though sunk: {above} vs {below}",
+        )
+
+    def test_the_fog_is_measured_from_the_eye_and_not_down_the_view_axis(
+        self,
+    ) -> None:
+        """Two prims the same distance away are fogged the same.
+
+        Depth along the view axis is the cheaper measure and it is wrong at
+        the edges of the screen, where a fragment is further from the eye than
+        its depth says. What that draws is water that thins towards the corners
+        and slides as the camera turns -- the same thing being *more* visible
+        the further off-centre you look at it, which is the opposite of fog.
+
+        Both prims here sit on a circle around the eye, one straight ahead and
+        one forty degrees off, so anything but equal fog is the axis showing.
+        """
+        eye = (128.0, 128.0, 14.0)
+        reach = 60.0
+        # A little past the reach, which is where the two measures disagree
+        # most: closer and there is not enough fog to differ in, further and
+        # both have gone to nothing.
+        span = reach * 1.1
+        seen = []
+        # Straight ahead, then forty degrees off to one side -- where the
+        # depth along the view axis is a fifth shorter than the distance. Both
+        # stay at the eye's own height, so both are the same depth under the
+        # surface and the partial-path arithmetic cannot be what differs; the
+        # frame is drawn wide enough for the second to be in it.
+        for degrees in (0.0, 40.0):
+            scene = self._scene()
+            scene.water_fog = (0.0, 0.0, 0.0)
+            scene.water_reach = reach
+            # Flat light: two prims turned differently to the sun would
+            # otherwise be compared on their shading.
+            scene.diffuse_light_color = (0.0, 0.0, 0.0)
+            scene.ambient_light_color = (1.0, 1.0, 1.0)
+            self._prim(
+                scene,
+                1,
+                (
+                    eye[0] + span * math.sin(math.radians(degrees)),
+                    eye[1] + span * math.cos(math.radians(degrees)),
+                    eye[2],
+                ),
+                (8.0, 8.0, 8.0),
+                (255, 40, 40),
+                # A sphere, not a cube: the point of its surface nearest the
+                # eye is the same distance away whichever way it lies, so the
+                # only thing left that can differ between the two frames is
+                # the fog.
+                shape="sphere",
+            )
+            frame = self._frame(
+                scene, eye, (eye[0], eye[1] + 10.0, eye[2]), aspect=2.5
+            )
+            width, height = self.FBO_SIZE
+            seen.append(max(frame[i] for i in range(0, width * height * 4, 4)))
+
+        self.assertGreater(seen[0], 30, f"the prim ahead is not visible: {seen}")
+        self.assertGreater(seen[1], 30, f"the prim off to the side is not: {seen}")
+        self.assertLess(
+            abs(seen[0] - seen[1]),
+            10,
+            f"the sea is thinner off to the side: {seen}",
+        )
+
+    def test_nothing_is_fogged_from_above_the_surface(self) -> None:
+        # The reach is zero in air, and that is the path almost every frame
+        # takes: a mistake here would tint the whole world all the time.
+        scene = self._scene()
+        scene.water_fog = (0.0, 0.0, 0.0)
+        self._prim(scene, 1, (128.0, 218.0, 30.0), (24.0, 24.0, 24.0), (255, 40, 40))
+
+        pixel = self._middle(
+            self._frame(scene, (128.0, 128.0, 30.0), (128.0, 200.0, 30.0))
+        )
+
+        self.assertGreater(pixel[0], 120, f"the world in air is fogged: {pixel}")
+
+    def test_taking_the_water_away_takes_the_fog_with_it(self) -> None:
+        """The HUD's water toggle is how a person looks at what is under it.
+
+        A viewer that hid the seabed in fog after being asked to take the sea
+        away would be answering a different question.
+        """
+        scene = self._scene()
+        scene.water_fog = (0.0, 0.0, 0.0)
+        self._prim(scene, 1, (128.0, 218.0, 14.0), (24.0, 24.0, 24.0), (255, 40, 40))
+
+        fogged = self._middle(
+            self._frame(scene, (128.0, 128.0, 14.0), (128.0, 200.0, 14.0))
+        )
+        scene.render_water = False
+        plain = self._middle(
+            self._frame(scene, (128.0, 128.0, 14.0), (128.0, 200.0, 14.0))
+        )
+
+        self.assertLess(fogged[0], 25, f"the sea does not fog at all: {fogged}")
+        self.assertGreater(plain[0], 120, f"the fog outlived the sea: {plain}")
+
+    # -- the ceiling --------------------------------------------------------
+
+    def test_the_surface_from_below_is_not_the_surface_from_above(self) -> None:
+        """From underneath it is a ceiling, and its normal points down.
+
+        Measured at a grazing angle, because that is where the two are not the
+        same thing. Straight on they nearly are -- half sky and half sea from
+        either side, which is `fresnel_offset` -- but along the surface they
+        are opposites: from above, almost all of what comes back is sky; from
+        below, almost all of it is sea. A ceiling drawn with the topside
+        expression has that backwards, and reads as a second sky under the
+        water.
+        """
+        scene = self._scene()
+        scene.water_fog = (0.05, 0.10, 0.30)
+        scene.sky_horizon_color = (1.0, 0.9, 0.2)
+        scene.sky_zenith_color = (1.0, 0.9, 0.2)
+
+        below = self._middle(
+            self._frame(scene, (128.0, 128.0, 17.0), (128.0, 600.0, 19.9))
+        )
+        above = self._middle(
+            self._frame(scene, (128.0, 128.0, 23.0), (128.0, 600.0, 20.1))
+        )
+
+        self.assertGreater(
+            below[2], below[0] + 30, f"the ceiling shows back sky: {below}"
+        )
+        self.assertGreater(
+            above[0], above[2] + 30, f"the sea shows back its own colour: {above}"
+        )
+
+    def test_the_surface_overhead_lets_the_sky_through(self) -> None:
+        """Straight up is the one direction that is not a mirror.
+
+        Beyond about forty-eight degrees from the vertical a water surface
+        stops transmitting altogether and shows the sea back instead -- which
+        is what a diver sees as the bright circle overhead with a mirror all
+        around it. Schlick's shape gives that for free once the normal is the
+        right way up.
+        """
+        scene = self._scene()
+        scene.water_fog = (0.0, 0.0, 0.4)
+        scene.sky_horizon_color = (1.0, 0.2, 0.0)
+        scene.sky_zenith_color = (1.0, 0.2, 0.0)
+        scene.water_ripple = (scene.water_ripple[0], 0.0)
+
+        overhead = self._middle(
+            self._frame(scene, (128.0, 128.0, 17.0), (128.5, 128.0, 24.0))
+        )
+        aside = self._middle(
+            self._frame(scene, (128.0, 128.0, 17.0), (168.0, 128.0, 20.4))
+        )
+
+        self.assertGreater(
+            overhead[0], aside[0] + 40, f"no sky overhead: {overhead} {aside}"
+        )
+
+    def test_the_sky_gets_through_where_the_water_is_thinnest(self) -> None:
+        """Straight up is six metres of water; a shallow angle is thirty-five.
+
+        The surface is made perfectly transparent here -- `water_fresnel` of
+        zero -- so the water plane draws nothing and the only thing shaping the
+        frame is how much sea a ray crosses on its way out. That path is the
+        depth divided by how steeply the ray climbs, and a renderer that used
+        the depth alone would let just as much sky through sideways as
+        overhead, which is a sky with no window in it.
+        """
+        scene = self._scene()
+        scene.water_fog = (0.0, 0.0, 0.4)
+        scene.sky_horizon_color = (1.0, 0.15, 0.0)
+        scene.sky_zenith_color = (1.0, 0.15, 0.0)
+        scene.water_fresnel = (0.0, 0.0)
+
+        steep = self._middle(
+            self._frame(scene, (128.0, 128.0, 14.0), (128.5, 128.0, 24.0))
+        )
+        shallow = self._middle(
+            self._frame(scene, (128.0, 128.0, 14.0), (188.0, 128.0, 20.5))
+        )
+
+        self.assertGreater(
+            steep[0],
+            shallow[0] + 60,
+            f"the sky comes through sideways as well as up: {steep} {shallow}",
+        )
+
+    # -- the ground ---------------------------------------------------------
+
+    def test_the_seabed_goes_into_the_fog_like_everything_else(self) -> None:
+        """All three ways this renderer draws ground, one at a time.
+
+        The flat fill, the region's map tile and the region's own four ground
+        textures are three separate programs, and the fog had to be added to
+        each. A pass that missed it draws a seabed at full brightness under a
+        fogged sea, which reads as the water having a hole in it.
+        """
+        import tempfile
+
+        from vibestorm.world.terrain import RegionHeightmap
+
+        def seabed(scene):
+            scene.render_terrain = True
+            scene.terrain_heightmap = RegionHeightmap(
+                width=4, height=4, samples=[2.0] * 16, revision=1
+            )
+            return scene
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tile = _write_solid_tile((255, 60, 60))
+            textures = [
+                self._solid_png(root, f"band{index}.png", (255, 60, 60))
+                for index in range(4)
+            ]
+            try:
+                for label, prepare in (
+                    ("the flat fill", lambda scene: scene),
+                    ("the map tile", lambda scene: setattr(scene, "map_tile_path", tile) or scene),
+                    (
+                        "the region's own textures",
+                        lambda scene: setattr(scene, "terrain_texture_paths", textures)
+                        or setattr(scene, "terrain_start_height", (0.0,) * 4)
+                        or setattr(scene, "terrain_height_range", (60.0,) * 4)
+                        or scene,
+                    ),
+                ):
+                    near = prepare(seabed(self._scene()))
+                    near.water_fog = (0.0, 0.0, 0.0)
+                    # Clear enough to see the seabed plainly, against a sea
+                    # that swallows it a few metres out. Both are the same
+                    # frame otherwise, so a pass that skipped the fog draws
+                    # them identically.
+                    near.water_reach = 600.0
+                    far = prepare(seabed(self._scene()))
+                    far.water_fog = (0.0, 0.0, 0.0)
+                    far.water_reach = 4.0
+
+                    lit = self._middle(
+                        self._frame(near, (128.0, 128.0, 14.0), (168.0, 128.0, 2.0))
+                    )
+                    lost = self._middle(
+                        self._frame(far, (128.0, 128.0, 14.0), (168.0, 128.0, 2.0))
+                    )
+
+                    self.assertGreater(
+                        sum(lit[:3]), 60, f"{label}: nothing is drawn at all: {lit}"
+                    )
+                    self.assertLess(
+                        sum(lost[:3]),
+                        sum(lit[:3]) // 2,
+                        f"{label}: the seabed ignores the fog: {lit} against {lost}",
+                    )
+            finally:
+                tile.unlink(missing_ok=True)
+
+    def _solid_png(self, directory: Path, name: str, color: tuple[int, int, int]) -> Path:
+        import pygame
+
+        surface = pygame.Surface((4, 4))
+        surface.fill(color)
+        path = directory / name
+        pygame.image.save(surface, str(path))
+        return path
+
+    def test_the_surface_leans_further_seen_from_below(self) -> None:
+        """`scale_below` is a separate number and it is the larger one.
+
+        Sending the topside lean to a submerged camera is a quiet mistake: the
+        ceiling still ripples, just by a sixth of what the document asked for.
+        """
+        scene = self._scene()
+        scene.water_fog = (0.0, 0.0, 0.3)
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+        eye, target = (128.0, 128.0, 16.0), (128.0, 168.0, 21.0)
+
+        steep = self._frame(scene, eye, target)
+        scene.water_ripple_below = 0.0
+        flat = self._frame(scene, eye, target)
+
+        width, height = self.FBO_SIZE
+        differing = sum(
+            1
+            for i in range(0, width * height * 4, 4)
+            if max(abs(steep[i + c] - flat[i + c]) for c in range(3)) > 6
+        )
+        self.assertGreater(
+            differing, 300, "the ceiling is as flat with waves on it as without"
         )
 
 

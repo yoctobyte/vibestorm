@@ -133,6 +133,16 @@ WATER_WAVE_LENGTH_M: float = 9.0
 #: seven seconds, which is a calm sea rather than a pond or a storm.
 WATER_WAVE_SPEED_M_PER_S: float = 0.55
 
+#: What a density of one is worth as a distance, in metres.
+#:
+#: A rendering choice standing in for a unit the document does not give. See
+#: `underwater_reach`: the default cycle's density works out to thirty metres
+#: of visibility with this constant, which is a clear sea rather than a murky
+#: one -- and murk is the failure that cannot be undone from inside the
+#: viewer, since a swimmer who can see nothing cannot tell a dense sea from a
+#: broken renderer.
+UNDERWATER_REFERENCE_M: float = 120.0
+
 #: What `scale_above` is worth as a slope. The document gives 0.03, which is a
 #: distortion strength for a normal map and not an angle; multiplied by this it
 #: becomes a surface that leans about ten degrees at the steepest, which is
@@ -204,6 +214,40 @@ def water_wave_number(water: WaterSettings) -> float:
 def water_wave_slope(water: WaterSettings) -> float:
     """How far the surface leans at the steepest point of a wave."""
     return max(0.0, water.scale_above) * WATER_WAVE_STEEPNESS
+
+
+def water_wave_slope_below(water: WaterSettings) -> float:
+    """The same, for a viewer under the surface.
+
+    `scale_below` is a separate number in the document -- 0.2 against 0.03
+    above -- and it is larger, which is the right way round: seen from
+    underneath, a surface is a lens rather than a mirror and the same swell
+    bends the view much further.
+    """
+    return max(0.0, water.scale_below) * WATER_WAVE_STEEPNESS
+
+
+def underwater_reach(water: WaterSettings) -> float:
+    """How far a viewer can see under the surface, in metres.
+
+    `water_fog_density` is the only density the water frame carries -- 16 in
+    the default cycle -- and `underwater_fog_mod` (0.25) is what modifies it
+    for a viewer who is under rather than over. Neither has a unit anywhere:
+    16 is not 16 of anything the document names, and taken literally as an
+    extinction coefficient per metre it would put visibility at six
+    centimetres.
+
+    So the pair are read as a *ratio* and `UNDERWATER_REFERENCE_M` turns it
+    into a distance. The default cycle's 16 x 0.25 gives thirty metres, which
+    is a clear sea; a region that doubles its density halves that.
+
+    One clamp, not three. Guarding each factor against a negative document
+    was dead code the moment the divisor was floored: a negative density
+    produces a negative product, and flooring that gives the same very long
+    reach flooring a zero does.
+    """
+    density = water.fog_density * water.underwater_fog_mod
+    return UNDERWATER_REFERENCE_M / max(density, 0.01)
 
 
 def _unit(vector: Vec2, fallback: Vec2) -> Vec2:
@@ -390,3 +434,5 @@ DEFAULT_WATER_RIPPLE: Vec2 = (
     water_wave_number(_DEFAULT_WATER),
     water_wave_slope(_DEFAULT_WATER),
 )
+DEFAULT_WATER_RIPPLE_BELOW: float = water_wave_slope_below(_DEFAULT_WATER)
+DEFAULT_UNDERWATER_REACH: float = underwater_reach(_DEFAULT_WATER)

@@ -23,9 +23,11 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_DRIFT_PER_SECOND,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_UNDERWATER_REACH,
     DEFAULT_WATER_FOG,
     DEFAULT_WATER_FRESNEL,
     DEFAULT_WATER_RIPPLE,
+    DEFAULT_WATER_RIPPLE_BELOW,
     DEFAULT_WATER_TINT,
     DEFAULT_WATER_WAVE_SPEED,
     DEFAULT_WATER_WAVES,
@@ -37,10 +39,12 @@ from vibestorm.viewer3d.atmosphere import (
     moon_level,
     sky_gradient,
     star_level,
+    underwater_reach,
     water_fog,
     water_fresnel,
     water_wave_number,
     water_wave_slope,
+    water_wave_slope_below,
     water_wave_speed,
     water_waves,
 )
@@ -497,6 +501,10 @@ class Scene:
     water_fresnel: tuple[float, float] = DEFAULT_WATER_FRESNEL
     water_waves: tuple[float, float, float, float] = DEFAULT_WATER_WAVES
     water_ripple: tuple[float, float] = DEFAULT_WATER_RIPPLE
+    # How far the surface leans seen from *below*, which the document gives
+    # separately and larger, and how far a viewer under it can see.
+    water_ripple_below: float = DEFAULT_WATER_RIPPLE_BELOW
+    water_reach: float = DEFAULT_UNDERWATER_REACH
     # How far each of the two waves has travelled since the viewer started, in
     # radians, and how fast it is going. Accumulated per frame for the reason
     # the clouds are: see `advance_water`.
@@ -556,6 +564,8 @@ class Scene:
             self.water_fresnel = DEFAULT_WATER_FRESNEL
             self.water_waves = DEFAULT_WATER_WAVES
             self.water_ripple = DEFAULT_WATER_RIPPLE
+            self.water_ripple_below = DEFAULT_WATER_RIPPLE_BELOW
+            self.water_reach = DEFAULT_UNDERWATER_REACH
             self.water_wave_speed = DEFAULT_WATER_WAVE_SPEED
             self.light_level = 1.0
             self.ambient_light_color = (1.0, 1.0, 1.0)
@@ -590,6 +600,8 @@ class Scene:
         self.water_fresnel = water_fresnel(water)
         self.water_waves = water_waves(water)
         self.water_ripple = (water_wave_number(water), water_wave_slope(water))
+        self.water_ripple_below = water_wave_slope_below(water)
+        self.water_reach = underwater_reach(water)
         self.water_wave_speed = water_wave_speed(water)
         self.environment_sun_direction = sun_direction_for(sky)
         self.light_level = daylight_scale(sky)

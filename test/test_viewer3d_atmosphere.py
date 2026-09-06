@@ -37,11 +37,13 @@ from vibestorm.viewer3d.atmosphere import (
     sky_gradient,
     star_level,
     sun_direction,
+    underwater_reach,
     water_fog,
     water_fresnel,
     water_tint,
     water_wave_number,
     water_wave_slope,
+    water_wave_slope_below,
     water_wave_speed,
     water_waves,
 )
@@ -410,6 +412,68 @@ class WaterSurfaceTests(unittest.TestCase):
 
     def test_a_negative_lean_is_no_lean(self) -> None:
         self.assertEqual(water_wave_slope(WaterSettings(scale_above=-1.0)), 0.0)
+
+
+class UnderwaterTests(unittest.TestCase):
+    """The two numbers that say how far a swimmer can see, and one more.
+
+    `water_fog_density` and `underwater_fog_mod` had been parsed and never
+    used, and so had `scale_below`. A camera under the water plane got a clear
+    afternoon: the sky gradient, the sun, the clouds and every prim in the
+    region at full brightness.
+    """
+
+    def setUp(self) -> None:
+        self.env = _live_environment()
+
+    def test_a_denser_sea_is_a_shorter_one(self) -> None:
+        clear = underwater_reach(WaterSettings(fog_density=8.0))
+        murky = underwater_reach(WaterSettings(fog_density=32.0))
+
+        self.assertAlmostEqual(clear, murky * 4.0, places=4)
+
+    def test_the_modifier_counts_as_much_as_the_density(self) -> None:
+        """Both, not one. They multiply, and reading only the density puts
+        the default cycle's visibility at seven metres rather than thirty."""
+        halved_density = underwater_reach(
+            WaterSettings(fog_density=8.0, underwater_fog_mod=0.5)
+        )
+        halved_modifier = underwater_reach(
+            WaterSettings(fog_density=16.0, underwater_fog_mod=0.25)
+        )
+
+        self.assertAlmostEqual(halved_density, halved_modifier, places=4)
+
+    def test_the_default_cycle_is_a_clear_sea(self) -> None:
+        # Thirty metres. Not asserted to the metre -- what matters is that it
+        # is a sea somebody can see across a room in and not across a region.
+        reach = underwater_reach(self.env.water_at(0.5))
+
+        self.assertGreater(reach, 10.0)
+        self.assertLess(reach, 100.0)
+
+    def test_a_sea_with_no_fog_in_it_does_not_divide_by_zero(self) -> None:
+        reach = underwater_reach(WaterSettings(fog_density=0.0))
+
+        self.assertGreater(reach, 1000.0)
+        self.assertLess(reach, float("inf"))
+
+    def test_a_negative_density_is_no_density(self) -> None:
+        self.assertEqual(
+            underwater_reach(WaterSettings(fog_density=-16.0)),
+            underwater_reach(WaterSettings(fog_density=0.0)),
+        )
+
+    def test_the_surface_leans_further_from_underneath(self) -> None:
+        # `scale_below` is 0.2 against `scale_above`'s 0.03 in the default
+        # cycle, and the larger number is the right way round: from below a
+        # surface is a lens rather than a mirror.
+        water = self.env.water_at(0.5)
+
+        self.assertGreater(water_wave_slope_below(water), water_wave_slope(water))
+
+    def test_a_negative_lean_below_is_no_lean(self) -> None:
+        self.assertEqual(water_wave_slope_below(WaterSettings(scale_below=-1.0)), 0.0)
 
 
 if __name__ == "__main__":

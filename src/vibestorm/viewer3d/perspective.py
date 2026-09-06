@@ -50,9 +50,11 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_EDGE_LOW,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_UNDERWATER_REACH,
     DEFAULT_WATER_FOG,
     DEFAULT_WATER_FRESNEL,
     DEFAULT_WATER_RIPPLE,
+    DEFAULT_WATER_RIPPLE_BELOW,
     DEFAULT_WATER_TINT,
     DEFAULT_WATER_WAVES,
 )
@@ -292,6 +294,37 @@ AMBIENT_LIGHT: float = 0.78
 DIFFUSE_LIGHT: float = 0.34
 
 
+#: The one copy of the fog a submerged viewer sees the world through.
+#:
+#: Four passes want it -- prims and avatars, the map-tile ground, the textured
+#: terrain and the flat terrain fill -- and a second copy of it is a second
+#: thing to get wrong. Substituted rather than shared through a GLSL include,
+#: which core OpenGL does not have.
+_WATER_FOG_GLSL = """// --- the world seen through water ---------------------------------------
+//
+// `u_water_fog` is the sea's own colour and `u_water_depth` is
+// (how far a viewer under the surface can see, the surface's height, the
+// eye's height). A reach of zero means the viewer is in air and nothing here
+// does anything, which is the usual case and costs one comparison.
+uniform vec3 u_water_fog;
+uniform vec3 u_water_depth;
+
+vec3 waterlogged(vec3 rgb, float distance_to, float world_z) {
+    if (u_water_depth.x <= 0.0) {
+        return rgb;
+    }
+    // Only the part of the line of sight actually *in* the water fogs. A
+    // building on the shore is seen through the water in front of it and
+    // through clear air beyond, and fogging the whole distance would grey it
+    // out as though the sea reached the horizon at eye level.
+    float rise = world_z - u_water_depth.z;
+    float submerged = rise > 0.0
+        ? clamp((u_water_depth.y - u_water_depth.z) / rise, 0.0, 1.0)
+        : 1.0;
+    return mix(u_water_fog, rgb, exp(-distance_to * submerged / u_water_depth.x));
+}
+"""
+
 _VERTEX_SHADER = """
 #version 330
 
@@ -311,6 +344,8 @@ out vec3 v_light;
 out vec3 v_local_pos;
 out vec3 v_local_normal;
 out vec2 v_mesh_uv;
+out float v_eye_distance;
+out float v_world_z;
 
 void main() {
     // in_normal is authored per mesh. Primitive shapes bake the old
@@ -335,7 +370,15 @@ void main() {
     v_local_pos = in_pos;
     v_local_normal = local_normal;
     v_mesh_uv = in_mesh_uv;
-    gl_Position = u_proj * u_view * in_model * vec4(in_pos, 1.0);
+    vec4 world = in_model * vec4(in_pos, 1.0);
+    // The eye is the origin of view space, so this is the true distance to
+    // the fragment rather than its depth along the view axis. Fog measured
+    // along the axis thins towards the edges of the screen, which reads as
+    // the water clearing when the camera turns.
+    vec4 eye_space = u_view * world;
+    v_eye_distance = length(eye_space.xyz);
+    v_world_z = world.z;
+    gl_Position = u_proj * eye_space;
 }
 """
 
@@ -351,7 +394,10 @@ in vec3 v_light;
 in vec3 v_local_pos;
 in vec3 v_local_normal;
 in vec2 v_mesh_uv;
+in float v_eye_distance;
+in float v_world_z;
 out vec4 frag_color;
+__WATER_FOG_GLSL__
 
 vec2 generated_uv(vec3 pos, vec3 normal) {
     vec3 axis = abs(normal);
@@ -376,9 +422,11 @@ void main() {
             : generated_uv(v_local_pos, v_local_normal);
         base_color = texture(u_texture, uv).rgb;
     }
-    frag_color = vec4(base_color * v_light, 1.0);
+    frag_color = vec4(
+        waterlogged(base_color * v_light, v_eye_distance, v_world_z), 1.0
+    );
 }
-"""
+""".replace("__WATER_FOG_GLSL__", _WATER_FOG_GLSL)
 
 
 _GROUND_VERTEX_SHADER = """
@@ -391,10 +439,15 @@ in vec3 in_pos;
 in vec2 in_uv;
 
 out vec2 v_uv;
+out float v_eye_distance;
+out float v_world_z;
 
 void main() {
     v_uv = in_uv;
-    gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+    vec4 eye_space = u_view * vec4(in_pos, 1.0);
+    v_eye_distance = length(eye_space.xyz);
+    v_world_z = in_pos.z;
+    gl_Position = u_proj * eye_space;
 }
 """
 
@@ -404,13 +457,18 @@ _GROUND_FRAGMENT_SHADER = """
 uniform sampler2D u_texture;
 
 in vec2 v_uv;
+in float v_eye_distance;
+in float v_world_z;
 
 out vec4 frag_color;
+__WATER_FOG_GLSL__
 
 void main() {
-    frag_color = vec4(texture(u_texture, v_uv).rgb, 1.0);
+    frag_color = vec4(
+        waterlogged(texture(u_texture, v_uv).rgb, v_eye_distance, v_world_z), 1.0
+    );
 }
-"""
+""".replace("__WATER_FOG_GLSL__", _WATER_FOG_GLSL)
 
 #: How many times a ground texture repeats across the region.
 #:
@@ -431,11 +489,14 @@ in vec2 in_uv;
 
 out vec2 v_region_uv;
 out vec3 v_world_pos;
+out float v_eye_distance;
 
 void main() {
     v_region_uv = in_uv;
     v_world_pos = in_pos;
-    gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+    vec4 eye_space = u_view * vec4(in_pos, 1.0);
+    v_eye_distance = length(eye_space.xyz);
+    gl_Position = u_proj * eye_space;
 }
 """
 
@@ -456,8 +517,10 @@ uniform vec3 u_diffuse_light;
 
 in vec2 v_region_uv;
 in vec3 v_world_pos;
+in float v_eye_distance;
 
 out vec4 frag_color;
+__WATER_FOG_GLSL__
 
 void main() {
     // The band a fragment falls in is set by its height against a start and
@@ -493,9 +556,9 @@ void main() {
     }
     float diffuse = max(dot(normal, normalize(u_sun_dir)), 0.0);
     vec3 light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
-    frag_color = vec4(rgb * light, 1.0);
+    frag_color = vec4(waterlogged(rgb * light, v_eye_distance, v_world_pos.z), 1.0);
 }
-"""
+""".replace("__WATER_FOG_GLSL__", _WATER_FOG_GLSL)
 
 _TERRAIN_LINE_VERTEX_SHADER = """
 #version 330
@@ -507,11 +570,14 @@ in vec3 in_pos;
 
 out float v_height;
 out vec3 v_world_pos;
+out float v_eye_distance;
 
 void main() {
     v_height = in_pos.z;
     v_world_pos = in_pos;
-    gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
+    vec4 eye_space = u_view * vec4(in_pos, 1.0);
+    v_eye_distance = length(eye_space.xyz);
+    gl_Position = u_proj * eye_space;
 }
 """
 
@@ -527,8 +593,10 @@ uniform vec3 u_diffuse_light;
 
 in float v_height;
 in vec3 v_world_pos;
+in float v_eye_distance;
 
 out vec4 frag_color;
+__WATER_FOG_GLSL__
 
 void main() {
     float span = max(0.001, u_height_max - u_height_min);
@@ -547,9 +615,9 @@ void main() {
     float diffuse = max(dot(normal, normalize(u_sun_dir)), 0.0);
     vec3 light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
     rgb *= light;
-    frag_color = vec4(rgb, u_color.a);
+    frag_color = vec4(waterlogged(rgb, v_eye_distance, v_world_pos.z), u_color.a);
 }
-"""
+""".replace("__WATER_FOG_GLSL__", _WATER_FOG_GLSL)
 
 _TERRAIN_LINE_FRAGMENT_SHADER = """
 #version 330
@@ -714,6 +782,11 @@ uniform vec3 u_cloud_cover;
 // x: metres across one cell, y and z: how far the layer has drifted.
 uniform vec3 u_cloud_scale_drift;
 uniform float u_cloud_altitude;
+// The sea's own colour, and (reach, surface height, eye height) -- see the
+// water shader. Only the reach is read here: a viewer under the surface has
+// no sky, and the far wall of the water is what is in its place.
+uniform vec3 u_water_fog;
+uniform vec3 u_water_depth;
 
 in vec3 v_ray;
 
@@ -791,6 +864,30 @@ float cloud_noise(vec2 p) {
 
 void main() {
     vec3 dir = normalize(v_ray);
+
+    // How much of the sky survives the water between here and the surface.
+    //
+    // Drawing a clear blue sky over a submerged camera was the whole reason
+    // nobody could tell they had gone under -- but the answer is not *no*
+    // sky. It is the sky seen through however much water the ray crosses on
+    // its way out, which is the depth divided by how steeply the ray climbs.
+    // Straight up from six metres down that is six metres of water and the
+    // sky comes through; ten degrees above the horizontal it is thirty-five
+    // and it does not. That difference *is* the bright circle overhead a
+    // swimmer sees, arriving out of the arithmetic rather than being drawn.
+    float clarity = 1.0;
+    if (u_water_depth.x > 0.0) {
+        clarity = dir.z > 0.001
+            ? exp(-((u_water_depth.y - u_water_depth.z) / dir.z) / u_water_depth.x)
+            : 0.0;
+        // Nearly all of the sky over a submerged camera is in this branch,
+        // and the sun, the stars and three octaves of cloud noise are what it
+        // skips.
+        if (clarity < 0.01) {
+            frag_color = vec4(u_water_fog, 1.0);
+            return;
+        }
+    }
     // Z is up. Below the horizon keeps the horizon colour: the water plane
     // covers it, and a second gradient there would show through the sea.
     float height = clamp(dir.z, 0.0, 1.0);
@@ -854,7 +951,7 @@ void main() {
     rgb += vec3(1.0, 0.95, 0.80) * pow(alignment, 900.0);
     rgb += vec3(1.0, 0.90, 0.72) * pow(alignment, 18.0) * 0.28;
 
-    frag_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+    frag_color = vec4(clamp(mix(u_water_fog, rgb, clarity), 0.0, 1.0), 1.0);
 }
 """
 
@@ -945,6 +1042,11 @@ uniform vec2 u_wave_phase;
 // x: how much sky is reflected looking straight down. y: how much more of it
 // there is at a grazing angle.
 uniform vec2 u_fresnel;
+// The sea's own colour again, and (how far a viewer under the surface can
+// see, the surface's height, the eye's height). A reach of zero means the
+// viewer is above the water and this is the ordinary sea.
+uniform vec3 u_water_fog;
+uniform vec3 u_water_depth;
 
 in vec3 v_world;
 out vec4 frag_color;
@@ -1027,6 +1129,14 @@ void main() {
         normal = normalize(vec3(-slope, 1.0));
     }
 
+    // Seen from underneath, the surface is a ceiling: the same plane with its
+    // normal the other way up, so that the angle below is measured the same
+    // way the angle above is.
+    bool below = u_water_depth.x > 0.0;
+    if (below) {
+        normal = -normal;
+    }
+
     vec3 view = normalize(u_eye - v_world);
     float facing = clamp(dot(normal, view), 0.0, 1.0);
     // Schlick's shape: reflectance rises as the fifth power of one minus the
@@ -1046,6 +1156,26 @@ void main() {
     );
     // The reflected ray is `view` mirrored in the normal, and only its height
     // is wanted, so only its height is worked out.
+    // From above, what is reflected is the sky and what is transmitted is the
+    // sea: more sky the flatter the angle. From below the two swap, and the
+    // surface stops being a colour at all -- it is the sea reflected back
+    // down, over however much of what is above it still gets through.
+    //
+    // So underneath it draws as the water's own colour at `mirror` opacity
+    // and lets the pass behind it supply the rest. That pass is the sky,
+    // which has already taken the same water off the same ray, so the two
+    // agree without either knowing about the other. Straight up `mirror` is
+    // about a half and what is above comes through; by a grazing angle it is
+    // nearly one and the ceiling is a mirror, which is what a diver sees
+    // outside the cone overhead.
+    //
+    // Refraction is left out: it would bend the whole sky into that cone
+    // rather than letting it span the sky, and the cone is where a viewer
+    // looks anyway.
+    if (below) {
+        frag_color = vec4(clamp(u_water_fog, 0.0, 1.0), mirror);
+        return;
+    }
     vec3 rgb = mix(
         u_color.rgb, sky_at_height(2.0 * facing * normal.z - view.z), mirror
     );
@@ -1114,6 +1244,31 @@ def _water_vertices(water_height: float) -> tuple[float, ...]:
         high,  high,  water_height,
         low,   high,  water_height,
     )
+
+
+def _underwater_uniforms(
+    scene: Scene, eye_position: tuple[float, float, float]
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """The fog every pass is drawn through when the viewer is under the sea.
+
+    Returns the sea's colour and (reach, surface height, eye height). A reach
+    of **zero** is the signal that the viewer is in air, which is what every
+    shader tests -- so this is the one place that decides, rather than six.
+
+    Tied to the water actually being drawn, not only to the height. Turning
+    the sea off is what a person does to look at what is under it, and a
+    viewer that hid the seabed in fog after being asked to take the water away
+    would be answering a different question.
+    """
+    fog = tuple(float(c) for c in getattr(scene, "water_fog", DEFAULT_WATER_FOG))
+    surface = float(getattr(scene, "water_height", WATER_LEVEL_M))
+    eye_height = float(eye_position[2])
+    if eye_height >= surface or not getattr(scene, "render_water", True):
+        return fog, (0.0, surface, eye_height)
+    reach = float(getattr(scene, "water_reach", DEFAULT_UNDERWATER_REACH))
+    # Never zero: zero is the flag for being in air, and a region that asks
+    # for no visibility at all would otherwise turn the water off entirely.
+    return fog, (max(reach, 0.01), surface, eye_height)
 
 
 def _light_uniforms(
@@ -1405,6 +1560,10 @@ class PerspectiveRenderer:
         self._light_level: float = 1.0
         self._ambient_light: tuple[float, float, float] = (AMBIENT_LIGHT,) * 3
         self._diffuse_light: tuple[float, float, float] = (DIFFUSE_LIGHT,) * 3
+        #: The sea's colour, and (reach, surface height, eye height). A reach
+        #: of zero means the viewer is in air, which is where a frame starts.
+        self._water_fog: tuple[float, float, float] = DEFAULT_WATER_FOG
+        self._water_depth: tuple[float, float, float] = (0.0, WATER_LEVEL_M, 0.0)
         # Ground (region floor) — separate program because the cubes are
         # flat-tinted while the ground samples a texture.
         self._ground_program = None  # type: moderngl.Program | None
@@ -1499,6 +1658,27 @@ class PerspectiveRenderer:
 
     # -------------------------------------------------------------- GL pass
 
+    def _apply_water_fog(self) -> None:
+        """Hand this frame's water fog to every pass that draws the world.
+
+        The terrain *line* program is left out on purpose: it is a decode
+        debugging overlay, and an overlay that disappears in fog is one a
+        person cannot use to find out why the ground is wrong. Labels are out
+        for the same reason -- a name tag is not in the world.
+        """
+        for program in (
+            self._program,
+            self._ground_program,
+            self._terrain_texture_program,
+            self._terrain_fill_program,
+            self._sky_program,
+            self._water_program,
+        ):
+            if program is None or "u_water_fog" not in program:
+                continue
+            program["u_water_fog"].value = self._water_fog
+            program["u_water_depth"].value = self._water_depth
+
     def render_gl(self, scene: Scene, *, aspect: float) -> None:
         """Draw the region ground + primitives + water.
 
@@ -1535,6 +1715,12 @@ class PerspectiveRenderer:
         # value and it cannot change within a frame.
         self._light_level = max(0.0, min(1.0, float(getattr(scene, "light_level", 1.0))))
         self._ambient_light, self._diffuse_light = _light_uniforms(scene, self._light_level)
+        # Whether this frame is being drawn from under the sea, and in what.
+        # Set on every program up front rather than beside each draw: six
+        # passes want the same two values and none of them can change within
+        # a frame.
+        self._water_fog, self._water_depth = _underwater_uniforms(scene, eye_position)
+        self._apply_water_fog()
 
         self._frame_index += 1
         self._prune_object_textures(scene)
@@ -1708,9 +1894,20 @@ class PerspectiveRenderer:
                 self._water_program["u_wave_dirs"].value = getattr(
                     scene, "water_waves", DEFAULT_WATER_WAVES
                 )
-                self._water_program["u_ripple"].value = getattr(
-                    scene, "water_ripple", DEFAULT_WATER_RIPPLE
-                )
+                ripple = getattr(scene, "water_ripple", DEFAULT_WATER_RIPPLE)
+                if self._water_depth[0] > 0.0:
+                    # `scale_below`, which the document gives separately and
+                    # larger: from underneath the surface is a lens, and the
+                    # same swell bends the view much further.
+                    ripple = (
+                        ripple[0],
+                        float(
+                            getattr(
+                                scene, "water_ripple_below", DEFAULT_WATER_RIPPLE_BELOW
+                            )
+                        ),
+                    )
+                self._water_program["u_ripple"].value = ripple
                 self._water_program["u_wave_phase"].value = getattr(
                     scene, "water_phase", (0.0, 0.0)
                 )

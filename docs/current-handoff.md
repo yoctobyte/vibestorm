@@ -236,6 +236,76 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- and there is a world under it (2026-09-06).** A camera below the water
+plane got a clear afternoon. The sky gradient, the sun, the clouds and every
+prim in the region at full brightness, with the surface overhead as a faint
+translucent sheet -- so the one state a swimmer is in was the one state the
+viewer could not show, and a person who walked into the sea could not tell.
+
+Four more numbers off the wire, three of them now spent. `water_fog_density`
+(16) and `underwater_fog_mod` (0.25) together say how far a viewer can see,
+and `scale_below` (0.2) says how far the surface bends the view from
+underneath -- seven times further than `scale_above`'s 0.03 does from over it,
+which is the right way round: from below a surface is a lens rather than a
+mirror. `blur_multiplier` is the fourth and is still unread; there is no blur
+pass to give it to.
+
+The density is the interesting one, because **it is a ratio and not a
+coefficient**. Taken literally as an extinction per metre, 16 x 0.25 puts
+visibility at six centimetres. Nothing in the document says what the unit is,
+so `UNDERWATER_REFERENCE_M` supplies one: the default cycle comes out at thirty
+metres of clear sea, and a region that doubles its density halves that.
+
+*Every pass that draws the world fogs.* Prims and avatars, the map-tile ground,
+the region's own four ground textures and the flat terrain fill are four
+programs and the fog had to go in all four; the shared GLSL is substituted
+rather than copied, because four copies of it is four things to get wrong. Two
+details in it are worth keeping:
+
+- **Only the part of the line of sight actually in the water fogs.** A tower on
+  the shore is seen through the water in front of it and clear air beyond, and
+  fogging the whole distance would grey it out as though the sea reached the
+  horizon at eye level.
+- **The distance is from the eye, not the depth along the view axis.** Depth is
+  cheaper and wrong at the edges of the frame: it draws water that thins
+  towards the corners and slides as the camera turns, which is a thing being
+  *more* visible the further off-centre you look at it.
+
+*The sky is still drawn, and that turned out to be the right answer.* The first
+version replaced it with the water's colour outright, which is true of almost
+every direction and false of the one that matters. What a submerged camera sees
+of the sky is the sky through however much water the ray crosses on the way
+out, and that is the depth divided by how steeply the ray climbs: six metres
+straight up, thirty-five at ten degrees above the horizontal. **The bright
+circle overhead a swimmer sees comes out of that arithmetic rather than being
+drawn.** Below one per cent the shader returns the fog and skips the sun, the
+stars and three octaves of cloud noise, which is nearly all of a submerged
+frame.
+
+*The surface from below is a ceiling.* Its normal points down, so the angle is
+measured the same way; and the two sides are not symmetrical the way they look.
+Straight on they nearly are -- half sky and half sea from either side, which is
+`fresnel_offset` -- but along the surface they are opposites: from above almost
+everything coming back is sky, from below almost all of it is sea. So
+underneath it draws as the water's own colour at `mirror` opacity and lets the
+sky pass behind it supply the rest. The two agree without either knowing about
+the other, because both take the same water off the same ray.
+
+Above water this costs nothing measurable: A/B against the previous commit over
+four runs on llvmpipe put the water pass at 4.7-5.6 ms either way. The fog is
+one comparison against a uniform, and the uniform is zero in air.
+
+Thirty-one mutations, thirty killed, and the survivor was **equivalent rather
+than untested**: guarding each of the density's two factors against a negative
+document was dead the moment the divisor was floored, since a negative product
+floors to the same very long reach a zero does. The guards are gone.
+
+Four of the thirty needed new tests written for them and three of those were
+the same mistake in different clothes -- the fixture *is* the fallback, so
+"refresh from the region and find the region's numbers" proves nothing at all.
+Every plumbing test here now builds a day cycle whose water is unlike
+`WaterSettings`' defaults in every field.
+
 **A -- the sea has a surface now (2026-09-06).** Four things the region's
 document says about water had been parsed and never used: `wave1_direction`,
 `wave2_direction`, `fresnel_offset` and `fresnel_scale`. The sea was a flat
@@ -971,10 +1041,13 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
 1. **B is still untested.** The launcher defaults SL to `home`, but nothing has
    touched the live grid -- that needs the owner's credentials. Everything else
    is guesswork until someone logs in.
-2. **C's last gap is the GUI, not the protocol.** `--all-assets` covers every
-   type from the CLI; the viewer's "save all text assets" button still only
-   saves text. Small, and only worth doing if the owner works from the window
-   rather than the shell.
+2. ~~**C's last gap is the GUI, not the protocol.**~~ Closed on 2026-09-05 in
+   86fc0ce: the inspector's Save button goes through `pull_object_to_folder`
+   with `include_binary=True`, so it writes textures, sounds, animations and
+   body parts as well as text, records the bindings a later push needs, and
+   names files by the same rule the CLI does. This entry was stale for a day;
+   it is left here struck through rather than deleted because a next-step list
+   that quietly loses entries is one nobody trusts.
 3. **A's remaining visual gaps are smaller than the last one was.** Water and
    sky now come from the region's own day cycle (sixth pass). What is still
    this client's own idea rather than the region's:
@@ -999,9 +1072,19 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      rather than the region's. There is also no sun glitter: a specular
      highlight off the wave crests is the most recognisable thing about the SL
      sea from a low camera, and nothing draws one.
+   - ~~**Under the water.**~~ Done in the seventh pass: every pass that draws
+     the world fogs, the sky comes through the surface only where the water is
+     thin enough, and the surface from below is a ceiling. `blur_multiplier`
+     is what is left of it -- there is no blur pass to give it to.
    - **`cloud_shadow` is still unspent.** It is not about the clouds: it is
      how much they darken the **ground**, and nothing casts it. The parameter
      is parsed and sitting on `SkySettings` at 0.27 all day.
+   - **The sky's own unread fields.** `gamma`, `max_y`, `glow`,
+     `density_multiplier`, `distance_multiplier` and `haze_density` are all
+     parsed and none is drawn. Most belong to the Windlight atmospheric
+     integral this viewer deliberately does not attempt (see the module
+     docstring in `atmosphere.py`); `glow` is the exception and is the sun's
+     own size and focus, which is currently two constants in the sky shader.
    (The gait, sitting, attachments, linkset placement, the frame cost at
    region scale, texture filtering, and the sky and sea themselves, which used
    to be this entry in various forms, are done -- see the fourth, fifth and

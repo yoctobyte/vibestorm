@@ -21,9 +21,11 @@ from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_UNDERWATER_REACH,
     DEFAULT_WATER_FOG,
     DEFAULT_WATER_FRESNEL,
     DEFAULT_WATER_RIPPLE,
+    DEFAULT_WATER_RIPPLE_BELOW,
     DEFAULT_WATER_TINT,
     DEFAULT_WATER_WAVE_SPEED,
     DEFAULT_WATER_WAVES,
@@ -269,9 +271,39 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
     were parsed and none reached the frame.
     """
 
+    def _unlike_the_default(self):
+        """A day cycle whose water is nothing like `WaterSettings`' defaults.
+
+        Needed for the same reason `test_the_regions_own_surface_reaches_the
+        _frame` needs it: the captured fixture *is* the defaults, so refreshing
+        from it and finding the defaults afterwards proves nothing.
+        """
+        return RegionEnvironment(
+            day_length=14400.0,
+            water_track=(
+                (
+                    0.0,
+                    WaterSettings(
+                        fog_color=(0.4, 0.1, 0.05),
+                        fresnel_offset=0.11,
+                        fresnel_scale=0.22,
+                        scale_above=0.5,
+                        scale_below=0.75,
+                        fog_density=32.0,
+                        underwater_fog_mod=0.5,
+                        normal_scale=(3.0, 3.0, 3.0),
+                        wave1_direction=(0.0, 2.0),
+                        wave2_direction=(-3.0, 0.0),
+                    ),
+                ),
+            ),
+        )
+
     def test_a_world_view_with_no_environment_keeps_the_default_sea(self) -> None:
         scene = Scene()
-        scene.refresh_from_world_view(_world_view(clock=_at(0.5)))
+        loaded = WorldView()
+        loaded.environment = self._unlike_the_default()
+        scene.refresh_from_world_view(loaded)
 
         scene.refresh_from_world_view(_world_view(environment=False))
 
@@ -279,6 +311,8 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
         self.assertEqual(scene.water_fresnel, DEFAULT_WATER_FRESNEL)
         self.assertEqual(scene.water_waves, DEFAULT_WATER_WAVES)
         self.assertEqual(scene.water_ripple, DEFAULT_WATER_RIPPLE)
+        self.assertEqual(scene.water_ripple_below, DEFAULT_WATER_RIPPLE_BELOW)
+        self.assertEqual(scene.water_reach, DEFAULT_UNDERWATER_REACH)
         self.assertEqual(scene.water_wave_speed, DEFAULT_WATER_WAVE_SPEED)
 
     def test_the_regions_own_surface_reaches_the_frame(self) -> None:
@@ -290,25 +324,8 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
         a `Scene` that ignored the region entirely passes that. This builds a
         day cycle whose every water field differs and checks each one arrives.
         """
-        environment = RegionEnvironment(
-            day_length=14400.0,
-            water_track=(
-                (
-                    0.0,
-                    WaterSettings(
-                        fog_color=(0.4, 0.1, 0.05),
-                        fresnel_offset=0.11,
-                        fresnel_scale=0.22,
-                        scale_above=0.5,
-                        normal_scale=(3.0, 3.0, 3.0),
-                        wave1_direction=(0.0, 2.0),
-                        wave2_direction=(-3.0, 0.0),
-                    ),
-                ),
-            ),
-        )
         view = WorldView()
-        view.environment = environment
+        view.environment = self._unlike_the_default()
         scene = Scene()
 
         scene.refresh_from_world_view(view)
@@ -328,7 +345,13 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
         self.assertAlmostEqual(
             scene.water_wave_speed[1], scene.water_wave_speed[0] * 1.5, places=5
         )
-        for index in range(5):
+        # A sea four times as dense as the fallback's is seen a quarter as
+        # far into.
+        self.assertAlmostEqual(
+            scene.water_reach, DEFAULT_UNDERWATER_REACH / 4.0, places=5
+        )
+        self.assertGreater(scene.water_ripple_below, scene.water_ripple[1])
+        for index in range(7):
             self.assertNotEqual(
                 (
                     scene.water_fog,
@@ -336,6 +359,8 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
                     scene.water_waves,
                     scene.water_ripple,
                     scene.water_wave_speed,
+                    scene.water_reach,
+                    scene.water_ripple_below,
                 )[index],
                 (
                     DEFAULT_WATER_FOG,
@@ -343,6 +368,8 @@ class WaterSurfaceRefreshTests(unittest.TestCase):
                     DEFAULT_WATER_WAVES,
                     DEFAULT_WATER_RIPPLE,
                     DEFAULT_WATER_WAVE_SPEED,
+                    DEFAULT_UNDERWATER_REACH,
+                    DEFAULT_WATER_RIPPLE_BELOW,
                 )[index],
             )
 

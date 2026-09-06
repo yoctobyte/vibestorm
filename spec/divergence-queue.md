@@ -50,6 +50,8 @@ reference item, not a divergence.
 | Environment | `wave1_direction` and `wave2_direction` are a heading *and* a speed in one two-vector: the direction is where the wave runs and the **length** is how fast. Nothing says so. A reader that normalises loses the speed; one that does not ties speed to wavelength, so a faster wave is also a shorter one | `viewer3d/atmosphere.py` |
 | Environment | `fresnel_offset` and `fresnel_scale` are named for a physical model and are not physical values: the default cycle's offset is **0.5**, where a real water surface reflects about 0.02 straight down. Used as an index of refraction they give a sea twenty-five times too reflective, and it looks plausible rather than broken | `viewer3d/atmosphere.py` |
 | Environment | `water_fog_density` is the fog seen from **under** the surface, not distance haze over it. It is the only density-shaped number in the water frame, so it is what a reader reaches for when the sea meets the sky in a hard line -- and it is a different quantity in a different medium | `viewer3d/perspective.py` |
+| Environment | `water_fog_density` and `underwater_fog_mod` are a ratio, not a coefficient. Taken literally as an extinction per metre, the default cycle's 16 x 0.25 puts underwater visibility at **six centimetres**; nothing in the document says what the unit is, so a client has to supply its own reference distance and cannot derive one | `viewer3d/atmosphere.py` |
+| Environment | A water keyframe carries `scale_above` **and** `scale_below`, and they differ by nearly seven times (0.03 against 0.2). A reader that finds one and uses it for both draws a surface that barely ripples seen from underneath, which is the side it ripples most on | `viewer3d/atmosphere.py` |
 
 ## Not divergences
 
