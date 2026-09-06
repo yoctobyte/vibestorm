@@ -236,6 +236,60 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the clouds are the region's now, not a hash (2026-09-06).** `cloud_id`
+is a 512x512 greyscale texture that **tiles seamlessly** -- measured: the mean
+absolute difference between its left and right edge columns is 1.1, against
+48 for an arbitrary pair. Three octaves of value noise had been standing in for
+it. The noise stays as the fallback, because the asset arrives seconds into a
+session and a sky with nothing in it for that long is worse than a sky with
+invented cloud in it.
+
+Two things about the numbers came out of having the texture at last.
+
+**A density is a coverage, not a threshold.** `CLOUD_EDGE_LOW`/`HIGH` exist
+because value noise is a field of smooth hills with no gaps: without a
+threshold to carve holes it draws an even grey haze rather than clouds with sky
+between them. A cloud texture already has the holes, so the density multiplies
+it and the answer *is* the coverage. The two readings differ in linearity --
+three flat fields evenly spaced in level come back evenly spaced in brightness
+under a multiply and nothing like evenly under a threshold, which is what the
+test asks.
+
+**`cloud_scale` is a texture scale, and always was.** It had been read as a
+noise cell -- 260 metres at scale 1 -- and one tile of the real texture holds a
+sky's worth of shapes where a noise cell holds about one. Drawn a cell to a
+tile the sky is a fine repeating mesh, which is what the first screenshot of it
+was. `CLOUD_SCALE_METRES` is 2400 now, so the default cycle's 0.42 puts a tile
+at about a kilometre against a layer 320 metres up, and the repeat falls where
+perspective has already crushed it toward the horizon.
+`CLOUD_NOISE_CELLS_PER_TILE` is the ratio that keeps the fallback reading at
+the same size as the thing it stands in for, and `CLOUD_DRIFT_PER_SECOND` moved
+with the unit -- the layer still crosses the sky at just under a metre a
+second.
+
+That also spends **`cloud_pos_density1` and `2`'s first two components**, which
+have been sitting parsed since the sixth pass with nothing to offset into. They
+are equal in all eight keyframes, so the second layer sits exactly on the
+first and the sky is one field at the sum of two densities. That is what the
+document asks for, oddly, and it is not a reason to invent a second scale for
+the second layer to be interesting at -- the previous pass had drawn it at 3.7
+times the frequency, which with a real texture is visible tiling. **Nothing in
+a captured region can tell a shader that reads the second pair from one that
+reads the first twice**, so the test hands them different offsets, which is the
+only way to ask.
+
+Eighteen mutations, all killed, three only after tests were added -- and all
+three were the same lesson as the moon's: *the default cycle cannot see these*.
+Both layers share an offset in it, and the two-tone field a plumbing test paints
+is binary, so a threshold and a multiply agree on it exactly. Painted fields
+have to be chosen to disagree.
+
+One test detail worth keeping: **the cloud layer is mip-mapped**, so a painted
+field at the region's own tile size averages to a flat grey before it reaches a
+pixel. `CLOUD_TEST_TILE_M` is 400 metres against the region's thousand for that
+reason -- narrow enough to put three or four stripes across the frame, wide
+enough to stay above one pixel.
+
 **A -- the day cycle names textures, and they are real (2026-09-06).** The
 handoff has been saying for three passes that the moon is "procedural because
 `moon_id` names a texture nobody here has fetched", and the same for `cloud_id`
@@ -299,7 +353,8 @@ axes" and "is the face the size of the disc" separately.
 
 The cloud field and the normal map are fetched and cached by this change and
 not yet drawn -- they are the next two passes, and both replace inventions this
-handoff has been apologising for.
+handoff has been apologising for. (The cloud field landed the same day, in the
+pass above.)
 
 **A -- the two waves were secretly the same wave (2026-09-06).** Screenshot
 the sea from forty metres up and it is a woven mesh: a regular diamond lattice
@@ -1230,12 +1285,11 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
 3. **A's remaining visual gaps are smaller than the last one was.** Water and
    sky now come from the region's own day cycle (sixth pass). What is still
    this client's own idea rather than the region's:
-   - **Clouds.** Drawn in the seventh pass and `cloud_shadow` with them, but
-     drawn *procedurally* -- and `cloud_id` turns out to be a real 512x512
-     texture this client now fetches and does not yet use. Spending it is the
-     next pass, and it brings the two position components of each
-     `cloud_pos_density` with it: they are an offset into `cloud_id`, which
-     until now there was nothing to offset into.
+   - ~~**Clouds.**~~ Done: the region's own `cloud_id` texture, at the offsets
+     its two `cloud_pos_density` pairs give, with `cloud_shadow` on the
+     ground. What is left is `cloud_variance`, which is 0 in every keyframe of
+     the live cycle and is drawn as a third field at a scale this viewer
+     invented -- so it is spent, but on no evidence at all.
    - ~~**Stars and the moon.**~~ Done in the seventh pass; both are drawn at
      `moon_scale` and `sun_scale` since, and the moon wears its own `moon_id`
      texture. What is left of it is the **stars**, which are a hash rather

@@ -30,6 +30,7 @@ from vibestorm.viewer3d.atmosphere import (
     WATER_WAVE_LENGTH_SPREAD,
     cloud_cover,
     cloud_hue,
+    cloud_offsets,
     cloud_shadow_scale,
     cloud_size,
     daylight_scale,
@@ -796,3 +797,29 @@ class CloudTests(unittest.TestCase):
         # A region that writes 0 would otherwise divide the sky into cells of
         # no width, which in the shader is every pixel sampling one hash.
         self.assertGreater(cloud_size(SkySettings(cloud_scale=0.0)), 0.0)
+
+    def test_each_layer_starts_where_its_own_pair_says(self) -> None:
+        """The first two components of each `cloud_pos_density`.
+
+        Parsed since the sixth pass and unusable until `cloud_id` turned out
+        to be a real texture. The third component of each is the density and
+        belongs to `cloud_cover`, so getting this wrong by one index is the
+        obvious mistake and this is what catches it.
+        """
+        sky = SkySettings(
+            cloud_pos_density1=(0.25, 0.5, 0.75),
+            cloud_pos_density2=(0.125, 0.375, 0.5),
+        )
+
+        self.assertEqual(cloud_offsets(sky), (0.25, 0.5, 0.125, 0.375))
+
+    def test_the_live_cycle_starts_both_layers_in_the_same_place(self) -> None:
+        """Which is the reason the second layer is not drawn any differently.
+
+        All eight keyframes give the two layers the same offset, so a viewer
+        that read them as two positions would sample one field twice. This is
+        the evidence for saying so, and it is not something to invent around.
+        """
+        first_x, first_y, second_x, second_y = cloud_offsets(self.env.sky_at(0.5))
+
+        self.assertEqual((first_x, first_y), (second_x, second_y))

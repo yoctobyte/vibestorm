@@ -48,6 +48,7 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_ALTITUDE_METRES,
     CLOUD_EDGE_HIGH,
     CLOUD_EDGE_LOW,
+    CLOUD_NOISE_CELLS_PER_TILE,
     DEFAULT_MOON_DISC,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
@@ -791,6 +792,14 @@ uniform float u_star_level;
 uniform vec3 u_cloud_color;
 // x: coarse coverage, y: fine coverage, z: variance.
 uniform vec3 u_cloud_cover;
+// The region's own cloud field, and whether one has arrived. `cloud_id` names
+// a 512x512 greyscale texture that tiles seamlessly -- which is what the noise
+// below was standing in for. `u_cloud_offsets` is the first two components of
+// `cloud_pos_density1` and of `cloud_pos_density2`: where in that texture each
+// of the two layers starts.
+uniform sampler2D u_cloud_tex;
+uniform float u_cloud_textured;
+uniform vec4 u_cloud_offsets;
 // x: metres across one cell, y and z: how far the layer has drifted.
 uniform vec3 u_cloud_scale_drift;
 uniform float u_cloud_altitude;
@@ -872,6 +881,22 @@ float cloud_noise(vec2 p) {
     total += value_noise(p * 2.03) * 0.25;
     total += value_noise(p * 4.11) * 0.125;
     return total / 0.875;
+}
+
+// How much cloud there is at a point on the layer.
+//
+// The region's own texture where one has arrived and the noise above where it
+// has not -- the asset is fetched over the network mid-session, and a sky with
+// no cloud in it for those seconds is worse than a sky with invented cloud.
+// The branch is on a uniform, so the mip level this needs is still well
+// defined across the quad.
+float cloud_field(vec2 p) {
+    // A tile of the texture holds several clouds where one cell of the noise
+    // holds about one, so the stand-in is scaled to the thing it stands in
+    // for. Drawn a cell to a tile it would be one cloud across the whole sky.
+    return u_cloud_textured > 0.0
+        ? texture(u_cloud_tex, p).r
+        : cloud_noise(p * __CLOUD_NOISE_CELLS__);
 }
 
 void main() {
@@ -969,18 +994,30 @@ void main() {
     if (u_cloud_cover.x > 0.0 && dir.z > 0.001) {
         vec2 ground = (dir.xy / dir.z) * u_cloud_altitude;
         vec2 uv = ground / max(u_cloud_scale_drift.x, 1.0) + u_cloud_scale_drift.yz;
-        float amount = cloud_noise(uv) * u_cloud_cover.x;
-        // Both of these are a whole extra noise field each, and the default
-        // cycle asks for the second one not at all -- `cloud_variance` is 0
-        // in every keyframe of it. Paying for a field multiplied by zero is
-        // a third of the cloud pass for nothing.
+        // Two layers, each starting where its own `cloud_pos_density` says.
+        // In every keyframe of the default cycle the two offsets are equal,
+        // so this draws one field at the sum of the two densities -- which is
+        // what the document asks for, oddly, and not a reason to invent a
+        // second scale for it to be interesting at.
+        float amount = cloud_field(uv + u_cloud_offsets.xy) * u_cloud_cover.x;
+        // The second layer is a whole extra sample and the default cycle asks
+        // for the third not at all -- `cloud_variance` is 0 in every keyframe
+        // of it. Paying for a field multiplied by zero is a third of the
+        // cloud pass for nothing.
         if (u_cloud_cover.y > 0.002) {
-            amount += cloud_noise(uv * 3.7 + 11.0) * u_cloud_cover.y;
+            amount += cloud_field(uv + u_cloud_offsets.zw) * u_cloud_cover.y;
         }
         if (u_cloud_cover.z > 0.002) {
-            amount += (cloud_noise(uv * 0.31 - 7.0) - 0.5) * u_cloud_cover.z;
+            amount += (cloud_field(uv * 0.31 - 7.0) - 0.5) * u_cloud_cover.z;
         }
-        float cover = smoothstep(CLOUD_EDGE_LOW, CLOUD_EDGE_HIGH, amount);
+        // The texture is what has the holes in it, so with one in hand the
+        // density is the coverage and nothing has to decide where an edge
+        // falls. The edge band is for the noise, which is a field of smooth
+        // hills with no gaps at all -- without a threshold it draws an even
+        // grey haze rather than clouds with sky between them.
+        float cover = u_cloud_textured > 0.0
+            ? clamp(amount, 0.0, 1.0)
+            : smoothstep(CLOUD_EDGE_LOW, CLOUD_EDGE_HIGH, amount);
         cover *= smoothstep(0.02, 0.22, dir.z);
         rgb = mix(rgb, u_cloud_color, cover);
     }
@@ -1006,10 +1043,12 @@ void main() {
 
 # GLSL cannot import a Python constant, and two copies of the cloud edge would
 # drift apart the first time either moved. Substituted in once, here, so
-# `atmosphere.py` stays the only place either number is written down.
-_SKY_FRAGMENT_SHADER = _SKY_FRAGMENT_SHADER.replace(
-    "CLOUD_EDGE_LOW", f"{CLOUD_EDGE_LOW:.6f}"
-).replace("CLOUD_EDGE_HIGH", f"{CLOUD_EDGE_HIGH:.6f}")
+# `atmosphere.py` stays the only place any of these numbers is written down.
+_SKY_FRAGMENT_SHADER = (
+    _SKY_FRAGMENT_SHADER.replace("CLOUD_EDGE_LOW", f"{CLOUD_EDGE_LOW:.6f}")
+    .replace("CLOUD_EDGE_HIGH", f"{CLOUD_EDGE_HIGH:.6f}")
+    .replace("__CLOUD_NOISE_CELLS__", f"{CLOUD_NOISE_CELLS_PER_TILE:f}")
+)
 
 #: A quad in clip space. Two triangles rather than the usual oversized single
 #: triangle, because the ray is interpolated across it and a triangle reaching
@@ -1035,13 +1074,15 @@ _SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 #: **under** the surface, which is a different quantity in a different medium,
 #: and using it here would be reading the document to mean something it does
 #: not say.
-#: Which texture unit the sky pass binds the moon's face to.
+#: Which texture units the sky pass binds the moon's face and the cloud field
+#: to.
 #:
 #: Not zero. The terrain pass owns units 0 through 3 for its four ground
 #: textures, and although the two passes never run together, a sampler left
 #: pointing at unit 0 reads whatever was bound there last -- which on a frame
 #: with terrain in it is the ground, stretched across the moon.
 _MOON_TEXTURE_UNIT: int = 4
+_CLOUD_TEXTURE_UNIT: int = 5
 
 WATER_HAZE_NEAR_M: float = 260.0
 WATER_HAZE_FAR_M: float = 900.0
@@ -1862,6 +1903,10 @@ class PerspectiveRenderer:
                     sun_disc=getattr(scene, "sun_disc", DEFAULT_SUN_DISC),
                     moon_disc=getattr(scene, "moon_disc", DEFAULT_MOON_DISC),
                     moon_texture=self._moon_texture(ctx, scene),
+                    cloud_offsets=getattr(
+                        scene, "cloud_offsets", (0.0, 0.0, 0.0, 0.0)
+                    ),
+                    cloud_texture=self._cloud_texture(ctx, scene),
                     cloud_color=getattr(scene, "cloud_color", (0.41, 0.41, 0.41)),
                     # The toggle is spent here rather than in the shader: a
                     # zero cover skips the whole noise field, which is the
@@ -3106,6 +3151,8 @@ class PerspectiveRenderer:
         cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41),
         cloud_cover: tuple[float, float, float] = (0.0, 0.0, 0.0),
         cloud_scale_drift: tuple[float, float, float] = (900.0, 0.0, 0.0),
+        cloud_offsets: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
+        cloud_texture: object | None = None,
     ) -> None:
         """Paint the sky before anything else in the frame.
 
@@ -3139,6 +3186,13 @@ class PerspectiveRenderer:
         self._sky_program["u_cloud_cover"].value = cloud_cover
         self._sky_program["u_cloud_scale_drift"].value = cloud_scale_drift
         self._sky_program["u_cloud_altitude"].value = CLOUD_ALTITUDE_METRES
+        self._sky_program["u_cloud_offsets"].value = cloud_offsets
+        self._sky_program["u_cloud_tex"].value = _CLOUD_TEXTURE_UNIT
+        self._sky_program["u_cloud_textured"].value = (
+            1.0 if cloud_texture is not None else 0.0
+        )
+        if cloud_texture is not None:
+            cloud_texture.use(location=_CLOUD_TEXTURE_UNIT)
         ctx.disable(ctx.DEPTH_TEST)
         try:
             self._sky_vao.render()
@@ -3219,6 +3273,13 @@ class PerspectiveRenderer:
         """
         texture_id = getattr(scene, "moon_texture_id", None)
         if texture_id is None:
+            return None
+        return self._upload_object_texture(ctx, scene, texture_id)
+
+    def _cloud_texture(self, ctx: moderngl.Context, scene: Scene) -> object | None:
+        """The region's cloud field, if it named one and it has arrived."""
+        texture_id = getattr(scene, "cloud_texture_id", None)
+        if texture_id is None or not getattr(scene, "render_clouds", True):
             return None
         return self._upload_object_texture(ctx, scene, texture_id)
 

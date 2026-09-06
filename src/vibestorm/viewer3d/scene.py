@@ -35,6 +35,7 @@ from vibestorm.viewer3d.atmosphere import (
     DEFAULT_WATER_WAVES,
     cloud_cover,
     cloud_hue,
+    cloud_offsets,
     cloud_shadow_scale,
     cloud_size,
     daylight_scale,
@@ -538,6 +539,11 @@ class Scene:
     # ordinary GetTexture capability, so the disc need not be a flat circle:
     # this is the id, and `texture_paths` says whether it has arrived yet.
     moon_texture_id: UUID | None = None
+    # The cloud layer's own field, and where in it the layer starts. The
+    # offsets are the first two components of each `cloud_pos_density`, which
+    # were parsed and unusable while there was no texture to offset into.
+    cloud_texture_id: UUID | None = None
+    cloud_offsets: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     # How much of the direct sun the region's cloud layer leaves on the
     # ground. 1.0 is a clear sky.
     cloud_shadow: float = 1.0
@@ -595,6 +601,8 @@ class Scene:
             self.sun_disc = DEFAULT_SUN_DISC
             self.moon_disc = DEFAULT_MOON_DISC
             self.moon_texture_id = None
+            self.cloud_texture_id = None
+            self.cloud_offsets = (0.0, 0.0, 0.0, 0.0)
             self.cloud_shadow = 1.0
             self.cloud_cover = (0.0, 0.0, 0.0)
             return
@@ -635,6 +643,8 @@ class Scene:
         self.sun_disc = sun_disc(sky)
         self.moon_disc = moon_disc(sky)
         self.moon_texture_id = _asset_id(sky.moon_id)
+        self.cloud_texture_id = _asset_id(sky.cloud_id)
+        self.cloud_offsets = cloud_offsets(sky)
         self.cloud_shadow = cloud_shadow_scale(sky)
         coarse, fine = cloud_cover(sky)
         self.cloud_color = cloud_hue(sky)

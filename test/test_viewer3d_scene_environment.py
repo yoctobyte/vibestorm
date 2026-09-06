@@ -335,15 +335,38 @@ class SunAndMoonRefreshTests(unittest.TestCase):
 
         self.assertIsNone(scene.moon_texture_id)
 
+    def test_the_cloud_field_and_its_offsets_reach_the_frame(self) -> None:
+        clouds = UUID(int=0xC10D)
+        scene = Scene()
+        view = WorldView()
+        view.environment = self._sky_cycle(
+            cloud_id=str(clouds),
+            cloud_pos_density1=(0.25, 0.5, 0.75),
+            cloud_pos_density2=(0.125, 0.375, 0.5),
+        )
+
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.cloud_texture_id, clouds)
+        # The offsets are the first two of each pair; the third is the density
+        # and belongs to `cloud_cover`, which is why this checks all four.
+        self.assertEqual(scene.cloud_offsets, (0.25, 0.5, 0.125, 0.375))
+
     def test_a_lost_environment_takes_the_moons_face_with_it(self) -> None:
         scene = Scene()
         loaded = WorldView()
-        loaded.environment = self._sky_cycle(moon_id=str(UUID(int=0xB0B)))
+        loaded.environment = self._sky_cycle(
+            moon_id=str(UUID(int=0xB0B)),
+            cloud_id=str(UUID(int=0xC10D)),
+            cloud_pos_density1=(0.25, 0.5, 0.75),
+        )
         scene.refresh_from_world_view(loaded)
 
         scene.refresh_from_world_view(_world_view(environment=False))
 
         self.assertIsNone(scene.moon_texture_id)
+        self.assertIsNone(scene.cloud_texture_id)
+        self.assertEqual(scene.cloud_offsets, (0.0, 0.0, 0.0, 0.0))
 
 
 class WaterSurfaceRefreshTests(unittest.TestCase):

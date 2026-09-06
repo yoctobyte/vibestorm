@@ -76,10 +76,26 @@ STAR_BRIGHTNESS_FULL: float = 500.0
 #: rooftops.
 CLOUD_ALTITUDE_METRES: float = 320.0
 
-#: How many metres of sky one unit of cloud noise spans at `cloud_scale` 1.
-#: The other half of a choice: `cloud_scale` is a bare number in the document
-#: with no unit attached, and this is what turns it into a size.
-CLOUD_SCALE_METRES: float = 260.0
+#: How many metres of sky one tile of the region's cloud texture spans at
+#: `cloud_scale` 1. The other half of a choice: `cloud_scale` is a bare number
+#: in the document with no unit attached, and this is what turns it into a
+#: size.
+#:
+#: A tile, since `cloud_id` turned out to be a real 512x512 texture that
+#: repeats seamlessly. One tile holds a whole sky's worth of shapes, so it has
+#: to span most of a sky: at the default cycle's 0.42 this is about a
+#: kilometre, against a cloud layer 320 metres up, and the repeat falls where
+#: perspective has already crushed it toward the horizon.
+CLOUD_SCALE_METRES: float = 2400.0
+
+#: How many cells of the stand-in noise fill one of those tiles.
+#:
+#: The noise is what is drawn until the texture arrives, and the two are not
+#: the same kind of thing: a tile of the texture holds several clouds where
+#: one cell of value noise holds about one. Drawn a cell to a tile, the
+#: fallback is a single cloud across the whole sky. This is the ratio that
+#: makes the two read at the same size.
+CLOUD_NOISE_CELLS_PER_TILE: float = 9.2
 
 #: Where the coverage numbers land on the noise.
 #:
@@ -89,12 +105,12 @@ CLOUD_SCALE_METRES: float = 260.0
 #: in the document it multiplies a *texture*, and the texture is what has the
 #: holes in it. With no texture fetched, the noise stands in for it and these
 #: two say where its edge falls.
-#: What one unit of `cloud_scroll_rate` means, in cell widths per second.
+#: What one unit of `cloud_scroll_rate` means, in tile widths per second.
 #:
 #: The rate is a bare pair of numbers with no unit in the document. At one
-#: cell a second the default cycle's 0.5 would blow the sky past in a blink;
-#: at this it crosses a cell in about a minute, which is weather.
-CLOUD_DRIFT_PER_SECOND: float = 0.017
+#: tile a second the default cycle's 0.5 would blow the sky past in a blink;
+#: at this it moves the layer just under a metre a second, which is weather.
+CLOUD_DRIFT_PER_SECOND: float = 0.00185
 
 CLOUD_EDGE_LOW: float = 0.46
 CLOUD_EDGE_HIGH: float = 0.78
@@ -430,6 +446,30 @@ def cloud_cover(sky: SkySettings) -> tuple[float, float]:
     return _clamp(sky.cloud_pos_density1[2]), _clamp(sky.cloud_pos_density2[2])
 
 
+def cloud_offsets(sky: SkySettings) -> tuple[float, float, float, float]:
+    """Where in the cloud texture each of the two layers starts.
+
+    The first two components of `cloud_pos_density1` and of
+    `cloud_pos_density2`, whose third components are the two densities. They
+    were parsed and unusable while there was no texture to offset into.
+
+    In texture widths, so 1.0 is a whole tile and does nothing to a field that
+    repeats -- which the region's own cloud texture does, seamlessly. Nor is
+    there anything to see in the difference between the two here: they are
+    *equal* in every keyframe of the default cycle, so the second layer sits
+    exactly on the first and the sky is one field at the sum of two densities.
+    None of that is a reason to drop them. What the document says is where
+    each layer starts, and a region that says 0.3 means a different sky from
+    one that says 0.8.
+    """
+    return (
+        sky.cloud_pos_density1[0],
+        sky.cloud_pos_density1[1],
+        sky.cloud_pos_density2[0],
+        sky.cloud_pos_density2[1],
+    )
+
+
 def cloud_hue(sky: SkySettings) -> Color3:
     """What colour the clouds are: `cloud_color` as an albedo, lit.
 
@@ -453,7 +493,7 @@ def cloud_hue(sky: SkySettings) -> Color3:
 
 
 def cloud_size(sky: SkySettings) -> float:
-    """How many metres across one cell of cloud is."""
+    """How many metres across one tile of the cloud field is."""
     scale = sky.cloud_scale if sky.cloud_scale > 0.0 else 1.0
     return scale * CLOUD_SCALE_METRES
 

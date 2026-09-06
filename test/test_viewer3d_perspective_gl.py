@@ -4512,6 +4512,11 @@ class RegionWeatherGLTests(_GLTestBase):
         from vibestorm.viewer3d.scene import Scene
 
         scene = self._scene_at(0.3)
+        # Clouds off: what is being compared is the gradient against the
+        # gradient the scene derived, and a cloud between the two is a third
+        # number. The layer moved when `cloud_pos_density1`'s offset started
+        # being spent, which is when this stopped passing by luck.
+        scene.render_clouds = False
         r, g, b, _ = self._sky_pixel(scene)
 
         for index, drawn in enumerate((r, g, b)):
@@ -4705,6 +4710,10 @@ class RegionWeatherGLTests(_GLTestBase):
         the sky.
         """
         scene = self._scene_at(0.0)
+        # Clouds off, here and in its opposite below: both measure the moon
+        # against the gradient behind it, and a cloud in front of the moon is
+        # neither.
+        scene.render_clouds = False
         direction = scene.moon_direction
         self.assertIsNotNone(direction)
         eye = (128.0, 128.0, 30.0)
@@ -4722,6 +4731,7 @@ class RegionWeatherGLTests(_GLTestBase):
 
     def test_no_moon_is_drawn_when_the_region_says_none(self) -> None:
         scene = self._scene_at(0.0)
+        scene.render_clouds = False
         direction = scene.moon_direction
         scene.moon_level = 0.0
         eye = (128.0, 128.0, 30.0)
@@ -4920,13 +4930,190 @@ class RegionWeatherGLTests(_GLTestBase):
         # And it is a fade, not a curtain: higher up the same frame is cloud.
         self.assertGreater(self._band_deviation(frame, empty, 150, 200), 100)
 
+    #: How wide one tile of a painted cloud field is made in these tests.
+    #:
+    #: Narrower than any region asks for, and deliberately: the camera below
+    #: sees about eight hundred metres of the layer, so at the region's own
+    #: kilometre a tile there is barely a stripe of a painted field in frame
+    #: to read. This puts three or four of them across it. Not narrower still,
+    #: because the layer is mip-mapped and a tile small enough to fall below
+    #: one pixel averages to a flat grey -- which is the right thing for the
+    #: renderer to do and useless for reading a texture back out of a frame.
+    CLOUD_TEST_TILE_M = 400.0
+
+    def _clouded(self, scene, *, halves: bool = False, grey: int = 128, offsets=None):
+        """The same scene with a painted cloud field on a real file.
+
+        Either half black and half white, or a flat field of one level. The
+        pair differ in nothing but what is *in* the texture, so a difference
+        between two such frames cannot come from a texture merely being bound.
+        """
+        import pygame
+
+        cloud_id = UUID(int=0xC10D)
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = Path(directory) / f"cloud-{halves}-{grey}.png"
+        surface = pygame.Surface((64, 64))
+        surface.fill((grey, grey, grey))
+        if halves:
+            surface.fill((0, 0, 0), pygame.Rect(0, 0, 64, 32))
+            surface.fill((255, 255, 255), pygame.Rect(0, 32, 64, 32))
+        pygame.image.save(surface, str(path))
+        scene.cloud_texture_id = cloud_id
+        scene.texture_paths[cloud_id] = path
+        scene.cloud_scale_drift = (
+            self.CLOUD_TEST_TILE_M,
+            *scene.cloud_scale_drift[1:],
+        )
+        if offsets is not None:
+            scene.cloud_offsets = offsets
+        return scene
+
+    def test_the_region_draws_its_own_cloud_field(self) -> None:
+        """`cloud_id`, which nobody had fetched either.
+
+        A 512x512 greyscale texture that tiles seamlessly, which is what three
+        octaves of value noise had been standing in for. Asserted against a
+        *flat* field of the same average rather than against the noise: two
+        frames that differ only in what the texture holds cannot differ
+        because a texture is bound at all.
+        """
+        target = self._cloud_target(21.5)
+        painted = self._star_frame(
+            self._clouded(self._cloudy(0.5), halves=True), target=target
+        )
+        flat = self._star_frame(
+            self._clouded(self._cloudy(0.5), halves=False), target=target
+        )
+
+        self.assertGreater(
+            self._spread(painted),
+            self._spread(flat) + 100,
+            "the region's own field did not reach the sky",
+        )
+
+    def test_the_layers_start_where_the_document_says(self) -> None:
+        """`cloud_pos_density1` and `2`, whose first two components are an
+        offset into that texture -- parsed since the sixth pass and unusable
+        while there was nothing to offset into.
+
+        Moving the offset by half a tile swaps which half of a two-tone field
+        is overhead, which no other parameter here can do.
+        """
+        target = self._cloud_target(21.5)
+        near = self._star_frame(
+            self._clouded(self._cloudy(0.5), halves=True, offsets=(0.0, 0.0, 0.0, 0.0)),
+            target=target,
+        )
+        far = self._star_frame(
+            self._clouded(
+                self._cloudy(0.5), halves=True, offsets=(0.0, 0.5, 0.0, 0.5)
+            ),
+            target=target,
+        )
+
+        self.assertGreater(
+            max(
+                abs(sum(a[:3]) - sum(b[:3]))
+                for a, b in zip(near, far, strict=True)
+            ),
+            60,
+            "the offset never reached the shader",
+        )
+
+    def test_a_density_is_a_coverage_and_not_a_threshold(self) -> None:
+        """What having the texture changes about reading the numbers.
+
+        The edge band exists because the noise is a field of smooth hills with
+        no gaps in it: without a threshold to carve holes it draws an even grey
+        haze. A real cloud texture already has the holes, so the density
+        multiplies it and the answer *is* the coverage -- and the difference
+        shows as linearity. Three flat fields evenly spaced in level come back
+        evenly spaced in brightness under a multiply, and nothing like evenly
+        under a threshold, which flattens two of them onto the same answer.
+        """
+        target = self._cloud_target(21.5)
+
+        def level(grey: int) -> float:
+            frame = self._star_frame(
+                self._clouded(self._cloudy(0.5), grey=grey), target=target
+            )
+            return sum(sum(p[:3]) for p in frame) / len(frame)
+
+        low, middle, high = level(64), level(128), level(192)
+        span = abs(high - low)
+
+        self.assertGreater(span, 40, f"the field did not reach the sky: {low}..{high}")
+        self.assertLess(
+            abs(middle - (low + high) / 2.0),
+            span * 0.15,
+            f"the density is being thresholded: {low:.0f} {middle:.0f} {high:.0f}",
+        )
+
+    def test_the_second_layer_starts_where_its_own_pair_says(self) -> None:
+        """`cloud_pos_density2`'s first two components, separately.
+
+        The live document gives both layers the same offset in all eight
+        keyframes, so nothing in a captured region can tell a shader that uses
+        the second pair from one that uses the first twice. This hands them
+        different offsets, which is the only way to ask.
+        """
+        target = self._cloud_target(21.5)
+        together = self._star_frame(
+            self._clouded(
+                self._cloudy(0.5), halves=True, offsets=(0.0, 0.0, 0.0, 0.0)
+            ),
+            target=target,
+        )
+        apart = self._star_frame(
+            self._clouded(
+                self._cloudy(0.5), halves=True, offsets=(0.0, 0.0, 0.0, 0.5)
+            ),
+            target=target,
+        )
+
+        self.assertGreater(
+            max(
+                abs(sum(a[:3]) - sum(b[:3]))
+                for a, b in zip(together, apart, strict=True)
+            ),
+            15,
+            "the second layer's own offset never reached the shader",
+        )
+
+    def test_a_cloud_field_that_has_not_arrived_is_still_a_sky(self) -> None:
+        """Named and not yet delivered, which is most of the first seconds.
+
+        The noise is what stands in, and it has to be scaled to the thing it
+        stands in for: a tile of the region's texture holds a sky's worth of
+        shapes where one cell of value noise holds about one, so a fallback
+        drawn a cell to a tile is a single cloud stretched over everything.
+        """
+        awaiting = self._cloudy(0.5)
+        awaiting.cloud_texture_id = UUID(int=0xC10D)  # named, never delivered
+        target = self._cloud_target(21.5)
+
+        edges = self._horizontal_edges(
+            self._star_frame(awaiting, target=target), 70, 240
+        )
+
+        self.assertGreater(edges, 40, "the sky went flat while it waited")
+
     def test_the_cell_size_sets_how_big_the_clouds_are(self) -> None:
         # `cloud_scale` is the region's only say in this, and a shader that
         # divides by a constant instead draws the same sky for every region.
+        #
+        # Both sizes set here rather than one against the default: the default
+        # is a size in metres and this test is about the *ratio*, so leaning
+        # on it made the test silently weaker the day that number moved --
+        # which it did, when `cloud_scale` stopped meaning a noise cell and
+        # started meaning a tile of the region's own cloud texture.
         target = self._cloud_target(21.5)
         small = self._cloudy(0.5)
+        small.cloud_scale_drift = (900.0, *small.cloud_scale_drift[1:])
         large = self._cloudy(0.5)
-        large.cloud_scale_drift = (400.0, *large.cloud_scale_drift[1:])
+        large.cloud_scale_drift = (3600.0, *large.cloud_scale_drift[1:])
 
         fine = self._horizontal_edges(self._star_frame(small, target=target), 70, 240)
         coarse = self._horizontal_edges(self._star_frame(large, target=target), 70, 240)
