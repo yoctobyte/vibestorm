@@ -6010,13 +6010,83 @@ class RegionWeatherGLTests(_GLTestBase):
         self.assertGreater(level, 96, f"the middle is too dark: {level:.0f}")
         self.assertLess(level, 176, f"the middle is too bright: {level:.0f}")
 
-    def test_a_moon_directly_overhead_still_has_a_face(self) -> None:
-        """The one direction where the obvious pair of axes is not a pair.
+    def _quadrant_centre(self, data: bytes, name: str) -> tuple[float, float]:
+        """Where the given quarter of the painted face landed, in pixels.
 
-        Two axes across the face come from crossing the moon's direction with
-        world up, and a moon straight up crossed with up is nothing --
-        normalised, that is a NaN in every texture coordinate on the disc.
-        Nothing in the day cycle stops a region putting its moon there.
+        A centroid rather than a count: what these tests ask is not whether a
+        colour is on the disc but *where*, which is the only thing a turn of
+        the face changes.
+        """
+        width, _height = self.FBO_SIZE
+        picked = []
+        for index in range(0, len(data), 4):
+            r, g, b = data[index], data[index + 1], data[index + 2]
+            hit = {
+                "red": r > 180 and g < 90 and b < 90,
+                "green": g > 180 and r < 90 and b < 90,
+                "blue": b > 180 and r < 90 and g < 90,
+                "yellow": r > 180 and g > 180 and b < 90,
+            }[name]
+            if hit:
+                pixel = index // 4
+                picked.append((pixel % width, pixel // width))
+        self.assertTrue(picked, f"no {name} on the moon at all")
+        return (
+            sum(x for x, _ in picked) / len(picked),
+            sum(y for _, y in picked) / len(picked),
+        )
+
+    def test_the_face_hangs_the_way_the_document_turns_it(self) -> None:
+        """`moon_rotation` is a quaternion, and that is the point of it.
+
+        A direction would have done if the orientation were not meant to be
+        read; the same rotation that says where the moon is says which of its
+        own axes is across its face and which is up. So a cycle that rolls its
+        moon a quarter turn draws the same moon in the same place with its
+        face turned, and the red quarter lands where the green one was.
+
+        The axes are handed to the shader here rather than derived in it,
+        which is what makes this readable at all: the frame is a quarter turn
+        of the face and nothing else at all has moved.
+        """
+        upright = self._faced_moon()
+        square = self._moon_frame(upright)
+        rolled = self._faced_moon()
+        across, up = upright.moon_face_axes
+        rolled.moon_face_axes = (up, tuple(-component for component in across))
+        turned = self._moon_frame(rolled)
+
+        # A quarter turn takes each quarter of the face to the next one's
+        # place, all the way round: red to green's, green to yellow's, yellow
+        # to blue's and blue back to red's. All four, because any one of them
+        # alone is also what a mirror would do.
+        for moved, stood in (
+            ("red", "green"),
+            ("green", "yellow"),
+            ("yellow", "blue"),
+            ("blue", "red"),
+        ):
+            for drawn, expected in zip(
+                self._quadrant_centre(turned, moved),
+                self._quadrant_centre(square, stood),
+                strict=True,
+            ):
+                self.assertAlmostEqual(
+                    drawn,
+                    expected,
+                    delta=2.0,
+                    msg=f"{moved} did not land where {stood} was",
+                )
+
+    def test_a_moon_directly_overhead_still_has_a_face(self) -> None:
+        """The direction that used to have no pair of axes at all.
+
+        They came from crossing the moon's direction with world up, and a moon
+        straight up crossed with up is nothing -- normalised, a NaN in every
+        texture coordinate on the disc. They come off `moon_rotation` now, so
+        there is no direction left that is special; this stays because nothing
+        in the day cycle stops a region putting its moon here, and the day
+        cycle in hand puts it here every midnight.
         """
         scene = self._faced_moon()
         scene.moon_direction = (0.0, 0.0, 1.0)

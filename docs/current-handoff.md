@@ -236,6 +236,43 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the moon hangs the way the document hangs it (2026-09-06).** A
+correction, and the handoff is the thing being corrected. It has said for two
+passes that *"the document says nothing about which way up a moon hangs"*, and
+that the face therefore takes world up. Both halves are wrong.
+
+`moon_rotation` is a **quaternion**, and a direction would have done if the
+orientation were not meant to be read. It takes `MOON_REFERENCE_DIRECTION` to
+where the moon is; it takes the two axes perpendicular to that reference to the
+two across the moon's face. `moon_face_axes` reads them, and they go to the sky
+shader as two uniforms rather than being manufactured in it.
+
+Crossing the moon's direction with world up was not merely less well founded.
+**It flips sign at the meridian** -- `cross(up, moon)` points one way while the
+moon is east and the other way once it is west -- so the face turned a half
+circle in a single frame, at the top of the moon's arc, every night. It also
+had a direction with no answer at all, straight up, where the cross product is
+nothing and every texture coordinate on the disc came out NaN; that needed a
+special case, and the special case is gone with it. There is no direction left
+that is special.
+
+On the cycle in hand the two readings agree everywhere except that flip: the
+default cycle turns its moon about -Y throughout, which leaves +Y fixed and
+swings +Z along with the moon, and that is exactly what the cross product
+computes while the moon is in the east. So a screenshot cannot tell them apart
+and a keyframe cannot either. What can is a *rolled* moon -- two documents may
+put the moon in the same place and hang it differently -- which is what the
+tests use, and what a hand-written day cycle is free to do.
+
+Twelve mutations, all killed, three only after the tests grew. One of the three
+is worth keeping: **turning a vector by a quaternion is only a rotation while
+the quaternion is a unit one**, and the parser takes what the document writes.
+A half-root-of-two about X sends the moon's +Y to 2e-16 of itself -- not a
+short vector, a rounding error -- and normalising that returns whichever way
+the error happened to point, in three texture coordinates on a disc. So the
+guard is a *tolerance* and not a test against zero, which is where it started
+and where nothing could reach it.
+
 **A -- there is a sun in the water (2026-09-06).** The gap the handoff has
 been naming for three passes: *"a specular highlight off the wave crests is the
 most recognisable thing about the SL sea from a low camera, and nothing draws
@@ -453,9 +490,11 @@ reads as absent here, everywhere.
 This pass spends the moon. The disc's size still comes from `moon_scale`; what
 is new is what is drawn inside it. There is no disc geometry in the sky -- the
 whole moon is a dot product against a direction -- so the face needs two axes
-across it, and the document says nothing about which way up a moon hangs. It
-takes world up, and swings to world north for a moon directly overhead, where
-up and the moon are the same direction and their cross product is nothing.
+across it, and this pass claimed the document says nothing about which way up
+a moon hangs -- so it took world up, and swung to world north for a moon
+directly overhead, where up and the moon are the same direction and their cross
+product is nothing. **That claim was wrong**, and is corrected in the pass
+above: `moon_rotation` is a quaternion and carries the face's own two axes.
 
 Two things worth keeping:
 

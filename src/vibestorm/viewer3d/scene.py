@@ -22,6 +22,7 @@ from uuid import UUID
 from vibestorm.viewer3d.atmosphere import (
     CLOUD_DRIFT_PER_SECOND,
     DEFAULT_MOON_DISC,
+    DEFAULT_MOON_FACE_AXES,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
     DEFAULT_SUN_DISC,
@@ -41,6 +42,7 @@ from vibestorm.viewer3d.atmosphere import (
     daylight_scale,
     light_hues,
     moon_disc,
+    moon_face_axes,
     moon_level,
     sky_gradient,
     star_level,
@@ -542,6 +544,11 @@ class Scene:
     # ordinary GetTexture capability, so the disc need not be a flat circle:
     # this is the id, and `texture_paths` says whether it has arrived yet.
     moon_texture_id: UUID | None = None
+    # Which way up the moon hangs: two world axes across its own face,
+    # from the same quaternion that says where it is.
+    moon_face_axes: tuple[tuple[float, float, float], tuple[float, float, float]] = (
+        DEFAULT_MOON_FACE_AXES
+    )
     # The cloud layer's own field, and where in it the layer starts. The
     # offsets are the first two components of each `cloud_pos_density`, which
     # were parsed and unusable while there was no texture to offset into.
@@ -605,6 +612,7 @@ class Scene:
             self.sun_disc = DEFAULT_SUN_DISC
             self.moon_disc = DEFAULT_MOON_DISC
             self.moon_texture_id = None
+            self.moon_face_axes = DEFAULT_MOON_FACE_AXES
             self.cloud_texture_id = None
             self.cloud_offsets = (0.0, 0.0, 0.0, 0.0)
             self.cloud_shadow = 1.0
@@ -648,6 +656,7 @@ class Scene:
         self.sun_disc = sun_disc(sky)
         self.moon_disc = moon_disc(sky)
         self.moon_texture_id = _asset_id(sky.moon_id)
+        self.moon_face_axes = moon_face_axes(sky)
         self.cloud_texture_id = _asset_id(sky.cloud_id)
         self.cloud_offsets = cloud_offsets(sky)
         self.cloud_shadow = cloud_shadow_scale(sky)

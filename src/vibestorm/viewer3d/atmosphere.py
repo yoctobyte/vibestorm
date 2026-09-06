@@ -376,6 +376,23 @@ def _length(vector: Vec2) -> float:
     return math.hypot(vector[0], vector[1])
 
 
+#: Below this a vector is not short, it is gone.
+#:
+#: Not zero, because floating point rarely lands there: the quaternion that
+#: collapses an axis exactly -- see `moon_face_axes` -- leaves 2e-16 of it
+#: behind, and normalising that returns whichever way the rounding error
+#: happened to point. A tenth of a nanometre of a unit vector is noise
+#: whatever produced it.
+_VANISHED: float = 1e-9
+
+
+def _unit3(vector: Vec3, fallback: Vec3) -> Vec3:
+    length = math.sqrt(sum(component * component for component in vector))
+    if length <= _VANISHED:
+        return fallback
+    return (vector[0] / length, vector[1] / length, vector[2] / length)
+
+
 
 #: How lit the world stays at the darkest point of the cycle. Not zero: the
 #: moon is real, and a viewer whose region goes absolutely black at midnight
@@ -419,6 +436,35 @@ def sun_direction(sky: SkySettings) -> Vec3:
 def moon_direction(sky: SkySettings) -> Vec3:
     """Where the moon is. Same reference vector as the sun -- see the constant."""
     return quat_rotate(sky.moon_rotation, MOON_REFERENCE_DIRECTION)
+
+
+def moon_face_axes(sky: SkySettings) -> tuple[Vec3, Vec3]:
+    """Which way up the moon hangs: two world axes across its own face.
+
+    `moon_rotation` is a *quaternion*, and a direction would have done if the
+    orientation were not meant to be read -- it takes
+    `MOON_REFERENCE_DIRECTION` to where the moon is, and it takes the two axes
+    perpendicular to that reference to the two across the moon's face. So the
+    document does say which way up it hangs, in the same field that says where
+    it is. The handoff spent two passes claiming otherwise and crossing the
+    moon direction with world up instead.
+
+    Which is not merely less well founded, it is wrong on this very cycle. A
+    cross product with world up flips sign as the moon crosses the meridian --
+    `cross(up, moon)` points one way while the moon is east and the other way
+    once it is west -- so the face turns a half circle at the zenith, in one
+    frame, every night. The quaternion's own axes do not: the default cycle
+    turns about -Y throughout, which leaves +Y fixed and swings +Z along with
+    the moon.
+
+    Returned as (across, up) in world space and unit length, in the moon's own
+    +Y and +Z. Normalised here because nothing in the document promises a unit
+    quaternion, and a scaled one would stretch the face rather than turn it.
+    """
+    return (
+        _unit3(quat_rotate(sky.moon_rotation, (0.0, 1.0, 0.0)), (0.0, 1.0, 0.0)),
+        _unit3(quat_rotate(sky.moon_rotation, (0.0, 0.0, 1.0)), (0.0, 0.0, 1.0)),
+    )
 
 
 def star_level(sky: SkySettings) -> float:
@@ -580,3 +626,4 @@ DEFAULT_UNDERWATER_REACH: float = underwater_reach(_DEFAULT_WATER)
 _DEFAULT_SKY = SkySettings()
 DEFAULT_SUN_DISC: Vec2 = sun_disc(_DEFAULT_SKY)
 DEFAULT_MOON_DISC: Vec2 = moon_disc(_DEFAULT_SKY)
+DEFAULT_MOON_FACE_AXES: tuple[Vec3, Vec3] = moon_face_axes(_DEFAULT_SKY)

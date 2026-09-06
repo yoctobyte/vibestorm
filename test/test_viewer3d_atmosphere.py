@@ -37,6 +37,7 @@ from vibestorm.viewer3d.atmosphere import (
     light_hues,
     moon_direction,
     moon_disc,
+    moon_face_axes,
     moon_level,
     sky_gradient,
     star_level,
@@ -68,6 +69,20 @@ def _live_environment() -> RegionEnvironment:
 
 def _elevation_degrees(direction) -> float:
     return math.degrees(math.asin(max(-1.0, min(1.0, direction[2]))))
+
+
+def _dot3(first, second) -> float:
+    return sum(a * b for a, b in zip(first, second, strict=True))
+
+
+def _length3(vector) -> float:
+    return math.sqrt(_dot3(vector, vector))
+
+
+def _turn_about_y(angle: float):
+    """A quaternion turning `angle` about +Y, which is the axis the day cycle
+    turns its moon about."""
+    return (0.0, math.sin(angle / 2.0), 0.0, math.cos(angle / 2.0))
 
 
 class SunTests(unittest.TestCase):
@@ -670,6 +685,96 @@ class NightSkyTests(unittest.TestCase):
                     -_elevation_degrees(sun_direction(sky)),
                     delta=0.01,
                 )
+
+    def test_the_moons_face_hangs_square_to_the_moon(self) -> None:
+        """Two axes across the face, from the same quaternion as the direction.
+
+        `moon_rotation` is a quaternion where a direction would have done if
+        the orientation were not meant to be read, and it takes the two axes
+        perpendicular to `MOON_REFERENCE_DIRECTION` to the two across the
+        moon's face. Checked at every keyframe: unit length, at right angles
+        to each other, and both at right angles to where the moon is.
+        """
+        for fraction, sky in self.env.sky_track:
+            with self.subTest(fraction=fraction):
+                across, up = moon_face_axes(sky)
+                moon = moon_direction(sky)
+                self.assertAlmostEqual(_length3(across), 1.0, places=6)
+                self.assertAlmostEqual(_length3(up), 1.0, places=6)
+                self.assertAlmostEqual(_dot3(across, up), 0.0, places=6)
+                self.assertAlmostEqual(_dot3(across, moon), 0.0, places=6)
+                self.assertAlmostEqual(_dot3(up, moon), 0.0, places=6)
+
+    def test_the_face_does_not_turn_over_as_the_moon_crosses_the_zenith(self) -> None:
+        """The bug this replaced, and the reason it is worth replacing.
+
+        Two axes can also be had by crossing the moon's direction with world
+        up, which is what was here for two passes. That cross product changes
+        sign at the meridian -- it points one way while the moon is east and
+        the other way once it is west -- so the face turned a half circle in
+        a single frame, every night, at the top of the moon's arc. A frame of
+        rotation either side of straight up is a degree of moon, and a degree
+        of moon must not be half a turn of its face.
+        """
+        step = math.radians(1.0)
+        before, after = (
+            moon_face_axes(SkySettings(moon_rotation=_turn_about_y(angle)))
+            for angle in (-math.pi / 2 - step, -math.pi / 2 + step)
+        )
+
+        for first, second in zip(before, after, strict=True):
+            self.assertGreater(
+                _dot3(first, second),
+                0.999,
+                f"the face turned as the moon crossed the zenith: {before} {after}",
+            )
+
+    def test_the_document_decides_which_way_up_the_moon_hangs(self) -> None:
+        """A roll about the moon's own direction turns the face and nothing else.
+
+        Which is the whole reason to read the quaternion rather than
+        manufacture a pair of axes: two documents can put the moon in the same
+        place and hang it differently, and a viewer that crosses with world up
+        draws both the same.
+        """
+        upright = SkySettings(moon_rotation=(0.0, 0.0, 0.0, 1.0))
+        # A quarter turn about +X, which is `MOON_REFERENCE_DIRECTION` itself.
+        quarter = math.pi / 4.0
+        rolled = SkySettings(
+            moon_rotation=(math.sin(quarter), 0.0, 0.0, math.cos(quarter))
+        )
+
+        self.assertAlmostEqual(
+            _dot3(moon_direction(upright), moon_direction(rolled)), 1.0, places=6
+        )
+        across, up = moon_face_axes(upright)
+        rolled_across, rolled_up = moon_face_axes(rolled)
+        # +Y has gone to +Z and +Z to -Y: the face is a quarter turn round.
+        self.assertAlmostEqual(_dot3(across, rolled_across), 0.0, places=6)
+        self.assertAlmostEqual(_dot3(up, rolled_across), 1.0, places=6)
+        self.assertAlmostEqual(_dot3(across, rolled_up), -1.0, places=6)
+
+    def test_a_quaternion_of_nothing_leaves_the_face_where_it_was(self) -> None:
+        """`_quat` does not normalise and a document need not either."""
+        axes = moon_face_axes(SkySettings(moon_rotation=(0.0, 0.0, 0.0, 0.0)))
+
+        self.assertEqual(axes, ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)))
+
+    def test_a_quaternion_that_collapses_an_axis_leaves_it_where_it_was(self) -> None:
+        """The one input that is not merely wrong but has no answer at all.
+
+        Turning a vector by a quaternion is only a rotation while the
+        quaternion is a unit one, and `_quat` takes what the document writes.
+        For a half-root-of-two about X the arithmetic sends +Y to nothing --
+        2e-16 of it survives the rounding, which is not a direction, and
+        normalising it returns whichever way the error happened to point. It
+        keeps the axis it had instead.
+        """
+        collapsed = SkySettings(moon_rotation=(math.sqrt(0.5), 0.0, 0.0, 0.0))
+
+        across, _up = moon_face_axes(collapsed)
+
+        self.assertEqual(across, (0.0, 1.0, 0.0))
 
     def test_the_moon_is_up_at_midnight_and_down_at_noon(self) -> None:
         midnight = dict(self.env.sky_track)[0.0]

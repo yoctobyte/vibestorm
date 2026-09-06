@@ -21,6 +21,7 @@ from uuid import UUID
 from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
     DEFAULT_MOON_DISC,
+    DEFAULT_MOON_FACE_AXES,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
     DEFAULT_SUN_DISC,
@@ -320,6 +321,29 @@ class SunAndMoonRefreshTests(unittest.TestCase):
 
         self.assertEqual(scene.moon_texture_id, moon)
 
+    def test_the_way_the_moon_hangs_reaches_the_frame(self) -> None:
+        """`moon_rotation` says more than where the moon is.
+
+        It is a quaternion, and the two axes perpendicular to
+        `MOON_REFERENCE_DIRECTION` are the two across the moon's face. A cycle
+        that rolls its moon a quarter turn about its own direction puts the
+        face's up where its across was.
+        """
+        quarter = math.pi / 4.0
+        scene = Scene()
+        view = WorldView()
+        view.environment = self._sky_cycle(
+            moon_rotation=(math.sin(quarter), 0.0, 0.0, math.cos(quarter))
+        )
+
+        scene.refresh_from_world_view(view)
+
+        across, up = scene.moon_face_axes
+        for drawn, expected in zip(across, (0.0, 0.0, 1.0), strict=True):
+            self.assertAlmostEqual(drawn, expected, places=6)
+        for drawn, expected in zip(up, (0.0, -1.0, 0.0), strict=True):
+            self.assertAlmostEqual(drawn, expected, places=6)
+
     def test_a_null_moon_id_is_no_texture_rather_than_a_null_one(self) -> None:
         """Which is what the document writes when it means "draw your own".
 
@@ -355,10 +379,14 @@ class SunAndMoonRefreshTests(unittest.TestCase):
     def test_a_lost_environment_takes_the_moons_face_with_it(self) -> None:
         scene = Scene()
         loaded = WorldView()
+        quarter = math.pi / 4.0
         loaded.environment = self._sky_cycle(
             moon_id=str(UUID(int=0xB0B)),
             cloud_id=str(UUID(int=0xC10D)),
             cloud_pos_density1=(0.25, 0.5, 0.75),
+            # Rolled, so that "back to the default" is a different answer from
+            # "left as this region had it".
+            moon_rotation=(math.sin(quarter), 0.0, 0.0, math.cos(quarter)),
         )
         scene.refresh_from_world_view(loaded)
 
@@ -367,6 +395,7 @@ class SunAndMoonRefreshTests(unittest.TestCase):
         self.assertIsNone(scene.moon_texture_id)
         self.assertIsNone(scene.cloud_texture_id)
         self.assertEqual(scene.cloud_offsets, (0.0, 0.0, 0.0, 0.0))
+        self.assertEqual(scene.moon_face_axes, DEFAULT_MOON_FACE_AXES)
 
 
 class WaterSurfaceRefreshTests(unittest.TestCase):

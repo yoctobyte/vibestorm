@@ -50,6 +50,7 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_EDGE_LOW,
     CLOUD_NOISE_CELLS_PER_TILE,
     DEFAULT_MOON_DISC,
+    DEFAULT_MOON_FACE_AXES,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
     DEFAULT_SUN_DISC,
@@ -806,6 +807,10 @@ uniform float u_moon_level;
 // asks for the sun and the moon to be drawn.
 uniform vec2 u_sun_disc;
 uniform vec2 u_moon_disc;
+// The two world axes across the moon's face, which is what makes the
+// face have a way up at all. See `moon_face_axes`.
+uniform vec3 u_moon_across;
+uniform vec3 u_moon_up;
 // The moon's own face, and whether one has arrived. `moon_id` is an ordinary
 // texture behind the ordinary GetTexture capability, so the moon is a
 // photograph rather than a disc of one colour -- but it is fetched over the
@@ -980,15 +985,14 @@ void main() {
         float disc = smoothstep(u_moon_disc.x, u_moon_disc.y, moon_alignment);
         vec3 face = vec3(0.96, 0.95, 0.90);
         if (u_moon_textured > 0.0 && disc > 0.0) {
-            // Two axes across the moon's own face. Any pair perpendicular to
-            // the moon would do -- there is nothing in the document saying
-            // which way up it hangs -- so this takes world up, and swings to
-            // world north for a moon overhead, where up and the moon are the
-            // same direction and their cross product is nothing.
-            vec3 across = abs(moon.z) > 0.999
-                ? normalize(cross(vec3(0.0, 1.0, 0.0), moon))
-                : normalize(cross(vec3(0.0, 0.0, 1.0), moon));
-            vec3 upward = cross(moon, across);
+            // Two axes across the moon's own face, from the same quaternion
+            // that says where the moon is: `moon_rotation` takes the moon's
+            // own +Y and +Z to these. Not a cross product with world up,
+            // which was here before and turns the face a half circle in one
+            // frame as the moon crosses the meridian, because that is where
+            // the cross product changes sign.
+            vec3 across = u_moon_across;
+            vec3 upward = u_moon_up;
             // The disc's outer edge as a sine, which is the radius the face
             // has to span: u_moon_disc.x is its cosine.
             float reach = max(sqrt(1.0 - u_moon_disc.x * u_moon_disc.x), 1e-5);
@@ -2036,6 +2040,9 @@ class PerspectiveRenderer:
                     star_level=float(getattr(scene, "star_level", 0.0) or 0.0),
                     sun_disc=getattr(scene, "sun_disc", DEFAULT_SUN_DISC),
                     moon_disc=getattr(scene, "moon_disc", DEFAULT_MOON_DISC),
+                    moon_face_axes=getattr(
+                        scene, "moon_face_axes", DEFAULT_MOON_FACE_AXES
+                    ),
                     moon_texture=self._moon_texture(ctx, scene),
                     cloud_offsets=getattr(
                         scene, "cloud_offsets", (0.0, 0.0, 0.0, 0.0)
@@ -3301,6 +3308,9 @@ class PerspectiveRenderer:
         star_level: float = 0.0,
         sun_disc: tuple[float, float] = DEFAULT_SUN_DISC,
         moon_disc: tuple[float, float] = DEFAULT_MOON_DISC,
+        moon_face_axes: tuple[
+            tuple[float, float, float], tuple[float, float, float]
+        ] = DEFAULT_MOON_FACE_AXES,
         moon_texture: object | None = None,
         cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41),
         cloud_cover: tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -3328,6 +3338,8 @@ class PerspectiveRenderer:
         self._sky_program["u_moon_level"].value = float(moon_level)
         self._sky_program["u_sun_disc"].value = sun_disc
         self._sky_program["u_moon_disc"].value = moon_disc
+        self._sky_program["u_moon_across"].value = moon_face_axes[0]
+        self._sky_program["u_moon_up"].value = moon_face_axes[1]
         # Unit 3: the terrain pass owns 0 through 3 but never runs beside this
         # one, and leaving the moon on 0 would have it read whatever the last
         # pass bound there.
