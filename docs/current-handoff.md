@@ -316,6 +316,46 @@ the horizon, where `dir.xy / dir.z` runs away and every neighbouring pixel
 reads a different part of the field.
 
 
+**A -- rubbish into every decoder, before anyone logs in to the main grid
+(2026-09-06).** The other half of the first priority is *without crashes*, and
+the largest single source of one is still ahead of this project: B. A grid
+this client has never met sends packets this client has never seen, and the
+difference between a decoder that raises `ValueError` and one that raises
+`IndexError` is the difference between a dropped packet and a viewer that goes
+down.
+
+`test_decoder_fuzz.py` puts random bytes through all sixteen decoders that
+read bytes off the wire -- the message template, zerocode, terrain layers,
+`TextureEntry`, `ExtraParams`, the compressed object blob, the parcel overlay,
+texture animation -- and fails on any exception outside `ValueError`,
+`TypeError`, `KeyError` and the project's own two decode errors. Nothing
+raised, across four seeds and about eight hundred thousand calls off the
+suite, and 385 inputs x 16 decoders inside it.
+
+"Nothing raised" is worth nothing on its own, so the same two guards the HUD
+sweep uses are here: every decoder has a floor for how many of the random
+inputs it must have *accepted* -- run its body rather than its length check --
+and a second test fails if a decoder is added to the sweep with no floor
+beside it.
+
+Two things are worth keeping from building it.
+
+**A corpus of uniform noise is not enough for a decoder with a marker byte.**
+Deleting zerocode's "a marker at the end of the packet has no count byte"
+guard survived the first version of this sweep: reaching it needs the zerocode
+flag set in byte 0 *and* a zero as the last byte, which random bytes produce
+about once in five hundred. Three shapes noise almost never makes were added
+-- flag set with a zero tail, a field of nothing, a field of all-ones -- and
+that mutant dies now. Four planted crashes, all four caught.
+
+**Fuzzing terrain is expensive and the interesting cases are short.** A 2 kB
+blob of noise is thirty-odd patches, each an inverse cosine transform, and the
+two terrain decoders were four of the file's five seconds. They are fed the
+first 256 bytes: the cases worth having are an empty blob, a header with no
+body, a patch cut off in the middle, and truncation makes more of those, not
+fewer. The file runs in two seconds now.
+
+
 **A -- the camera stopped standing inside the hill (2026-09-06).** Found the
 way the last three were: render the thing and look at it. A third-person
 camera at the foot of a ridge drew a flat green wall across the top of the
