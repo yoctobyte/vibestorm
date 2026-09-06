@@ -24,6 +24,7 @@ from vibestorm.viewer3d.atmosphere import (
     DEFAULT_SKY_ZENITH_COLOR,
     DEFAULT_WATER_TINT,
     daylight_scale,
+    light_hues,
     sky_gradient,
 )
 from vibestorm.viewer3d.atmosphere import (
@@ -456,6 +457,10 @@ class Scene:
     water_tint: tuple[float, float, float] = DEFAULT_WATER_TINT
     # How brightly to light everything solid. 1.0 is full day.
     light_level: float = 1.0
+    # And in what colour: the light off the sky, and the light off the sun.
+    # White until a region's day cycle says otherwise.
+    ambient_light_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    diffuse_light_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
     # Who is currently typing, from the start/stop-typing chat types. Kept as a
     # dict rather than a set so insertion order gives a stable display order.
@@ -485,6 +490,8 @@ class Scene:
             self.sky_zenith_color = DEFAULT_SKY_ZENITH_COLOR
             self.water_tint = DEFAULT_WATER_TINT
             self.light_level = 1.0
+            self.ambient_light_color = (1.0, 1.0, 1.0)
+            self.diffuse_light_color = (1.0, 1.0, 1.0)
             return
 
         clock = (
@@ -508,6 +515,7 @@ class Scene:
         self.water_tint = water_tint_for(environment.water_at(fraction), horizon)
         self.environment_sun_direction = sun_direction_for(sky)
         self.light_level = daylight_scale(sky)
+        self.ambient_light_color, self.diffuse_light_color = light_hues(sky)
 
     def apply_region_changed(self, event: RegionChanged) -> None:
         debug_heightmap = self.terrain_heightmap if self.debug_terrain_source is not None else None

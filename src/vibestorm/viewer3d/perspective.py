@@ -228,8 +228,8 @@ _VERTEX_SHADER = """
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform vec3 u_sun_dir;
-uniform float u_ambient_light;
-uniform float u_diffuse_light;
+uniform vec3 u_ambient_light;
+uniform vec3 u_diffuse_light;
 in vec3 in_pos;
 in vec3 in_normal;
 in vec2 in_mesh_uv;
@@ -237,7 +237,7 @@ in mat4 in_model;
 in vec3 in_tint;
 
 out vec3 v_tint;
-out float v_light;
+out vec3 v_light;
 out vec3 v_local_pos;
 out vec3 v_local_normal;
 out vec2 v_mesh_uv;
@@ -277,7 +277,7 @@ uniform bool u_use_mesh_uv;
 uniform sampler2D u_texture;
 
 in vec3 v_tint;
-in float v_light;
+in vec3 v_light;
 in vec3 v_local_pos;
 in vec3 v_local_normal;
 in vec2 v_mesh_uv;
@@ -381,8 +381,8 @@ uniform vec4 u_start_height;
 uniform vec4 u_height_range;
 uniform float u_repeats;
 uniform vec3 u_sun_dir;
-uniform float u_ambient_light;
-uniform float u_diffuse_light;
+uniform vec3 u_ambient_light;
+uniform vec3 u_diffuse_light;
 
 in vec2 v_region_uv;
 in vec3 v_world_pos;
@@ -422,7 +422,7 @@ void main() {
         normal = -normal;
     }
     float diffuse = max(dot(normal, normalize(u_sun_dir)), 0.0);
-    float light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
+    vec3 light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
     frag_color = vec4(rgb * light, 1.0);
 }
 """
@@ -452,8 +452,8 @@ uniform vec4 u_color;
 uniform float u_height_min;
 uniform float u_height_max;
 uniform vec3 u_sun_dir;
-uniform float u_ambient_light;
-uniform float u_diffuse_light;
+uniform vec3 u_ambient_light;
+uniform vec3 u_diffuse_light;
 
 in float v_height;
 in vec3 v_world_pos;
@@ -475,7 +475,7 @@ void main() {
         normal = -normal;
     }
     float diffuse = max(dot(normal, normalize(u_sun_dir)), 0.0);
-    float light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
+    vec3 light = clamp(u_ambient_light + diffuse * u_diffuse_light, 0.0, 1.15);
     rgb *= light;
     frag_color = vec4(rgb, u_color.a);
 }
@@ -728,6 +728,24 @@ def _water_vertices(water_height: float) -> tuple[float, ...]:
         high,  low,   water_height,
         high,  high,  water_height,
         low,   high,  water_height,
+    )
+
+
+def _light_uniforms(
+    scene: Scene, level: float
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """This frame's two light colours, strength and daylight already in them.
+
+    `AMBIENT_LIGHT` and `DIFFUSE_LIGHT` are how strong each term is and have
+    not changed; `level` is how far through the region's day it is; the hues
+    come from the day cycle. Multiplied together here so the four passes that
+    light something all say the same thing without each doing the arithmetic.
+    """
+    ambient = getattr(scene, "ambient_light_color", None) or (1.0, 1.0, 1.0)
+    diffuse = getattr(scene, "diffuse_light_color", None) or (1.0, 1.0, 1.0)
+    return (
+        tuple(AMBIENT_LIGHT * level * component for component in ambient),
+        tuple(DIFFUSE_LIGHT * level * component for component in diffuse),
     )
 
 
@@ -993,6 +1011,8 @@ class PerspectiveRenderer:
         self._instance_blobs: dict[int, tuple[SceneEntity, bytes]] = {}
         #: This frame's daylight, 1.0 until a region's day cycle says otherwise.
         self._light_level: float = 1.0
+        self._ambient_light: tuple[float, float, float] = (AMBIENT_LIGHT,) * 3
+        self._diffuse_light: tuple[float, float, float] = (DIFFUSE_LIGHT,) * 3
         # Ground (region floor) — separate program because the cubes are
         # flat-tinted while the ground samples a texture.
         self._ground_program = None  # type: moderngl.Program | None
@@ -1101,6 +1121,7 @@ class PerspectiveRenderer:
         # signatures, since every pass that lights anything wants the same
         # value and it cannot change within a frame.
         self._light_level = max(0.0, min(1.0, float(getattr(scene, "light_level", 1.0))))
+        self._ambient_light, self._diffuse_light = _light_uniforms(scene, self._light_level)
 
         self._prune_object_textures(scene)
         self._prune_mesh_assets(scene)
@@ -1185,8 +1206,8 @@ class PerspectiveRenderer:
                 self._program["u_view"].write(view_data)
                 self._program["u_proj"].write(proj_data)
                 self._program["u_sun_dir"].value = sun_direction
-                self._program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
-                self._program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
+                self._program["u_ambient_light"].value = self._ambient_light
+                self._program["u_diffuse_light"].value = self._diffuse_light
                 if "u_texture" in self._program:
                     self._program["u_texture"].value = 0
                 if face_shape_groups:
@@ -2098,8 +2119,8 @@ class PerspectiveRenderer:
         self._program["u_view"].write(view_data)
         self._program["u_proj"].write(proj_data)
         self._program["u_sun_dir"].value = sun_direction
-        self._program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
-        self._program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
+        self._program["u_ambient_light"].value = self._ambient_light
+        self._program["u_diffuse_light"].value = self._diffuse_light
         self._program["u_use_mesh_uv"].value = True
         self._program["u_use_texture"].value = True
         if "u_texture" in self._program:
@@ -2329,8 +2350,8 @@ class PerspectiveRenderer:
         program["u_height_range"].value = tuple(scene.terrain_height_range)
         program["u_repeats"].value = TERRAIN_TEXTURE_REPEATS
         program["u_sun_dir"].value = sun_direction
-        program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
-        program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
+        program["u_ambient_light"].value = self._ambient_light
+        program["u_diffuse_light"].value = self._diffuse_light
         for index, texture in enumerate(self._terrain_textures):
             texture.use(location=index)
         assert self._terrain_texture_vao is not None
@@ -2469,8 +2490,8 @@ class PerspectiveRenderer:
         self._terrain_fill_program["u_height_min"].value = self._terrain_height_range[0]
         self._terrain_fill_program["u_height_max"].value = self._terrain_height_range[1]
         self._terrain_fill_program["u_sun_dir"].value = sun_direction
-        self._terrain_fill_program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
-        self._terrain_fill_program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
+        self._terrain_fill_program["u_ambient_light"].value = self._ambient_light
+        self._terrain_fill_program["u_diffuse_light"].value = self._diffuse_light
         self._terrain_fill_vao.render()
 
     def _upload_parcel_borders(self, ctx: moderngl.Context, scene: Scene) -> None:

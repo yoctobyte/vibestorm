@@ -1,6 +1,6 @@
 # Capability Coverage
 
-Last verified: 2026-08-14 (previous revision: 2026-04-02)
+Last verified: 2026-09-06 (previous revision: 2026-08-14)
 
 Like `message-coverage.md`, this had drifted: every row still read `planned`
 while nine capabilities were being resolved and used every session. Statuses

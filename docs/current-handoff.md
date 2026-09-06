@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (fifth pass)
+Last updated: 2026-09-06 (sixth pass)
 
 ## The Owner's Priorities
 
@@ -142,6 +142,100 @@ uniformly textured cube, cylinder and prism are rendered both ways and the
 framebuffers compared pixel for pixel, with the prim turned off every axis so a
 symmetric silhouette cannot pass by accident.
 
+**A -- and the avatar stops being a cloud to other people (2026-09-06).**
+`RebakeAvatarTextures` arrived 45 times across the recorded sessions, was
+decoded to a message name and dropped. It is the simulator saying: your
+`AgentSetAppearance` named a baked texture whose asset I do not have. Until
+something answers it the avatar is a cloud to everyone else -- a goal-A
+visualization failure that happens on other people's screens rather than this
+one's, and so exactly the kind that goes unnoticed here.
+
+There is no rasterizer in this client to bake a fresh texture with. What it can
+do is assert the appearance it already holds, which is the fix when the asset
+exists and only the simulator's cache entry went missing. The re-send has to
+carry a **higher serial**: the simulator keeps the last one it saw, so
+repeating it re-sends the appearance it has already decided is stale while the
+client believes it has answered. The answer goes straight out of
+`handle_incoming` rather than waiting for the next agent-update tick, since a
+cloud is visible to other people now.
+
+**A -- the sixth pass (2026-09-06): the region's own weather.** Water colour
+and sky came out of constants compiled into the shaders, so every region looked
+like the same afternoon at the same hour. This was named as the largest
+remaining visual gap and it is closed.
+
+It is not a UDP message. `RegionHandshake` carries the four terrain textures,
+the elevation bands they cover and the water *height*, and nothing at all about
+colour. The colour is behind a capability, and the local sim offers two:
+`EnvironmentSettings`, the legacy Windlight document, and `ExtEnvironment`, the
+EEP one. The second is read -- `world/environment.py` for the document,
+`viewer3d/atmosphere.py` for what to draw with it, the two kept apart because
+the first is protocol with one right answer and the second is a rendering
+choice with several.
+
+Zenith is `blue_density`, horizon is `blue_horizon` washed toward the colour of
+the light by `haze_horizon`, `ambient` is how bright the whole thing is, and the
+sea is its own `water_fog_color` with some sky reflected in it. Windlight's
+actual sky is an integral through a modelled atmosphere -- `rayleigh_config`,
+`mie_config` and `absorption_config` sit in every frame beside the colours
+these use -- and reproducing it is a project of its own. What this does is take
+each parameter in the direction it plainly means.
+
+Four things the document does not say, all found by looking:
+
+- **The capability answers 503 until the agent is in the region.** Resolving
+  the URL from the seed capability straight after login succeeds, and the fetch
+  then fails in a way that reads like a broken URL rather than like being
+  early. The fetch is deferred until `movement_completed`.
+- **The five tracks are positional** -- 0 water, 1 the sky at ground level, 2
+  to 4 the sky above each `track_altitudes` entry. Nothing labels a track; only
+  a *frame* carries a `type`, so the two can disagree, and a water frame read
+  as a sky is a plausible and entirely wrong sky. Each frame is checked against
+  the track it is listed in.
+- **The sun is in the document.** Every sky keyframe carries a `sun_rotation`,
+  and the default cycle's eight trace an exact arc once they are read as
+  turning **+X**: straight down at midnight, +5.4 degrees at 0.125, straight up
+  at 0.5, +4.3 at 0.875, down again at 0.95. Which axis was found by trying
+  each of the three against all eight.
+- **The simulator does not send a sun at all.** OpenSim's
+  `SimulatorViewerTimeMessage.SunDirection` is `(0, 0, 0)`, every message. It
+  is not a missing answer that `None` would signal -- it is a well-formed
+  direction of length nothing, and the renderer's normalise stepped straight
+  over it into a fixed fallback. **The sun had never moved in any session.**
+
+The cycle is indexed by the simulator's clock. `UsecSinceStart` is misnamed: it
+is a Unix timestamp in microseconds, checked against this machine's own clock.
+`SunPhase` cannot serve -- measured twenty minutes apart it ran at 2.18e-4 and
+4.36e-4 rad/s, a factor of exactly two, on a region reporting the same
+`SecPerDay` both times, so a single window's rate is that part of the day's
+rate and nothing more. `tools/probe_sun.py` is that measurement and prints all
+three findings.
+
+Everything solid dims and takes colour with the sky, or a region at midnight is
+a black sky over a field in full sun. The shaders' two light terms became
+colours rather than scalars, which is the right shape: `ambient` is the light
+off the sky and carries the interesting tint (pink at dawn, warm at dusk, blue
+at midnight), `sunlight_color` is the light straight from the sun. Brightness
+is divided out of both, because `sunlight_color` is *brighter than one* at dawn
+and dusk -- 2.8 at the sunset keyframe -- and cannot double as a level. A night
+floor keeps the world from going absolutely black, since a viewer that cannot
+be used at midnight is not much of a viewer.
+
+Twenty-three mutations were killed across the parse, the derivation and the
+plumbing. The ones that matter most are the plumbing: a derivation that is
+perfect and never reaches a uniform draws exactly the sky it drew before, and
+every unit test still passes. Seven GL tests read the pixels back.
+
+**The first run of that battery was wrong, in the way the handoff already
+warns about.** Restoring a file with `cp` between mutations gives it the same
+mtime to the second, and Python reuses the cached `.pyc` -- so a mutation reads
+as caught when it is not. Re-run with `PYTHONDONTWRITEBYTECODE=1`, one of the
+twenty-four survived: sending **only** `u_horizon` back to its constant passed
+every test. The sky camera looks 80 degrees up, where the gradient is 99 per
+cent zenith, so a wrong horizon moved the pixel by less than one level of
+quantisation. A test that looks *level* is what closes it, and finding that at
+all is the argument for running the battery twice.
+
 **A -- textures stopped crawling (2026-09-06).** `Texture.filter` is
 `(minification, magnification)` and every world texture set the first half to
 `LINEAR`, so a texture was point-sampled however small it was on screen. The
@@ -275,9 +369,10 @@ stride) -- the obvious `1 - cos` formula over-corrects by 6.5 cm, because the
 shoe reaches forward of the ankle and the loss depends on which way the leg is
 swinging.
 
-Still open under A: **prim textures are the only thing textured** -- terrain,
-water and sky are all shader-generated, which looks right but means a region
-with custom ground textures still gets this client's blend of them.
+Still open under A at the time: **prim textures are the only thing
+textured** -- terrain, water and sky are all shader-generated. Terrain was
+answered in the same pass and the sky and sea in the sixth; what is left is
+the cloud, star and water-surface textures the day cycle names.
 
 **A -- and a seated avatar is a child too (2026-09-05).** Sitting reparents the
 avatar onto the seat: `tools/verify_seated_avatar.py` rezzes a prim, sits on
@@ -571,17 +666,24 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    type from the CLI; the viewer's "save all text assets" button still only
    saves text. Small, and only worth doing if the owner works from the window
    rather than the shell.
-3. **A's remaining win: water and sky are this client's, not the region's.**
-   Terrain now textures from the region's own `TerrainDetail` UUIDs, but water
-   colour and the sky come out of the shaders regardless of where you are, so
-   every region looks like the same weather. That is not a UDP message:
-   `RegionHandshake` carries terrain textures, heights and a water *height* and
-   nothing about colour, so it means an environment capability and an LLSD
-   settings document. It is the largest remaining visual gap and the most work
-   of anything on this list.
+3. **A's remaining visual gaps are smaller than the last one was.** Water and
+   sky now come from the region's own day cycle (sixth pass). What is still
+   this client's own idea rather than the region's:
+   - **Clouds.** Every sky keyframe names a `cloud_id` texture and carries
+     `cloud_color`, `cloud_scale`, `cloud_shadow`, `cloud_variance` and two
+     scroll rates. None is drawn; the sky is a clean gradient. This is the
+     largest of what is left and it is ordinary work -- the parameters are
+     already parsed and sitting on `SkySettings`.
+   - **Stars and the moon.** `star_brightness` reaches 500 in the night
+     keyframes and `moon_id` names a texture. The night sky is empty.
+   - **The water surface itself.** `normal_map`, the two wave directions,
+     `fresnel_scale` and `fresnel_offset` are all parsed and none is used: the
+     sea is a flat tinted quad with a sine ripple. A real Fresnel term would
+     also replace the fixed sky-reflection mixture in `water_tint`.
    (The gait, sitting, attachments, linkset placement, the frame cost at
-   region scale and texture filtering, which used to be this entry in various
-   forms, are done -- see the fourth and fifth passes.)
+   region scale, texture filtering, and the sky and sea themselves, which used
+   to be this entry in various forms, are done -- see the fourth, fifth and
+   sixth passes.)
 4. **A's next unknown is memory, not speed.** `_prune_object_textures` bounds
    the uploaded set by what the region references, which is right -- nothing
    visible is ever evicted -- but nothing bounds how much a region can

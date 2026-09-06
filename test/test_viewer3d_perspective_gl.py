@@ -3240,6 +3240,51 @@ class RegionWeatherGLTests(_GLTestBase):
             20,
         )
 
+    def test_the_drawn_horizon_is_the_horizon_colour(self) -> None:
+        """The other half of the gradient, and it needed its own test.
+
+        A mutation that sent only `u_horizon` back to its constant survived
+        every other test here: the sky camera looks 80 degrees up, where the
+        gradient is 99 per cent zenith, so a wrong horizon moved the pixel by
+        less than a level of quantisation. This one looks level.
+        """
+        from vibestorm.viewer3d.atmosphere import DEFAULT_SKY_HORIZON_COLOR
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        scene = self._scene_at(0.3)
+        # Level and due north, away from the 45-degree morning sun in the east,
+        # and with the water off so the lower half of the sky is not covered.
+        scene.render_water = False
+        camera = Camera3D(
+            mode="eye",
+            eye_position=(128.0, 128.0, 30.0),
+            target=(128.0, 228.0, 30.0),
+        )
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            r, g, b, _ = self._read_pixel(
+                self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2
+            )
+        finally:
+            renderer.clear_caches()
+
+        for index, drawn in enumerate((r, g, b)):
+            self.assertAlmostEqual(
+                drawn, round(scene.sky_horizon_color[index] * 255), delta=6
+            )
+        self.assertGreater(
+            sum(
+                abs(round(a * 255) - round(c * 255))
+                for a, c in zip(
+                    scene.sky_horizon_color, DEFAULT_SKY_HORIZON_COLOR, strict=True
+                )
+            ),
+            20,
+        )
+
     def test_the_water_takes_the_regions_colour(self) -> None:
         from vibestorm.viewer3d.camera import Camera3D
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
@@ -3301,7 +3346,6 @@ class RegionWeatherGLTests(_GLTestBase):
         # midnight was a black sky over a field in full sun.
         from vibestorm.viewer3d.camera import Camera3D
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
-
         from vibestorm.viewer3d.scene import SceneEntity
 
         def ground(day_fraction: float) -> int:
@@ -3346,3 +3390,50 @@ class RegionWeatherGLTests(_GLTestBase):
         self.assertGreater(day, 30, "the ground should be lit at midday")
         self.assertLess(night, day / 2)
         self.assertGreater(night, 0, "and not absolutely black -- the moon is real")
+
+    def test_the_light_takes_the_colour_of_the_hour(self) -> None:
+        # A white prim lit by a dawn sky should not come back grey. The tint
+        # lives in `ambient`: pink at dawn, warm at dusk, blue at midnight --
+        # and a light term that stayed a scalar would render all three the same
+        # shade of the prim's own colour.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import SceneEntity
+
+        def lit(day_fraction: float) -> tuple[int, int, int]:
+            scene = self._scene_at(day_fraction)
+            scene.render_sky = False
+            scene.render_water = False
+            scene.object_entities[1] = SceneEntity(
+                local_id=1,
+                pcode=9,
+                kind="prim",
+                position=(128.0, 128.0, 25.0),
+                scale=(4.0, 4.0, 4.0),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape=None,
+                default_texture_id=None,
+                name=None,
+                tint=(255, 255, 255),
+            )
+            camera = Camera3D(
+                target=(128.0, 128.0, 25.0), distance=12.0, yaw=0.0, pitch=0.3
+            )
+            camera.set_mode("orbit")
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                pixel = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+            finally:
+                renderer.clear_caches()
+            return pixel[:3]
+
+        dawn = lit(0.125)
+        night = lit(0.0)
+
+        # Dawn is warm: more red than blue on a white prim.
+        self.assertGreater(dawn[0], dawn[2])
+        # Night is cold: more blue than red.
+        self.assertGreater(night[2], night[0])

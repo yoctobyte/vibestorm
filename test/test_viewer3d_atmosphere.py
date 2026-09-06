@@ -25,6 +25,7 @@ from vibestorm.viewer3d.atmosphere import (
     NIGHT_LIGHT_FLOOR,
     SUN_REFERENCE_DIRECTION,
     daylight_scale,
+    light_hues,
     sky_gradient,
     sun_direction,
     water_tint,
@@ -199,6 +200,42 @@ class DaylightTests(unittest.TestCase):
             scale = daylight_scale(SkySettings(ambient=ambient))
             self.assertGreaterEqual(scale, 0.0)
             self.assertLessEqual(scale, 1.0)
+
+
+class LightHueTests(unittest.TestCase):
+    """Which colour lights what."""
+
+    def test_the_sky_light_comes_first_and_the_sun_light_second(self) -> None:
+        # Two terms, two parameters, and they are not interchangeable: the
+        # ambient one lights a face turned away from the sun and the sunlight
+        # one does not reach it at all. Swapping them is invisible on a lit
+        # face and wrong everywhere else.
+        sky = SkySettings(ambient=(1.0, 0.0, 0.0), sunlight_color=(0.0, 0.0, 1.0))
+
+        ambient, diffuse = light_hues(sky)
+
+        self.assertEqual(ambient, (1.0, 0.0, 0.0))
+        self.assertEqual(diffuse, (0.0, 0.0, 1.0))
+
+    def test_dawn_is_warm_and_midnight_is_cold(self) -> None:
+        env = _live_environment()
+
+        dawn, _ = light_hues(env.sky_at(0.125))
+        midnight, _ = light_hues(env.sky_at(0.0))
+
+        self.assertGreater(dawn[0], dawn[2])
+        self.assertGreater(midnight[2], midnight[0])
+
+    def test_brightness_is_divided_out_of_both(self) -> None:
+        # `sunlight_color` reaches 2.8 at the sunset keyframe, so its own
+        # magnitude cannot serve as a level -- that is `daylight_scale`'s job,
+        # and using both would count the day twice.
+        sky = SkySettings(ambient=(3.0, 3.0, 3.0), sunlight_color=(0.02, 0.02, 0.02))
+
+        ambient, diffuse = light_hues(sky)
+
+        self.assertEqual(ambient, (1.0, 1.0, 1.0))
+        self.assertEqual(diffuse, (1.0, 1.0, 1.0))
 
 
 class WaterTests(unittest.TestCase):

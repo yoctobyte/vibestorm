@@ -1,6 +1,6 @@
 # Message Coverage
 
-Last verified: 2026-09-02 (previous revision: 2026-08-14)
+Last verified: 2026-09-06 (previous revision: 2026-09-02)
 
 Statuses distinguish `tested` from `verified` — see Status Scale. A row that
 says `verified` means a live simulator sent it and the client handled it, not

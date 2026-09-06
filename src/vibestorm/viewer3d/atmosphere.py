@@ -81,6 +81,23 @@ def daylight_scale(sky: SkySettings) -> float:
     return NIGHT_LIGHT_FLOOR + (1.0 - NIGHT_LIGHT_FLOOR) * _brightness(sky.ambient)
 
 
+def light_hues(sky: SkySettings) -> tuple[Color3, Color3]:
+    """The colour of the ambient light and of the sunlight, in that order.
+
+    Two colours because the shaders already have two terms, and each parameter
+    names one of them: `ambient` is the light off the sky, `sunlight_color` the
+    light straight from the sun. Brightness is divided out of both -- that is
+    `daylight_scale`'s job, and multiplying the two would count the day twice.
+
+    The default cycle puts the interesting colour in `ambient`: pink at dawn
+    (1.00, 0.57, 0.78), warm at dusk (1.00, 0.79, 0.79), blue at midnight
+    (0.62, 0.74, 1.00). `sunlight_color` is white at the horizon and faintly
+    blue at noon, and is *brighter than one* at dawn and dusk -- 2.8 at the
+    sunset keyframe -- which is why its brightness cannot be used as a level.
+    """
+    return _light_hue(sky.ambient), _light_hue(sky.sunlight_color)
+
+
 def sun_direction(sky: SkySettings) -> Vec3:
     """Where the sun is, from the day cycle rather than from the simulator."""
     return quat_rotate(sky.sun_rotation, SUN_REFERENCE_DIRECTION)
