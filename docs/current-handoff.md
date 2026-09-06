@@ -756,8 +756,9 @@ side and its winding does not matter. The walls are *striped*, because the
 sea's shader takes its normal from a wave function of world x and y, which
 on a vertical face varies along one axis only; from eye height in our own
 region they read as a thin line along the border, and closing the hole is
-worth that. Making them shade properly means a per-vertex flag and a branch
-in the water shader, which is not this pass's work.
+worth that. ~~Making them shade properly means a per-vertex flag and a branch
+in the water shader, which is not this pass's work.~~ Done on 2026-09-07, and
+by exactly that route -- see the entry above.
 
 Two decisions worth keeping. The cut is only made for a region whose
 *ground* is being drawn, which `neighbour_terrain` already filters to:
@@ -829,6 +830,48 @@ The lesson is the one about where a guard lives. A crash caused by a message
 this client sends belongs to the encoder, not to whichever tool happened to
 learn about it.
 
+
+**A -- and the wall between two seas stopped being a ladder (2026-09-07).**
+The pass that cut the water plane at region borders left a named debt: the
+walls that close the step between two sea levels came out *striped*, and the
+note said fixing it meant "a per-vertex flag and a branch in the water
+shader, which is not this pass's work". It is this pass's work.
+
+The cause is one line of the shader nobody had to change: every wave term is a
+function of world x and y. On the sea that is a surface. On a wall it varies
+along one axis only -- so the wall drew as a ladder of bands along the whole
+border, and from inside our own region that reads as the border being broken
+rather than as water.
+
+So the water mesh carries six floats a vertex instead of three: where the
+corner is, then which way its face points before any wave leans it. `(0, 0, 1)`
+for the sea, horizontal for a wall, and the shader skips the entire wave block
+for anything that is not facing up. A wall is the *side* of a step, and a
+vertical face of water reflecting the sky at a grazing angle is what it should
+have been all along.
+
+Two details are load-bearing.
+
+The wall's normal points **away from the higher sea**, which is the direction
+a back-face cull would want -- and nothing culls here, so the shader turns it
+toward the eye instead. Without that the wall is drawn from its far side with
+the Fresnel term inside out, reflecting the ground where the sky should be.
+And the underwater flip is for the surface only: a wall is vertical and has no
+up side, so flipping it there would undo the turn it just got.
+
+**The test is not a picture of stripes.** That would need a threshold nobody
+can defend. It is what stripes *do*: they travel. Advance the two wave phases
+and a striped wall changes; a wall that takes its own normal does not, and the
+frame is byte-for-byte identical.
+
+That alone would pass for a viewer that had quietly switched the sea's waves
+off, so it is paired with **the same camera looking at the same place with the
+step removed** -- no wall, ordinary sea, and it has to ripple. Measured: with
+the step, 0 of 16,384 channels move; without it, 4,025 do. A third test
+forbids the cheapest fix of all, which is not drawing the wall: a hole there
+shows the sky through it, which is the picture the walls exist to prevent.
+
+Twelve mutants planted.
 
 **A -- nothing here had ever run for more than a few minutes (2026-09-07).**
 Every measurement in this project so far has been of one frame or one tick.

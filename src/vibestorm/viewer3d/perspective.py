@@ -1338,11 +1338,16 @@ uniform mat4 u_view;
 uniform mat4 u_proj;
 
 in vec3 in_pos;
+// Which way this face points before any wave leans it. (0, 0, 1) for the sea
+// itself; horizontal for a wall closing the step between two sea levels.
+in vec3 in_face;
 
 out vec3 v_world;
+out vec3 v_face;
 
 void main() {
     v_world = in_pos;
+    v_face = in_face;
     gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
 }
 """
@@ -1382,6 +1387,7 @@ uniform vec3 u_sun_dir;
 uniform vec2 u_sun_disc;
 
 in vec3 v_world;
+in vec3 v_face;
 out vec4 frag_color;
 
 // The sky, as a function of how high a ray leaves the surface. The same
@@ -1439,13 +1445,15 @@ vec2 turned(vec2 direction) {
 
 void main() {
     vec2 ground = v_world.xy;
-    // Two ways to a normal, and which one runs is whether the region's
-    // `normal_map` has arrived. With it, the map *is* the normal. Without it,
-    // sines: a plane leaning by (dx, dy) has normal (-dx, -dy, 1), so what
-    // they have to produce is the gradient of a height field. Either way what
-    // is off the wire is which way the waves run, how fast, and how steep.
-    vec3 normal = vec3(0.0, 0.0, 1.0);
-    if (u_ripple.z > 0.0) {
+    // A wall closes the step between two regions that disagree about their
+    // sea level, and it is vertical. Every wave term below is a function of
+    // world x and y alone, which on a vertical face varies along one axis
+    // only -- so waving a wall draws it in stripes rather than in ripples.
+    // It takes the normal it was built with, and the whole wave block is
+    // skipped for it.
+    bool wall = abs(v_face.z) < 0.5;
+    vec3 normal = normalize(v_face);
+    if (!wall && u_ripple.z > 0.0) {
         if (u_water_mapped > 0.0) {
             // The region's own normal map, one sample per wave. Each is laid
             // along its own wave's heading and slid along it by that wave's
@@ -1525,13 +1533,22 @@ void main() {
 
     // Seen from underneath, the surface is a ceiling: the same plane with its
     // normal the other way up, so that the angle below is measured the same
-    // way the angle above is.
+    // way the angle above is. A wall is vertical and has no up side, so it is
+    // left alone here and turned to face the viewer below instead.
     bool below = u_water_depth.x > 0.0;
-    if (below) {
+    if (below && !wall) {
         normal = -normal;
     }
 
     vec3 view = normalize(u_eye - v_world);
+    // A wall is built with one outward normal but nothing culls faces here,
+    // so it is drawn from both sides -- and from the far side that normal
+    // points away from the eye, which turns the Fresnel term inside out and
+    // reflects the ground instead of the sky. Turning it toward the viewer
+    // costs a dot product and makes the wall the same water from either side.
+    if (wall && dot(normal, view) < 0.0) {
+        normal = -normal;
+    }
     float facing = clamp(dot(normal, view), 0.0, 1.0);
     // Schlick's shape: reflectance rises as the fifth power of one minus the
     // cosine of the viewing angle. This is what `fresnel_offset` and
@@ -1749,13 +1766,22 @@ def _water_quads(scene: Scene) -> tuple[tuple[float, float, float, float, float]
     return tuple(quads)
 
 
+#: Position (3) then the face's own normal (3). See `_water_mesh`.
+FLOATS_PER_WATER_VERTEX = 6
+
 #: Corners of one wall closing the step between two rectangles.
-_Wall = tuple[
+_Corners = tuple[
     tuple[float, float, float],
     tuple[float, float, float],
     tuple[float, float, float],
     tuple[float, float, float],
 ]
+
+#: A wall, and which way it faces. The normal is horizontal -- a wall is the
+#: side of a step in the sea -- and the shader needs it because every wave
+#: term is a function of world x and y, which on a vertical face varies along
+#: one axis and draws as stripes.
+_Wall = tuple[_Corners, tuple[float, float, float]]
 
 
 def _water_walls(
@@ -1785,12 +1811,25 @@ def _water_walls(
                 y0 = max(lower[1], upper[1])
                 y1 = min(lower[3], upper[3])
                 if y1 > y0:
+                    # Facing the lower piece: the wall is the side of the
+                    # higher sea, so it faces away from it. The shader turns
+                    # it toward the eye anyway, since nothing culls faces
+                    # here and a wall is seen from both sides -- but a
+                    # direction that means something is better than a sign
+                    # picked at random, and this is the one a cull would want.
+                    # `lower` is the low piece: `lower[0] == upper[2]` means
+                    # the high one ends where this begins, so it is at the
+                    # smaller x and the wall faces +x.
+                    away = 1.0 if lower[0] == upper[2] else -1.0
                     walls.append(
                         (
-                            (edge, y0, low),
-                            (edge, y1, low),
-                            (edge, y1, high),
-                            (edge, y0, high),
+                            (
+                                (edge, y0, low),
+                                (edge, y1, low),
+                                (edge, y1, high),
+                                (edge, y0, high),
+                            ),
+                            (away, 0.0, 0.0),
                         )
                     )
             # And along y, the same the other way round.
@@ -1799,12 +1838,16 @@ def _water_walls(
                 x0 = max(lower[0], upper[0])
                 x1 = min(lower[2], upper[2])
                 if x1 > x0:
+                    away = 1.0 if lower[1] == upper[3] else -1.0
                     walls.append(
                         (
-                            (x0, edge, low),
-                            (x1, edge, low),
-                            (x1, edge, high),
-                            (x0, edge, high),
+                            (
+                                (x0, edge, low),
+                                (x1, edge, low),
+                                (x1, edge, high),
+                                (x0, edge, high),
+                            ),
+                            (0.0, away, 0.0),
                         )
                     )
     return walls
@@ -1814,6 +1857,12 @@ def _water_mesh(
     quads: Sequence[tuple[float, float, float, float, float]],
 ) -> tuple[tuple[float, ...], tuple[int, ...]]:
     """Those rectangles, and the walls between them, as vertex and index blobs.
+
+    Six floats a vertex: where it is, then which way its face points before
+    any wave leans it. The second three exist for the walls -- the sea itself
+    is (0, 0, 1) everywhere -- and they are what stop a wall being drawn in
+    stripes, since every wave term in the shader is a function of world x and
+    y and a vertical face varies along only one of them.
 
     Corners are not shared between faces even where they coincide: two pieces
     at different heights must not share one, and the saving on the handful
@@ -1825,10 +1874,11 @@ def _water_mesh(
     vertices: list[float] = []
     indices: list[int] = []
 
-    def add(corners: _Wall) -> None:
-        first = len(vertices) // 3
+    def add(corners: _Corners, face: tuple[float, float, float]) -> None:
+        first = len(vertices) // FLOATS_PER_WATER_VERTEX
         for corner in corners:
             vertices.extend(corner)
+            vertices.extend(face)
         indices.extend((first, first + 1, first + 2, first, first + 2, first + 3))
 
     for x0, y0, x1, y1, height in quads:
@@ -1838,10 +1888,11 @@ def _water_mesh(
                 (x1, y0, height),
                 (x1, y1, height),
                 (x0, y1, height),
-            )
+            ),
+            (0.0, 0.0, 1.0),
         )
-    for wall in _water_walls(quads):
-        add(wall)
+    for corners, face in _water_walls(quads):
+        add(corners, face)
     return tuple(vertices), tuple(indices)
 
 
@@ -3178,7 +3229,7 @@ class PerspectiveRenderer:
         )
         self._water_vao = ctx.vertex_array(
             self._water_program,
-            [(self._water_vbo, "3f", "in_pos")],
+            [(self._water_vbo, "3f 3f", "in_pos", "in_face")],
             index_buffer=self._water_ibo,
             index_element_size=4,
         )
@@ -4508,11 +4559,13 @@ class PerspectiveRenderer:
             if buffer is not None:
                 buffer.release()
         self._water_capacity = max(self._water_capacity * 2, faces)
-        self._water_vbo = ctx.buffer(reserve=self._water_capacity * 4 * 3 * 4, dynamic=True)
+        self._water_vbo = ctx.buffer(
+            reserve=self._water_capacity * 4 * FLOATS_PER_WATER_VERTEX * 4, dynamic=True
+        )
         self._water_ibo = ctx.buffer(reserve=self._water_capacity * 6 * 4, dynamic=True)
         self._water_vao = ctx.vertex_array(
             self._water_program,
-            [(self._water_vbo, "3f", "in_pos")],
+            [(self._water_vbo, "3f 3f", "in_pos", "in_face")],
             index_buffer=self._water_ibo,
             index_element_size=4,
         )

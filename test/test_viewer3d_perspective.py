@@ -203,14 +203,16 @@ class VoidWaterTests(unittest.TestCase):
 
     def test_water_extends_past_the_region_on_every_side(self) -> None:
         from vibestorm.viewer3d.perspective import (
+            FLOATS_PER_WATER_VERTEX,
             REGION_GROUND_SIZE_M,
             VOID_WATER_EXTENT_M,
             _water_vertices,
         )
 
         vertices = _water_vertices(20.0)
-        xs = vertices[0::3]
-        ys = vertices[1::3]
+        # Six floats a vertex: position, then the face's own normal.
+        xs = vertices[0::FLOATS_PER_WATER_VERTEX]
+        ys = vertices[1::FLOATS_PER_WATER_VERTEX]
 
         self.assertEqual(min(xs), -VOID_WATER_EXTENT_M)
         self.assertEqual(min(ys), -VOID_WATER_EXTENT_M)
@@ -226,9 +228,30 @@ class VoidWaterTests(unittest.TestCase):
         self.assertGreaterEqual(VOID_WATER_EXTENT_M, DEFAULT_FAR_PLANE_M)
 
     def test_every_corner_sits_at_the_water_height(self) -> None:
-        from vibestorm.viewer3d.perspective import _water_vertices
+        from vibestorm.viewer3d.perspective import (
+            FLOATS_PER_WATER_VERTEX,
+            _water_vertices,
+        )
 
-        self.assertEqual(set(_water_vertices(20.0)[2::3]), {20.0})
+        self.assertEqual(
+            set(_water_vertices(20.0)[2::FLOATS_PER_WATER_VERTEX]), {20.0}
+        )
+
+    def test_the_flat_sea_faces_straight_up(self) -> None:
+        # The other three floats a vertex, and the whole reason they exist:
+        # a face that says which way it points is what lets the shader wave
+        # the sea and leave a wall alone.
+        from vibestorm.viewer3d.perspective import (
+            FLOATS_PER_WATER_VERTEX,
+            _water_vertices,
+        )
+
+        vertices = _water_vertices(20.0)
+        faces = [
+            tuple(vertices[i + 3 : i + 6])
+            for i in range(0, len(vertices), FLOATS_PER_WATER_VERTEX)
+        ]
+        self.assertEqual(set(faces), {(0.0, 0.0, 1.0)})
 
 
 def _cube(local_id: int, position=(10.0, 10.0, 25.0), *, texture_entry=None):
