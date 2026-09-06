@@ -591,6 +591,56 @@ The tests that inserted straight into `world_view.objects` now go through
 `remember_object`, which is the better test anyway: a prim put into the
 world around the model's own door is one the fetches will never look at.
 
+**Twenty per cent off the frame's floor, and no new state to keep
+(2026-09-06).** `refresh_from_world_view` runs once a frame and walks every
+prim in view whether or not anything moved, so it is the ceiling on the frame
+rate before a triangle is drawn. `tools/bench_scene_refresh.py` said 40.3 ms
+for a still region of 15,000 prims in linksets -- a 25 fps ceiling for a
+world in which *nothing was happening*. A profile said where it went, and
+none of it was where it looked like going.
+
+    15,000 prims in linksets       before     after
+    0% moving                     40.30 ms   31.12 ms
+    1% moving                     48.69 ms   38.00 ms
+    5% moving                     81.73 ms   67.05 ms
+
+Three changes, no new caches and no new invariants to keep.
+
+`getattr(obj, "position", None)` against `obj.position`. The composing loop
+is the one thing that runs for every prim every frame, and the defensive
+form costs three times as much -- 5.2 ms against 1.7 ms per 15,000 prims for
+the three fields it reads. The default was never reachable: they are
+required fields on `WorldObject` and `remember_object` is the only door into
+that dict. 270,000 `getattr` calls a profile became 40.
+
+`resolve_world_transforms` was rebuilding `list(pending)` -- the whole region
+-- on each outward pass and deleting from the dict as it went, to make a
+second pass that had nothing left to do. It now carries forward only what it
+could not resolve, which for a region of ordinary linksets is nothing.
+
+And the scene compared a child's remembered transform with `==`, walking two
+nested tuples of floats per child per frame. The resolver hands back *the
+same tuple* for anything that did not move, and says so in its docstring, so
+`is` reaches the same answer without the walk. Where `is` is wrong it is
+wrong in the safe direction: an equal-but-rebuilt transform rebuilds an
+entity that need not have been.
+
+That last one is a contract nothing had ever pinned, and it is the sort that
+breaks silently -- the viewer stays correct and quietly rebuilds every entity
+in the region, every frame. `test/test_viewer3d_refresh_cost.py` exists for
+it: no test in it asserts a number, because a test that says "under n
+milliseconds" fails on a busy machine and gets deleted, while one that says
+"this must still be the same tuple" fails exactly when someone removes the
+reason it was fast.
+
+What is *not* done, and what to reach for next if this needs to be faster:
+the 84,000 `dict.get` calls a refresh still makes for 15,000 prims. The
+honest fix is incremental -- the world saying which prims changed rather than
+the scene asking each one -- and that is a design with new state to keep
+correct, which is a pass of its own and not a hurried addition to this one. A
+version counter alone will not do it: something is always moving on a real
+region, so a whole-frame skip almost never fires. It has to be per prim.
+
 **The camera sees round things now (2026-09-06).** Two halves of one
 complaint, and the first half was a bug hiding inside a fix. The ground
 march has been there since the eleventh pass, but it opened with `if not

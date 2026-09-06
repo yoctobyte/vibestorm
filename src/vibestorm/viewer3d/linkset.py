@@ -130,12 +130,15 @@ def resolve_world_transforms(
     # the composing goes, so a moved root carries its whole linkset.
     moved: set[int] = set()
 
+    known_get = known.get
+    resolved_get = resolved.get
+    moved_add = moved.add
     for local_id, (parent_id, position, rotation) in local_transforms.items():
         turn = rotation if rotation is not None else IDENTITY
         if not parent_id:
-            was = known.get(local_id) if local_id in unchanged else None
+            was = known_get(local_id) if local_id in unchanged else None
             if was is None:
-                moved.add(local_id)
+                moved_add(local_id)
                 resolved[local_id] = (position, turn)
             else:
                 resolved[local_id] = was
@@ -143,28 +146,34 @@ def resolve_world_transforms(
             pending[local_id] = (parent_id, position, turn)
 
     # Outward from the roots: each pass resolves the children of everything
-    # resolved so far, so a chain of depth n costs n passes. The pass count is
-    # bounded by how many objects are pending -- there cannot be more levels
-    # than that -- rather than by trusting the loop to make progress, so a
-    # malformed parent cycle costs a few wasted passes instead of hanging the
-    # viewer. The early exit is only there to stop short of the bound.
-    for _ in range(len(pending)):
+    # resolved so far, so a chain of depth n costs n passes. A pass that
+    # resolves nothing is the end of it, which is also what a malformed parent
+    # cycle looks like -- a viewer that hung on one would be worse than one
+    # that leaves those prims out.
+    #
+    # What is *not* done is deleting from `pending` as it goes. Nearly every
+    # prim is resolved on the first pass, so the second pass is handed the
+    # few that were not rather than a list of the whole region built to be
+    # thrown away: a linkset region of 15,000 spends its time here.
+    while pending:
         progressed = False
-        for local_id in list(pending):
-            parent_id, position, turn = pending[local_id]
-            parent = resolved.get(parent_id)
+        still_pending: dict[int, tuple[int, Vec3, Quat]] = {}
+        for local_id, entry in pending.items():
+            parent_id = entry[0]
+            parent = resolved_get(parent_id)
             if parent is None:
+                still_pending[local_id] = entry
                 continue
-            was = known.get(local_id) if local_id in unchanged else None
+            was = known_get(local_id) if local_id in unchanged else None
             if was is None or parent_id in moved:
-                moved.add(local_id)
-                resolved[local_id] = compose(parent, (position, turn))
+                moved_add(local_id)
+                resolved[local_id] = compose(parent, (entry[1], entry[2]))
             else:
                 resolved[local_id] = was
-            del pending[local_id]
             progressed = True
         if not progressed:
             break
+        pending = still_pending
 
     return resolved
 
