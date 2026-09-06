@@ -358,6 +358,24 @@ quantity -- and it is the second time in two passes that it has been the one
 survivor.
 
 
+**A -- every control in both HUDs, pressed (2026-09-06).** The other half of
+the owner's first priority is *without crashes*, and a viewer's crashes do not
+mostly live in the renderer. They live in the widgets. `LoginScreen.resize`
+was exactly that: a call to a method pygame_gui has not got, raising out of
+the event loop the moment anyone dragged the window, uncaught for as long as
+it has existed because no test had ever called the method.
+
+`test_viewer3d_hud_events.py` presses all sixty-odd buttons in the 3D HUD and
+the twenty in the map HUD, finishes every text entry, moves the slider, picks
+a row that does not exist from every list, closes and resizes every window,
+and sends the keys the app forwards -- with every window open and every
+callback supplied. Nothing raised, which is the answer one wants and not one
+worth much on its own, so two things guard against it being vacuous: the sweep
+counts what it touched and fails if it found almost nothing, and it names the
+callbacks a press can reach with no selection made and fails if any of them
+never fired. Planting one bad call in `_hide_all_menus` takes two of the four
+tests down.
+
 **A -- the two textures nobody draws, settled (2026-09-06).** The live day
 cycle names *five* real texture ids, not three. Two of them nothing here has
 ever read: the water's `transparent_texture` and the sky's `bloom_id` -- and
