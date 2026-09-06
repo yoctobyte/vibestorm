@@ -20,6 +20,7 @@ from vibestorm.udp.messages import (
     SimStatsMessage,
     SimulatorViewerTimeMessage,
 )
+from vibestorm.world.environment import RegionEnvironment
 from vibestorm.world.sim_stats import NamedSimStat, name_sim_stats
 from vibestorm.world.texture_anim import TextureAnimation
 from vibestorm.world.texture_entry import TextureEntry, parse_texture_entry
@@ -186,6 +187,11 @@ class WorldView:
     #: populated for objects that have been selected.
     object_properties: dict[UUID, ObjectPropertiesEntry] = field(default_factory=dict)
     object_properties_events: int = 0
+    #: The region's own sky and water, from the `ExtEnvironment` capability.
+    #: Not from any UDP message: `RegionHandshake` carries the terrain
+    #: textures, the bands they cover and the water *height*, and nothing at
+    #: all about colour. `None` until the fetch lands, or if it never does.
+    environment: RegionEnvironment | None = None
 
     @property
     def terse_avatar_count(self) -> int:

@@ -19,6 +19,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
+from vibestorm.viewer3d.atmosphere import (
+    DEFAULT_SKY_HORIZON_COLOR,
+    DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_WATER_TINT,
+    daylight_scale,
+    sky_gradient,
+)
+from vibestorm.viewer3d.atmosphere import (
+    sun_direction as sun_direction_for,
+)
+from vibestorm.viewer3d.atmosphere import (
+    water_tint as water_tint_for,
+)
 from vibestorm.viewer3d.avatar_pose import (
     AvatarMotion,
     advance_all,
@@ -32,6 +45,7 @@ from vibestorm.world.chat_types import (
     chat_type_name,
     is_typing_notification,
 )
+from vibestorm.world.environment import RegionEnvironment
 from vibestorm.world.extra_params import DecodedExtraParams, decode_extra_params
 from vibestorm.world.land_flags import DecodedFlags, decode_parcel_flags
 from vibestorm.world.parcel_overlay import (
@@ -427,12 +441,73 @@ class Scene:
     )
     sun_phase: float | None = None
     sun_direction: tuple[float, float, float] | None = None
+    # The region's own weather, from the ExtEnvironment capability, and where
+    # in its day cycle this frame is. Both None until the fetch lands.
+    environment: RegionEnvironment | None = None
+    day_fraction: float | None = None
+    # Where the day cycle puts the sun. Not the same thing as `sun_direction`,
+    # which is what the simulator said -- and OpenSim says (0, 0, 0).
+    environment_sun_direction: tuple[float, float, float] | None = None
+    # The colours the sky and water are drawn in this frame. They start as the
+    # ones this viewer chose by eye and become the region's own once its day
+    # cycle arrives.
+    sky_horizon_color: tuple[float, float, float] = DEFAULT_SKY_HORIZON_COLOR
+    sky_zenith_color: tuple[float, float, float] = DEFAULT_SKY_ZENITH_COLOR
+    water_tint: tuple[float, float, float] = DEFAULT_WATER_TINT
+    # How brightly to light everything solid. 1.0 is full day.
+    light_level: float = 1.0
     chat_lines: deque[ChatLine] = field(default_factory=lambda: deque(maxlen=128))
     # Who is currently typing, from the start/stop-typing chat types. Kept as a
     # dict rather than a set so insertion order gives a stable display order.
     typing_senders: dict[str, bool] = field(default_factory=dict)
 
     # ---- bus event handlers ----------------------------------------------
+
+    def _refresh_environment(self, world_view, time_snapshot) -> None:
+        """Take this frame's sky, sun and sea from the region's day cycle.
+
+        The time comes from the simulator's own clock. ``UsecSinceStart`` is
+        misnamed -- it is a Unix timestamp in microseconds, not an uptime --
+        and it is the only clock either side agrees on, so it is what indexes
+        the cycle.
+
+        A region with an environment but no clock yet is drawn at midday
+        rather than at fraction zero: zero is midnight, and a viewer that
+        blacks out for the second before the first time message is a worse
+        answer than one that is briefly too bright.
+        """
+        environment = getattr(world_view, "environment", None)
+        self.environment = environment
+        if environment is None:
+            self.day_fraction = None
+            self.environment_sun_direction = None
+            self.sky_horizon_color = DEFAULT_SKY_HORIZON_COLOR
+            self.sky_zenith_color = DEFAULT_SKY_ZENITH_COLOR
+            self.water_tint = DEFAULT_WATER_TINT
+            self.light_level = 1.0
+            return
+
+        clock = (
+            getattr(time_snapshot, "usec_since_start", None)
+            if time_snapshot is not None
+            else None
+        )
+        # `is not None`, not truthiness: a clock reading of zero is a real
+        # moment in the day -- the top of it -- and testing it as a flag put
+        # midnight at midday.
+        if clock is not None:
+            fraction = environment.day_fraction_for(float(clock) / 1_000_000.0)
+        else:
+            fraction = 0.5
+        self.day_fraction = fraction
+
+        sky = environment.sky_at(fraction)
+        horizon, zenith = sky_gradient(sky)
+        self.sky_horizon_color = horizon
+        self.sky_zenith_color = zenith
+        self.water_tint = water_tint_for(environment.water_at(fraction), horizon)
+        self.environment_sun_direction = sun_direction_for(sky)
+        self.light_level = daylight_scale(sky)
 
     def apply_region_changed(self, event: RegionChanged) -> None:
         debug_heightmap = self.terrain_heightmap if self.debug_terrain_source is not None else None
@@ -811,6 +886,7 @@ class Scene:
             getattr(time_snapshot, "sun_direction", None) if time_snapshot is not None else None
         )
         self.sun_direction = _as_vec3(raw_sun_direction)
+        self._refresh_environment(world_view, time_snapshot)
 
         objects = getattr(world_view, "objects", {})
         terse_objects = getattr(world_view, "terse_objects", {})

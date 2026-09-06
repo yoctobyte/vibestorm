@@ -48,6 +48,8 @@ This document tracks which simulator capabilities matter for Vibestorm and when 
 | `RenderMaterials` | materials data | P4 | planned | offered by the sim (confirmed 2026-08-14). The per-face material *UUIDs* decode from `ExtraParams` (`0x80`), but the material assets are not fetched. `ViewerAsset`'s `material_id` key may serve them without this cap; untried, because no prim in the region has a material |
 | `ObjectMedia` | media metadata | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
 | `ObjectMediaNavigate` | media navigation | P4 | planned | offered by the sim (confirmed 2026-08-14); not early-scope |
+| `ExtEnvironment` | the region's sky and water | P2 | verified | `world/environment.py` reads the EEP document: a `day_cycle` with named `frames` and five `tracks`. Track 0 is water, track 1 the sky at ground level, tracks 2-4 the sky above each of `track_altitudes` and empty here -- positional, with no `type` on a track, so each frame's own `type` is checked against the track it is listed in. Live 2026-09-06: 33,789 bytes, one water keyframe and eight sky ones over a 4-hour day. **The capability answers 503 until the agent is actually in the region**, which reads like a broken URL rather than like being early. The colour fields a person sees are under `legacy_haze`; the `rayleigh_config` / `mie_config` / `absorption_config` beside them describe the same sky as a physical model and are not read |
+| `EnvironmentSettings` | the legacy Windlight document | P3 | planned | offered by the same sim and fetched live 2026-09-06 (21,773 bytes), in an entirely different shape: an array of a message/region id map, then a track of `[keyframe, frame-name]` pairs, then a map of frames. Not read -- `ExtEnvironment` is what the current grid speaks and the only one whose day cycle is addressable by altitude. Worth keeping in mind for an older sim that offers only this |
 | `GetObjectCost` | land impact or cost-style data | P3 | verified | `caps/object_cost_client.py`, alongside physics under `./run.sh census --physics`. Live-verified 2026-08-14: 32 prims, every one costing 1, `resource_limiting_type=legacy`. **Batching works here** — unlike `GetObjectPhysicsData` in the same source file, this handler closes its outer map after the loop, and four ids returned four entries. Two traps: a request matching nothing is answered with a filler entry keyed by the **zero UUID** and all costs 0, which is shaped exactly like a real free prim (the client drops it); and equal prim/linkset costs mean the prim's cost covers its linkset, not that the linkset has one prim |
 | `GetObjectPhysicsData` | physics-related object data | P2 | verified | `caps/object_physics_client.py`, behind `./run.sh census --physics`. This is how to read prim physics *without* an in-world edit — the UDP `ObjectPhysicsProperties` message only echoes an edit the viewer itself made. Live-verified 2026-08-14: 32 of 33 objects answered, all shape `prim` at OpenSim defaults; the one that did not is our own avatar, which is in the same collection but is not a `SceneObjectPart`. **One id per request** — OpenSim's handler closes the outer LLSD map inside its loop, so two ids return XML that does not parse (confirmed live, `mismatched tag`) |
 
@@ -89,7 +91,7 @@ The initial capability layer should support:
 
 ## Current Requested Capability Set
 
-`_run_caps_prelude` in `udp/session.py` requests these, and all eleven resolve
+`_run_caps_prelude` in `udp/session.py` requests these, and all twelve resolve
 against local OpenSim:
 
 - `EventQueueGet`
@@ -103,6 +105,7 @@ against local OpenSim:
 - `GetMesh`
 - `GetMesh2`
 - `GetTexture`
+- `ExtEnvironment`
 
 `NewFileAgentInventory` and the task-inventory update capabilities are resolved
 on demand by their own commands rather than in the prelude, so a session that

@@ -44,6 +44,11 @@ from vibestorm.assets.sl_mesh import (
     decode_sl_mesh_asset,
     smooth_vertex_normals,
 )
+from vibestorm.viewer3d.atmosphere import (
+    DEFAULT_SKY_HORIZON_COLOR,
+    DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_WATER_TINT,
+)
 
 if TYPE_CHECKING:
     import moderngl
@@ -512,7 +517,7 @@ _GROUND_INDICES: tuple[int, ...] = (
 # Region water: flat translucent quad. The default comes from SL/OpenSim's
 # usual 20 m setting, but live scenes override it from RegionHandshake.
 WATER_LEVEL_M: float = 20.0
-WATER_TINT_RGB: tuple[float, float, float] = (0.18, 0.36, 0.55)
+WATER_TINT_RGB: tuple[float, float, float] = DEFAULT_WATER_TINT
 WATER_NOISE_STRENGTH: float = 0.08
 TERRAIN_FILL_RGBA: tuple[float, float, float, float] = (0.28, 0.58, 0.22, 1.0)
 TERRAIN_LINE_RGBA: tuple[float, float, float, float] = (0.05, 1.0, 0.20, 0.85)
@@ -598,8 +603,8 @@ _LABEL_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 #: windlight settings asset is LLSD *notation*, which this tree does not parse
 #: and OpenSim itself only regex-scrapes -- so these are chosen to sit either
 #: side of the old flat value rather than derived from anything on the wire.
-SKY_HORIZON_COLOR: tuple[float, float, float] = (0.62, 0.74, 0.86)
-SKY_ZENITH_COLOR: tuple[float, float, float] = (0.16, 0.36, 0.62)
+SKY_HORIZON_COLOR: tuple[float, float, float] = DEFAULT_SKY_HORIZON_COLOR
+SKY_ZENITH_COLOR: tuple[float, float, float] = DEFAULT_SKY_ZENITH_COLOR
 
 _SKY_VERTEX_SHADER = """
 #version 330
@@ -727,11 +732,41 @@ def _water_vertices(water_height: float) -> tuple[float, ...]:
 
 
 def lighting_direction(scene: Scene) -> tuple[float, float, float]:
-    """Return a normalized world-space light direction for the scene."""
-    raw = getattr(scene, "sun_direction", None)
-    if raw is None:
-        raw = _sun_direction_from_phase(getattr(scene, "sun_phase", None))
-    return _normalize_vec3(raw, fallback=DEFAULT_SUN_DIRECTION)
+    """Return a normalized world-space light direction for the scene.
+
+    Four sources, in order of how much they know:
+
+    1. The simulator's own `SunDirection`. Best if it ever arrives -- but
+       OpenSim sends `(0, 0, 0)`, every message, so in practice it never does.
+    2. The region's day cycle, whose every sky keyframe carries a
+       `sun_rotation`. This is what actually moves the sun.
+    3. `SunPhase`, kept for synthetic and debug scenes that have no region.
+    4. A fixed direction, which is what every session got before the day cycle
+       was read: the sun sat still for the whole run.
+    """
+    for candidate in (
+        getattr(scene, "sun_direction", None),
+        getattr(scene, "environment_sun_direction", None),
+        _sun_direction_from_phase(getattr(scene, "sun_phase", None)),
+    ):
+        if _is_a_direction(candidate):
+            return _normalize_vec3(candidate, fallback=DEFAULT_SUN_DIRECTION)
+    return _normalize_vec3(DEFAULT_SUN_DIRECTION, fallback=DEFAULT_SUN_DIRECTION)
+
+
+def _is_a_direction(value) -> bool:
+    """True for a vector that points somewhere.
+
+    The zero vector is the case that matters: it is what the simulator sends,
+    and it is not a missing answer that `None` would signal -- it arrives as a
+    perfectly well-formed direction of length nothing.
+    """
+    try:
+        x, y, z = (float(value[0]), float(value[1]), float(value[2]))
+    except (TypeError, ValueError, IndexError):
+        return False
+    length = math.sqrt((x * x) + (y * y) + (z * z))
+    return math.isfinite(length) and length > 0.000001
 
 
 def _sun_direction_from_phase(phase: float | None) -> tuple[float, float, float]:
@@ -956,6 +991,8 @@ class PerspectiveRenderer:
         # ``Scene`` hands back the same ``SceneEntity`` object for anything
         # unchanged, so ``is`` is what says whether this is still good.
         self._instance_blobs: dict[int, tuple[SceneEntity, bytes]] = {}
+        #: This frame's daylight, 1.0 until a region's day cycle says otherwise.
+        self._light_level: float = 1.0
         # Ground (region floor) — separate program because the cubes are
         # flat-tinted while the ground samples a texture.
         self._ground_program = None  # type: moderngl.Program | None
@@ -1059,6 +1096,11 @@ class PerspectiveRenderer:
         view_data = struct.pack("16f", *view)
         proj_data = struct.pack("16f", *proj)
         sun_direction = lighting_direction(scene)
+        # One number for the whole frame: how far through the region's day it
+        # is. Kept on the renderer rather than threaded through four call
+        # signatures, since every pass that lights anything wants the same
+        # value and it cannot change within a frame.
+        self._light_level = max(0.0, min(1.0, float(getattr(scene, "light_level", 1.0))))
 
         self._prune_object_textures(scene)
         self._prune_mesh_assets(scene)
@@ -1088,7 +1130,14 @@ class PerspectiveRenderer:
         ctx.enable(ctx.DEPTH_TEST)
         try:
             if scene.render_sky:
-                self._render_sky(ctx, view_data, proj_data, sun_direction=sun_direction)
+                self._render_sky(
+                    ctx,
+                    view_data,
+                    proj_data,
+                    sun_direction=sun_direction,
+                    horizon=getattr(scene, "sky_horizon_color", DEFAULT_SKY_HORIZON_COLOR),
+                    zenith=getattr(scene, "sky_zenith_color", DEFAULT_SKY_ZENITH_COLOR),
+                )
             if scene.render_terrain:
                 self._upload_terrain_mesh(ctx, scene)
             else:
@@ -1136,8 +1185,8 @@ class PerspectiveRenderer:
                 self._program["u_view"].write(view_data)
                 self._program["u_proj"].write(proj_data)
                 self._program["u_sun_dir"].value = sun_direction
-                self._program["u_ambient_light"].value = AMBIENT_LIGHT
-                self._program["u_diffuse_light"].value = DIFFUSE_LIGHT
+                self._program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
+                self._program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
                 if "u_texture" in self._program:
                     self._program["u_texture"].value = 0
                 if face_shape_groups:
@@ -1182,7 +1231,8 @@ class PerspectiveRenderer:
                 self._water_program["u_view"].write(view_data)
                 self._water_program["u_proj"].write(proj_data)
                 alpha = max(0.0, min(1.0, float(getattr(scene, "water_alpha", 0.72))))
-                self._water_program["u_color"].value = (*WATER_TINT_RGB, alpha)
+                tint = getattr(scene, "water_tint", DEFAULT_WATER_TINT)
+                self._water_program["u_color"].value = (*tint, alpha)
                 ctx.enable(ctx.BLEND)
                 ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
                 try:
@@ -2048,8 +2098,8 @@ class PerspectiveRenderer:
         self._program["u_view"].write(view_data)
         self._program["u_proj"].write(proj_data)
         self._program["u_sun_dir"].value = sun_direction
-        self._program["u_ambient_light"].value = AMBIENT_LIGHT
-        self._program["u_diffuse_light"].value = DIFFUSE_LIGHT
+        self._program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
+        self._program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
         self._program["u_use_mesh_uv"].value = True
         self._program["u_use_texture"].value = True
         if "u_texture" in self._program:
@@ -2190,7 +2240,14 @@ class PerspectiveRenderer:
         self._ground_texture_path = path
 
     def _render_sky(
-        self, ctx: moderngl.Context, view_data: bytes, proj_data: bytes, *, sun_direction
+        self,
+        ctx: moderngl.Context,
+        view_data: bytes,
+        proj_data: bytes,
+        *,
+        sun_direction,
+        horizon: tuple[float, float, float] = DEFAULT_SKY_HORIZON_COLOR,
+        zenith: tuple[float, float, float] = DEFAULT_SKY_ZENITH_COLOR,
     ) -> None:
         """Paint the sky before anything else in the frame.
 
@@ -2205,8 +2262,8 @@ class PerspectiveRenderer:
             return
         self._sky_program["u_view"].write(view_data)
         self._sky_program["u_proj"].write(proj_data)
-        self._sky_program["u_horizon"].value = SKY_HORIZON_COLOR
-        self._sky_program["u_zenith"].value = SKY_ZENITH_COLOR
+        self._sky_program["u_horizon"].value = horizon
+        self._sky_program["u_zenith"].value = zenith
         self._sky_program["u_sun_dir"].value = sun_direction
         ctx.disable(ctx.DEPTH_TEST)
         try:
@@ -2272,8 +2329,8 @@ class PerspectiveRenderer:
         program["u_height_range"].value = tuple(scene.terrain_height_range)
         program["u_repeats"].value = TERRAIN_TEXTURE_REPEATS
         program["u_sun_dir"].value = sun_direction
-        program["u_ambient_light"].value = AMBIENT_LIGHT
-        program["u_diffuse_light"].value = DIFFUSE_LIGHT
+        program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
+        program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
         for index, texture in enumerate(self._terrain_textures):
             texture.use(location=index)
         assert self._terrain_texture_vao is not None
@@ -2412,8 +2469,8 @@ class PerspectiveRenderer:
         self._terrain_fill_program["u_height_min"].value = self._terrain_height_range[0]
         self._terrain_fill_program["u_height_max"].value = self._terrain_height_range[1]
         self._terrain_fill_program["u_sun_dir"].value = sun_direction
-        self._terrain_fill_program["u_ambient_light"].value = AMBIENT_LIGHT
-        self._terrain_fill_program["u_diffuse_light"].value = DIFFUSE_LIGHT
+        self._terrain_fill_program["u_ambient_light"].value = AMBIENT_LIGHT * self._light_level
+        self._terrain_fill_program["u_diffuse_light"].value = DIFFUSE_LIGHT * self._light_level
         self._terrain_fill_vao.render()
 
     def _upload_parcel_borders(self, ctx: moderngl.Context, scene: Scene) -> None:

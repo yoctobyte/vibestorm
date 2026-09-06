@@ -83,7 +83,9 @@ from vibestorm.udp.messages import (
     WearableCacheEntry,
     encode_agent_cached_texture,
     encode_agent_is_now_wearing,
+    encode_agent_request_sit,
     encode_agent_set_appearance,
+    encode_agent_sit,
     encode_agent_throttle,
     encode_agent_update,
     encode_agent_wearables_request,
@@ -95,8 +97,6 @@ from vibestorm.udp.messages import (
     encode_improved_instant_message,
     encode_logout_request,
     encode_map_block_request,
-    encode_agent_request_sit,
-    encode_agent_sit,
     encode_object_add,
     encode_object_attach,
     encode_object_delete,
@@ -108,6 +108,7 @@ from vibestorm.udp.messages import (
     encode_packet_ack,
     encode_parcel_properties_request,
     encode_region_handshake_reply,
+    encode_remove_task_inventory,
     encode_request_multiple_objects,
     encode_request_object_properties_family,
     encode_request_task_inventory,
@@ -115,7 +116,6 @@ from vibestorm.udp.messages import (
     encode_rez_script,
     encode_teleport_location_request,
     encode_transfer_request,
-    encode_remove_task_inventory,
     encode_update_task_inventory,
     encode_use_circuit_code,
     packed_quaternion_yaw,
@@ -133,8 +133,8 @@ from vibestorm.udp.messages import (
     parse_improved_terse_object_update,
     parse_kick_user,
     parse_kill_object,
-    parse_logout_reply,
     parse_layer_data,
+    parse_logout_reply,
     parse_map_block_reply,
     parse_object_animation,
     parse_object_update,
@@ -168,6 +168,10 @@ from vibestorm.udp.template import (
     decode_message_number,
 )
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
+from vibestorm.world.environment import (
+    EnvironmentError,
+    parse_environment_document,
+)
 from vibestorm.world.extra_params import (
     EXTRA_PARAM_LIGHT,
     EXTRA_PARAM_MESH_FLAGS,
@@ -392,6 +396,11 @@ class LiveCircuitSession:
     caps_udp_listen_port: int | None = None
     baked_appearance_override: BakedAppearanceOverride | None = None
     upload_baked_url: str | None = None
+    #: The region's own sky and water. Fetched once, after arriving: the
+    #: capability answers 503 until the agent is actually in the region, which
+    #: reads like a broken URL rather than like being early.
+    ext_environment_url: str | None = None
+    environment_fetched: bool = False
     get_mesh_url: str | None = None
     get_texture_url: str | None = None
     viewer_asset_url: str | None = None
@@ -3296,6 +3305,23 @@ async def run_live_session(
                 for packet in session.drain_due_packets(loop.time()):
                     await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
 
+            # Deferred environment fetch: the region's own sky and water.
+            # Once per session, and only after arriving -- the capability
+            # answers 503 to an agent that is not in the region yet, which
+            # reads like a broken URL rather than like being early.
+            if (
+                session.ext_environment_url is not None
+                and session.movement_completed
+                and not session.environment_fetched
+            ):
+                session.environment_fetched = True
+                await _fetch_region_environment(
+                    session,
+                    session.ext_environment_url,
+                    session.caps_udp_listen_port,
+                    loop.time(),
+                )
+
             # Deferred map tile fetch: triggered once per session after
             # MapBlockReply has been parsed and the GetTexture CAP is known.
             if (
@@ -3472,6 +3498,43 @@ _APPEARANCE_FIXTURE = _BAKED_CACHE_DIR / "appearance-fixture.json"
 _MAP_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "map-cache"
 _TEXTURE_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "texture-cache"
 _MESH_CACHE_DIR = Path(__file__).parent.parent.parent.parent / "local" / "mesh-cache"
+
+
+async def _fetch_region_environment(
+    session: LiveCircuitSession,
+    cap_url: str,
+    local_port: int | None,
+    now: float,
+) -> None:
+    """Fetch and store the region's day cycle. Failure is recorded, not raised.
+
+    A region whose environment cannot be read is still a region worth drawing:
+    the scene falls back to the colours this client picked by eye, which is
+    what every region got before this existed.
+    """
+    client = CapabilityClient(timeout_seconds=10.0)
+    try:
+        document = await client.fetch_capability_value(
+            cap_url, udp_listen_port=local_port
+        )
+    except CapabilityError as exc:
+        session._record_event(now, "environment.fetch.error", str(exc))
+        return
+    try:
+        environment = parse_environment_document(document)
+    except EnvironmentError as exc:
+        session._record_event(now, "environment.parse.error", str(exc))
+        return
+    session.world_view.environment = environment
+    session._record_event(
+        now,
+        "environment.ok",
+        (
+            f"region={environment.region_id} day={environment.day_length:.0f}s "
+            f"offset={environment.day_offset:.0f}s sky_keys={len(environment.sky_track)} "
+            f"water_keys={len(environment.water_track)}"
+        ),
+    )
 
 
 async def _fetch_and_cache_region_map(
@@ -4023,6 +4086,7 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         "GetMesh",
         "GetMesh2",
         "GetTexture",
+        "ExtEnvironment",
     ]
 
     session._record_event(now, "caps.seed.start", f"udp_port={local_port}")
@@ -4146,6 +4210,15 @@ async def _run_caps_prelude(session: LiveCircuitSession, sock: socket.socket, no
         session._record_event(now, "map.get_texture_url_ready", "tile fetch deferred until MapBlockReply")
     else:
         session._record_event(now, "map.skip", "GetTexture CAP not resolved")
+
+    ext_environment_url = resolved.get("ExtEnvironment")
+    if ext_environment_url:
+        session.ext_environment_url = ext_environment_url
+        session._record_event(
+            now, "environment.url_ready", "fetch deferred until the agent is in the region"
+        )
+    else:
+        session._record_event(now, "environment.skip", "ExtEnvironment CAP not resolved")
 
     object_physics_url = resolved.get("GetObjectPhysicsData")
     if object_physics_url and session.config.fetch_object_physics:

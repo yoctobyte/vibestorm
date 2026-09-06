@@ -3125,3 +3125,224 @@ class MipmapGLTests(_GLTestBase):
         finally:
             renderer.clear_caches()
 
+
+
+class RegionWeatherGLTests(_GLTestBase):
+    """The region's day cycle reaching actual pixels.
+
+    Everything else about this path is arithmetic that can be checked without a
+    GPU. What cannot is whether the numbers are *plumbed* -- a derivation that
+    is perfect and never reaches a uniform draws exactly the sky it did before,
+    and every unit test still passes.
+    """
+
+    def _scene_at(self, day_fraction: float):
+        from pathlib import Path
+
+        from vibestorm.caps.llsd import parse_xml_value
+        from vibestorm.viewer3d.scene import Scene
+        from vibestorm.world.environment import parse_environment_document
+        from vibestorm.world.models import SimulatorTimeSnapshot, WorldView
+
+        view = WorldView()
+        view.environment = parse_environment_document(
+            parse_xml_value(
+                Path("test/fixtures/environment/ext-environment-opensim.xml").read_bytes()
+            )
+        )
+        length, offset = 14400, 57600
+        view.latest_time = SimulatorTimeSnapshot(
+            usec_since_start=int(((day_fraction * length) - offset) % length) * 1_000_000,
+            sec_per_day=length,
+            sec_per_year=31536000,
+            sun_phase=0.0,
+            sun_direction=(0.0, 0.0, 0.0),
+        )
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        return scene
+
+    #: Where the sky camera looks: high, and west, away from the morning sun.
+    #:
+    #: Not *straight* up, which is the obvious choice and a trap -- `look_at`
+    #: crosses the view direction with the world up, and a view along the up
+    #: axis makes that cross product zero. The matrix collapses and the frame
+    #: quietly shows the horizon instead, which is a plausible sky and the
+    #: wrong one to be measuring.
+    SKY_EYE = (128.0, 128.0, 30.0)
+    SKY_TARGET = (110.6, 128.0, 128.5)
+
+    def _sky_pixel(self, scene) -> tuple[int, int, int, int]:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(
+            mode="eye", eye_position=self.SKY_EYE, target=self.SKY_TARGET
+        )
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+        finally:
+            renderer.clear_caches()
+
+    def _expected_sky(self, scene) -> tuple[float, float, float]:
+        """What the shader's gradient makes of the two colours in this view.
+
+        `mix(horizon, zenith, sqrt(dir.z))`, spelled out here rather than
+        borrowed, so the assertion is about the plumbing and not about the two
+        sides agreeing with each other.
+        """
+        direction = [b - a for a, b in zip(self.SKY_EYE, self.SKY_TARGET, strict=True)]
+        length = math.sqrt(sum(c * c for c in direction))
+        blend = math.sqrt(max(0.0, min(1.0, direction[2] / length)))
+        return tuple(
+            h + (z - h) * blend
+            for h, z in zip(scene.sky_horizon_color, scene.sky_zenith_color, strict=True)
+        )
+
+    def test_the_night_sky_is_darker_than_the_day_sky(self) -> None:
+        day = self._sky_pixel(self._scene_at(0.5))
+        night = self._sky_pixel(self._scene_at(0.0))
+
+        self.assertGreater(sum(day[:3]), 60, "midday should not be nearly black")
+        self.assertLess(sum(night[:3]), sum(day[:3]) / 2)
+
+    def test_the_drawn_sky_is_the_colour_the_scene_derived(self) -> None:
+        # At 0.3 rather than at noon: at noon the sun is overhead and its glow
+        # is what a high camera would be measuring instead of the gradient.
+        from vibestorm.viewer3d.atmosphere import (
+            DEFAULT_SKY_HORIZON_COLOR,
+            DEFAULT_SKY_ZENITH_COLOR,
+        )
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = self._scene_at(0.3)
+        r, g, b, _ = self._sky_pixel(scene)
+
+        for index, drawn in enumerate((r, g, b)):
+            self.assertAlmostEqual(
+                drawn, round(self._expected_sky(scene)[index] * 255), delta=6
+            )
+
+        # And it is not the sky this viewer drew before the region was asked.
+        before = Scene()
+        before.sky_horizon_color = DEFAULT_SKY_HORIZON_COLOR
+        before.sky_zenith_color = DEFAULT_SKY_ZENITH_COLOR
+        self.assertGreater(
+            sum(
+                abs(round(a * 255) - round(b * 255))
+                for a, b in zip(
+                    self._expected_sky(scene), self._expected_sky(before), strict=True
+                )
+            ),
+            20,
+        )
+
+    def test_the_water_takes_the_regions_colour(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        scene = self._scene_at(0.5)
+        scene.render_sky = False  # water over the clear colour, not over sky
+        camera = Camera3D(
+            target=(128.0, 128.0, 0.0),
+            distance=200.0,
+            yaw=0.0,
+            pitch=math.pi / 2 - 0.1,
+        )
+        camera.set_mode("orbit")
+
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+        finally:
+            renderer.clear_caches()
+
+        alpha = scene.water_alpha
+        for index, drawn in enumerate((r, g, b)):
+            self.assertAlmostEqual(
+                drawn, round(scene.water_tint[index] * alpha * 255), delta=12
+            )
+
+    def test_the_sun_is_drawn_where_the_day_cycle_puts_it(self) -> None:
+        # Looking east at dawn should find the sun's glow; looking west at the
+        # same moment should not. Before this the sun sat in one fixed spot
+        # whatever the region or the hour.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        scene = self._scene_at(0.125)
+
+        def brightness(target: tuple[float, float, float]) -> int:
+            camera = Camera3D(
+                mode="eye", eye_position=(128.0, 128.0, 30.0), target=target
+            )
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                pixel = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+            finally:
+                renderer.clear_caches()
+            return sum(pixel[:3])
+
+        # The dawn sun sits at +5.4 degrees, due east.
+        east = brightness((228.0, 128.0, 39.5))
+        west = brightness((28.0, 128.0, 39.5))
+
+        self.assertGreater(east, west * 1.5)
+
+    def test_the_ground_goes_dark_at_night_too(self) -> None:
+        # The sky dimmed before this and nothing under it did, so a region at
+        # midnight was a black sky over a field in full sun.
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        from vibestorm.viewer3d.scene import SceneEntity
+
+        def ground(day_fraction: float) -> int:
+            # A white prim rather than the terrain: an empty scene has no
+            # heightmap, so nothing would draw and both readings would be the
+            # clear colour, agreeing perfectly and saying nothing.
+            scene = self._scene_at(day_fraction)
+            scene.render_sky = False
+            scene.render_water = False
+            scene.object_entities[1] = SceneEntity(
+                local_id=1,
+                pcode=9,
+                kind="prim",
+                position=(128.0, 128.0, 25.0),
+                scale=(4.0, 4.0, 4.0),
+                rotation=(0.0, 0.0, 0.0, 1.0),
+                rotation_z_radians=0.0,
+                shape=None,
+                default_texture_id=None,
+                name=None,
+                tint=(255, 255, 255),
+            )
+            camera = Camera3D(
+                target=(128.0, 128.0, 25.0),
+                distance=12.0,
+                yaw=0.0,
+                pitch=0.3,
+            )
+            camera.set_mode("orbit")
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                pixel = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
+            finally:
+                renderer.clear_caches()
+            return sum(pixel[:3])
+
+        day = ground(0.5)
+        night = ground(0.0)
+
+        self.assertGreater(day, 30, "the ground should be lit at midday")
+        self.assertLess(night, day / 2)
+        self.assertGreater(night, 0, "and not absolutely black -- the moon is real")
