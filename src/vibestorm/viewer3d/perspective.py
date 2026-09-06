@@ -770,6 +770,30 @@ void main() {
 }
 """
 
+#: The sun as the sky draws it, as GLSL, shared with the water shader.
+#:
+#: One string in two programs rather than two copies, and for the same reason
+#: `sky_at_height` is the same expression in both: the sea is showing that sky
+#: back, so any disagreement between the two draws as a second sun in the
+#: water sitting beside the reflection of the real one.
+#:
+#: The disc is at the size the region asked for, through `sun_scale`. The haze
+#: around it does not scale with it -- that is `glow`, which is parsed nowhere
+#: and identical in all eight of the default cycle's keyframes, so there is no
+#: evidence in this document for which way either of its two numbers runs, and
+#: a guess dressed as a reading is worse than an honest constant.
+_SUN_IN_SKY_GLSL = """
+vec3 sun_in_sky(vec3 dir, vec3 sun_dir, vec2 disc) {
+    // Pure falloff on the angle to the light direction the day cycle gives
+    // us -- no disc geometry, so it costs one dot product.
+    float alignment = max(dot(dir, sun_dir), 0.0);
+    return vec3(1.0, 0.95, 0.80) * smoothstep(disc.x, disc.y, alignment)
+        + vec3(1.0, 0.90, 0.72) * pow(alignment, 18.0) * 0.28;
+}
+"""
+
+
+
 _SKY_FRAGMENT_SHADER = """
 #version 330
 
@@ -817,6 +841,8 @@ out vec4 frag_color;
 // independent, which is the whole point: the stars have to sit still on the
 // celestial sphere while the camera turns under them, and a hash of the *cell*
 // rather than of the screen does that for free.
+__SUN_IN_SKY_GLSL__
+
 float cell_hash(vec3 cell) {
     vec3 p = fract(cell * 0.1031 + vec3(0.1031, 0.1030, 0.0973));
     p += dot(p, p.yzx + 33.33);
@@ -1023,20 +1049,12 @@ void main() {
         rgb = mix(rgb, u_cloud_color, cover);
     }
 
-    // The sun, and the haze around it. Both are pure falloff on the angle to
-    // the light direction the day cycle gives us -- no disc geometry, so it
-    // costs one dot product. Drawn after the clouds, so a cloud in front of
-    // the sun still glows rather than reading as a hole.
-    float alignment = max(dot(dir, normalize(u_sun_dir)), 0.0);
-    // The disc, at the size the region asked for. The 900th power this
-    // replaces was the same size and no size at all: nothing could change it.
-    rgb += vec3(1.0, 0.95, 0.80) * smoothstep(u_sun_disc.x, u_sun_disc.y, alignment);
-    // The haze around it does not scale with it. That is `glow`, which is
-    // parsed nowhere and identical in all eight of the default cycle's
-    // keyframes, so there is no evidence in this document for which way
-    // either of its two numbers runs -- and a guess dressed as a reading is
-    // worse than an honest constant.
-    rgb += vec3(1.0, 0.90, 0.72) * pow(alignment, 18.0) * 0.28;
+    // The sun and the haze around it, drawn after the clouds so a cloud in
+    // front of the sun still glows rather than reading as a hole. The same
+    // expression the sea reflects; see `_SUN_IN_SKY_GLSL`. The disc is at the
+    // size the region asked for -- the 900th power this replaced was the same
+    // size and no size at all, since nothing could change it.
+    rgb += sun_in_sky(dir, normalize(u_sun_dir), u_sun_disc);
 
     frag_color = vec4(clamp(mix(u_water_fog, rgb, clarity), 0.0, 1.0), 1.0);
 }
@@ -1049,6 +1067,7 @@ _SKY_FRAGMENT_SHADER = (
     _SKY_FRAGMENT_SHADER.replace("CLOUD_EDGE_LOW", f"{CLOUD_EDGE_LOW:.6f}")
     .replace("CLOUD_EDGE_HIGH", f"{CLOUD_EDGE_HIGH:.6f}")
     .replace("__CLOUD_NOISE_CELLS__", f"{CLOUD_NOISE_CELLS_PER_TILE:f}")
+    .replace("__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL)
 )
 
 #: A quad in clip space. Two triangles rather than the usual oversized single
@@ -1190,6 +1209,10 @@ uniform vec3 u_water_depth;
 // standing in for.
 uniform sampler2D u_water_normals;
 uniform float u_water_mapped;
+// Where the sun is and how large the region draws it. The same two the sky
+// pass is given, because this is that sky reflected.
+uniform vec3 u_sun_dir;
+uniform vec2 u_sun_disc;
 
 in vec3 v_world;
 out vec4 frag_color;
@@ -1204,6 +1227,8 @@ out vec4 frag_color;
 vec3 sky_at_height(float height) {
     return mix(u_horizon, u_zenith, sqrt(clamp(height, 0.0, 1.0)));
 }
+
+__SUN_IN_SKY_GLSL__
 
 // One wave's contribution to the slope of the surface: the derivative of a
 // sine along the direction it runs in, faded by how legible it still is.
@@ -1376,9 +1401,22 @@ void main() {
         frag_color = vec4(clamp(u_water_fog, 0.0, 1.0), mirror);
         return;
     }
-    vec3 rgb = mix(
-        u_color.rgb, sky_at_height(2.0 * facing * normal.z - view.z), mirror
-    );
+    // The reflected ray, in full this time. The gradient only ever wanted its
+    // height, and for a long while that was all that was worked out -- but the
+    // sun is a direction in the sky and not a height in it, and the sun in the
+    // water is the one thing anyone recognises a sea by.
+    vec3 reflected = 2.0 * facing * normal - view;
+    vec3 rgb = mix(u_color.rgb, sky_at_height(reflected.z), mirror);
+    // Glitter. Not a specular model and deliberately not: it is the sun the
+    // sky pass draws, at the size the region asked for, seen in a mirror --
+    // the same argument as `sky_at_height` above, one step further. What
+    // breaks it into a glittering path rather than one round highlight is the
+    // surface, which is the region's own normal map; six sines gave a row of
+    // repeating blobs instead.
+    //
+    // Weighted by `mirror` like everything else reflected here, so the track
+    // widens and brightens toward the horizon the way the sky does.
+    rgb += sun_in_sky(reflected, normalize(u_sun_dir), u_sun_disc) * mirror;
 
     // Distant sea becomes the sky it meets. Without this the horizon is a
     // hard line -- measured at sixty-seven levels of jump from a camera three
@@ -1395,7 +1433,19 @@ void main() {
     float haze = smoothstep(
         __WATER_HAZE_NEAR__, __WATER_HAZE_FAR__, length(ground - u_eye.xy)
     );
-    rgb = mix(rgb, u_horizon, haze);
+    // What it becomes is the sky *along this pixel's own bearing*, at the
+    // horizon: the gradient there is `u_horizon` everywhere, but the sun is
+    // not, and mixing to the bare horizon colour puts the far sea a few
+    // levels under the sky right above it -- a seam along the whole horizon
+    // wherever the sun is low. Which is the same wall this haze exists to
+    // remove, arriving by another route.
+    rgb = mix(
+        rgb,
+        u_horizon + sun_in_sky(
+            normalize(vec3(-view.xy, 0.0)), normalize(u_sun_dir), u_sun_disc
+        ),
+        haze
+    );
     // The opacity goes with both. Reflected light does not come from under the
     // surface, so a stretch of water showing back a lot of sky hides what is
     // beneath it; and at the horizon there is nothing beneath it but sky, so
@@ -1424,6 +1474,8 @@ void main() {
     "__WAVE_SLOPE_TOTAL__", f"{WAVE_SLOPE_TOTAL:f}"
 ).replace(
     "__WATER_RIPPLES_PER_TILE__", f"{WATER_NORMAL_RIPPLES_PER_TILE:f}"
+).replace(
+    "__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL
 )
 
 _WATER_INDICES: tuple[int, ...] = (
@@ -2147,6 +2199,12 @@ class PerspectiveRenderer:
                 )
                 self._water_program["u_fresnel"].value = getattr(
                     scene, "water_fresnel", DEFAULT_WATER_FRESNEL
+                )
+                # The same two the sky pass is handed, off the same scene:
+                # what the sea reflects has to be the sky that is drawn.
+                self._water_program["u_sun_dir"].value = sun_direction
+                self._water_program["u_sun_disc"].value = getattr(
+                    scene, "sun_disc", DEFAULT_SUN_DISC
                 )
                 ctx.enable(ctx.BLEND)
                 ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)

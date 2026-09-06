@@ -249,6 +249,27 @@ class PerspectiveRendererInstanceGrowthTests(_GLTestBase):
         self.assertIsNone(renderer._water_vao)
 
 
+def _sun_in_sky(direction, scene) -> tuple[float, float, float]:
+    """`_SUN_IN_SKY_GLSL` in Python: the disc and the haze around it.
+
+    The sky pass and the water pass are handed one copy of this expression so
+    that the sun in the water is the sun in the sky. This is a third copy, and
+    it is here for the same reason the rest of `_flat_sea_pixel` is: to say
+    what the shader has to draw rather than to remember what it drew.
+    """
+    from vibestorm.viewer3d.perspective import DEFAULT_SUN_DISC, lighting_direction
+
+    sun = lighting_direction(scene)
+    alignment = max(0.0, sum(a * b for a, b in zip(direction, sun, strict=True)))
+    low, high = getattr(scene, "sun_disc", DEFAULT_SUN_DISC)
+    disc = _smoothstep(low, high, alignment)
+    haze = alignment**18.0 * 0.28
+    return tuple(
+        edge * disc + glow * haze
+        for edge, glow in zip((1.0, 0.95, 0.80), (1.0, 0.90, 0.72), strict=True)
+    )
+
+
 def _flat_sea_pixel(camera, scene) -> tuple[float, float, float, float]:
     """What the shader has to draw where the centre ray meets the sea.
 
@@ -290,6 +311,15 @@ def _flat_sea_pixel(camera, scene) -> tuple[float, float, float, float]:
     rgb = tuple(
         fog + (reflected - fog) * mirror
         for fog, reflected in zip(scene.water_fog, sky, strict=True)
+    )
+    # And the sun in that sky, off the same flat surface: the reflected ray is
+    # the view with its height turned over.
+    reflected_ray = (forward[0], forward[1], -forward[2])
+    rgb = tuple(
+        channel + glint * mirror
+        for channel, glint in zip(
+            rgb, _sun_in_sky(reflected_ray, scene), strict=True
+        )
     )
     haze = _smoothstep(WATER_HAZE_NEAR_M, WATER_HAZE_FAR_M, ground_distance)
     rgb = tuple(
@@ -2742,6 +2772,30 @@ class SeaHorizonGLTests(_GLTestBase):
 
         self.assertLess(self._worst_step(column, 120, 175), 30)
 
+    def test_a_low_sun_does_not_put_the_wall_back(self) -> None:
+        """The same wall, arriving by another route.
+
+        The far sea turns into the sky it meets, and for a long time that was
+        the horizon *colour* -- which is the whole sky at the horizon only
+        while nothing else is drawn there. The sun is drawn there: its haze
+        reaches tens of degrees, so with the sun low the sky just above the
+        horizon is several levels brighter than a sea mixing to the bare
+        gradient, and the line comes back along the entire horizon.
+
+        The sun is put twelve degrees off this camera's bearing and six up:
+        near enough that the haze along the horizon is most of its strength,
+        far enough that the disc itself is outside a column three degrees
+        wide. Measured, the step across the horizon is 42 levels when the far
+        water mixes to the bare gradient and 17 when it mixes to the sky that
+        is actually drawn there.
+        """
+        scene = self._sea_scene()
+        scene.sun_direction = (0.5416, 0.8341, 0.1045)
+
+        column = self._column(scene)
+
+        self.assertLess(self._worst_step(column, 120, 175), 30)
+
     def test_the_sea_close_by_is_still_the_sea(self) -> None:
         """The haze must not eat the water at the viewer's feet.
 
@@ -3523,6 +3577,101 @@ class SeaSurfaceGLTests(_GLTestBase):
             crossings, 5, f"the map tiles too coarsely: {crossings}"
         )
         self.assertLessEqual(crossings, 9, f"the map tiles too finely: {crossings}")
+
+    # -- the sun in the water ----------------------------------------------
+
+    #: A sun low enough to be reflected along the `GRAZING` camera's bearing,
+    #: eleven degrees over the horizon and due east, which is where that
+    #: camera looks.
+    LOW_SUN = (0.981, 0.0, 0.192)
+
+    def _sunlit(self, sun, *, mapped: bool = True):
+        """A frame of the sea with the sun in the given direction.
+
+        The sky quad is off as everywhere in this class, so what is read is
+        the water pass alone: any brightness in the frame arrived through the
+        surface rather than past it.
+        """
+        scene = self._mapped(self._scene()) if mapped else self._scene()
+        scene.sun_direction = sun
+        # The sea's own colour black, so the only thing that can light this
+        # frame is what the surface shows back.
+        scene.water_fog = (0.0, 0.0, 0.0)
+        scene.sky_horizon_color = (0.0, 0.0, 0.0)
+        scene.sky_zenith_color = (0.0, 0.0, 0.0)
+        return self._frame(scene, *self.GRAZING)
+
+    def _brightness(self, frame) -> float:
+        width, height = self.FBO_SIZE
+        return statistics.fmean(
+            max(frame[i], frame[i + 1], frame[i + 2])
+            for i in range(0, width * height * 4, 4)
+        )
+
+    def test_the_sea_shows_the_sun_back(self) -> None:
+        """Sun glitter, which is the most recognisable thing about a sea.
+
+        Not a specular model: it is the sun the sky pass draws, at the size
+        the region asked for, seen in a mirror -- one GLSL string in both
+        programs, so the sun in the water cannot drift from the sun in the
+        sky.
+        """
+        toward = self._sunlit(self.LOW_SUN)
+        away = self._sunlit((-self.LOW_SUN[0], 0.0, self.LOW_SUN[2]))
+
+        # Six and a half levels averaged over the whole frame, against a sea
+        # with the sun behind it that is exactly black.
+        self.assertGreater(
+            self._brightness(toward) - self._brightness(away),
+            3.0,
+            "the sea does not show the sun back",
+        )
+
+    def test_the_glitter_is_a_mirror_and_not_a_light(self) -> None:
+        """Which direction the sun is asked about, and it is not the view's.
+
+        A sun below the horizon has nothing above the water to be reflected,
+        so the sea must be dark -- while a shader that took the angle between
+        the *view* and the sun would light it fully, since the camera is
+        looking almost straight at where that sun is.
+        """
+        above = self._sunlit(self.LOW_SUN)
+        below = self._sunlit((self.LOW_SUN[0], 0.0, -self.LOW_SUN[2]))
+
+        self.assertGreater(
+            self._brightness(above) - self._brightness(below),
+            3.0,
+            "the sun is being taken off the view rather than the reflection",
+        )
+        # Not quite nothing: this sea leans by 0.4 at the steepest, which is
+        # enough for a few faces to point at a sun a tenth of that under the
+        # horizon. A shader reading the view would light the whole frame.
+        self.assertLess(
+            self._brightness(below), 3.0, "a sun under the sea is lighting it"
+        )
+
+    def test_the_sun_in_the_water_is_the_size_the_region_asks_for(self) -> None:
+        """`sun_scale` reaches the sea as well as the sky.
+
+        The disc's two cosines are handed to the water pass unchanged, so a
+        region that draws a larger sun lays a wider track on its water.
+        """
+        scene = self._mapped(self._scene())
+        scene.sun_direction = self.LOW_SUN
+        scene.water_fog = (0.0, 0.0, 0.0)
+        scene.sky_horizon_color = (0.0, 0.0, 0.0)
+        scene.sky_zenith_color = (0.0, 0.0, 0.0)
+
+        scene.sun_disc = (math.cos(0.30), math.cos(0.24))
+        wide = self._frame(scene, *self.GRAZING)
+        scene.sun_disc = (math.cos(0.05), math.cos(0.04))
+        narrow = self._frame(scene, *self.GRAZING)
+
+        self.assertGreater(
+            self._brightness(wide) - self._brightness(narrow),
+            10.0,
+            "the sea draws its own sun rather than the region's",
+        )
 
     def test_ripples_too_small_to_draw_are_not_drawn(self) -> None:
         """The one artefact that reads as a broken renderer.

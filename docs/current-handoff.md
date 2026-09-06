@@ -236,6 +236,54 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- there is a sun in the water (2026-09-06).** The gap the handoff has
+been naming for three passes: *"a specular highlight off the wave crests is the
+most recognisable thing about the SL sea from a low camera, and nothing draws
+one."* There is one now, and it is not a specular model.
+
+It is the sun the sky pass already draws, seen in a mirror. `_SUN_IN_SKY_GLSL`
+is one string compiled into both programs -- the disc at the size `sun_scale`
+asks for, and the haze around it -- so the sun in the water cannot drift from
+the sun in the sky. That is the same argument `sky_at_height` was factored out
+for one pass ago, taken one step further, and it is the reason there is no
+shininess constant anywhere in this: **a mirror does not need a reflection
+model, it needs the thing being reflected.**
+
+What it cost the shader was the reflected ray. The water pass had been working
+out only its *height*, because that is all a vertical gradient wants; a sun is
+a direction and not a height, so `reflect` is computed in full now. Three
+multiplies.
+
+**And what breaks one round highlight into a glittering path is the region's
+own normal map**, which landed in the pass above. Drawn on the sines it is a
+line of repeating blobs; drawn on the map it is flakes, converging toward the
+sun and widening toward the viewer, which is what a sea looks like.
+
+**The wall at the horizon came back, by another route.** The far sea turns into
+the sky it meets, and "the sky it meets" had been the horizon *colour* -- which
+is the whole sky at the horizon only for as long as nothing else is drawn
+there. The sun is drawn there, and its haze reaches tens of degrees, so a low
+sun put the far water several levels under the sky directly above it: a line
+along the entire horizon, the exact defect the haze exists to remove. The far
+sea now mixes toward the horizon colour *plus the sun along this pixel's own
+bearing*. Measured on a column three degrees wide with the sun twelve degrees
+off it and six degrees up, the step across the horizon is 42 levels the old way
+and 17 the new.
+
+Fourteen mutations, thirteen killed. The survivor is taking that horizon sun
+off the whole view ray rather than off its flattened bearing: haze only reaches
+full strength past nine hundred metres, and from any camera near the water a
+ray that far out is level to within a degree, so the two agree everywhere the
+answer is used. The flattened one stays because it is the one that is *right* --
+the far edge of the plane is at the horizon, and a ray sloping below the
+horizon is asking the sky for a direction the sky does not have.
+
+One thing to know before touching this again: **the sun's own bearing is not a
+usable test camera.** A frame looking straight at a low sun has the disc in it,
+and a disc is a hard edge by design, so any measurement of how smoothly the sea
+meets the sky reads the disc's rim instead. Ten to fifteen degrees off is where
+the haze is still most of its strength and the disc is outside the frame.
+
 **A -- the sea is drawn on the region's own surface (2026-09-06).** The last
 of the three textures the day cycle names. `normal_map` is a 256x256
 tangent-space normal map -- a wind-ripple sheet whose crests run along v and
@@ -1395,13 +1443,14 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      the eighth: the surface is the region's own sheet, laid in each wave's
      frame, with the sines kept as the fallback until it arrives. The
      wavelength and the steepness are still this viewer's constants rather
-     than the region's. There is
-     also no sun glitter: a specular
-     highlight off the wave crests is the most recognisable thing about the SL
-     sea from a low camera, and nothing draws one. Screenshot the sea before
-     believing any change to it -- the GL tests read single pixels, and an
-     interference pattern is the one defect a single pixel cannot see. That is
-     how a lattice in it went unnoticed for a whole pass.
+     than the region's. Sun glitter followed in the same pass, and is not a
+     specular model: it is the sun the sky pass draws, off one shared GLSL
+     string, seen in a mirror. What is left here is `transparent_texture` --
+     a fourth asset id in the water frame that nothing parses; it fetches, and
+     it is an opaque blue sheet rather than anything transparent. Screenshot
+     the sea before believing any change to it -- the GL tests read single
+     pixels, and an interference pattern is the one defect a single pixel
+     cannot see. That is how a lattice in it went unnoticed for a whole pass.
    - ~~**Under the water.**~~ Done in the seventh pass: every pass that draws
      the world fogs, the sky comes through the surface only where the water is
      thin enough, and the surface from below is a ceiling. `blur_multiplier`
