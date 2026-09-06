@@ -97,14 +97,6 @@ CLOUD_SCALE_METRES: float = 2400.0
 #: makes the two read at the same size.
 CLOUD_NOISE_CELLS_PER_TILE: float = 9.2
 
-#: Where the coverage numbers land on the noise.
-#:
-#: `cloud_pos_density1`'s third component runs 0.88 to 1.0 across the default
-#: cycle. Taken literally as "this fraction of the sky is cloud" that is
-#: permanent overcast, which is not what the default sky looks like -- because
-#: in the document it multiplies a *texture*, and the texture is what has the
-#: holes in it. With no texture fetched, the noise stands in for it and these
-#: two say where its edge falls.
 #: What one unit of `cloud_scroll_rate` means, in tile widths per second.
 #:
 #: The rate is a bare pair of numbers with no unit in the document. At one
@@ -112,6 +104,16 @@ CLOUD_NOISE_CELLS_PER_TILE: float = 9.2
 #: at this it moves the layer just under a metre a second, which is weather.
 CLOUD_DRIFT_PER_SECOND: float = 0.00185
 
+#: Where the coverage numbers land on the *noise*, which is the stand-in drawn
+#: until `cloud_id` arrives.
+#:
+#: `cloud_pos_density1`'s third component runs 0.88 to 1.0 across the default
+#: cycle. Taken literally as "this fraction of the sky is cloud" that is
+#: permanent overcast, which is not what the default sky looks like -- because
+#: in the document it multiplies a *texture*, and the texture is what has the
+#: holes in it. The noise has none, being a field of smooth hills, so these two
+#: say where its edge falls. With the texture in hand the density is simply the
+#: coverage and neither of these is read.
 CLOUD_EDGE_LOW: float = 0.46
 CLOUD_EDGE_HIGH: float = 0.78
 
@@ -487,9 +489,9 @@ def moon_level(sky: SkySettings) -> float:
 def cloud_cover(sky: SkySettings) -> tuple[float, float]:
     """How much coarse and fine cloud there is, both 0 to 1.
 
-    The third component of each `cloud_pos_density` pair. The other two are an
-    offset into a cloud texture this tree has never fetched, so they are
-    parsed and not used.
+    The third component of each `cloud_pos_density` pair. The other two are
+    where in `cloud_id` each of the two layers starts, which is `cloud_offsets`
+    below.
     """
     return _clamp(sky.cloud_pos_density1[2]), _clamp(sky.cloud_pos_density2[2])
 

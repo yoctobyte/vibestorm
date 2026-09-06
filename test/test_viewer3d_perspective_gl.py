@@ -2933,12 +2933,13 @@ class SeaSurfaceGLTests(_GLTestBase):
     said one mixture was standing in for both ends of an angle it could not
     measure. It can measure it now.
 
-    `normal_map` is the fifth and is still not used: it names a texture asset
-    nobody here has fetched. Two sines stand in for it, which is why the
-    wavelength and the steepness are constants in `atmosphere` rather than
-    numbers off the wire -- and the tests below are careful to assert what the
-    document *does* decide (which way, how fast, how much sky) rather than the
-    shape, which it does not.
+    `normal_map` is the fifth, and it is used now: it names a texture asset
+    behind the ordinary GetTexture capability, and the sea is drawn on it. The
+    two sines that stood in for it are still here for the seconds before it
+    arrives, which is why the wavelength and the steepness are constants in
+    `atmosphere` rather than numbers off the wire -- and the tests below are
+    careful to assert what the document *does* decide (which way, how fast,
+    how much sky) rather than the shape of the stand-in, which it does not.
 
     Every scene here is opaque and has the sky quad off, so what is read is
     the water pass and nothing behind it.
@@ -4897,6 +4898,207 @@ class MipmapGLTests(_GLTestBase):
 
 
 
+class SeaShowsTheSkyBackGLTests(_GLTestBase):
+    """The sea and the sky in one frame, checked against each other.
+
+    Every other sea test in this file has the sky quad switched off so that
+    what is read back is the water pass and nothing behind it. This one is the
+    opposite: both passes run, and what is asserted is that they agree.
+
+    A camera looking exactly along the horizon makes that checkable without
+    predicting either of them. The ray through a pixel `k` rows below the
+    middle is the ray through the pixel `k` rows above it with its height
+    turned over -- and a flat sea reflects a ray by turning its height over.
+    So the sea at the one row is showing back the sky at the other, and with
+    the surface made a perfect mirror the two pixels have to come out the same
+    colour, whatever is in them.
+
+    That is a stronger statement than any of its pieces: it holds for the
+    gradient, for the sun and for the cloud layer at once, and it fails the
+    moment either pass grows a term the other has not got. Which has now
+    happened twice -- the sun reached the water long after it reached the sky,
+    and the cloud layer later still.
+    """
+
+    FBO_SIZE = (96, 96)
+    WATER_HEIGHT = 20.0
+    #: Two metres over the water and looking dead level, so the horizon falls
+    #: exactly between the two middle rows and row `r` mirrors row `95 - r`.
+    EYE = (128.0, 128.0, 22.0)
+    TARGET = (328.0, 128.0, 22.0)
+    #: Twenty degrees up and along the way the camera points, so the sun and
+    #: its reflection are both in frame and the pair of them is checked too.
+    SUN = (0.9397, 0.0, 0.3420)
+    #: How far in from the top and the bottom of the frame to compare. Not the
+    #: rows beside the horizon: those are looking at sea a long way off, which
+    #: is where the haze turns it into sky by a different route and the mirror
+    #: stops being the whole story. Eight rows in is sea about four metres
+    #: away; twenty-eight rows in is about eight.
+    ROWS = range(8, 28)
+    #: One cloud cell every three hundred metres rather than the default nine
+    #: hundred, so several of them cross the rows being compared.
+    CLOUD_CELL_M = 300.0
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_sky = True
+        scene.water_height = self.WATER_HEIGHT
+        scene.water_alpha = 1.0
+        scene.water_fog = (0.0, 0.0, 0.0)
+        # A perfect mirror at every angle. The sea is then the sky along the
+        # reflected ray and nothing else -- no share of its own colour to
+        # subtract before the two can be compared.
+        scene.water_fresnel = (1.0, 0.0)
+        # Flat, so the reflected ray really is the view with its height turned
+        # over. A ripple would aim each pixel somewhere else in the sky.
+        scene.water_ripple = (*scene.water_ripple[:2], 0.0)
+        scene.sun_direction = self.SUN
+        # Nothing in the sky the sea does not have: the stars and the moon are
+        # drawn by the sky pass alone, and a moon in frame would be a
+        # difference this test could not tell from a bug.
+        scene.star_level = 0.0
+        scene.moon_level = 0.0
+        return scene
+
+    def _clouded(self, scene):
+        scene.render_clouds = True
+        scene.cloud_cover = (0.9, 0.0, 0.0)
+        scene.cloud_color = (0.95, 0.95, 1.0)
+        scene.cloud_scale_drift = (self.CLOUD_CELL_M, 0.0, 0.0)
+        scene.cloud_offsets = (0.0, 0.0, 0.0, 0.0)
+        return scene
+
+    def _frame(self, scene):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(mode="eye", eye_position=self.EYE, target=self.TARGET)
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self.fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+
+    def _row(self, frame, row: int) -> list[tuple[int, int, int]]:
+        """One row of the frame, counted from the bottom as GL reads it."""
+        width, _ = self.FBO_SIZE
+        start = row * width * 4
+        return [
+            tuple(frame[start + x * 4 : start + x * 4 + 3]) for x in range(width)
+        ]
+
+    def _mirrored_pairs(self, frame):
+        """(sea pixel, sky pixel) for every pair of rows across the horizon."""
+        _, height = self.FBO_SIZE
+        for row in self.ROWS:
+            sea = self._row(frame, row)
+            sky = self._row(frame, height - 1 - row)
+            yield from zip(sea, sky, strict=True)
+
+    def _spread(self, frame) -> int:
+        """How much the sea being compared varies, in levels of green.
+
+        A frame with a flat sea in it would pass the comparison below for the
+        wrong reason, so the test says how much sky it is looking at.
+        """
+        greens = [sea[1] for sea, _ in self._mirrored_pairs(frame)]
+        return max(greens) - min(greens)
+
+    def test_the_sea_shows_back_the_sky_the_sky_pass_draws(self) -> None:
+        frame = self._frame(self._clouded(self._scene()))
+
+        self.assertGreater(
+            self._spread(frame),
+            40,
+            "nothing is varying across the sea, so the comparison is vacuous",
+        )
+        worst = max(
+            max(abs(a - b) for a, b in zip(sea, sky, strict=True))
+            for sea, sky in self._mirrored_pairs(frame)
+        )
+        self.assertLessEqual(
+            worst,
+            3,
+            "the sea and the sky disagree about the same direction",
+        )
+
+    def test_the_cloud_layer_reaches_the_sea(self) -> None:
+        """The whole of the above holds with no cloud anywhere, too.
+
+        So this is the half of it the mirror cannot see: that there is a cloud
+        layer in the water at all, rather than two passes agreeing on a clear
+        sky.
+        """
+        clear = self._scene()
+        clear.render_clouds = False
+        overcast = self._clouded(self._scene())
+
+        def greens(frame):
+            return [sea[1] for sea, _ in self._mirrored_pairs(frame)]
+
+        without = greens(self._frame(clear))
+        with_cloud = greens(self._frame(overcast))
+
+        moved = sum(
+            1 for a, b in zip(without, with_cloud, strict=True) if abs(a - b) > 6
+        )
+        self.assertGreater(
+            moved,
+            len(without) // 4,
+            "the region's cloud layer never reached the water",
+        )
+
+    def test_the_sea_fetches_the_cloud_field_for_itself(self) -> None:
+        """With the sky pass off, so nothing else has bound the texture.
+
+        `cloud_id` is a real asset and the water pass reads it on its own
+        sampler. Left to inherit whatever the sky pass bound last, the sea
+        would draw the right thing in every frame that has a sky in it and the
+        terrain in every frame that has not.
+        """
+        import pygame
+
+        def painted(level: int):
+            scene = self._clouded(self._scene())
+            scene.render_sky = False
+            cloud_id = UUID(int=0xC10D)
+            directory = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, directory, True)
+            path = Path(directory) / f"cloud-{level}.png"
+            surface = pygame.Surface((64, 64))
+            surface.fill((level, level, level))
+            pygame.image.save(surface, str(path))
+            scene.cloud_texture_id = cloud_id
+            scene.texture_paths[cloud_id] = path
+            return self._frame(scene)
+
+        # A flat field either way, so the difference cannot be the pattern:
+        # one says the sky is covered and the other says it is clear, and both
+        # of them arrive through the water pass's own sampler.
+        overcast = painted(255)
+        clear = painted(0)
+
+        moved = sum(
+            1
+            for sea, other in zip(
+                (sea for sea, _ in self._mirrored_pairs(overcast)),
+                (sea for sea, _ in self._mirrored_pairs(clear)),
+                strict=True,
+            )
+            if abs(sea[1] - other[1]) > 20
+        )
+        self.assertGreater(
+            moved,
+            len(self.ROWS) * self.FBO_SIZE[0] // 2,
+            "the sea did not read the region's own cloud field",
+        )
+
+
 class RegionWeatherGLTests(_GLTestBase):
     """The region's day cycle reaching actual pixels.
 
@@ -5664,6 +5866,12 @@ class RegionWeatherGLTests(_GLTestBase):
         # Waves off: with them on the centre pixel is on some part of a ripple
         # and the prediction would have to guess which.
         scene.water_ripple = (*scene.water_ripple[:2], 0.0)
+        # Clouds off, for the same reason and one step further: the sea shows
+        # back the cloud layer as well as the sun now, and predicting it here
+        # would mean a fourth copy of three octaves of value noise. What this
+        # test is for is the colour the region asked for, which the clear sky
+        # between the clouds carries just as well.
+        scene.render_clouds = False
         camera = Camera3D(
             target=(128.0, 128.0, 0.0),
             distance=200.0,

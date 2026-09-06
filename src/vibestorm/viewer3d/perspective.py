@@ -793,31 +793,14 @@ vec3 sun_in_sky(vec3 dir, vec3 sun_dir, vec2 disc) {
 }
 """
 
-
-
-_SKY_FRAGMENT_SHADER = """
-#version 330
-
-uniform vec3 u_horizon;
-uniform vec3 u_zenith;
-uniform vec3 u_sun_dir;
-uniform vec3 u_moon_dir;
-uniform float u_moon_level;
-// The cosines of each disc's outer and inner edge -- how large the region
-// asks for the sun and the moon to be drawn.
-uniform vec2 u_sun_disc;
-uniform vec2 u_moon_disc;
-// The two world axes across the moon's face, which is what makes the
-// face have a way up at all. See `moon_face_axes`.
-uniform vec3 u_moon_across;
-uniform vec3 u_moon_up;
-// The moon's own face, and whether one has arrived. `moon_id` is an ordinary
-// texture behind the ordinary GetTexture capability, so the moon is a
-// photograph rather than a disc of one colour -- but it is fetched over the
-// network mid-session, and until it lands there has to be something up there.
-uniform sampler2D u_moon_tex;
-uniform float u_moon_textured;
-uniform float u_star_level;
+#: The region's cloud layer, as GLSL, shared with the water shader.
+#:
+#: The same argument as `_SUN_IN_SKY_GLSL` above and `sky_at_height` below:
+#: the sea is showing this sky back, and two copies of a cloud layer are two
+#: cloud layers the first time either of them moves. It carries its own
+#: uniforms, so a pass that includes it does not have to know what it reads --
+#: only to hand `_bind_cloud_layer` its program.
+_CLOUD_IN_SKY_GLSL = """
 uniform vec3 u_cloud_color;
 // x: coarse coverage, y: fine coverage, z: variance.
 uniform vec3 u_cloud_cover;
@@ -832,59 +815,15 @@ uniform vec4 u_cloud_offsets;
 // x: metres across one cell, y and z: how far the layer has drifted.
 uniform vec3 u_cloud_scale_drift;
 uniform float u_cloud_altitude;
-// The sea's own colour, and (reach, surface height, eye height) -- see the
-// water shader. Only the reach is read here: a viewer under the surface has
-// no sky, and the far wall of the water is what is in its place.
-uniform vec3 u_water_fog;
-uniform vec3 u_water_depth;
 
-in vec3 v_ray;
-
-out vec4 frag_color;
-
-// One float in 0..1 from a cell of the sky. Deterministic and view
-// independent, which is the whole point: the stars have to sit still on the
-// celestial sphere while the camera turns under them, and a hash of the *cell*
-// rather than of the screen does that for free.
-__SUN_IN_SKY_GLSL__
-
-float cell_hash(vec3 cell) {
-    vec3 p = fract(cell * 0.1031 + vec3(0.1031, 0.1030, 0.0973));
-    p += dot(p, p.yzx + 33.33);
-    return fract((p.x + p.y) * p.z);
-}
-
-// A star field, procedural because the document does not name one: unlike
-// `moon_id`, `cloud_id` and the water's `normal_map`, there is no `star_id`
-// in any keyframe of the live cycle, so there is nothing to fetch. The sky is
-// divided into cells, about one in thirty gets a star at a hashed position
-// inside it, and each is a small round falloff.
-float star_field(vec3 dir) {
-    vec3 p = dir * 220.0;
-    vec3 cell = floor(p);
-    float pick = cell_hash(cell);
-    if (pick < 0.966) {
-        return 0.0;
-    }
-    vec3 centre = vec3(
-        cell_hash(cell + 11.0),
-        cell_hash(cell + 23.0),
-        cell_hash(cell + 37.0)
-    );
-    float distance_to = length((p - cell) - centre);
-    // Brightness varies per star, or a field of identical dots reads as a
-    // pattern rather than as a sky.
-    float magnitude = 0.35 + 0.65 * fract(pick * 91.7);
-    return smoothstep(0.18, 0.0, distance_to) * magnitude;
-}
-
-// Value noise on a plane, and the sum of four octaves of it. This is what
-// stands in for `cloud_id`: the document names a cloud texture, nothing here
-// has fetched one, and four octaves of value noise is the shape such a texture
-// holds.
-// Its own hash rather than `cell_hash` above: this one runs four times per
-// octave per pixel across half the screen, and the two-component version is
-// measurably cheaper than packing a vec2 into a vec3 to reuse the other.
+// Value noise on a plane, and the sum of three octaves of it. This is what
+// stands in for `cloud_id` while the texture the document names is still on
+// its way over the network: a few octaves of value noise is the shape such a
+// texture holds.
+// Its own hash rather than the sky pass's `cell_hash`: this one runs four
+// times per octave per pixel across half the screen, and the two-component
+// version is measurably cheaper than packing a vec2 into a vec3 to reuse the
+// other -- and this string is compiled into a pass that has no `cell_hash`.
 float plane_hash(vec2 p) {
     p = fract(p * vec2(0.1031, 0.1030));
     p += dot(p, p.yx + 33.33);
@@ -929,6 +868,131 @@ float cloud_field(vec2 p) {
     return u_cloud_textured > 0.0
         ? texture(u_cloud_tex, p).r
         : cloud_noise(p * __CLOUD_NOISE_CELLS__);
+}
+
+// The cloud layer, over whatever is already being shown in `dir`.
+//
+// A flat layer at a fixed height, hit by the view ray: the further from
+// straight up the ray points, the further across the layer it lands, which
+// is the perspective that makes a flat sheet read as sky rather than as
+// wallpaper. Near the horizon that distance runs away, so the layer fades
+// out before it can alias -- which is also where real cloud disappears
+// into the haze.
+vec3 cloud_over(vec3 base, vec3 dir) {
+    if (u_cloud_cover.x <= 0.0 || dir.z <= 0.001) {
+        return base;
+    }
+    vec2 ground = (dir.xy / dir.z) * u_cloud_altitude;
+    vec2 uv = ground / max(u_cloud_scale_drift.x, 1.0) + u_cloud_scale_drift.yz;
+    // Two layers, each starting where its own `cloud_pos_density` says.
+    // In every keyframe of the default cycle the two offsets are equal,
+    // so this draws one field at the sum of the two densities -- which is
+    // what the document asks for, oddly, and not a reason to invent a
+    // second scale for it to be interesting at.
+    float amount = cloud_field(uv + u_cloud_offsets.xy) * u_cloud_cover.x;
+    // The second layer is a whole extra sample and the default cycle asks
+    // for the third not at all -- `cloud_variance` is 0 in every keyframe
+    // of it. Paying for a field multiplied by zero is a third of the
+    // cloud pass for nothing.
+    if (u_cloud_cover.y > 0.002) {
+        amount += cloud_field(uv + u_cloud_offsets.zw) * u_cloud_cover.y;
+    }
+    if (u_cloud_cover.z > 0.002) {
+        amount += (cloud_field(uv * 0.31 - 7.0) - 0.5) * u_cloud_cover.z;
+    }
+    // The texture is what has the holes in it, so with one in hand the
+    // density is the coverage and nothing has to decide where an edge
+    // falls. The edge band is for the noise, which is a field of smooth
+    // hills with no gaps at all -- without a threshold it draws an even
+    // grey haze rather than clouds with sky between them.
+    float cover = u_cloud_textured > 0.0
+        ? clamp(amount, 0.0, 1.0)
+        : smoothstep(CLOUD_EDGE_LOW, CLOUD_EDGE_HIGH, amount);
+    cover *= smoothstep(0.02, 0.22, dir.z);
+    return mix(base, u_cloud_color, cover);
+}
+"""
+
+# The edge band and the cell count are `atmosphere.py`'s numbers, and GLSL
+# cannot import a Python constant. Substituted once, into the one copy of the
+# layer, so both passes are drawing the same cloud.
+_CLOUD_IN_SKY_GLSL = (
+    _CLOUD_IN_SKY_GLSL.replace("CLOUD_EDGE_LOW", f"{CLOUD_EDGE_LOW:.6f}")
+    .replace("CLOUD_EDGE_HIGH", f"{CLOUD_EDGE_HIGH:.6f}")
+    .replace("__CLOUD_NOISE_CELLS__", f"{CLOUD_NOISE_CELLS_PER_TILE:f}")
+)
+
+
+
+
+_SKY_FRAGMENT_SHADER = """
+#version 330
+
+uniform vec3 u_horizon;
+uniform vec3 u_zenith;
+uniform vec3 u_sun_dir;
+uniform vec3 u_moon_dir;
+uniform float u_moon_level;
+// The cosines of each disc's outer and inner edge -- how large the region
+// asks for the sun and the moon to be drawn.
+uniform vec2 u_sun_disc;
+uniform vec2 u_moon_disc;
+// The two world axes across the moon's face, which is what makes the
+// face have a way up at all. See `moon_face_axes`.
+uniform vec3 u_moon_across;
+uniform vec3 u_moon_up;
+// The moon's own face, and whether one has arrived. `moon_id` is an ordinary
+// texture behind the ordinary GetTexture capability, so the moon is a
+// photograph rather than a disc of one colour -- but it is fetched over the
+// network mid-session, and until it lands there has to be something up there.
+uniform sampler2D u_moon_tex;
+uniform float u_moon_textured;
+uniform float u_star_level;
+// The sea's own colour, and (reach, surface height, eye height) -- see the
+// water shader. Only the reach is read here: a viewer under the surface has
+// no sky, and the far wall of the water is what is in its place.
+uniform vec3 u_water_fog;
+uniform vec3 u_water_depth;
+
+in vec3 v_ray;
+
+out vec4 frag_color;
+
+__SUN_IN_SKY_GLSL__
+__CLOUD_IN_SKY_GLSL__
+
+// One float in 0..1 from a cell of the sky. Deterministic and view
+// independent, which is the whole point: the stars have to sit still on the
+// celestial sphere while the camera turns under them, and a hash of the *cell*
+// rather than of the screen does that for free.
+float cell_hash(vec3 cell) {
+    vec3 p = fract(cell * 0.1031 + vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+// A star field, procedural because the document does not name one: unlike
+// `moon_id`, `cloud_id` and the water's `normal_map`, there is no `star_id`
+// in any keyframe of the live cycle, so there is nothing to fetch. The sky is
+// divided into cells, about one in thirty gets a star at a hashed position
+// inside it, and each is a small round falloff.
+float star_field(vec3 dir) {
+    vec3 p = dir * 220.0;
+    vec3 cell = floor(p);
+    float pick = cell_hash(cell);
+    if (pick < 0.966) {
+        return 0.0;
+    }
+    vec3 centre = vec3(
+        cell_hash(cell + 11.0),
+        cell_hash(cell + 23.0),
+        cell_hash(cell + 37.0)
+    );
+    float distance_to = length((p - cell) - centre);
+    // Brightness varies per star, or a field of identical dots reads as a
+    // pattern rather than as a sky.
+    float magnitude = 0.35 + 0.65 * fract(pick * 91.7);
+    return smoothstep(0.18, 0.0, distance_to) * magnitude;
 }
 
 void main() {
@@ -1014,44 +1078,7 @@ void main() {
         rgb += face * disc * u_moon_level;
     }
 
-    // Clouds, over the stars and the moon and under the sun.
-    //
-    // A flat layer at a fixed height, hit by the view ray: the further from
-    // straight up the ray points, the further across the layer it lands, which
-    // is the perspective that makes a flat sheet read as sky rather than as
-    // wallpaper. Near the horizon that distance runs away, so the layer fades
-    // out before it can alias -- which is also where real cloud disappears
-    // into the haze.
-    if (u_cloud_cover.x > 0.0 && dir.z > 0.001) {
-        vec2 ground = (dir.xy / dir.z) * u_cloud_altitude;
-        vec2 uv = ground / max(u_cloud_scale_drift.x, 1.0) + u_cloud_scale_drift.yz;
-        // Two layers, each starting where its own `cloud_pos_density` says.
-        // In every keyframe of the default cycle the two offsets are equal,
-        // so this draws one field at the sum of the two densities -- which is
-        // what the document asks for, oddly, and not a reason to invent a
-        // second scale for it to be interesting at.
-        float amount = cloud_field(uv + u_cloud_offsets.xy) * u_cloud_cover.x;
-        // The second layer is a whole extra sample and the default cycle asks
-        // for the third not at all -- `cloud_variance` is 0 in every keyframe
-        // of it. Paying for a field multiplied by zero is a third of the
-        // cloud pass for nothing.
-        if (u_cloud_cover.y > 0.002) {
-            amount += cloud_field(uv + u_cloud_offsets.zw) * u_cloud_cover.y;
-        }
-        if (u_cloud_cover.z > 0.002) {
-            amount += (cloud_field(uv * 0.31 - 7.0) - 0.5) * u_cloud_cover.z;
-        }
-        // The texture is what has the holes in it, so with one in hand the
-        // density is the coverage and nothing has to decide where an edge
-        // falls. The edge band is for the noise, which is a field of smooth
-        // hills with no gaps at all -- without a threshold it draws an even
-        // grey haze rather than clouds with sky between them.
-        float cover = u_cloud_textured > 0.0
-            ? clamp(amount, 0.0, 1.0)
-            : smoothstep(CLOUD_EDGE_LOW, CLOUD_EDGE_HIGH, amount);
-        cover *= smoothstep(0.02, 0.22, dir.z);
-        rgb = mix(rgb, u_cloud_color, cover);
-    }
+    rgb = cloud_over(rgb, dir);
 
     // The sun and the haze around it, drawn after the clouds so a cloud in
     // front of the sun still glows rather than reading as a hole. The same
@@ -1064,15 +1091,11 @@ void main() {
 }
 """
 
-# GLSL cannot import a Python constant, and two copies of the cloud edge would
-# drift apart the first time either moved. Substituted in once, here, so
-# `atmosphere.py` stays the only place any of these numbers is written down.
-_SKY_FRAGMENT_SHADER = (
-    _SKY_FRAGMENT_SHADER.replace("CLOUD_EDGE_LOW", f"{CLOUD_EDGE_LOW:.6f}")
-    .replace("CLOUD_EDGE_HIGH", f"{CLOUD_EDGE_HIGH:.6f}")
-    .replace("__CLOUD_NOISE_CELLS__", f"{CLOUD_NOISE_CELLS_PER_TILE:f}")
-    .replace("__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL)
-)
+# The two pieces of sky the sea also shows back, compiled in from the one copy
+# of each. Both carry their own numbers already; see `_CLOUD_IN_SKY_GLSL`.
+_SKY_FRAGMENT_SHADER = _SKY_FRAGMENT_SHADER.replace(
+    "__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL
+).replace("__CLOUD_IN_SKY_GLSL__", _CLOUD_IN_SKY_GLSL)
 
 #: A quad in clip space. Two triangles rather than the usual oversized single
 #: triangle, because the ray is interpolated across it and a triangle reaching
@@ -1108,6 +1131,54 @@ _SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 _MOON_TEXTURE_UNIT: int = 4
 _CLOUD_TEXTURE_UNIT: int = 5
 _WATER_NORMAL_UNIT: int = 6
+
+
+@dataclass(frozen=True)
+class _CloudLayer:
+    """What the region's cloud layer is drawn from.
+
+    Two passes draw it now -- the sky, and the sea showing that sky back --
+    and there is one reading of the scene between them. A second copy of these
+    defaults would be a second cloud layer the first time either one moved.
+    """
+
+    color: tuple[float, float, float]
+    cover: tuple[float, float, float]
+    scale_drift: tuple[float, float, float]
+    offsets: tuple[float, float, float, float]
+
+
+def _cloud_layer(scene: Scene) -> _CloudLayer:
+    """The scene's cloud layer, or a layer of nothing if it is switched off."""
+    return _CloudLayer(
+        color=getattr(scene, "cloud_color", (0.41, 0.41, 0.41)),
+        # The toggle is spent here rather than in the shader: a zero cover
+        # skips the whole noise field, which is the five milliseconds the
+        # setting exists to give back -- in both passes now, since the sea
+        # asks the same field the same question.
+        cover=(
+            getattr(scene, "cloud_cover", (0.0, 0.0, 0.0))
+            if getattr(scene, "render_clouds", True)
+            else (0.0, 0.0, 0.0)
+        ),
+        scale_drift=getattr(scene, "cloud_scale_drift", (900.0, 0.0, 0.0)),
+        offsets=getattr(scene, "cloud_offsets", (0.0, 0.0, 0.0, 0.0)),
+    )
+
+
+def _bind_cloud_layer(
+    program, layer: _CloudLayer, texture: object | None
+) -> None:
+    """Hand a program the cloud layer `_CLOUD_IN_SKY_GLSL` reads."""
+    program["u_cloud_color"].value = layer.color
+    program["u_cloud_cover"].value = layer.cover
+    program["u_cloud_scale_drift"].value = layer.scale_drift
+    program["u_cloud_altitude"].value = CLOUD_ALTITUDE_METRES
+    program["u_cloud_offsets"].value = layer.offsets
+    program["u_cloud_tex"].value = _CLOUD_TEXTURE_UNIT
+    program["u_cloud_textured"].value = 1.0 if texture is not None else 0.0
+    if texture is not None:
+        texture.use(location=_CLOUD_TEXTURE_UNIT)
 
 WATER_HAZE_NEAR_M: float = 260.0
 WATER_HAZE_FAR_M: float = 900.0
@@ -1233,6 +1304,7 @@ vec3 sky_at_height(float height) {
 }
 
 __SUN_IN_SKY_GLSL__
+__CLOUD_IN_SKY_GLSL__
 
 // One wave's contribution to the slope of the surface: the derivative of a
 // sine along the direction it runs in, faded by how legible it still is.
@@ -1410,17 +1482,29 @@ void main() {
     // sun is a direction in the sky and not a height in it, and the sun in the
     // water is the one thing anyone recognises a sea by.
     vec3 reflected = 2.0 * facing * normal - view;
-    vec3 rgb = mix(u_color.rgb, sky_at_height(reflected.z), mirror);
-    // Glitter. Not a specular model and deliberately not: it is the sun the
-    // sky pass draws, at the size the region asked for, seen in a mirror --
-    // the same argument as `sky_at_height` above, one step further. What
-    // breaks it into a glittering path rather than one round highlight is the
-    // surface, which is the region's own normal map; six sines gave a row of
-    // repeating blobs instead.
+    // The sky along the reflected ray, built the way the sky pass builds it:
+    // the gradient, then the cloud layer over it, then the sun over that. Not
+    // a reflection model and deliberately not -- it is the sky that is being
+    // drawn overhead, seen in a mirror, and a mirror does not need a model of
+    // the thing in front of it. The order is the sky's own, too: a cloud in
+    // front of the sun still glows there, and a sea that put the sun under
+    // the cloud would show back a sky its own sky disagrees with.
     //
-    // Weighted by `mirror` like everything else reflected here, so the track
-    // widens and brightens toward the horizon the way the sky does.
-    rgb += sun_in_sky(reflected, normalize(u_sun_dir), u_sun_disc) * mirror;
+    // The cloud layer is hit from the eye rather than from this patch of
+    // surface. The sky pass anchors it at the eye as well, so this is exactly
+    // the cloud drawn overhead and not a second one arrived at another way --
+    // and the layer is a kilometre up where the eye is metres above the
+    // water, so there is nothing in the difference to see.
+    //
+    // What breaks the sun in it into a glittering path rather than one round
+    // highlight is the surface, which is the region's own normal map; six
+    // sines gave a row of repeating blobs instead.
+    vec3 mirrored = cloud_over(sky_at_height(reflected.z), reflected);
+    mirrored += sun_in_sky(reflected, normalize(u_sun_dir), u_sun_disc);
+    // Weighted by `mirror`, so the reflection strengthens toward the horizon
+    // the way the sky does: `mix(colour, sky, m) + m * sun` is this same
+    // expression, which is what it was before the cloud joined the sun in it.
+    vec3 rgb = mix(u_color.rgb, mirrored, mirror);
 
     // Distant sea becomes the sky it meets. Without this the horizon is a
     // hard line -- measured at sixty-seven levels of jump from a camera three
@@ -1480,6 +1564,8 @@ void main() {
     "__WATER_RIPPLES_PER_TILE__", f"{WATER_NORMAL_RIPPLES_PER_TILE:f}"
 ).replace(
     "__SUN_IN_SKY_GLSL__", _SUN_IN_SKY_GLSL
+).replace(
+    "__CLOUD_IN_SKY_GLSL__", _CLOUD_IN_SKY_GLSL
 )
 
 _WATER_INDICES: tuple[int, ...] = (
@@ -2044,22 +2130,8 @@ class PerspectiveRenderer:
                         scene, "moon_face_axes", DEFAULT_MOON_FACE_AXES
                     ),
                     moon_texture=self._moon_texture(ctx, scene),
-                    cloud_offsets=getattr(
-                        scene, "cloud_offsets", (0.0, 0.0, 0.0, 0.0)
-                    ),
+                    cloud=_cloud_layer(scene),
                     cloud_texture=self._cloud_texture(ctx, scene),
-                    cloud_color=getattr(scene, "cloud_color", (0.41, 0.41, 0.41)),
-                    # The toggle is spent here rather than in the shader: a
-                    # zero cover skips the whole noise field, which is the
-                    # five milliseconds the setting exists to give back.
-                    cloud_cover=(
-                        getattr(scene, "cloud_cover", (0.0, 0.0, 0.0))
-                        if getattr(scene, "render_clouds", True)
-                        else (0.0, 0.0, 0.0)
-                    ),
-                    cloud_scale_drift=getattr(
-                        scene, "cloud_scale_drift", (900.0, 0.0, 0.0)
-                    ),
                 )
             if scene.render_terrain:
                 self._upload_terrain_mesh(ctx, scene)
@@ -2212,6 +2284,15 @@ class PerspectiveRenderer:
                 self._water_program["u_sun_dir"].value = sun_direction
                 self._water_program["u_sun_disc"].value = getattr(
                     scene, "sun_disc", DEFAULT_SUN_DISC
+                )
+                # And the same cloud layer, for the same reason. Bound here
+                # rather than left over from the sky pass: that pass may not
+                # have run at all, and a sampler pointing at whatever unit 5
+                # held last would put the terrain in the sea.
+                _bind_cloud_layer(
+                    self._water_program,
+                    _cloud_layer(scene),
+                    self._cloud_texture(ctx, scene),
                 )
                 ctx.enable(ctx.BLEND)
                 ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
@@ -3312,10 +3393,7 @@ class PerspectiveRenderer:
             tuple[float, float, float], tuple[float, float, float]
         ] = DEFAULT_MOON_FACE_AXES,
         moon_texture: object | None = None,
-        cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41),
-        cloud_cover: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        cloud_scale_drift: tuple[float, float, float] = (900.0, 0.0, 0.0),
-        cloud_offsets: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
+        cloud: _CloudLayer,
         cloud_texture: object | None = None,
     ) -> None:
         """Paint the sky before anything else in the frame.
@@ -3348,17 +3426,7 @@ class PerspectiveRenderer:
         if moon_texture is not None:
             moon_texture.use(location=_MOON_TEXTURE_UNIT)
         self._sky_program["u_star_level"].value = float(star_level)
-        self._sky_program["u_cloud_color"].value = cloud_color
-        self._sky_program["u_cloud_cover"].value = cloud_cover
-        self._sky_program["u_cloud_scale_drift"].value = cloud_scale_drift
-        self._sky_program["u_cloud_altitude"].value = CLOUD_ALTITUDE_METRES
-        self._sky_program["u_cloud_offsets"].value = cloud_offsets
-        self._sky_program["u_cloud_tex"].value = _CLOUD_TEXTURE_UNIT
-        self._sky_program["u_cloud_textured"].value = (
-            1.0 if cloud_texture is not None else 0.0
-        )
-        if cloud_texture is not None:
-            cloud_texture.use(location=_CLOUD_TEXTURE_UNIT)
+        _bind_cloud_layer(self._sky_program, cloud, cloud_texture)
         ctx.disable(ctx.DEPTH_TEST)
         try:
             self._sky_vao.render()

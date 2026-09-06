@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (eighth pass)
+Last updated: 2026-09-06 (ninth pass)
 
 ## The Owner's Priorities
 
@@ -235,6 +235,86 @@ every test. The sky camera looks 80 degrees up, where the gradient is 99 per
 cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
+
+**A -- the sea shows the sky back, and now that is checkable (2026-09-06).**
+The sun reached the water in the pass before this one on one argument: *a
+mirror does not need a reflection model, it needs the thing being reflected.*
+The cloud layer is the same argument again, and it was the last piece of sky
+the sea did not have. A heavily clouded sky over a plain grey-blue sea is what
+the live frame showed, and it is the wrong picture: an overcast sea is bright
+and mottled, and it is bright and mottled because it is showing the overcast
+back.
+
+So `_CLOUD_IN_SKY_GLSL` joins `_SUN_IN_SKY_GLSL`: one GLSL string, compiled
+into both programs, carrying its own uniforms so a pass that includes it does
+not have to know what it reads. The sky calls `cloud_over(rgb, dir)` where the
+open-coded layer used to sit; the sea calls it on the reflected ray. On the
+Python side `_cloud_layer(scene)` is the one reading of the scene and
+`_bind_cloud_layer` the one place the seven uniforms are set, so the two passes
+cannot be handed different clouds. `_render_sky` lost four loose keyword
+arguments to it.
+
+Two details worth keeping.
+
+**The layer is hit from the eye, not from the patch of surface.** Physically
+the reflection of a layer at a finite altitude should start where the ray
+leaves the water. But the sky pass anchors the layer at the eye as well --
+`ground = (dir.xy / dir.z) * altitude`, with no eye position in it at all --
+so taking it from the eye makes the sea's cloud *exactly* the sky's cloud and
+not a second one arrived at another way. The layer is 320 metres up where the
+eye is metres above the water, so there is nothing in the difference to see
+either.
+
+**And the sea can now be checked against the sky rather than against a
+prediction.** Every other sea test in the file switches the sky quad off so
+that what is read back is the water pass alone; `SeaShowsTheSkyBackGLTests`
+does the opposite. A camera looking dead level puts the horizon exactly
+between the two middle rows, and the ray through the pixel *k* rows below the
+middle is the ray through the pixel *k* rows above it with its height turned
+over -- which is what a flat sea does to a ray. Make the surface a perfect
+mirror (`water_fresnel = (1, 0)`) and switch the waves off, and the two pixels
+have to be **the same colour**. Measured: 119 levels of variation across the
+sea being compared, and a worst disagreement of **one level** over all 1920
+pairs.
+
+That single assertion covers the gradient, the sun and the cloud layer at
+once, and it fails the moment either pass grows a term the other has not got
+-- which has now happened twice. It is the test that should have existed
+before the sun did.
+
+It cannot see one thing, though, and that is the point of the two tests beside
+it: a sea and a sky that agree on *no* cloud pass it perfectly. So one frame
+with the layer and one without have to differ over the water, and -- with the
+sky pass switched off entirely, so nothing else has bound unit 5 -- a painted
+overcast field and a painted clear one have to differ too. Without that
+second one the sea would draw the right thing in every frame that has a sky in
+it and the terrain in every frame that has not.
+
+One existing test had to give ground. `test_the_water_takes_the_regions_colour`
+predicts the sea pixel in Python instead of remembering it, and it already
+switches the waves off because a prediction cannot guess which part of a
+ripple the centre pixel is on. It switches the clouds off now for the same
+reason one step further: predicting the layer would mean a fourth copy of
+three octaves of value noise, and the colour the region asked for is carried
+by the clear sky between the clouds just as well.
+
+Nine mutations, all nine killed, and one of them was loud in a way worth
+knowing about: dropping `cloud_over` from the water shader takes eighty-three
+tests down rather than one, because GLSL then optimises the cloud uniforms out
+of that program and `_bind_cloud_layer` raises a `KeyError` on the first
+frame. Setting them unconditionally is what makes a shader that stops reading
+them fail immediately instead of quietly.
+
+And it is close to free. Measured on llvmpipe at 1280x800 with the sea filling
+the entire frame -- a camera a hundred metres up looking down -- the water pass
+is **0.87 ms without the layer and 0.92 with it**, which is inside the spread
+between runs. The sky's own cloud costs 1.4 ms over the same frame, so the
+asymmetry is real and not a mistake in the measurement: a reflected ray off
+water leaves at a steep angle over most of the sea, so the samples land close
+together, where the sky pass fans its rays across a whole hemisphere including
+the horizon, where `dir.xy / dir.z` runs away and every neighbouring pixel
+reads a different part of the field.
+
 
 **A -- the moon hangs the way the document hangs it (2026-09-06).** A
 correction, and the handoff is the thing being corrected. It has said for two
@@ -1486,7 +1566,12 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      specular model: it is the sun the sky pass draws, off one shared GLSL
      string, seen in a mirror. What is left here is `transparent_texture` --
      a fourth asset id in the water frame that nothing parses; it fetches, and
-     it is an opaque blue sheet rather than anything transparent. Screenshot
+     it is an opaque blue sheet rather than anything transparent. The sea shows
+     back the region's cloud layer as well as its sun since the ninth pass,
+     off the same one shared GLSL string, and there is a test that compares
+     the two passes against each other rather than against a prediction. What
+     it still does not show back is the **moon** -- the one thing left in the
+     sky the sea has not got. Screenshot
      the sea before believing any change to it -- the GL tests read single
      pixels, and an interference pattern is the one defect a single pixel
      cannot see. That is how a lattice in it went unnoticed for a whole pass.
