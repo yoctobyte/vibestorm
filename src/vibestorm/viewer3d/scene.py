@@ -21,8 +21,10 @@ from uuid import UUID
 
 from vibestorm.viewer3d.atmosphere import (
     CLOUD_DRIFT_PER_SECOND,
+    DEFAULT_MOON_DISC,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_SUN_DISC,
     DEFAULT_UNDERWATER_REACH,
     DEFAULT_WATER_FOG,
     DEFAULT_WATER_FRESNEL,
@@ -33,12 +35,15 @@ from vibestorm.viewer3d.atmosphere import (
     DEFAULT_WATER_WAVES,
     cloud_cover,
     cloud_hue,
+    cloud_shadow_scale,
     cloud_size,
     daylight_scale,
     light_hues,
+    moon_disc,
     moon_level,
     sky_gradient,
     star_level,
+    sun_disc,
     underwater_reach,
     water_fog,
     water_fresnel,
@@ -522,6 +527,14 @@ class Scene:
     moon_direction: tuple[float, float, float] | None = None
     moon_level: float = 0.0
     star_level: float = 0.0
+    # How large each is drawn, as the cosines of the disc's outer and inner
+    # edge -- which is what a shader with no disc geometry can compare a dot
+    # product against.
+    sun_disc: tuple[float, float] = DEFAULT_SUN_DISC
+    moon_disc: tuple[float, float] = DEFAULT_MOON_DISC
+    # How much of the direct sun the region's cloud layer leaves on the
+    # ground. 1.0 is a clear sky.
+    cloud_shadow: float = 1.0
     # The cloud layer. `cloud_cover` is (coarse, fine, variance) and
     # `cloud_scale_drift` is (metres across a cell, drift x, drift y).
     cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41)
@@ -573,6 +586,9 @@ class Scene:
             self.moon_direction = None
             self.moon_level = 0.0
             self.star_level = 0.0
+            self.sun_disc = DEFAULT_SUN_DISC
+            self.moon_disc = DEFAULT_MOON_DISC
+            self.cloud_shadow = 1.0
             self.cloud_cover = (0.0, 0.0, 0.0)
             return
 
@@ -609,6 +625,9 @@ class Scene:
         self.moon_direction = moon_direction_for(sky)
         self.moon_level = moon_level(sky)
         self.star_level = star_level(sky)
+        self.sun_disc = sun_disc(sky)
+        self.moon_disc = moon_disc(sky)
+        self.cloud_shadow = cloud_shadow_scale(sky)
         coarse, fine = cloud_cover(sky)
         self.cloud_color = cloud_hue(sky)
         self.cloud_cover = (coarse, fine, max(0.0, sky.cloud_variance))

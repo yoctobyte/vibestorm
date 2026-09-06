@@ -19,8 +19,10 @@ from pathlib import Path
 
 from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
+    DEFAULT_MOON_DISC,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_SUN_DISC,
     DEFAULT_UNDERWATER_REACH,
     DEFAULT_WATER_FOG,
     DEFAULT_WATER_FRESNEL,
@@ -261,6 +263,51 @@ class LightingDirectionTests(unittest.TestCase):
             self.assertAlmostEqual(
                 direction[index], DEFAULT_SUN_DIRECTION[index] / length, places=6
             )
+
+
+class SunAndMoonRefreshTests(unittest.TestCase):
+    """How big the region wants its sun and moon, and how much shade it has."""
+
+    def _sky_cycle(self, **fields):
+        from vibestorm.world.environment import SkySettings
+
+        return RegionEnvironment(
+            day_length=14400.0,
+            sky_track=((0.0, SkySettings(**fields)),),
+        )
+
+    def test_a_world_view_with_no_environment_keeps_the_defaults(self) -> None:
+        scene = Scene()
+        loaded = WorldView()
+        loaded.environment = self._sky_cycle(
+            sun_scale=3.0, moon_scale=0.25, cloud_shadow=0.9
+        )
+        scene.refresh_from_world_view(loaded)
+
+        scene.refresh_from_world_view(_world_view(environment=False))
+
+        self.assertEqual(scene.sun_disc, DEFAULT_SUN_DISC)
+        self.assertEqual(scene.moon_disc, DEFAULT_MOON_DISC)
+        self.assertEqual(scene.cloud_shadow, 1.0)
+
+    def test_the_regions_own_sizes_reach_the_frame(self) -> None:
+        scene = Scene()
+        view = WorldView()
+        view.environment = self._sky_cycle(
+            sun_scale=3.0, moon_scale=0.25, cloud_shadow=0.9
+        )
+
+        scene.refresh_from_world_view(view)
+
+        # Bigger sun, smaller moon, and the disc is measured as an angle
+        # because the cosine runs the other way.
+        self.assertGreater(
+            math.acos(scene.sun_disc[0]), math.acos(DEFAULT_SUN_DISC[0])
+        )
+        self.assertLess(
+            math.acos(scene.moon_disc[0]), math.acos(DEFAULT_MOON_DISC[0])
+        )
+        self.assertAlmostEqual(scene.cloud_shadow, 0.1, places=5)
 
 
 class WaterSurfaceRefreshTests(unittest.TestCase):

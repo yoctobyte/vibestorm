@@ -113,6 +113,12 @@ class SkySettings:
     max_y: float = 1605.0
     star_brightness: float = 0.0
     moon_brightness: float = 0.5
+    #: How large to draw the sun and the moon, as a multiple of whatever a
+    #: viewer calls the usual size. Both 1.0 in OpenSim's default cycle, so
+    #: this document says nothing about how they scale -- only that 1.0 is the
+    #: unchanged one, which is what makes the direction readable at all.
+    sun_scale: float = 1.0
+    moon_scale: float = 1.0
     glow: Vec3 = (5.0, 0.001, -0.48)
     sun_rotation: Quat = (0.0, 0.0, 0.0, 1.0)
     moon_rotation: Quat = (0.0, 0.0, 0.0, 1.0)
@@ -272,6 +278,8 @@ def _read_sky(frame: Mapping[str, object]) -> SkySettings:
         gamma=_float(frame.get("gamma"), default.gamma),
         max_y=_float(frame.get("max_y"), default.max_y),
         star_brightness=_float(frame.get("star_brightness"), default.star_brightness),
+        sun_scale=_float(frame.get("sun_scale"), default.sun_scale),
+        moon_scale=_float(frame.get("moon_scale"), default.moon_scale),
         moon_brightness=_float(frame.get("moon_brightness"), default.moon_brightness),
         glow=_color(frame.get("glow"), default.glow),
         sun_rotation=_quat(frame.get("sun_rotation"), default.sun_rotation),
@@ -346,6 +354,8 @@ def _blend_sky(a: SkySettings, b: SkySettings, t: float) -> SkySettings:
         max_y=_lerp(a.max_y, b.max_y, t),
         star_brightness=_lerp(a.star_brightness, b.star_brightness, t),
         moon_brightness=_lerp(a.moon_brightness, b.moon_brightness, t),
+        sun_scale=_lerp(a.sun_scale, b.sun_scale, t),
+        moon_scale=_lerp(a.moon_scale, b.moon_scale, t),
         glow=_lerp3(a.glow, b.glow, t),
         sun_rotation=_slerp(a.sun_rotation, b.sun_rotation, t),
         moon_rotation=_slerp(a.moon_rotation, b.moon_rotation, t),

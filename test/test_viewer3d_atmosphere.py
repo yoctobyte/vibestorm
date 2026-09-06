@@ -29,14 +29,17 @@ from vibestorm.viewer3d.atmosphere import (
     SUN_REFERENCE_DIRECTION,
     cloud_cover,
     cloud_hue,
+    cloud_shadow_scale,
     cloud_size,
     daylight_scale,
     light_hues,
     moon_direction,
+    moon_disc,
     moon_level,
     sky_gradient,
     star_level,
     sun_direction,
+    sun_disc,
     underwater_reach,
     water_fog,
     water_fresnel,
@@ -474,6 +477,103 @@ class UnderwaterTests(unittest.TestCase):
 
     def test_a_negative_lean_below_is_no_lean(self) -> None:
         self.assertEqual(water_wave_slope_below(WaterSettings(scale_below=-1.0)), 0.0)
+
+
+class SunAndMoonSizeTests(unittest.TestCase):
+    """`sun_scale` and `moon_scale`, which had not even been parsed.
+
+    Both are 1.0 in every keyframe of OpenSim's default cycle, so the document
+    says nothing about how they scale -- only that 1.0 is the unchanged size,
+    which is what makes the direction readable at all. What it replaces is two
+    pairs of magic numbers in the sky shader that no region could reach.
+    """
+
+    def setUp(self) -> None:
+        self.env = _live_environment()
+
+    def test_the_default_scale_draws_the_size_this_viewer_already_drew(self) -> None:
+        # The moon's two thresholds were 0.9990 and 0.9994 and it is a
+        # regression if they move: this replaces a constant with a parameter,
+        # it does not restyle the sky.
+        low, high = moon_disc(self.env.sky_at(0.0))
+
+        self.assertAlmostEqual(low, 0.9990, places=5)
+        self.assertAlmostEqual(high, 0.9994, places=5)
+
+    def test_the_sun_keeps_the_angle_its_old_falloff_half_faded_at(self) -> None:
+        """The sun's own regression, which is not the moon's.
+
+        Its falloff was a 900th power of the alignment and is a smoothstep
+        now, so the two curves cannot be compared everywhere -- but the angle
+        at which the old one had fallen to half is a number, and the middle of
+        the new one's edge is set to it. Pinned to a ten-thousandth of a radian,
+        which is tight enough to tell the sun's size from the moon's: the two
+        are one per cent apart and a test that let them swap would say nothing.
+        """
+        low, high = sun_disc(SkySettings())
+        edge_middle = (math.acos(low) + math.acos(high)) / 2.0
+
+        self.assertAlmostEqual(edge_middle, math.acos(0.5 ** (1.0 / 900.0)), delta=1e-4)
+
+    def test_the_edges_are_the_right_way_round_for_a_smoothstep(self) -> None:
+        low, high = sun_disc(SkySettings())
+
+        self.assertLess(low, high)
+
+    def test_a_bigger_scale_is_a_bigger_disc(self) -> None:
+        """Which is the one thing the document's own value cannot show.
+
+        Asserted as an angle rather than as a cosine, because the cosine runs
+        the other way and a test that compared the two numbers directly would
+        pass just as happily on a sun that shrank.
+        """
+        small = math.acos(sun_disc(SkySettings(sun_scale=1.0))[0])
+        large = math.acos(sun_disc(SkySettings(sun_scale=3.0))[0])
+
+        self.assertAlmostEqual(large, small * 3.0, places=5)
+
+    def test_the_sun_and_the_moon_scale_separately(self) -> None:
+        sky = SkySettings(sun_scale=4.0, moon_scale=1.0)
+
+        self.assertGreater(math.acos(sun_disc(sky)[0]), math.acos(moon_disc(sky)[0]))
+
+    def test_a_scale_of_nothing_does_not_collapse_the_edges(self) -> None:
+        # Two equal edges make a smoothstep a step, which draws an aliased dot
+        # rather than no sun -- a worse answer than either.
+        low, high = sun_disc(SkySettings(sun_scale=0.0))
+
+        self.assertLess(low, high)
+
+    def test_a_negative_scale_is_no_scale(self) -> None:
+        self.assertEqual(
+            sun_disc(SkySettings(sun_scale=-2.0)), sun_disc(SkySettings(sun_scale=0.0))
+        )
+
+
+class CloudShadowTests(unittest.TestCase):
+    """`cloud_shadow`, parsed since the sixth pass and never spent."""
+
+    def setUp(self) -> None:
+        self.env = _live_environment()
+
+    def test_the_default_cycle_keeps_most_of_the_sun(self) -> None:
+        # 0.27 of it is in shade, so about three quarters is left.
+        kept = cloud_shadow_scale(self.env.sky_at(0.5))
+
+        self.assertAlmostEqual(kept, 0.73, places=2)
+
+    def test_more_shadow_is_less_light(self) -> None:
+        self.assertLess(
+            cloud_shadow_scale(SkySettings(cloud_shadow=0.8)),
+            cloud_shadow_scale(SkySettings(cloud_shadow=0.1)),
+        )
+
+    def test_a_clear_sky_takes_nothing(self) -> None:
+        self.assertEqual(cloud_shadow_scale(SkySettings(cloud_shadow=0.0)), 1.0)
+
+    def test_a_document_cannot_ask_for_more_shade_than_there_is_sun(self) -> None:
+        self.assertEqual(cloud_shadow_scale(SkySettings(cloud_shadow=4.0)), 0.0)
+        self.assertEqual(cloud_shadow_scale(SkySettings(cloud_shadow=-4.0)), 1.0)
 
 
 if __name__ == "__main__":

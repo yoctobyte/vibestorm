@@ -133,6 +133,23 @@ WATER_WAVE_LENGTH_M: float = 9.0
 #: seven seconds, which is a calm sea rather than a pond or a storm.
 WATER_WAVE_SPEED_M_PER_S: float = 0.55
 
+#: How large the sun and the moon are drawn at the default scale, as an
+#: angular radius in radians.
+#:
+#: Both about 2.5 degrees, a little over four times life size, and both are
+#: the sizes the two hard-coded thresholds they replace already worked out to:
+#: the moon's pair of cosines reproduces exactly, and the sun keeps the angle
+#: at which it was half as bright, though its falloff is a smoothstep now
+#: rather than a 900th power. Life size is not an option -- at a quarter of a
+#: degree each draws as a dot, and every viewer in this world has made the
+#: same choice.
+SUN_DISC_RADIUS_RAD: float = 0.0442
+MOON_DISC_RADIUS_RAD: float = 0.0447
+
+#: How much of a disc's radius its soft edge takes. Without one the rim
+#: aliases into a ring of steps as the camera turns.
+DISC_EDGE_FRACTION: float = 0.2254
+
 #: What a density of one is worth as a distance, in metres.
 #:
 #: A rendering choice standing in for a unit the document does not give. See
@@ -148,6 +165,45 @@ UNDERWATER_REFERENCE_M: float = 120.0
 #: becomes a surface that leans about ten degrees at the steepest, which is
 #: what makes the Fresnel term visible as ripples rather than as a flat sheet.
 WATER_WAVE_STEEPNESS: float = 6.0
+
+
+def sun_disc(sky: SkySettings) -> Vec2:
+    """How large to draw the sun, as the cosines of its outer and inner edge.
+
+    Cosines rather than an angle because that is what a shader compares a dot
+    product against, and a dot product is all the sky shader has: there is no
+    disc geometry up there, only the angle between the ray and the light.
+    """
+    return _disc(SUN_DISC_RADIUS_RAD, sky.sun_scale)
+
+
+def moon_disc(sky: SkySettings) -> Vec2:
+    """The same for the moon, which the document scales separately."""
+    return _disc(MOON_DISC_RADIUS_RAD, sky.moon_scale)
+
+
+def _disc(radius: float, scale: float) -> Vec2:
+    # Floored rather than allowed to reach zero: at a radius of nothing the
+    # two edges are the same cosine, and a smoothstep whose edges meet is a
+    # step -- an aliased dot instead of no sun at all. The same floor is what
+    # catches a negative scale, which would otherwise turn the disc inside out.
+    radius = max(radius * scale, 1e-5)
+    return (math.cos(radius), math.cos(radius * (1.0 - DISC_EDGE_FRACTION)))
+
+
+def cloud_shadow_scale(sky: SkySettings) -> float:
+    """How much of the direct sun the cloud layer keeps off the ground.
+
+    Returned as what is *left*, so it multiplies. It is the direct light it
+    takes and not the ambient: cloud over a landscape dims the sun and leaves
+    the sky lighting everything, which is why an overcast day has soft shadows
+    rather than dark ones.
+
+    Independent of the clouds actually drawn, which are procedural and do not
+    line up with anything. The region says how much shade there is; where it
+    falls is not in the document.
+    """
+    return 1.0 - _clamp(sky.cloud_shadow)
 
 
 def water_fog(water: WaterSettings) -> Color3:
@@ -436,3 +492,8 @@ DEFAULT_WATER_RIPPLE: Vec2 = (
 )
 DEFAULT_WATER_RIPPLE_BELOW: float = water_wave_slope_below(_DEFAULT_WATER)
 DEFAULT_UNDERWATER_REACH: float = underwater_reach(_DEFAULT_WATER)
+
+#: And what the sky does: `SkySettings`' own defaults, read the same way.
+_DEFAULT_SKY = SkySettings()
+DEFAULT_SUN_DISC: Vec2 = sun_disc(_DEFAULT_SKY)
+DEFAULT_MOON_DISC: Vec2 = moon_disc(_DEFAULT_SKY)

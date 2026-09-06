@@ -48,8 +48,10 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_ALTITUDE_METRES,
     CLOUD_EDGE_HIGH,
     CLOUD_EDGE_LOW,
+    DEFAULT_MOON_DISC,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_SUN_DISC,
     DEFAULT_UNDERWATER_REACH,
     DEFAULT_WATER_FOG,
     DEFAULT_WATER_FRESNEL,
@@ -775,6 +777,10 @@ uniform vec3 u_zenith;
 uniform vec3 u_sun_dir;
 uniform vec3 u_moon_dir;
 uniform float u_moon_level;
+// The cosines of each disc's outer and inner edge -- how large the region
+// asks for the sun and the moon to be drawn.
+uniform vec2 u_sun_disc;
+uniform vec2 u_moon_disc;
 uniform float u_star_level;
 uniform vec3 u_cloud_color;
 // x: coarse coverage, y: fine coverage, z: variance.
@@ -912,7 +918,7 @@ void main() {
     // a speck.
     if (u_moon_level > 0.0) {
         float moon_alignment = dot(dir, normalize(u_moon_dir));
-        float disc = smoothstep(0.9990, 0.9994, moon_alignment);
+        float disc = smoothstep(u_moon_disc.x, u_moon_disc.y, moon_alignment);
         rgb += vec3(0.96, 0.95, 0.90) * disc * u_moon_level;
     }
 
@@ -948,7 +954,14 @@ void main() {
     // costs one dot product. Drawn after the clouds, so a cloud in front of
     // the sun still glows rather than reading as a hole.
     float alignment = max(dot(dir, normalize(u_sun_dir)), 0.0);
-    rgb += vec3(1.0, 0.95, 0.80) * pow(alignment, 900.0);
+    // The disc, at the size the region asked for. The 900th power this
+    // replaces was the same size and no size at all: nothing could change it.
+    rgb += vec3(1.0, 0.95, 0.80) * smoothstep(u_sun_disc.x, u_sun_disc.y, alignment);
+    // The haze around it does not scale with it. That is `glow`, which is
+    // parsed nowhere and identical in all eight of the default cycle's
+    // keyframes, so there is no evidence in this document for which way
+    // either of its two numbers runs -- and a guess dressed as a reading is
+    // worse than an honest constant.
     rgb += vec3(1.0, 0.90, 0.72) * pow(alignment, 18.0) * 0.28;
 
     frag_color = vec4(clamp(mix(u_water_fog, rgb, clarity), 0.0, 1.0), 1.0);
@@ -1283,9 +1296,16 @@ def _light_uniforms(
     """
     ambient = getattr(scene, "ambient_light_color", None) or (1.0, 1.0, 1.0)
     diffuse = getattr(scene, "diffuse_light_color", None) or (1.0, 1.0, 1.0)
+    # `cloud_shadow` takes only the direct light: cloud over a landscape dims
+    # the sun and leaves the sky lighting everything, which is why an overcast
+    # day has soft shadows rather than dark ones. Taking it off the ambient as
+    # well would make a cloudy noon read as dusk. Already in range when it gets
+    # here -- `cloud_shadow_scale` clamps the document's number on the way in,
+    # which is the one place that has to.
+    shade = float(getattr(scene, "cloud_shadow", 1.0))
     return (
         tuple(AMBIENT_LIGHT * level * component for component in ambient),
-        tuple(DIFFUSE_LIGHT * level * component for component in diffuse),
+        tuple(DIFFUSE_LIGHT * level * shade * component for component in diffuse),
     )
 
 
@@ -1763,6 +1783,8 @@ class PerspectiveRenderer:
                     ),
                     moon_level=float(getattr(scene, "moon_level", 0.0) or 0.0),
                     star_level=float(getattr(scene, "star_level", 0.0) or 0.0),
+                    sun_disc=getattr(scene, "sun_disc", DEFAULT_SUN_DISC),
+                    moon_disc=getattr(scene, "moon_disc", DEFAULT_MOON_DISC),
                     cloud_color=getattr(scene, "cloud_color", (0.41, 0.41, 0.41)),
                     # The toggle is spent here rather than in the shader: a
                     # zero cover skips the whole noise field, which is the
@@ -3000,6 +3022,8 @@ class PerspectiveRenderer:
         moon_direction: tuple[float, float, float] = (0.0, 0.0, -1.0),
         moon_level: float = 0.0,
         star_level: float = 0.0,
+        sun_disc: tuple[float, float] = DEFAULT_SUN_DISC,
+        moon_disc: tuple[float, float] = DEFAULT_MOON_DISC,
         cloud_color: tuple[float, float, float] = (0.41, 0.41, 0.41),
         cloud_cover: tuple[float, float, float] = (0.0, 0.0, 0.0),
         cloud_scale_drift: tuple[float, float, float] = (900.0, 0.0, 0.0),
@@ -3022,6 +3046,8 @@ class PerspectiveRenderer:
         self._sky_program["u_sun_dir"].value = sun_direction
         self._sky_program["u_moon_dir"].value = moon_direction
         self._sky_program["u_moon_level"].value = float(moon_level)
+        self._sky_program["u_sun_disc"].value = sun_disc
+        self._sky_program["u_moon_disc"].value = moon_disc
         self._sky_program["u_star_level"].value = float(star_level)
         self._sky_program["u_cloud_color"].value = cloud_color
         self._sky_program["u_cloud_cover"].value = cloud_cover

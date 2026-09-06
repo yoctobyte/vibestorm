@@ -236,6 +236,61 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the sun is the size the region asks for, and cloud finally casts
+(2026-09-06).** Three more fields spent. `sun_scale` and `moon_scale` had never
+even been parsed; `cloud_shadow` had been parsed a pass ago and read by
+nothing.
+
+The two scales replaced a pair of magic numbers that no region could reach: the
+moon was `smoothstep(0.9990, 0.9994)` against the alignment and the sun was
+`pow(alignment, 900.0)`. Both are now an angular radius scaled by the
+document's own number, turned into the two cosines a `smoothstep` wants --
+cosines because a dot product is all the sky shader has up there, there being
+no disc geometry in the sky at all.
+
+**The two constants are the old thresholds, read back out.** The moon's pair
+reproduces to five places, and it is also where `DISC_EDGE_FRACTION` comes
+from: 0.9994 is 0.9990's angle times 0.7746, so the soft edge was already
+22.54 per cent of the radius and did not need inventing. The sun's is pinned
+differently, because a 900th power and a smoothstep are not the same curve and
+cannot agree everywhere -- what is kept is the angle at which the old falloff
+had fallen to half, which the middle of the new edge is set to. That is a real
+test rather than a tautology only because it is tight: the two radii are one
+per cent apart, so a tolerance loose enough to be comfortable is loose enough
+to let the sun draw at the moon's size and say nothing.
+
+Every keyframe of the default cycle has both scales at 1.0, so *the document
+gives no evidence at all for the direction*. What it gives is that 1.0 is the
+unchanged size -- which is exactly what makes the direction readable, since a
+value that never moves still fixes where the scale starts. Bigger is bigger and
+zero is floored rather than allowed to collapse the two edges: a smoothstep
+whose edges meet is a step, which draws an aliased dot rather than no sun.
+
+`cloud_shadow` is the more interesting one, because *which* light it takes is
+the whole of it. **It takes the direct light and leaves the ambient.** Cloud
+over a landscape dims the sun and leaves the sky lighting everything, which is
+why an overcast day has soft shadows rather than dark ones; taking it off the
+ambient as well would make a cloudy noon read as dusk. It is also independent
+of the clouds actually drawn, which are procedural noise and line up with
+nothing -- the region says how much shade there is, and where it falls is not
+in the document.
+
+Two things about testing it. The first: **a face that takes no direct light
+cannot show a change in the direct light.** The first version of the GL test
+looked level at the side of a prim at noon, when the sun is straight overhead,
+and read the same 597 with the shade at full and at a tenth -- a passing-looking
+number that was measuring ambient twice. Looking down at the prim's top is what
+makes the claim testable. The second: the ambient half of the same test has to
+stay, because "it takes the direct and leaves the ambient" is two claims and a
+test of the first alone passes on a shader that dims everything.
+
+Twenty-three mutations, twenty-one killed and both survivors were redundant
+code rather than missing tests -- the clamp in `_light_uniforms` duplicated the
+one `cloud_shadow_scale` already does on the way in, and flooring a negative
+scale to zero was dead under a floor that catches it anyway. Both are gone; the
+clamp that remains is at the boundary where the document's number arrives,
+which is the one place that has to have it.
+
 **A -- and there is a world under it (2026-09-06).** A camera below the water
 plane got a clear afternoon. The sky gradient, the sun, the clouds and every
 prim in the region at full brightness, with the surface overhead as a faint
@@ -1051,14 +1106,13 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
 3. **A's remaining visual gaps are smaller than the last one was.** Water and
    sky now come from the region's own day cycle (sixth pass). What is still
    this client's own idea rather than the region's:
-   - ~~**Clouds.**~~ Done in the seventh pass, procedurally. What is left of
-     it is `cloud_shadow`, which is not the clouds at all -- it is how much
-     they darken the *ground*, and nothing casts it yet. The two position
-     components of each `cloud_pos_density` are also still unused: they are an
-     offset into `cloud_id`, and there is no `cloud_id` texture here to offset
-     into.
-   - ~~**Stars and the moon.**~~ Done in the seventh pass. What is left of it
-     is that both are drawn *procedurally*: `star_id` and `moon_id` name
+   - ~~**Clouds.**~~ Done in the seventh pass, procedurally, and
+     `cloud_shadow` with them. The two position components of each
+     `cloud_pos_density` are what is left: they are an offset into `cloud_id`,
+     and there is no `cloud_id` texture here to offset into.
+   - ~~**Stars and the moon.**~~ Done in the seventh pass, and both the moon
+     and the sun are drawn at `moon_scale` and `sun_scale` since. What is left
+     of it is that both are drawn *procedurally*: `star_id` and `moon_id` name
      textures nobody here has fetched, so the moon is a plain disc with no
      phase and no maria, and the stars are a hash rather than a catalogue.
      Neither turns with the night, either -- the field is fixed to the world
@@ -1071,20 +1125,27 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      the wavelength and the steepness of the waves are this viewer's constants
      rather than the region's. There is also no sun glitter: a specular
      highlight off the wave crests is the most recognisable thing about the SL
-     sea from a low camera, and nothing draws one.
+     sea from a low camera, and nothing draws one. **And there is still moire
+     in it**: from a normal eye height the middle distance cross-hatches, which
+     the `fwidth` fade catches further out and not there. Screenshot it before
+     believing any change to it -- the GL tests read single pixels and an
+     interference pattern is the one defect a single pixel cannot see.
    - ~~**Under the water.**~~ Done in the seventh pass: every pass that draws
      the world fogs, the sky comes through the surface only where the water is
      thin enough, and the surface from below is a ceiling. `blur_multiplier`
      is what is left of it -- there is no blur pass to give it to.
-   - **`cloud_shadow` is still unspent.** It is not about the clouds: it is
-     how much they darken the **ground**, and nothing casts it. The parameter
-     is parsed and sitting on `SkySettings` at 0.27 all day.
+   - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
+     leaves the ambient alone, so cloud dims the sun over the ground without
+     turning a cloudy noon into dusk.
    - **The sky's own unread fields.** `gamma`, `max_y`, `glow`,
      `density_multiplier`, `distance_multiplier` and `haze_density` are all
      parsed and none is drawn. Most belong to the Windlight atmospheric
      integral this viewer deliberately does not attempt (see the module
-     docstring in `atmosphere.py`); `glow` is the exception and is the sun's
-     own size and focus, which is currently two constants in the sky shader.
+     docstring in `atmosphere.py`). `glow` is the nearest to reachable -- it is
+     the sun's size and focus, which `sun_scale` now half covers -- but it is
+     identical in all eight keyframes of the default cycle, so there is no
+     evidence for which of its three components means what, and guessing is
+     how a viewer ends up with a sky nobody can correct.
    (The gait, sitting, attachments, linkset placement, the frame cost at
    region scale, texture filtering, and the sky and sea themselves, which used
    to be this entry in various forms, are done -- see the fourth, fifth and

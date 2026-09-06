@@ -300,6 +300,9 @@ def _flat_sea_pixel(camera, scene) -> tuple[float, float, float, float]:
     return (*rgb, alpha)
 
 
+from vibestorm.viewer3d.atmosphere import moon_disc, sun_disc  # noqa: E402
+
+
 def _smoothstep(low: float, high: float, value: float) -> float:
     """GLSL's `smoothstep`, so a test can predict what a shader drew."""
     t = max(0.0, min(1.0, (value - low) / (high - low)))
@@ -5010,6 +5013,156 @@ class RegionWeatherGLTests(_GLTestBase):
         west = brightness((28.0, 128.0, 39.5))
 
         self.assertGreater(east, west * 1.5)
+
+    def _sun_pixels(self, scene, *, above: int) -> int:
+        """How many pixels of a frame looking straight at the sun are bright.
+
+        Counted rather than sampled: what is being measured is how *large* the
+        disc is, and one pixel at the centre of it says nothing about that.
+        """
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(
+            mode="eye", eye_position=(128.0, 128.0, 30.0), target=(228.0, 128.0, 39.5)
+        )
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            data = self.fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+        width, height = self.FBO_SIZE
+        return sum(
+            1
+            for i in range(0, width * height * 4, 4)
+            if sum(data[i : i + 3]) > above
+        )
+
+    def test_the_sun_is_the_size_the_region_asks_for(self) -> None:
+        """`sun_scale`, which had not been parsed and could not be reached.
+
+        The 900th power it replaces was one size for every region in the
+        world. Counted as an area, because a disc twice as wide covers four
+        times as much and a threshold on one pixel would not know the
+        difference.
+        """
+        scene = self._scene_at(0.125)
+        scene.render_clouds = False
+
+        ordinary = self._sun_pixels(scene, above=700)
+        scene.sun_disc = sun_disc(scene.environment.sky_at(0.125).__class__(sun_scale=3.0))
+        larger = self._sun_pixels(scene, above=700)
+
+        self.assertGreater(ordinary, 4, f"there is no sun to measure: {ordinary}")
+        self.assertGreater(
+            larger,
+            ordinary * 3,
+            f"a three-times sun is not bigger: {ordinary} against {larger}",
+        )
+
+    def test_the_moon_is_the_size_the_region_asks_for(self) -> None:
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.world.environment import SkySettings
+
+        scene = self._scene_at(0.0)
+        scene.render_clouds = False
+        scene.star_level = 0.0
+        direction = scene.moon_direction
+        self.assertIsNotNone(direction)
+
+        def moon_pixels() -> int:
+            camera = Camera3D(
+                mode="eye",
+                eye_position=(128.0, 128.0, 30.0),
+                target=tuple(128.0 + direction[i] * 100.0 for i in range(2))
+                + (30.0 + direction[2] * 100.0,),
+            )
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                data = self.fbo.read(components=4)
+            finally:
+                renderer.clear_caches()
+            width, height = self.FBO_SIZE
+            return sum(
+                1
+                for i in range(0, width * height * 4, 4)
+                if sum(data[i : i + 3]) > 250
+            )
+
+        ordinary = moon_pixels()
+        scene.moon_disc = moon_disc(SkySettings(moon_scale=3.0))
+        larger = moon_pixels()
+
+        self.assertGreater(ordinary, 4, f"there is no moon to measure: {ordinary}")
+        self.assertGreater(
+            larger, ordinary * 3, f"a three-times moon is not bigger: {ordinary} {larger}"
+        )
+
+    def test_cloud_shadow_takes_the_sun_and_leaves_the_sky(self) -> None:
+        """`cloud_shadow`, parsed a pass ago and never spent.
+
+        It is the direct light it takes, not the ambient: cloud over a
+        landscape dims the sun and leaves the sky lighting everything, which is
+        why an overcast day has soft shadows rather than dark ones. So a lit
+        face must lose brightness and a face in shade must keep it.
+        """
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer, _light_uniforms
+        from vibestorm.viewer3d.scene import SceneEntity
+
+        scene = self._scene_at(0.5)
+        scene.render_sky = False
+        scene.object_entities[1] = SceneEntity(
+            local_id=1,
+            pcode=9,
+            kind="prim",
+            position=(128.0, 138.0, 30.0),
+            scale=(6.0, 6.0, 6.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            rotation_z_radians=0.0,
+            shape=None,
+            default_texture_id=None,
+            name=None,
+            tint=(255, 255, 255),
+        )
+        scene.water_height = -10.0
+
+        def lit() -> int:
+            # From above, so the centre pixel is the prim's *top* -- at noon
+            # the sun is overhead, and the side facing a level camera takes no
+            # direct light at all, which is a face this test cannot see a
+            # change on.
+            camera = Camera3D(
+                mode="eye", eye_position=(128.0, 128.0, 48.0), target=(128.0, 138.0, 33.0)
+            )
+            renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+            try:
+                self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                renderer.render_gl(scene, aspect=1.0)
+                return sum(
+                    self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)[:3]
+                )
+            finally:
+                renderer.clear_caches()
+
+        scene.cloud_shadow = 1.0
+        clear_sky = lit()
+        scene.cloud_shadow = 0.1
+        overcast = lit()
+
+        self.assertGreater(clear_sky - overcast, 20, f"{clear_sky} against {overcast}")
+        # The ambient is untouched, which is what keeps an overcast noon from
+        # reading as dusk.
+        scene.cloud_shadow = 0.1
+        ambient, _ = _light_uniforms(scene, 1.0)
+        scene.cloud_shadow = 1.0
+        clear_ambient, _ = _light_uniforms(scene, 1.0)
+        self.assertEqual(ambient, clear_ambient)
 
     def test_the_ground_goes_dark_at_night_too(self) -> None:
         # The sky dimmed before this and nothing under it did, so a region at

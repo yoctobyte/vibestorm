@@ -158,6 +158,32 @@ class LiveDocumentTests(unittest.TestCase):
 
         self.assertEqual(len(rate), 2)
 
+    def test_the_sun_and_moon_carry_their_own_size(self) -> None:
+        """`sun_scale` and `moon_scale`, off the frame root like the clouds.
+
+        Both are 1.0 through the whole of this cycle, which is exactly why
+        they are worth a test: a parser that never looked at them would hand
+        back 1.0 as well, and every reading of the drawn sky would agree. What
+        this pins is that the fields are *found* -- a stub value put in their
+        place has to arrive.
+        """
+        midday = self.env.sky_at(0.5)
+
+        self.assertEqual(midday.sun_scale, 1.0)
+        self.assertEqual(midday.moon_scale, 1.0)
+
+    def test_a_region_that_asks_for_a_bigger_sun_gets_one(self) -> None:
+        document = parse_xml_value(FIXTURE.read_bytes())
+        for frame in document["environment"]["day_cycle"]["frames"].values():
+            if frame.get("type") != "water":
+                frame["sun_scale"] = 2.5
+                frame["moon_scale"] = 0.4
+
+        sky = parse_environment_document(document).sky_at(0.5)
+
+        self.assertAlmostEqual(sky.sun_scale, 2.5, places=5)
+        self.assertAlmostEqual(sky.moon_scale, 0.4, places=5)
+
     def test_the_cloud_densities_interpolate_between_keyframes(self) -> None:
         # The coarse density is one of the few cloud numbers that actually
         # moves across this cycle -- 0.88 at night, 1.0 by mid-morning -- so

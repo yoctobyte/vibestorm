@@ -140,3 +140,5 @@ Moved to the docs project; listed so a later session does not re-queue them.
   `UpdateNotecardAgentInventory`), then copy it in. Scripts are the exception,
   not the rule -- `RezScript` has no counterpart for any other asset type.
   (2026-09-05)
+| Environment | `sun_scale` and `moon_scale` are **1.0 in all eight keyframes** of OpenSim's default cycle. A client can read that 1.0 is the unchanged size, and nothing else: the direction, the range and whether the number is a radius or an area are all unwritten, and no capture of the default cycle can settle them | `viewer3d/atmosphere.py` |
+| Environment | `cloud_shadow` is not about the clouds that are drawn. It is how much direct light the cloud layer keeps off the **ground**, it does not line up with any cloud the client renders, and nothing says whether it should also dim the ambient -- which is the difference between an overcast noon and a dusk | `viewer3d/perspective.py` |
