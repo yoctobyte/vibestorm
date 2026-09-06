@@ -31,8 +31,17 @@ if TYPE_CHECKING:
 
 
 CHAT_TICKER_LINES = 8
-BASE_MENU_HEIGHT = 30
-BASE_STATUS_HEIGHT = 24
+#: The bars along the top and the bottom of the frame, in unscaled pixels.
+#:
+#: Both are six pixels taller than the tallest thing they hold at its own
+#: offset, and the six are not slack: a `UIPanel` spends three pixels at each
+#: edge on its border and shadow, and it is the *container* inside those that
+#: clips the children. At 30 and 24 every button in the menu bar hung three
+#: pixels over the bottom of its container and both status labels hung five
+#: over -- and nobody saw the status one, because the whole bar was a window
+#: below the window until the tenth pass.
+BASE_MENU_HEIGHT = 34
+BASE_STATUS_HEIGHT = 30
 RENDER_MODE_2D = "2d-map"
 RENDER_MODE_3D = "3d"
 #: How often the diagnostics panel is rebuilt, in seconds.
@@ -323,7 +332,7 @@ class HUD:
         )
 
         self.status_bar = UIPanel(
-            relative_rect=pygame.Rect(0, sh - status_h, sw, status_h),
+            relative_rect=pygame.Rect(0, -status_h, sw, status_h),
             manager=self.manager,
             anchors={"left": "left", "right": "right", "bottom": "bottom"},
         )

@@ -73,13 +73,25 @@ class HUDTests(unittest.TestCase):
         self.assertEqual(calls, ["in", "out", "center"])
 
     def test_ui_scale_enlarges_shell_dimensions(self) -> None:
+        """In a window that can hold the scale -- see `scale_the_window_can_hold`.
+
+        1280x720 was the size here, and a HUD twice its design size does not
+        fit in it: the scale is capped to one and nothing is enlarged at all.
+        """
+        from vibestorm.viewer.hud import HUD
+
+        hud = HUD((2360, 1640), on_chat_submit=lambda text: None, ui_scale=2.0)
+
+        self.assertEqual(hud.menu_height, 68)
+        self.assertEqual(hud.status_height, 60)
+        self.assertEqual(hud.file_button.relative_rect.height, 48)
+
+    def test_a_window_that_cannot_hold_the_scale_does_not_get_it(self) -> None:
         from vibestorm.viewer.hud import HUD
 
         hud = HUD((1280, 720), on_chat_submit=lambda text: None, ui_scale=2.0)
 
-        self.assertEqual(hud.menu_height, 60)
-        self.assertEqual(hud.status_height, 48)
-        self.assertEqual(hud.file_button.relative_rect.height, 48)
+        self.assertEqual(hud.ui_scale, 1.0)
 
     def test_file_quit_button_sets_quit_requested(self) -> None:
         from vibestorm.viewer.hud import HUD

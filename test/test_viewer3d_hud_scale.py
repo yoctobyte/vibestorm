@@ -204,6 +204,82 @@ class HUDWindowsFitTheFrameTests(unittest.TestCase):
                 self.assertLessEqual(rect.bottom, height, f"{name} runs off the bottom")
 
 
+class StatusBarIsOnTheFrameTests(unittest.TestCase):
+    """The bar along the bottom, which was never on any frame at all.
+
+    It is anchored to the bottom, and pygame_gui reads a bottom-anchored
+    rect's `y` as an offset *up from the bottom edge*. It was given
+    `sh - status_h`, an absolute coordinate, so the bar landed at
+    `sh + sh - status_h` -- one whole window below the window, at every size
+    and every scale since it was written.
+
+    Which is why the framerate could be moved out of the diagnostics panel
+    and into the status bar without anyone noticing it had gone. Both HUDs
+    had the same line.
+    """
+
+    SIZE = (1280, 800)
+
+    def setUp(self) -> None:
+        try:
+            import pygame
+            import pygame_gui  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - optional viewer extra
+            self.skipTest(f"viewer dependencies unavailable: {exc}")
+        self.pygame = pygame
+        pygame.init()
+        pygame.display.set_mode(self.SIZE)
+
+    def tearDown(self) -> None:
+        self.pygame.quit()
+
+    def _huds(self):
+        from vibestorm.viewer.hud import HUD as HUD2D
+        from vibestorm.viewer3d.hud import HUD as HUD3D
+
+        yield "viewer3d", HUD3D(self.SIZE, on_chat_submit=lambda _text: None)
+        yield "viewer", HUD2D(self.SIZE, on_chat_submit=lambda _text: None)
+
+    def test_both_bars_are_inside_the_frame(self) -> None:
+        width, height = self.SIZE
+
+        for name, hud in self._huds():
+            for bar in ("menu_bar", "status_bar"):
+                with self.subTest(hud=name, bar=bar):
+                    rect = getattr(hud, bar).rect
+                    self.assertGreaterEqual(rect.top, 0, f"{bar} is above the frame")
+                    self.assertLessEqual(rect.bottom, height, f"{bar} is below the frame")
+                    self.assertLessEqual(rect.right, width, f"{bar} runs off the right")
+
+    def test_nothing_in_a_bar_hangs_over_the_edge_of_it(self) -> None:
+        """The bar's *container* is what clips, and it is not the bar.
+
+        A `UIPanel` spends three pixels at each edge on its border and its
+        shadow. At 30 and 24 pixels tall every menu button hung three pixels
+        over the bottom of its container and both status labels hung five
+        over, so the type in them was cut. This is what pins the heights: a
+        theme with thicker chrome fails here rather than shaving the text.
+        """
+        for name, hud in self._huds():
+            for bar in ("menu_bar", "status_bar"):
+                inside = getattr(hud, bar).get_container()
+                for element in inside.elements:
+                    with self.subTest(hud=name, bar=bar, element=type(element).__name__):
+                        self.assertTrue(
+                            inside.rect.contains(element.rect),
+                            f"{element.rect} hangs out of {bar}'s {inside.rect}",
+                        )
+
+    def test_the_status_bar_is_along_the_bottom(self) -> None:
+        # Not merely on the frame: where it is for. Anchored, so it stays
+        # there when the window is resized rather than being repositioned.
+        _width, height = self.SIZE
+
+        for name, hud in self._huds():
+            with self.subTest(hud=name):
+                self.assertEqual(hud.status_bar.rect.bottom, height)
+
+
 class LoginScreenFitsTheFrameTests(unittest.TestCase):
     """The same rule on the other screen, which has the same layout problem.
 

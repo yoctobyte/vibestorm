@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from vibestorm.viewer.ui_scale import scale_the_window_can_hold
 from vibestorm.viewer3d.chat_ticker import TickerEntry, draw_ticker
 
 if TYPE_CHECKING:
@@ -26,8 +27,17 @@ CHAT_TICKER_LINES = 8
 # not the map, was what made the 2D viewer crawl. The readouts are a position
 # and a few counters, so four refreshes a second still reads as live.
 STATUS_REFRESH_INTERVAL_S = 0.25
-BASE_MENU_HEIGHT = 30
-BASE_STATUS_HEIGHT = 24
+#: The bars along the top and the bottom of the frame, in unscaled pixels.
+#:
+#: Both are six pixels taller than the tallest thing they hold at its own
+#: offset, and the six are not slack: a `UIPanel` spends three pixels at each
+#: edge on its border and shadow, and it is the *container* inside those that
+#: clips the children. At 30 and 24 every button in the menu bar hung three
+#: pixels over the bottom of its container and both status labels hung five
+#: over -- and nobody saw the status one, because the whole bar was a window
+#: below the window until the tenth pass.
+BASE_MENU_HEIGHT = 34
+BASE_STATUS_HEIGHT = 30
 DEFAULT_HELP_TEXT = """Vibestorm 2D movement
 
 W / Up: move forward
@@ -71,7 +81,11 @@ class HUD:
         self._pygame = pygame
         self._pygame_gui = pygame_gui
         self.screen_size = screen_size
-        self.ui_scale = max(0.75, float(ui_scale))
+        # Kept as asked for as well as as used: `resize` needs the original to
+        # compare against the new window, or dragging a window small and back
+        # large again would leave the HUD at the smaller scale for good.
+        self.requested_ui_scale = max(0.75, float(ui_scale))
+        self.ui_scale = scale_the_window_can_hold(self.requested_ui_scale, screen_size)
         self.on_chat_submit = on_chat_submit
         self.on_zoom_in = on_zoom_in
         self.on_zoom_out = on_zoom_out
@@ -170,7 +184,7 @@ class HUD:
         )
 
         self.status_bar = UIPanel(
-            relative_rect=pygame.Rect(0, sh - status_h, sw, status_h),
+            relative_rect=pygame.Rect(0, -status_h, sw, status_h),
             manager=self.manager,
             anchors={"left": "left", "right": "right", "bottom": "bottom"},
         )
@@ -537,6 +551,7 @@ class HUD:
         # Tear down + rebuild on resize. pygame_gui's set_window_resolution exists
         # but element rects are absolute, so a rebuild is the safest way.
         self.screen_size = screen_size
+        self.ui_scale = scale_the_window_can_hold(self.requested_ui_scale, screen_size)
         self.manager.set_window_resolution(screen_size)
         for element in (
             self.menu_bar,

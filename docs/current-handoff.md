@@ -390,6 +390,23 @@ The owner's default window is 1180x820 at a scale of one, so at two it is
 is the shrunken window, and the owner shrinks the window -- *"we have around
 14fps. that raises to 20fps if i shrink the window"*.
 
+**And the status bar had never been on the frame at all.** It is anchored to
+the bottom, and pygame_gui reads a bottom-anchored rect's `y` as an offset *up
+from the bottom edge*. It was given `sh - status_h`, an absolute coordinate,
+so the bar landed at `sh + sh - status_h`: one whole window below the window,
+at every size and every scale since it was written. Both HUDs had the same
+line. That is why the framerate could be moved out of the diagnostics panel
+into the status bar in the fourth pass without anyone noticing it had gone --
+`Pos: 128.0, 128.0, 6.0 | Sim: Vibestorm Test | Parcel: Your Parcel` and
+`fps=62 objects=32 avatars=1` are on screen for the first time now.
+
+And once it was visible, the type in it was clipped. A `UIPanel` spends three
+pixels at each edge on its border and shadow, and it is the *container* inside
+those that clips: at 24 pixels tall both status labels hung five pixels over
+the bottom of it, and every menu-bar button hung three. The bars are 34 and 30
+now, and a test walks each bar's container and asserts every child is inside
+it, so a theme with thicker chrome fails rather than shaving the text.
+
 **And `resize` on the login screen crashed.** It called
 `manager.clear()`, which pygame_gui has not got, so dragging the window while
 the login screen was up raised `AttributeError` out of the event loop. It is
