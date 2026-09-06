@@ -244,6 +244,64 @@ class PerspectiveRendererInstanceGrowthTests(_GLTestBase):
         self.assertIsNone(renderer._water_vao)
 
 
+def _flat_sea_pixel(camera, scene) -> tuple[float, float, float, float]:
+    """What the shader has to draw where the centre ray meets the sea.
+
+    Worked out here rather than compared against a remembered number, and
+    it can be worked out exactly because the caller switches the waves off:
+    with a slope of zero the surface normal is exactly +Z and every term
+    closes. Reflectance is Schlick's, the reflected ray goes back up at the
+    angle the view came down at, and the sky along it is the same gradient
+    the sky itself is drawn with.
+
+    Returns (r, g, b, a) in 0..1, before the blend against whatever is
+    behind the water.
+    """
+    from vibestorm.viewer3d.perspective import (
+        WATER_HAZE_FAR_M,
+        WATER_HAZE_NEAR_M,
+    )
+
+    eye = camera.orbit_eye()
+    span = tuple(camera.target[i] - eye[i] for i in range(3))
+    length = math.sqrt(sum(component * component for component in span))
+    forward = tuple(component / length for component in span)
+    # Where the centre ray crosses the sea, and how far that is from the
+    # viewer along the ground.
+    step = (scene.water_height - eye[2]) / forward[2]
+    hit = tuple(eye[i] + forward[i] * step for i in range(3))
+    ground_distance = math.hypot(hit[0] - eye[0], hit[1] - eye[1])
+
+    facing = max(0.0, min(1.0, -forward[2]))
+    offset, scale = scene.water_fresnel
+    mirror = max(0.0, min(1.0, offset + scale * (1.0 - facing) ** 5))
+    # A flat surface reflects the ray back at its own elevation.
+    sky = tuple(
+        horizon + (zenith - horizon) * math.sqrt(max(0.0, min(1.0, facing)))
+        for horizon, zenith in zip(
+            scene.sky_horizon_color, scene.sky_zenith_color, strict=True
+        )
+    )
+    rgb = tuple(
+        fog + (reflected - fog) * mirror
+        for fog, reflected in zip(scene.water_fog, sky, strict=True)
+    )
+    haze = _smoothstep(WATER_HAZE_NEAR_M, WATER_HAZE_FAR_M, ground_distance)
+    rgb = tuple(
+        channel + (horizon - channel) * haze
+        for channel, horizon in zip(rgb, scene.sky_horizon_color, strict=True)
+    )
+    alpha = scene.water_alpha + (1.0 - scene.water_alpha) * mirror
+    alpha += (1.0 - alpha) * haze
+    return (*rgb, alpha)
+
+
+def _smoothstep(low: float, high: float, value: float) -> float:
+    """GLSL's `smoothstep`, so a test can predict what a shader drew."""
+    t = max(0.0, min(1.0, (value - low) / (high - low)))
+    return t * t * (3.0 - 2.0 * t)
+
+
 def _write_solid_tile(color: tuple[int, int, int], size: int = 4) -> Path:
     """Save a small solid-colour PNG and return its path. Uses pygame so
     the loader path in PerspectiveRenderer is exercised end-to-end."""
@@ -525,17 +583,8 @@ class PerspectiveRendererShapeDispatchTests(_GLTestBase):
 class PerspectiveRendererWaterTests(_GLTestBase):
     """Step: water plane at SL's default sea level (Z=20)."""
 
-    def test_water_plane_renders_translucent_blue_when_camera_looks_down(self) -> None:
-        # Camera high above the region centre, pitched almost straight
-        # down. Without a map_tile_path the ground stays untextured, so
-        # only water draws — center pixel reads water alpha-blended over
-        # the cleared (black) framebuffer.
+    def _looking_down_camera(self):
         from vibestorm.viewer3d.camera import Camera3D
-        from vibestorm.viewer3d.perspective import (
-            WATER_TINT_RGB,
-            PerspectiveRenderer,
-        )
-        from vibestorm.viewer3d.scene import Scene
 
         camera = Camera3D(
             target=(128.0, 128.0, 0.0),
@@ -544,7 +593,17 @@ class PerspectiveRendererWaterTests(_GLTestBase):
             pitch=math.pi / 2 - 0.1,
         )
         camera.set_mode("orbit")
+        return camera
 
+    def test_water_plane_renders_translucent_blue_when_camera_looks_down(self) -> None:
+        # Camera high above the region centre, pitched almost straight
+        # down. Without a map_tile_path the ground stays untextured, so
+        # only water draws — center pixel reads water alpha-blended over
+        # the cleared (black) framebuffer.
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = self._looking_down_camera()
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
             self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
@@ -552,16 +611,18 @@ class PerspectiveRendererWaterTests(_GLTestBase):
             # Sky off: the arithmetic below is water over the *clear* colour,
             # and the sky quad would be behind the water instead.
             scene.render_sky = False
+            # Waves off, so the normal is +Z everywhere and the expected
+            # colour is a closed expression rather than a sampled one. What
+            # the waves do is asserted on its own further down.
+            scene.water_ripple = (scene.water_ripple[0], 0.0)
             renderer.render_gl(scene, aspect=1.0)
 
             r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
-            # Water alpha-blended over black: each channel ≈ tint * alpha * 255.
-            wr, wg, wb = WATER_TINT_RGB
-            wa = scene.water_alpha
+            wr, wg, wb, wa = _flat_sea_pixel(camera, scene)
             expected = (round(wr * wa * 255), round(wg * wa * 255), round(wb * wa * 255))
-            self.assertAlmostEqual(r, expected[0], delta=12)
-            self.assertAlmostEqual(g, expected[1], delta=12)
-            self.assertAlmostEqual(b, expected[2], delta=12)
+            self.assertAlmostEqual(r, expected[0], delta=6)
+            self.assertAlmostEqual(g, expected[1], delta=6)
+            self.assertAlmostEqual(b, expected[2], delta=6)
 
             self.assertIsNotNone(renderer._water_program)
             self.assertIsNotNone(renderer._water_vao)
@@ -569,19 +630,13 @@ class PerspectiveRendererWaterTests(_GLTestBase):
             renderer.clear_caches()
 
     def test_water_plane_respects_scene_alpha(self) -> None:
-        from vibestorm.viewer3d.camera import Camera3D
-        from vibestorm.viewer3d.perspective import WATER_TINT_RGB, PerspectiveRenderer
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
         from vibestorm.viewer3d.scene import Scene
 
-        camera = Camera3D(
-            target=(128.0, 128.0, 0.0),
-            distance=200.0,
-            yaw=0.0,
-            pitch=math.pi / 2 - 0.1,
-        )
-        camera.set_mode("orbit")
+        camera = self._looking_down_camera()
         scene = Scene(water_alpha=0.9)
         scene.render_sky = False  # water over the clear colour, not over sky
+        scene.water_ripple = (scene.water_ripple[0], 0.0)
 
         renderer = PerspectiveRenderer(camera, ctx=self.ctx)
         try:
@@ -589,13 +644,51 @@ class PerspectiveRendererWaterTests(_GLTestBase):
             renderer.render_gl(scene, aspect=1.0)
 
             r, g, b, _ = self._read_pixel(self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2)
-            wr, wg, wb = WATER_TINT_RGB
-            expected = (round(wr * 0.9 * 255), round(wg * 0.9 * 255), round(wb * 0.9 * 255))
-            self.assertAlmostEqual(r, expected[0], delta=12)
-            self.assertAlmostEqual(g, expected[1], delta=12)
-            self.assertAlmostEqual(b, expected[2], delta=12)
+            wr, wg, wb, wa = _flat_sea_pixel(camera, scene)
+            expected = (round(wr * wa * 255), round(wg * wa * 255), round(wb * wa * 255))
+            self.assertAlmostEqual(r, expected[0], delta=6)
+            self.assertAlmostEqual(g, expected[1], delta=6)
+            self.assertAlmostEqual(b, expected[2], delta=6)
         finally:
             renderer.clear_caches()
+
+    def test_a_more_opaque_sea_hides_more_of_what_is_under_it(self) -> None:
+        """The slider still does what it says with a Fresnel term above it.
+
+        Worth asserting separately from the arithmetic: reflectance now feeds
+        the alpha as well as the colour, and a mistake there could leave the
+        surface fully opaque at every setting -- which the two tests above
+        would not notice, because they compute the same alpha the shader
+        would.
+        """
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        camera = self._looking_down_camera()
+        tile_path = _write_solid_tile((0, 220, 0))
+        try:
+            seen = []
+            for alpha in (0.2, 0.95):
+                scene = Scene(water_alpha=alpha)
+                scene.render_sky = False
+                scene.map_tile_path = tile_path
+                renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+                try:
+                    self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+                    renderer.render_gl(scene, aspect=1.0)
+                    _, green, _, _ = self._read_pixel(
+                        self.FBO_SIZE[0] // 2, self.FBO_SIZE[1] // 2
+                    )
+                    seen.append(green)
+                finally:
+                    renderer.clear_caches()
+            self.assertGreater(
+                seen[0] - seen[1],
+                40,
+                f"a nearly transparent sea should show much more ground; got {seen}",
+            )
+        finally:
+            tile_path.unlink(missing_ok=True)
 
     def test_water_plane_can_be_hidden(self) -> None:
         from vibestorm.viewer3d.camera import Camera3D
@@ -2600,6 +2693,21 @@ class SeaHorizonGLTests(_GLTestBase):
         scene.water_height = self.WATER_HEIGHT
         return scene
 
+    def _still_sea_scene(self):
+        """The same sea with its surface taken away: no waves, no reflection.
+
+        Every test in this class is about the *air* between the viewer and the
+        horizon, and a reflecting surface is the one thing that would hide it:
+        reflectance rises towards a grazing angle, which is exactly the
+        direction the haze rises in too, so a column of pixels going up towards
+        the horizon changes for two reasons at once and neither can be read off
+        it. What the surface itself does is asserted in `SeaSurfaceGLTests`.
+        """
+        scene = self._sea_scene()
+        scene.water_fresnel = (0.0, 0.0)
+        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        return scene
+
     def _worst_step(self, column, low_row: int, high_row: int) -> int:
         return max(
             max(abs(column[y][i] - column[y - 1][i]) for i in range(3))
@@ -2642,7 +2750,12 @@ class SeaHorizonGLTests(_GLTestBase):
         Row 130 is a good way below the horizon and row 152 is close to it;
         the second has to be much nearer the sky's colour than the first.
         """
-        scene = self._sea_scene()
+        scene = self._still_sea_scene()
+        # Opaque, so the only red in the frame is red the *haze* put there.
+        # A translucent sea over a red sky is red through it as well, and at
+        # this water's true fog colour -- which is very dark -- 28 per cent of
+        # a bright sky is enough of it to swamp the thing being measured.
+        scene.water_alpha = 1.0
         scene.sky_horizon_color = (0.85, 0.35, 0.20)
         scene.sky_zenith_color = (0.85, 0.35, 0.20)
 
@@ -2663,9 +2776,9 @@ class SeaHorizonGLTests(_GLTestBase):
         another route. So the alpha rises with the haze, and by the horizon
         the slider has stopped mattering.
         """
-        opaque = self._sea_scene()
+        opaque = self._still_sea_scene()
         opaque.water_alpha = 1.0
-        clear = self._sea_scene()
+        clear = self._still_sea_scene()
         clear.water_alpha = 0.2
 
         column_opaque = self._column(opaque)
@@ -2693,14 +2806,14 @@ class SeaHorizonGLTests(_GLTestBase):
         kilometre from (0, 0) and would be drawn as fully hazed, which is to
         say as sky.
         """
-        scene = self._sea_scene()
+        scene = self._still_sea_scene()
         self.EYE = (900.0, 900.0, 34.0)
 
         column = self._column(scene, target=(900.0, 910.0, -40.0))
 
         underfoot = column[len(column) // 2]
         to_water = sum(
-            abs(underfoot[i] - round(scene.water_tint[i] * 255)) for i in range(3)
+            abs(underfoot[i] - round(scene.water_fog[i] * 255)) for i in range(3)
         )
         to_sky = sum(
             abs(underfoot[i] - round(scene.sky_horizon_color[i] * 255)) for i in range(3)
@@ -2718,8 +2831,8 @@ class SeaHorizonGLTests(_GLTestBase):
         sky are pushed to opposite extremes here, which turns a few levels of
         drift into fifty.
         """
-        scene = self._sea_scene()
-        scene.water_tint = (0.0, 0.0, 0.0)
+        scene = self._still_sea_scene()
+        scene.water_fog = (0.0, 0.0, 0.0)
         scene.sky_horizon_color = (1.0, 1.0, 1.0)
         scene.sky_zenith_color = (1.0, 1.0, 1.0)
 
@@ -2734,6 +2847,321 @@ class SeaHorizonGLTests(_GLTestBase):
             18,
             f"the near sea is already hazing: {close} against {far}",
         )
+
+class SeaSurfaceGLTests(_GLTestBase):
+    """The surface of the sea, rather than the air over it.
+
+    Four things the region's document says about water had been parsed and
+    never used: `wave1_direction`, `wave2_direction`, `fresnel_offset` and
+    `fresnel_scale`. The sea was a flat sheet of one colour with a fixed share
+    of sky already mixed into it -- `WATER_SKY_REFLECTANCE`, whose own comment
+    said one mixture was standing in for both ends of an angle it could not
+    measure. It can measure it now.
+
+    `normal_map` is the fifth and is still not used: it names a texture asset
+    nobody here has fetched. Two sines stand in for it, which is why the
+    wavelength and the steepness are constants in `atmosphere` rather than
+    numbers off the wire -- and the tests below are careful to assert what the
+    document *does* decide (which way, how fast, how much sky) rather than the
+    shape, which it does not.
+
+    Every scene here is opaque and has the sky quad off, so what is read is
+    the water pass and nothing behind it.
+    """
+
+    FBO_SIZE = (96, 96)
+    WATER_HEIGHT = 20.0
+    #: Nearly straight down, and nearly is deliberate: a camera looking exactly
+    #: along -Z has no up vector to speak of, the view matrix comes out
+    #: degenerate, and nothing is drawn at all. Which is a thing to know, since
+    #: a test that framed it that way would read black and pass whatever the
+    #: shader did.
+    STEEP = ((128.0, 128.0, 80.0), (133.0, 128.0, 0.0))
+    #: Four metres over the water, looking a hundred and twenty metres out --
+    #: well inside `WATER_HAZE_NEAR_M`, so nothing here is the haze.
+    GRAZING = ((128.0, 128.0, 24.0), (248.0, 128.0, 20.0))
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene()
+        scene.render_terrain = False
+        scene.render_sky = False
+        scene.render_clouds = False
+        scene.water_height = self.WATER_HEIGHT
+        scene.water_alpha = 1.0
+        scene.water_fog = (0.0, 0.0, 0.0)
+        return scene
+
+    def _frame(self, scene, eye, target):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(mode="eye", eye_position=eye, target=target)
+        renderer = PerspectiveRenderer(camera, ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(scene, aspect=1.0)
+            return self.fbo.read(components=4)
+        finally:
+            renderer.clear_caches()
+
+    def _middle(self, frame) -> tuple[int, int, int, int]:
+        width, height = self.FBO_SIZE
+        offset = ((height // 2) * width + width // 2) * 4
+        return tuple(frame[offset : offset + 4])
+
+    def _worst_difference(self, first, second) -> int:
+        width, height = self.FBO_SIZE
+        return max(
+            max(abs(first[i + c] - second[i + c]) for c in range(3))
+            for i in range(0, width * height * 4, 4)
+        )
+
+    def _differing_pixels(self, first, second, *, threshold: int = 6) -> int:
+        width, height = self.FBO_SIZE
+        return sum(
+            1
+            for i in range(0, width * height * 4, 4)
+            if max(abs(first[i + c] - second[i + c]) for c in range(3)) > threshold
+        )
+
+    # -- what the angle decides -------------------------------------------
+
+    def test_the_sea_shows_back_more_sky_the_flatter_it_is_looked_at(self) -> None:
+        """A pond is a window from above and a mirror from the side.
+
+        Both cameras look at water well inside `WATER_HAZE_NEAR_M`, so the
+        difference between them cannot be the haze: it is the angle, which is
+        the whole reason `fresnel_offset` and `fresnel_scale` are on the wire.
+        """
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+        scene.water_ripple = (scene.water_ripple[0], 0.0)
+
+        straight_down = self._middle(self._frame(scene, *self.STEEP))
+        along_it = self._middle(self._frame(scene, *self.GRAZING))
+
+        self.assertGreater(
+            along_it[0] - straight_down[0],
+            60,
+            f"the angle changed nothing: {straight_down} against {along_it}",
+        )
+
+    def test_the_sea_shows_back_the_sky_that_is_above_it(self) -> None:
+        """Not one colour of sky: the one the reflected ray points at.
+
+        Looking straight down, a flat surface sends the eye back where it came
+        from, which is up -- so what comes back is the zenith. Looking along
+        the water it sends it out at the horizon. Getting this wrong is not
+        subtle: it draws the sea as a second sky with the gradient upside
+        down.
+        """
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 0.0, 0.0)
+        scene.sky_zenith_color = (0.0, 0.0, 1.0)
+        scene.water_ripple = (scene.water_ripple[0], 0.0)
+
+        straight_down = self._middle(self._frame(scene, *self.STEEP))
+        along_it = self._middle(self._frame(scene, *self.GRAZING))
+
+        self.assertGreater(
+            straight_down[2], straight_down[0] + 40, f"not the zenith: {straight_down}"
+        )
+        self.assertGreater(
+            along_it[0], along_it[2] + 40, f"not the horizon: {along_it}"
+        )
+
+    def test_a_sea_that_shows_back_more_sky_hides_more_of_what_is_under_it(
+        self,
+    ) -> None:
+        """Reflected light does not come from below the surface.
+
+        The two scenes differ in one number and are otherwise identical, and
+        the sky is set to the sea's own colour so that the *colour* term
+        cannot move: whatever changes in the frame changed through the alpha.
+        """
+        tile_path = _write_solid_tile((0, 220, 0))
+        try:
+            seen = []
+            for fresnel in ((0.0, 0.0), (0.9, 0.0)):
+                scene = self._scene()
+                scene.render_terrain = True
+                scene.map_tile_path = tile_path
+                scene.water_alpha = 0.35
+                scene.sky_horizon_color = scene.water_fog
+                scene.sky_zenith_color = scene.water_fog
+                scene.water_fresnel = fresnel
+                scene.water_ripple = (scene.water_ripple[0], 0.0)
+                seen.append(self._middle(self._frame(scene, *self.STEEP))[1])
+            self.assertGreater(
+                seen[0] - seen[1],
+                60,
+                f"the ground shows through a mirror just as well: {seen}",
+            )
+        finally:
+            tile_path.unlink(missing_ok=True)
+
+    # -- what the waves do -------------------------------------------------
+
+    def test_the_waves_are_there(self) -> None:
+        """A rippled sea is not the flat one, from the same camera.
+
+        Read as a count of pixels rather than as one pixel: a wave crest can
+        fall anywhere, including on whichever pixel a test picked.
+        """
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+        eye, target = (128.0, 128.0, 26.0), (168.0, 128.0, 20.0)
+
+        rippled = self._frame(scene, eye, target)
+        scene.water_ripple = (scene.water_ripple[0], 0.0)
+        flat = self._frame(scene, eye, target)
+
+        self.assertGreater(
+            self._differing_pixels(rippled, flat),
+            400,
+            "the sea is as flat with waves on it as without",
+        )
+
+    def test_the_waves_move(self) -> None:
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+        eye, target = (128.0, 128.0, 26.0), (168.0, 128.0, 20.0)
+
+        first = self._frame(scene, eye, target)
+        scene.water_phase = (1.4, 2.3)
+        later = self._frame(scene, eye, target)
+
+        self.assertGreater(
+            self._differing_pixels(first, later),
+            400,
+            "the sea is frozen: the phase is not reaching the surface",
+        )
+
+    def test_the_waves_run_the_way_the_region_says(self) -> None:
+        """The two directions off the wire, not a fixed pattern.
+
+        Asserted as two seas differing rather than as a measured heading: what
+        the document decides is *which way*, and a renderer that ignored it
+        would draw the same water for both of these.
+        """
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+        eye, target = self.GRAZING
+
+        scene.water_waves = (1.0, 0.0, 1.0, 0.0)
+        eastward = self._frame(scene, eye, target)
+        scene.water_waves = (0.0, 1.0, 0.0, 1.0)
+        northward = self._frame(scene, eye, target)
+
+        self.assertGreater(
+            self._differing_pixels(eastward, northward),
+            400,
+            "waves running east and waves running north draw the same sea",
+        )
+
+    def _line_variation(self, frame) -> tuple[int, int]:
+        """How much the frame changes along each screen axis.
+
+        Returned as (worst change across a row, worst change down a column).
+        A surface whose waves all run one way is *constant* along one of the
+        two once the camera is looking straight down at it, which is the
+        measurement `test_the_sea_is_not_a_corrugated_roof` is built on.
+        """
+        width, height = self.FBO_SIZE
+
+        def green(x: int, y: int) -> int:
+            return frame[(y * width + x) * 4 + 1]
+
+        # The outermost ring is left out: the water plane does not reach the
+        # corners of a downward frame and the clear colour there would read as
+        # variation in every direction.
+        rows = max(
+            max(green(x, y) for x in range(8, width - 8))
+            - min(green(x, y) for x in range(8, width - 8))
+            for y in range(8, height - 8)
+        )
+        columns = max(
+            max(green(x, y) for y in range(8, height - 8))
+            - min(green(x, y) for y in range(8, height - 8))
+            for x in range(8, width - 8)
+        )
+        return rows, columns
+
+    def test_the_sea_is_not_a_corrugated_roof(self) -> None:
+        """Two sines make a grid, and a grid does not read as water.
+
+        The document gives two wave directions; a surface built from those two
+        alone is periodic in both, which draws as regular diamonds -- corrugated
+        iron rather than a sea. Each is drawn with a second, finer wave turned
+        off its heading, and this is what says so.
+
+        Handed one heading for both documented waves, a sea built only from
+        them varies along that heading and *not at all* across it. So the
+        frame is measured along both screen axes and the smaller of the two
+        has to be substantial: a sea that is flat along either axis is the
+        cross-hatch coming back.
+
+        The reflected direction is what carries this rather than the amount
+        reflected. Straight down, Schlick's fifth power is almost flat -- a
+        ripple barely changes how much sky comes back -- but it changes
+        sharply *which* sky, so the horizon and the zenith are set to opposite
+        colours and the surface is made a full mirror.
+        """
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 0.0, 0.0)
+        scene.sky_zenith_color = (0.0, 1.0, 0.0)
+        scene.water_fresnel = (1.0, 0.0)
+        # A steep sea: near the vertical the reflected ray swings with the
+        # slope, and the document's own 0.18 is too gentle to swing it far.
+        scene.water_ripple = (scene.water_ripple[0], 1.0)
+        scene.water_waves = (1.0, 0.0, 1.0, 0.0)
+
+        frame = self._frame(scene, *self.STEEP)
+
+        across, down = self._line_variation(frame)
+        self.assertGreater(
+            min(across, down),
+            30,
+            f"the sea is flat along one axis: rows {across}, columns {down}",
+        )
+
+    def test_ripples_too_small_to_draw_are_not_drawn(self) -> None:
+        """The one artefact that reads as a broken renderer.
+
+        Waves are about four metres long and the plane runs for two
+        kilometres, so most of it is being asked for a ripple narrower than a
+        pixel. Sampled once per pixel that is not water, it is moire: a coarse
+        pattern that crawls when the camera moves.
+
+        Forced here rather than waited for -- the wavenumber is pushed up
+        until every ripple in the frame is far below a pixel, which is what
+        the far half of any real frame already looks like. The answer has to
+        be a flat sea, and it has to be *the* flat sea: identical to the same
+        scene with the waves switched off.
+        """
+        scene = self._scene()
+        scene.sky_horizon_color = (1.0, 1.0, 1.0)
+        scene.sky_zenith_color = (1.0, 1.0, 1.0)
+        eye, target = (128.0, 128.0, 26.0), (168.0, 128.0, 20.0)
+
+        number, slope = scene.water_ripple
+        scene.water_ripple = (number * 400.0, slope)
+        far_too_fine = self._frame(scene, eye, target)
+        scene.water_ripple = (number, 0.0)
+        flat = self._frame(scene, eye, target)
+
+        self.assertLess(
+            self._worst_difference(far_too_fine, flat),
+            8,
+            "sub-pixel ripples are being drawn, which is moire",
+        )
+
 
 class LargeRegionTextureGLTests(_GLTestBase):
     """A region holding more distinct textures than any fixed cache cap.
@@ -4009,11 +4437,27 @@ class RegionWeatherGLTests(_GLTestBase):
         )
 
     def test_the_water_takes_the_regions_colour(self) -> None:
+        """The sea drawn is the one this region's document describes.
+
+        Which is no longer a single colour to compare against: the sea is its
+        own fog with as much of *this region's* sky in it as the angle calls
+        for. So the pixel is checked against that whole expression, and then
+        against the same expression with the fallback sky in it -- the second
+        is what a renderer ignoring the region would draw, and the two have to
+        be far enough apart that passing the first means something.
+        """
+        from vibestorm.viewer3d.atmosphere import (
+            DEFAULT_SKY_HORIZON_COLOR,
+            DEFAULT_SKY_ZENITH_COLOR,
+        )
         from vibestorm.viewer3d.camera import Camera3D
         from vibestorm.viewer3d.perspective import PerspectiveRenderer
 
         scene = self._scene_at(0.5)
         scene.render_sky = False  # water over the clear colour, not over sky
+        # Waves off: with them on the centre pixel is on some part of a ripple
+        # and the prediction would have to guess which.
+        scene.water_ripple = (scene.water_ripple[0], 0.0)
         camera = Camera3D(
             target=(128.0, 128.0, 0.0),
             distance=200.0,
@@ -4030,11 +4474,20 @@ class RegionWeatherGLTests(_GLTestBase):
         finally:
             renderer.clear_caches()
 
-        alpha = scene.water_alpha
+        wr, wg, wb, wa = _flat_sea_pixel(camera, scene)
+        expected = [round(channel * wa * 255) for channel in (wr, wg, wb)]
         for index, drawn in enumerate((r, g, b)):
-            self.assertAlmostEqual(
-                drawn, round(scene.water_tint[index] * alpha * 255), delta=12
-            )
+            self.assertAlmostEqual(drawn, expected[index], delta=8)
+
+        scene.sky_horizon_color = DEFAULT_SKY_HORIZON_COLOR
+        scene.sky_zenith_color = DEFAULT_SKY_ZENITH_COLOR
+        fr, fg, fb, fa = _flat_sea_pixel(camera, scene)
+        fallback = [round(channel * fa * 255) for channel in (fr, fg, fb)]
+        self.assertGreater(
+            sum(abs(a - b) for a, b in zip(expected, fallback, strict=True)),
+            25,
+            "the region's sea is indistinguishable from the fallback one",
+        )
 
     def test_the_sun_is_drawn_where_the_day_cycle_puts_it(self) -> None:
         # Looking east at dawn should find the sun's glow; looking west at the

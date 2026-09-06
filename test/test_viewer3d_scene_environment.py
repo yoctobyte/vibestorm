@@ -21,11 +21,20 @@ from vibestorm.caps.llsd import parse_xml_value
 from vibestorm.viewer3d.atmosphere import (
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_WATER_FOG,
+    DEFAULT_WATER_FRESNEL,
+    DEFAULT_WATER_RIPPLE,
     DEFAULT_WATER_TINT,
+    DEFAULT_WATER_WAVE_SPEED,
+    DEFAULT_WATER_WAVES,
 )
 from vibestorm.viewer3d.perspective import DEFAULT_SUN_DIRECTION, lighting_direction
 from vibestorm.viewer3d.scene import Scene
-from vibestorm.world.environment import parse_environment_document
+from vibestorm.world.environment import (
+    RegionEnvironment,
+    WaterSettings,
+    parse_environment_document,
+)
 from vibestorm.world.models import SimulatorTimeSnapshot, WorldView
 
 FIXTURE = Path("test/fixtures/environment/ext-environment-opensim.xml")
@@ -249,6 +258,181 @@ class LightingDirectionTests(unittest.TestCase):
         for index in range(3):
             self.assertAlmostEqual(
                 direction[index], DEFAULT_SUN_DIRECTION[index] / length, places=6
+            )
+
+
+class WaterSurfaceRefreshTests(unittest.TestCase):
+    """The sea's surface, which the day cycle also describes.
+
+    Not the same thing as its colour: which way the waves run, how fast, how
+    steep, and how much sky the surface shows back at a given angle. All four
+    were parsed and none reached the frame.
+    """
+
+    def test_a_world_view_with_no_environment_keeps_the_default_sea(self) -> None:
+        scene = Scene()
+        scene.refresh_from_world_view(_world_view(clock=_at(0.5)))
+
+        scene.refresh_from_world_view(_world_view(environment=False))
+
+        self.assertEqual(scene.water_fog, DEFAULT_WATER_FOG)
+        self.assertEqual(scene.water_fresnel, DEFAULT_WATER_FRESNEL)
+        self.assertEqual(scene.water_waves, DEFAULT_WATER_WAVES)
+        self.assertEqual(scene.water_ripple, DEFAULT_WATER_RIPPLE)
+        self.assertEqual(scene.water_wave_speed, DEFAULT_WATER_WAVE_SPEED)
+
+    def test_the_regions_own_surface_reaches_the_frame(self) -> None:
+        """Against a sea unlike the fallback one, deliberately.
+
+        The captured document's water frame *is* the fallback: `WaterSettings`'
+        defaults were read off it in the first place. So refreshing from the
+        fixture and finding the defaults on the scene proves nothing at all --
+        a `Scene` that ignored the region entirely passes that. This builds a
+        day cycle whose every water field differs and checks each one arrives.
+        """
+        environment = RegionEnvironment(
+            day_length=14400.0,
+            water_track=(
+                (
+                    0.0,
+                    WaterSettings(
+                        fog_color=(0.4, 0.1, 0.05),
+                        fresnel_offset=0.11,
+                        fresnel_scale=0.22,
+                        scale_above=0.5,
+                        normal_scale=(3.0, 3.0, 3.0),
+                        wave1_direction=(0.0, 2.0),
+                        wave2_direction=(-3.0, 0.0),
+                    ),
+                ),
+            ),
+        )
+        view = WorldView()
+        view.environment = environment
+        scene = Scene()
+
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.water_fog, (0.4, 0.1, 0.05))
+        self.assertAlmostEqual(scene.water_fresnel[0], 0.11, places=6)
+        self.assertAlmostEqual(scene.water_fresnel[1], 0.22, places=6)
+        self.assertEqual(scene.water_waves, (0.0, 1.0, -1.0, 0.0))
+        # `normal_scale` three where the fallback's is two, so half again as
+        # many radians of wave per metre; and `scale_above` is a lean.
+        self.assertAlmostEqual(
+            scene.water_ripple[0], DEFAULT_WATER_RIPPLE[0] * 1.5, places=5
+        )
+        self.assertGreater(scene.water_ripple[1], DEFAULT_WATER_RIPPLE[1] * 2.0)
+        # The second wave is half again as long as the first, so it is that
+        # much faster.
+        self.assertAlmostEqual(
+            scene.water_wave_speed[1], scene.water_wave_speed[0] * 1.5, places=5
+        )
+        for index in range(5):
+            self.assertNotEqual(
+                (
+                    scene.water_fog,
+                    scene.water_fresnel,
+                    scene.water_waves,
+                    scene.water_ripple,
+                    scene.water_wave_speed,
+                )[index],
+                (
+                    DEFAULT_WATER_FOG,
+                    DEFAULT_WATER_FRESNEL,
+                    DEFAULT_WATER_WAVES,
+                    DEFAULT_WATER_RIPPLE,
+                    DEFAULT_WATER_WAVE_SPEED,
+                )[index],
+            )
+
+    def test_the_sea_is_not_the_colour_it_is_drawn(self) -> None:
+        """`water_fog` and `water_tint` are two different colours on purpose.
+
+        The second is the first with a fixed share of sky already in it, for
+        the renderer that cannot measure an angle. Handing the shader that one
+        would put the sky into the sea twice.
+        """
+        scene = Scene()
+
+        scene.refresh_from_world_view(_world_view(clock=_at(0.5)))
+
+        self.assertNotEqual(scene.water_fog, scene.water_tint)
+
+
+class WaterDriftTests(unittest.TestCase):
+    def test_the_waves_move_forward(self) -> None:
+        scene = Scene()
+
+        scene.advance_water(0.5)
+
+        self.assertGreater(scene.water_phase[0], 0.0)
+        self.assertGreater(scene.water_phase[1], 0.0)
+
+    def test_the_two_waves_do_not_move_together(self) -> None:
+        # They have different speeds in the document, and a sea whose two
+        # waves advance in lockstep is one wave drawn twice.
+        scene = Scene()
+
+        scene.advance_water(1.0)
+
+        self.assertNotAlmostEqual(scene.water_phase[0], scene.water_phase[1], places=3)
+
+    def test_the_regions_own_speed_is_what_moves_them(self) -> None:
+        fast, slow = Scene(), Scene()
+        fast.refresh_from_world_view(_world_view(clock=_at(0.5)))
+        fast.water_wave_speed = (4.0, 4.0)
+        slow.water_wave_speed = (0.25, 0.25)
+
+        fast.advance_water(0.5)
+        slow.advance_water(0.5)
+
+        self.assertGreater(fast.water_phase[0], slow.water_phase[0] * 8)
+
+    def test_time_never_runs_backwards_for_the_waves(self) -> None:
+        # A negative frame time is what a clock adjustment looks like from
+        # inside the loop, and a sea that jumps backwards is worse than one
+        # that stalls for a frame.
+        scene = Scene()
+        scene.advance_water(1.0)
+        first = scene.water_phase
+
+        scene.advance_water(-5.0)
+
+        self.assertEqual(scene.water_phase, first)
+
+    def test_the_phase_does_not_run_away(self) -> None:
+        """Wrapped at a full turn, which the cloud drift is not.
+
+        A phase is an angle handed straight to a sine in a shader, and shader
+        floats are single precision. Left to accumulate, an hour of viewing
+        puts it past ten thousand radians, where the gap between representable
+        angles is wide enough to show as the waves quantising.
+        """
+        scene = Scene()
+
+        for _ in range(200):
+            scene.advance_water(60.0)
+
+        for component in scene.water_phase:
+            self.assertGreaterEqual(component, 0.0)
+            self.assertLess(component, 2.0 * math.pi)
+
+    def test_wrapping_does_not_move_the_wave(self) -> None:
+        # The wrap has to be a whole turn or it is a jump. Two seas advanced
+        # by the same total, one in a single step and one in many, have to be
+        # at the same point on the sine.
+        one_step, many = Scene(), Scene()
+
+        one_step.advance_water(20.0)
+        for _ in range(20):
+            many.advance_water(1.0)
+
+        for index in range(2):
+            self.assertAlmostEqual(
+                math.sin(one_step.water_phase[index]),
+                math.sin(many.water_phase[index]),
+                places=5,
             )
 
 

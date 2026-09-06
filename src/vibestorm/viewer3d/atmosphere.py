@@ -37,10 +37,13 @@ sun had never moved in any session.
 
 from __future__ import annotations
 
+import math
+
 from vibestorm.viewer3d.linkset import quat_rotate
 from vibestorm.world.environment import SkySettings, WaterSettings
 
 Color3 = tuple[float, float, float]
+Vec2 = tuple[float, float]
 Vec3 = tuple[float, float, float]
 
 #: The vector a sky keyframe's ``sun_rotation`` turns. East, and level.
@@ -109,6 +112,110 @@ DEFAULT_WATER_TINT: Color3 = (0.18, 0.36, 0.55)
 #: reflection at a grazing angle and nearly all fog looking straight down;
 #: without a Fresnel term one mixture has to serve for both.
 WATER_SKY_REFLECTANCE: float = 0.35
+
+#: The sea's own colour when no region has said otherwise: `WaterSettings`'
+#: own default, not a second guess beside it. Every region supplies this, so
+#: the fallback only shows before the first environment fetch lands.
+DEFAULT_WATER_FOG: Color3 = WaterSettings().fog_color
+
+#: How long one ripple is, in metres, before `normal_scale` divides it down.
+#:
+#: A rendering choice, and it has to be: `normal_map` names a texture nobody
+#: here has fetched, so there is no map to scale and the waves are made out of
+#: two sines instead. What *is* off the wire is which way they run and how
+#: fast -- `wave1_direction` and `wave2_direction` -- and how steep the surface
+#: gets, from `scale_above`.
+WATER_WAVE_LENGTH_M: float = 9.0
+
+#: How fast a wave travels, in metres per second per unit of a wave direction.
+#: The default cycle's two directions are about 1.1 and 1.6 long, so this puts
+#: them at roughly 0.6 and 0.9 m/s: a swell that crosses its own wavelength in
+#: seven seconds, which is a calm sea rather than a pond or a storm.
+WATER_WAVE_SPEED_M_PER_S: float = 0.55
+
+#: What `scale_above` is worth as a slope. The document gives 0.03, which is a
+#: distortion strength for a normal map and not an angle; multiplied by this it
+#: becomes a surface that leans about ten degrees at the steepest, which is
+#: what makes the Fresnel term visible as ripples rather than as a flat sheet.
+WATER_WAVE_STEEPNESS: float = 6.0
+
+
+def water_fog(water: WaterSettings) -> Color3:
+    """The colour of the sea itself: what is seen looking *through* it.
+
+    Kept apart from `water_tint`, which is the same colour with a fixed share
+    of sky already mixed into it. The renderer that has a Fresnel term wants
+    the two separately, so it can decide how much sky per pixel; the one that
+    does not still wants them premixed.
+    """
+    return _clamped(water.fog_color)
+
+
+def water_fresnel(water: WaterSettings) -> tuple[float, float]:
+    """How much sky the surface shows back, as (base, grazing).
+
+    Read as Schlick's approximation -- reflectance rises as the fifth power of
+    one minus the cosine of the viewing angle -- with `fresnel_offset` as the
+    amount reflected looking straight down and `fresnel_scale` as how much more
+    is added at a grazing angle. That is a reading of the two names, not of any
+    implementation, and it is worth saying that 0.5 is nothing like water's
+    real reflectance straight down, which is about 0.02. The number is an
+    artistic one and is used as given.
+    """
+    return (_clamp(water.fresnel_offset), _clamp(water.fresnel_scale))
+
+
+def water_waves(water: WaterSettings) -> tuple[float, float, float, float]:
+    """The two wave directions as unit vectors: (d1x, d1y, d2x, d2y).
+
+    Their *lengths* are dropped here and picked back up in `water_wave_speed`,
+    because a direction and a speed are two different things to a shader even
+    though the document packs them into one vector.
+
+    A zero-length direction falls back to east and north rather than producing
+    a NaN: a document may say a wave stands still, and a surface with one wave
+    on it is better than a surface with none.
+    """
+    return (*_unit(water.wave1_direction, (1.0, 0.0)), *_unit(water.wave2_direction, (0.0, 1.0)))
+
+
+def water_wave_speed(water: WaterSettings) -> tuple[float, float]:
+    """How fast each wave's phase advances, in radians per second."""
+    number = water_wave_number(water)
+    return (
+        _length(water.wave1_direction) * WATER_WAVE_SPEED_M_PER_S * number,
+        _length(water.wave2_direction) * WATER_WAVE_SPEED_M_PER_S * number,
+    )
+
+
+def water_wave_number(water: WaterSettings) -> float:
+    """Radians of wave per metre of sea.
+
+    `normal_scale` is how many times the normal map repeats across whatever it
+    repeats across; with no map to repeat, it is read here as how fine the
+    ripples are, larger being finer. Averaged over the three components, which
+    are the three layers the map would have been sampled at.
+    """
+    scale = sum(water.normal_scale) / 3.0
+    metres = WATER_WAVE_LENGTH_M / max(scale, 1e-3)
+    return 2.0 * math.pi / max(metres, 1e-3)
+
+
+def water_wave_slope(water: WaterSettings) -> float:
+    """How far the surface leans at the steepest point of a wave."""
+    return max(0.0, water.scale_above) * WATER_WAVE_STEEPNESS
+
+
+def _unit(vector: Vec2, fallback: Vec2) -> Vec2:
+    length = _length(vector)
+    if length <= 0.0:
+        return fallback
+    return (vector[0] / length, vector[1] / length)
+
+
+def _length(vector: Vec2) -> float:
+    return math.hypot(vector[0], vector[1])
+
 
 
 #: How lit the world stays at the darkest point of the cycle. Not zero: the
@@ -269,3 +376,17 @@ def _clamped(color: Color3) -> Color3:
 
 def _clamp(value: float) -> float:
     return 0.0 if value < 0.0 else (1.0 if value > 1.0 else value)
+
+
+#: What the sea does before any region has said otherwise: `WaterSettings`'
+#: own defaults, read the same way a region's would be. Derived rather than
+#: written out, so a change to any of the readings above cannot leave the
+#: fallback describing a different sea from the real one.
+_DEFAULT_WATER = WaterSettings()
+DEFAULT_WATER_FRESNEL: Vec2 = water_fresnel(_DEFAULT_WATER)
+DEFAULT_WATER_WAVES: tuple[float, float, float, float] = water_waves(_DEFAULT_WATER)
+DEFAULT_WATER_WAVE_SPEED: Vec2 = water_wave_speed(_DEFAULT_WATER)
+DEFAULT_WATER_RIPPLE: Vec2 = (
+    water_wave_number(_DEFAULT_WATER),
+    water_wave_slope(_DEFAULT_WATER),
+)

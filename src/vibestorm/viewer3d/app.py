@@ -1034,6 +1034,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             # moved since the last frame, so it needs this frame's positions.
             scene.advance_avatar_poses(dt)
             scene.advance_clouds(dt)
+            scene.advance_water(dt)
             refresh_avatar_camera_preset()
             _m1 = _t()
             renderer.update(dt, scene)

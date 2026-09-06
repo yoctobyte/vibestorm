@@ -23,7 +23,12 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_DRIFT_PER_SECOND,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_WATER_FOG,
+    DEFAULT_WATER_FRESNEL,
+    DEFAULT_WATER_RIPPLE,
     DEFAULT_WATER_TINT,
+    DEFAULT_WATER_WAVE_SPEED,
+    DEFAULT_WATER_WAVES,
     cloud_cover,
     cloud_hue,
     cloud_size,
@@ -32,6 +37,12 @@ from vibestorm.viewer3d.atmosphere import (
     moon_level,
     sky_gradient,
     star_level,
+    water_fog,
+    water_fresnel,
+    water_wave_number,
+    water_wave_slope,
+    water_wave_speed,
+    water_waves,
 )
 from vibestorm.viewer3d.atmosphere import (
     moon_direction as moon_direction_for,
@@ -475,6 +486,22 @@ class Scene:
     sky_horizon_color: tuple[float, float, float] = DEFAULT_SKY_HORIZON_COLOR
     sky_zenith_color: tuple[float, float, float] = DEFAULT_SKY_ZENITH_COLOR
     water_tint: tuple[float, float, float] = DEFAULT_WATER_TINT
+    # The sea's surface, for the renderer that can shade one. `water_fog` is
+    # the colour looking *through* the water and `water_tint` above is the same
+    # colour with a fixed share of sky already in it -- the second is what a
+    # flat plane needs, the first is what a Fresnel term needs. `water_fresnel`
+    # is (straight down, grazing) reflectance, `water_waves` is the two wave
+    # directions as unit vectors, and `water_ripple` is (radians of wave per
+    # metre, how far the surface leans at the steepest).
+    water_fog: tuple[float, float, float] = DEFAULT_WATER_FOG
+    water_fresnel: tuple[float, float] = DEFAULT_WATER_FRESNEL
+    water_waves: tuple[float, float, float, float] = DEFAULT_WATER_WAVES
+    water_ripple: tuple[float, float] = DEFAULT_WATER_RIPPLE
+    # How far each of the two waves has travelled since the viewer started, in
+    # radians, and how fast it is going. Accumulated per frame for the reason
+    # the clouds are: see `advance_water`.
+    water_phase: tuple[float, float] = (0.0, 0.0)
+    water_wave_speed: tuple[float, float] = DEFAULT_WATER_WAVE_SPEED
     # How brightly to light everything solid. 1.0 is full day.
     light_level: float = 1.0
     # And in what colour: the light off the sky, and the light off the sun.
@@ -525,6 +552,11 @@ class Scene:
             self.sky_horizon_color = DEFAULT_SKY_HORIZON_COLOR
             self.sky_zenith_color = DEFAULT_SKY_ZENITH_COLOR
             self.water_tint = DEFAULT_WATER_TINT
+            self.water_fog = DEFAULT_WATER_FOG
+            self.water_fresnel = DEFAULT_WATER_FRESNEL
+            self.water_waves = DEFAULT_WATER_WAVES
+            self.water_ripple = DEFAULT_WATER_RIPPLE
+            self.water_wave_speed = DEFAULT_WATER_WAVE_SPEED
             self.light_level = 1.0
             self.ambient_light_color = (1.0, 1.0, 1.0)
             self.diffuse_light_color = (1.0, 1.0, 1.0)
@@ -552,7 +584,13 @@ class Scene:
         horizon, zenith = sky_gradient(sky)
         self.sky_horizon_color = horizon
         self.sky_zenith_color = zenith
-        self.water_tint = water_tint_for(environment.water_at(fraction), horizon)
+        water = environment.water_at(fraction)
+        self.water_tint = water_tint_for(water, horizon)
+        self.water_fog = water_fog(water)
+        self.water_fresnel = water_fresnel(water)
+        self.water_waves = water_waves(water)
+        self.water_ripple = (water_wave_number(water), water_wave_slope(water))
+        self.water_wave_speed = water_wave_speed(water)
         self.environment_sun_direction = sun_direction_for(sky)
         self.light_level = daylight_scale(sky)
         self.ambient_light_color, self.diffuse_light_color = light_hues(sky)
@@ -902,6 +940,26 @@ class Scene:
             self._cloud_drift[1] + rate[1] * step,
         )
         self.cloud_scale_drift = (self.cloud_scale_drift[0], *self._cloud_drift)
+
+    def advance_water(self, dt_seconds: float) -> None:
+        """Move the sea's two waves on by this frame's share of their speed.
+
+        Accumulated per frame rather than taken from the region's clock, for
+        the reason `advance_clouds` gives: the clock arrives every few seconds
+        and a sea that jumps once a second looks worse than a still one.
+
+        Wrapped at a full turn, which the clouds are not and do not need to be.
+        A phase is an angle fed straight to a sine in a shader, and shader
+        floats are single precision: left to run, an hour of viewing puts it
+        past ten thousand radians, where the gap between representable angles
+        is wide enough to show as the waves quantising.
+        """
+        speed = self.water_wave_speed
+        step = max(0.0, float(dt_seconds))
+        self.water_phase = (
+            (self.water_phase[0] + speed[0] * step) % math.tau,
+            (self.water_phase[1] + speed[1] * step) % math.tau,
+        )
 
     def advance_avatar_poses(self, dt_seconds: float) -> None:
         """Fold this frame's avatar positions into their gaits.

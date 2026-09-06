@@ -37,7 +37,13 @@ from vibestorm.viewer3d.atmosphere import (
     sky_gradient,
     star_level,
     sun_direction,
+    water_fog,
+    water_fresnel,
     water_tint,
+    water_wave_number,
+    water_wave_slope,
+    water_wave_speed,
+    water_waves,
 )
 from vibestorm.world.environment import (
     RegionEnvironment,
@@ -279,6 +285,131 @@ class WaterTests(unittest.TestCase):
         for component in tint:
             self.assertGreaterEqual(component, 0.0)
             self.assertLessEqual(component, 1.0)
+
+
+class WaterSurfaceTests(unittest.TestCase):
+    """The four water fields that had been parsed and never used.
+
+    `water_tint` above is the sea a renderer draws when it cannot measure an
+    angle: fog with one fixed share of sky in it, for both ends of a range
+    that runs from nearly none to nearly all. These are what a renderer that
+    *can* measure the angle needs instead.
+    """
+
+    def setUp(self) -> None:
+        self.env = _live_environment()
+
+    def test_the_fog_colour_is_the_sea_without_any_sky_in_it(self) -> None:
+        water = self.env.water_at(0.5)
+
+        self.assertEqual(water_fog(water), water.fog_color)
+        # And it is not `water_tint`, which is the same colour with the sky
+        # already mixed in. Confusing the two draws the sky into the sea twice.
+        self.assertNotEqual(
+            water_fog(water), water_tint(water, DEFAULT_SKY_HORIZON_COLOR)
+        )
+
+    def test_the_fog_colour_stays_inside_the_range_a_shader_can_use(self) -> None:
+        for component in water_fog(WaterSettings(fog_color=(5.0, -1.0, 0.5))):
+            self.assertGreaterEqual(component, 0.0)
+            self.assertLessEqual(component, 1.0)
+
+    def test_the_fresnel_pair_is_the_documents_own(self) -> None:
+        water = self.env.water_at(0.5)
+
+        offset, scale = water_fresnel(water)
+
+        self.assertAlmostEqual(offset, water.fresnel_offset, places=6)
+        self.assertAlmostEqual(scale, water.fresnel_scale, places=6)
+
+    def test_a_document_cannot_ask_for_more_reflection_than_there_is(self) -> None:
+        offset, scale = water_fresnel(
+            WaterSettings(fresnel_offset=4.0, fresnel_scale=-2.0)
+        )
+
+        self.assertEqual((offset, scale), (1.0, 0.0))
+
+    def test_the_wave_directions_come_back_as_unit_vectors(self) -> None:
+        """Because a direction and a speed are two things, not one.
+
+        The document packs both into one vector: which way the wave runs is
+        the direction and how fast it runs is the length. A shader handed the
+        raw vector would tie the two together -- a faster wave would also be a
+        shorter one -- so they are separated here.
+        """
+        water = self.env.water_at(0.5)
+
+        first_x, first_y, second_x, second_y = water_waves(water)
+
+        self.assertAlmostEqual(math.hypot(first_x, first_y), 1.0, places=6)
+        self.assertAlmostEqual(math.hypot(second_x, second_y), 1.0, places=6)
+        # Still pointing where the document pointed them.
+        self.assertAlmostEqual(
+            first_x * water.wave1_direction[1],
+            first_y * water.wave1_direction[0],
+            places=6,
+        )
+        self.assertGreater(first_x * water.wave1_direction[0], 0.0)
+
+    def test_the_two_waves_do_not_run_the_same_way(self) -> None:
+        # They are two waves in the document because a sea made of one is a
+        # corrugated roof. If the parse or the reading collapsed them the sea
+        # would look like one.
+        first_x, first_y, second_x, second_y = water_waves(self.env.water_at(0.5))
+
+        self.assertLess(first_x * second_x + first_y * second_y, 0.99)
+
+    def test_a_wave_that_stands_still_still_has_a_direction(self) -> None:
+        # A zero vector has no direction to normalise, and a NaN one would
+        # take the whole surface with it. Falling back leaves a sea with one
+        # wave on it, which is better than a sea with none.
+        waves = water_waves(WaterSettings(wave1_direction=(0.0, 0.0)))
+
+        self.assertEqual(waves[:2], (1.0, 0.0))
+        for component in waves:
+            self.assertEqual(component, component)
+
+    def test_a_longer_direction_vector_is_a_faster_wave(self) -> None:
+        slow = water_wave_speed(WaterSettings(wave1_direction=(0.5, 0.0)))
+        fast = water_wave_speed(WaterSettings(wave1_direction=(2.0, 0.0)))
+
+        self.assertGreater(fast[0], slow[0] * 3.5)
+
+    def test_a_wave_that_stands_still_does_not_move(self) -> None:
+        speed = water_wave_speed(WaterSettings(wave1_direction=(0.0, 0.0)))
+
+        self.assertEqual(speed[0], 0.0)
+
+    def test_normal_scale_decides_how_fine_the_ripples_are(self) -> None:
+        """Larger scale, shorter waves.
+
+        `normal_scale` is how many times the normal map repeats; with no map
+        to repeat it is read as how fine the ripples are, and the direction of
+        that reading is the part worth pinning down.
+        """
+        coarse = water_wave_number(WaterSettings(normal_scale=(1.0, 1.0, 1.0)))
+        fine = water_wave_number(WaterSettings(normal_scale=(4.0, 4.0, 4.0)))
+
+        self.assertGreater(fine, coarse)
+        self.assertAlmostEqual(fine, coarse * 4.0, places=5)
+
+    def test_a_zero_normal_scale_does_not_divide_by_zero(self) -> None:
+        number = water_wave_number(WaterSettings(normal_scale=(0.0, 0.0, 0.0)))
+
+        self.assertGreater(number, 0.0)
+        self.assertLess(number, float("inf"))
+
+    def test_scale_above_is_how_far_the_surface_leans(self) -> None:
+        water = self.env.water_at(0.5)
+
+        self.assertGreater(water_wave_slope(water), 0.0)
+        self.assertGreater(
+            water_wave_slope(WaterSettings(scale_above=0.2)),
+            water_wave_slope(water),
+        )
+
+    def test_a_negative_lean_is_no_lean(self) -> None:
+        self.assertEqual(water_wave_slope(WaterSettings(scale_above=-1.0)), 0.0)
 
 
 if __name__ == "__main__":

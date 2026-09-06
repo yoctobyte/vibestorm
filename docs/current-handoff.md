@@ -236,6 +236,95 @@ cent zenith, so a wrong horizon moved the pixel by less than one level of
 quantisation. A test that looks *level* is what closes it, and finding that at
 all is the argument for running the battery twice.
 
+**A -- the sea has a surface now (2026-09-06).** Four things the region's
+document says about water had been parsed and never used: `wave1_direction`,
+`wave2_direction`, `fresnel_offset` and `fresnel_scale`. The sea was a flat
+sheet of one colour -- `water_tint`, which is the water's own fog with a fixed
+35 per cent of sky mixed into it -- with a static sine pattern laid over it to
+stop it reading as a painted floor.
+
+`WATER_SKY_REFLECTANCE`'s own comment had said what was wrong with that: *"A
+real surface is nearly all reflection at a grazing angle and nearly all fog
+looking straight down; without a Fresnel term one mixture has to serve for
+both."* There is a Fresnel term now, so the mixture is per pixel:
+`fresnel_offset` is how much sky comes back looking straight down and
+`fresnel_scale` how much more there is along the surface, read as Schlick's
+shape -- reflectance rising as the fifth power of one minus the cosine of the
+viewing angle. That is a reading of the two names rather than of any
+implementation, and it is worth writing down that **0.5 is nothing like
+water's real reflectance straight down**, which is about 0.02. The number is
+artistic and is used as given.
+
+What comes back is not one colour of sky either. The reflected ray is worked
+out per pixel and the sky is sampled *along it*, with the same gradient the sky
+shader itself draws -- so looking down at the sea returns the zenith and looking
+along it returns the horizon. Getting that backwards is not subtle: it draws
+the sea as a second sky with the gradient upside down.
+
+The waves are the two the document names, running the way it says at the speed
+it says. The speed is the part nobody would guess: `wave1_direction` is a
+heading **and** a speed in one two-vector, and its *length* is how fast. A
+reader that normalises loses the speed; one that does not ties speed to
+wavelength, so a faster wave comes out a shorter one. They are separated here
+and the phases advance per frame, wrapped at a full turn -- shader floats are
+single precision and an hour of viewing would otherwise put the angle past ten
+thousand radians, where the waves visibly quantise.
+
+Three things about it are this viewer's invention rather than the region's, and
+two were forced:
+
+- **`normal_map` is still unused.** It names a texture asset nobody here has
+  fetched. The waves are sines instead, so the *wavelength* and the *steepness*
+  are constants in `atmosphere` (`WATER_WAVE_LENGTH_M` divided by
+  `normal_scale`, and `scale_above` times `WATER_WAVE_STEEPNESS`) rather than
+  numbers off the wire.
+- **There are four waves, not two.** Two sines draw a cross-hatch: a regular
+  diamond grid that reads as corrugated iron, which the first screenshot showed
+  immediately. Each documented wave is drawn again at 2.3 times the frequency,
+  turned 0.7 radians off its parent's heading and at 45 per cent of its height.
+  Deriving the extra pair from the two the region gave keeps the sea pointing
+  where the region said even though the shape is invented. 2.3 rather than 2:
+  an octave puts every second crest of the harmonic on a crest of its parent
+  and the grid comes back at half the spacing.
+- **Ripples fade out before they get too fine to draw.** Waves are about four
+  metres long and the plane runs for two kilometres, so most of it is being
+  asked for a ripple narrower than a pixel. Sampled once per pixel that is not
+  water, it is moire -- a coarse pattern that crawls when the camera moves, and
+  the one artefact that reads as a broken renderer rather than as rough water.
+  `fwidth` gives how much a wave's phase changes across a pixel, and each wave
+  fades as that approaches the rate it can no longer be carried: a mip level,
+  computed the only way open to a surface with no texture to have mips of.
+
+**The cost, measured on llvmpipe at 1280x800 with the sea filling half the
+frame.** The water pass was 2.9 ms and is 5.1 ms; the waves are 2.8 ms of that
+and the whole thing skips them when `u_ripple.y` is zero. Two changes paid for
+most of the Fresnel term: `pow(x, 5.0)` is an exponential and a logarithm on a
+software rasteriser and is multiplied out instead, and the reflected ray is
+never built because only its *height* is wanted. Flat water is now cheaper than
+it was before any of this.
+
+Thirty-one mutations, thirty killed. Two survived the first pass:
+
+- **The captured document's water frame is the fallback.** `WaterSettings`'
+  defaults were read off it in the first place, so a `Scene` that ignored the
+  region entirely passed every plumbing test -- the fixture's `fresnel_offset`
+  *is* `DEFAULT_WATER_FRESNEL[0]`. The test now builds a day cycle whose every
+  water field differs and checks each one arrives. This is the same shape of
+  vacuous test as the one recorded under "Two Ways A Test Can Agree With A
+  Bug", and it will happen again wherever a fixture is where a default came
+  from.
+- **Nothing measured the harmonics.** Making `turned` the identity -- so all
+  four waves run along the document's two headings -- changed no test, which
+  is to say the cross-hatch could come back unnoticed. What catches it is a sea
+  handed *one* heading for both documented waves: built from those alone it
+  varies along that heading and not at all across it, so the frame is measured
+  along both screen axes and the smaller has to be substantial.
+
+One is left deliberately alive: `WAVE_HARMONIC` set to 1.0, which makes the
+finer waves the same size as their parents. It is a look rather than a claim --
+the sea is still four-directional and still not a grid -- and a test pinning
+the ratio would be asserting a constant against itself.
+
 **A -- the sea stopped ending in a wall (2026-09-06).** Found by measuring
 rather than by looking: a column of pixels from a camera three metres above the
 water, with the elevation of each row printed beside it, showed a **step of
@@ -901,12 +990,15 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      phase and no maria, and the stars are a hash rather than a catalogue.
      Neither turns with the night, either -- the field is fixed to the world
      axes rather than to a celestial pole.
-   - **The water surface itself.** `normal_map`, the two wave directions,
-     `fresnel_scale` and `fresnel_offset` are all parsed and none is used: the
-     sea is a flat tinted quad with a sine ripple and a distance haze. A real
-     Fresnel term would also replace the fixed sky-reflection mixture in
-     `water_tint`. The *horizon* is no longer part of this entry -- see the
-     seventh pass.
+   - ~~**The water surface itself.**~~ Done in the seventh pass: the two wave
+     directions and both Fresnel fields are read and drawn, and the fixed
+     sky-reflection mixture in `water_tint` is gone from the 3D path (it stays
+     for the 2D one, which has no angle to measure). What is left of it is
+     `normal_map`, which names a texture asset nobody here has fetched -- so
+     the wavelength and the steepness of the waves are this viewer's constants
+     rather than the region's. There is also no sun glitter: a specular
+     highlight off the wave crests is the most recognisable thing about the SL
+     sea from a low camera, and nothing draws one.
    - **`cloud_shadow` is still unspent.** It is not about the clouds: it is
      how much they darken the **ground**, and nothing casts it. The parameter
      is parsed and sitting on `SkySettings` at 0.27 all day.

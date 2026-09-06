@@ -50,7 +50,11 @@ from vibestorm.viewer3d.atmosphere import (
     CLOUD_EDGE_LOW,
     DEFAULT_SKY_HORIZON_COLOR,
     DEFAULT_SKY_ZENITH_COLOR,
+    DEFAULT_WATER_FOG,
+    DEFAULT_WATER_FRESNEL,
+    DEFAULT_WATER_RIPPLE,
     DEFAULT_WATER_TINT,
+    DEFAULT_WATER_WAVES,
 )
 
 if TYPE_CHECKING:
@@ -584,7 +588,6 @@ _GROUND_INDICES: tuple[int, ...] = (
 # usual 20 m setting, but live scenes override it from RegionHandshake.
 WATER_LEVEL_M: float = 20.0
 WATER_TINT_RGB: tuple[float, float, float] = DEFAULT_WATER_TINT
-WATER_NOISE_STRENGTH: float = 0.08
 TERRAIN_FILL_RGBA: tuple[float, float, float, float] = (0.28, 0.58, 0.22, 1.0)
 TERRAIN_LINE_RGBA: tuple[float, float, float, float] = (0.05, 1.0, 0.20, 0.85)
 PARCEL_BORDER_RGBA: tuple[float, float, float, float] = (0.45, 0.85, 0.55, 0.9)
@@ -889,6 +892,23 @@ _SKY_INDICES: tuple[int, ...] = (0, 1, 2, 0, 2, 3)
 WATER_HAZE_NEAR_M: float = 260.0
 WATER_HAZE_FAR_M: float = 900.0
 
+#: The second wave drawn for each of the document's two: how many times finer
+#: it is, how far off its parent's heading it runs, and how tall it is beside
+#: it.
+#:
+#: Entirely a rendering choice, and a necessary one. The document gives two
+#: wave directions, and a surface made of two sines is a cross-hatch -- a
+#: regular diamond grid that reads as corrugated iron. Real water has no
+#: period. Deriving the extra pair from the two the region gave, rather than
+#: picking two more headings, keeps the sea pointing where the region said
+#: even though the shape of it is this viewer's invention.
+#:
+#: Not an octave: 2.0 would put every second crest of the harmonic on a crest
+#: of its parent and the grid would come back at half the spacing.
+WAVE_HARMONIC: float = 2.3
+WAVE_HARMONIC_TURN_RAD: float = 0.7
+WAVE_HARMONIC_HEIGHT: float = 0.45
+
 
 _WATER_VERTEX_SHADER = """
 #version 330
@@ -898,10 +918,10 @@ uniform mat4 u_proj;
 
 in vec3 in_pos;
 
-out vec2 v_world_xy;
+out vec3 v_world;
 
 void main() {
-    v_world_xy = in_pos.xy;
+    v_world = in_pos;
     gl_Position = u_proj * u_view * vec4(in_pos, 1.0);
 }
 """
@@ -909,18 +929,126 @@ void main() {
 _WATER_FRAGMENT_SHADER = """
 #version 330
 
+// The sea's own colour -- what is seen looking *through* it -- and how much
+// of what is under it shows through at all.
 uniform vec4 u_color;
-uniform vec3 u_haze;
-uniform vec2 u_eye_xy;
+// The sky it shows back, as the two colours the sky itself is drawn from.
+uniform vec3 u_horizon;
+uniform vec3 u_zenith;
+uniform vec3 u_eye;
+// The two wave directions, as unit vectors: (d1.xy, d2.xy).
+uniform vec4 u_wave_dirs;
+// x: radians of wave per metre. y: how far the surface leans at its steepest.
+uniform vec2 u_ripple;
+// How far each of the two waves has travelled, in radians.
+uniform vec2 u_wave_phase;
+// x: how much sky is reflected looking straight down. y: how much more of it
+// there is at a grazing angle.
+uniform vec2 u_fresnel;
 
-in vec2 v_world_xy;
+in vec3 v_world;
 out vec4 frag_color;
 
+// The sky, as a function of how high a ray leaves the surface. The same
+// expression the sky shader is drawn with, and it has to be the same one:
+// this is the sea showing that sky back, and any disagreement between the two
+// draws as a second horizon in the water.
+//
+// Takes the height alone rather than the direction, because that is all the
+// gradient uses -- and it means the reflected ray never has to be built.
+vec3 sky_at_height(float height) {
+    return mix(u_horizon, u_zenith, sqrt(clamp(height, 0.0, 1.0)));
+}
+
+// One wave's contribution to the slope of the surface: the derivative of a
+// sine along the direction it runs in, faded by how legible it still is.
+vec2 crest(vec2 ground, vec2 direction, float number, float phase, float height) {
+    return direction * (cos(dot(ground, direction) * number + phase) * height);
+}
+
+// A direction turned by a fixed angle, for the harmonics below.
+vec2 turned(vec2 direction) {
+    return vec2(
+        direction.x * __WAVE_TURN_COS__ - direction.y * __WAVE_TURN_SIN__,
+        direction.x * __WAVE_TURN_SIN__ + direction.y * __WAVE_TURN_COS__
+    );
+}
+
 void main() {
-    float wave = sin(v_world_xy.x * 0.23) * sin(v_world_xy.y * 0.19);
-    float fine = sin((v_world_xy.x + v_world_xy.y) * 0.61);
-    float noise = (wave * 0.65 + fine * 0.35) * 0.5 + 0.5;
-    vec3 rgb = u_color.rgb + (noise - 0.5) * __WATER_NOISE_STRENGTH__;
+    vec2 ground = v_world.xy;
+    // A plane leaning by (dx, dy) has normal (-dx, -dy, 1), so what the waves
+    // have to produce is the gradient of a height field. Sines, because
+    // `normal_map` names a texture nobody here has fetched -- what is off the
+    // wire is which way the waves run, how fast, and how steep, and that is
+    // what is being used.
+    vec3 normal = vec3(0.0, 0.0, 1.0);
+    if (u_ripple.y > 0.0) {
+        float first = dot(ground, u_wave_dirs.xy) * u_ripple.x + u_wave_phase.x;
+        float second = dot(ground, u_wave_dirs.zw) * u_ripple.x + u_wave_phase.y;
+        // How much of each wave survives being drawn at this distance. Waves
+        // are about four metres long and the plane runs for two kilometres,
+        // so most of it is being asked for a ripple narrower than a pixel;
+        // sampled once per pixel that is not a ripple, it is moire, which is
+        // the one artefact that reads as a broken renderer rather than as
+        // rough water. The two harmonics below are scaled from their parents'
+        // widths rather than measured -- their headings differ by less than a
+        // radian, and this is a fade rather than a filter.
+        vec2 width = vec2(fwidth(first), fwidth(second));
+        vec4 fade = vec4(
+            1.0 - smoothstep(1.0, 3.0, width.x),
+            1.0 - smoothstep(1.0, 3.0, width.y),
+            1.0 - smoothstep(1.0, 3.0, width.x * __WAVE_HARMONIC__),
+            1.0 - smoothstep(1.0, 3.0, width.y * __WAVE_HARMONIC__)
+        );
+        // Four waves, not the document's two. Two alone draw a cross-hatch:
+        // a regular diamond grid that reads as corrugated iron, because a sea
+        // is not periodic and two sines are. The other two are those same
+        // waves at __WAVE_HARMONIC__ times the frequency, turned off their
+        // parent's heading and at a fraction of its height -- which breaks
+        // the pattern without inventing a direction the region never gave.
+        vec2 slope = u_ripple.y / (1.0 + __WAVE_HARMONIC_HEIGHT__) * (
+            u_wave_dirs.xy * cos(first) * fade.x
+            + u_wave_dirs.zw * cos(second) * fade.y
+            + crest(
+                ground,
+                turned(u_wave_dirs.xy),
+                u_ripple.x * __WAVE_HARMONIC__,
+                u_wave_phase.x * __WAVE_HARMONIC__ + 1.7,
+                __WAVE_HARMONIC_HEIGHT__ * fade.z
+            )
+            + crest(
+                ground,
+                turned(-u_wave_dirs.zw),
+                u_ripple.x * __WAVE_HARMONIC__,
+                u_wave_phase.y * __WAVE_HARMONIC__ + 4.1,
+                __WAVE_HARMONIC_HEIGHT__ * fade.w
+            )
+        );
+        normal = normalize(vec3(-slope, 1.0));
+    }
+
+    vec3 view = normalize(u_eye - v_world);
+    float facing = clamp(dot(normal, view), 0.0, 1.0);
+    // Schlick's shape: reflectance rises as the fifth power of one minus the
+    // cosine of the viewing angle. This is what `fresnel_offset` and
+    // `fresnel_scale` are being read as, and it is what replaces the single
+    // fixed sky-in-the-sea mixture the flat plane had -- a surface is mostly
+    // its own colour looking down into it and mostly sky along it.
+    // Multiplied out rather than left as pow(): a general power is an
+    // exponential and a logarithm, and this runs on every pixel of half the
+    // screen on a software rasteriser.
+    float grazing = 1.0 - facing;
+    float grazing_squared = grazing * grazing;
+    float mirror = clamp(
+        u_fresnel.x + u_fresnel.y * grazing_squared * grazing_squared * grazing,
+        0.0,
+        1.0
+    );
+    // The reflected ray is `view` mirrored in the normal, and only its height
+    // is wanted, so only its height is worked out.
+    vec3 rgb = mix(
+        u_color.rgb, sky_at_height(2.0 * facing * normal.z - view.z), mirror
+    );
 
     // Distant sea becomes the sky it meets. Without this the horizon is a
     // hard line -- measured at sixty-seven levels of jump from a camera three
@@ -935,21 +1063,29 @@ void main() {
     // is the average of three corners a kilometre away and the sea at the
     // viewer's feet comes out as hazed as the sea at the horizon.
     float haze = smoothstep(
-        __WATER_HAZE_NEAR__, __WATER_HAZE_FAR__, length(v_world_xy - u_eye_xy)
+        __WATER_HAZE_NEAR__, __WATER_HAZE_FAR__, length(ground - u_eye.xy)
     );
-    rgb = mix(rgb, u_haze, haze);
-    // The alpha goes with it: the sea is translucent up close, where there is
-    // something under it worth seeing, and opaque at the horizon, where being
-    // partly transparent only lets the sky through at the wrong brightness.
-    float alpha = mix(u_color.a, 1.0, haze);
+    rgb = mix(rgb, u_horizon, haze);
+    // The opacity goes with both. Reflected light does not come from under the
+    // surface, so a stretch of water showing back a lot of sky hides what is
+    // beneath it; and at the horizon there is nothing beneath it but sky, so
+    // staying translucent there only lets that sky through at the wrong
+    // brightness -- the same wall by another route.
+    float alpha = mix(mix(u_color.a, 1.0, mirror), 1.0, haze);
     frag_color = vec4(clamp(rgb, 0.0, 1.0), alpha);
 }
 """.replace(
-    "__WATER_NOISE_STRENGTH__", f"{WATER_NOISE_STRENGTH:f}"
-).replace(
     "__WATER_HAZE_NEAR__", f"{WATER_HAZE_NEAR_M:f}"
 ).replace(
     "__WATER_HAZE_FAR__", f"{WATER_HAZE_FAR_M:f}"
+).replace(
+    "__WAVE_HARMONIC_HEIGHT__", f"{WAVE_HARMONIC_HEIGHT:f}"
+).replace(
+    "__WAVE_HARMONIC__", f"{WAVE_HARMONIC:f}"
+).replace(
+    "__WAVE_TURN_COS__", f"{math.cos(WAVE_HARMONIC_TURN_RAD):f}"
+).replace(
+    "__WAVE_TURN_SIN__", f"{math.sin(WAVE_HARMONIC_TURN_RAD):f}"
 )
 
 _WATER_INDICES: tuple[int, ...] = (
@@ -1547,16 +1683,39 @@ class PerspectiveRenderer:
                 self._water_program["u_view"].write(view_data)
                 self._water_program["u_proj"].write(proj_data)
                 alpha = max(0.0, min(1.0, float(getattr(scene, "water_alpha", 0.72))))
-                tint = getattr(scene, "water_tint", DEFAULT_WATER_TINT)
-                self._water_program["u_color"].value = (*tint, alpha)
-                # The sky the sea has to agree with at the horizon, and where
-                # the viewer is standing so it knows what "far" means.
-                self._water_program["u_haze"].value = getattr(
+                # The sea's own colour, not `water_tint`: that one is the same
+                # colour with a fixed share of sky already mixed in, which is
+                # what a plane with no Fresnel term needs and what this shader
+                # would then be adding sky to twice.
+                fog = getattr(scene, "water_fog", DEFAULT_WATER_FOG)
+                self._water_program["u_color"].value = (*fog, alpha)
+                # The sky the sea reflects and has to agree with at the
+                # horizon, and where the viewer is standing -- which the
+                # surface needs in full, not just on the ground plane, because
+                # the angle it is looked at is what decides how much of that
+                # sky comes back.
+                self._water_program["u_horizon"].value = getattr(
                     scene, "sky_horizon_color", DEFAULT_SKY_HORIZON_COLOR
                 )
-                self._water_program["u_eye_xy"].value = (
+                self._water_program["u_zenith"].value = getattr(
+                    scene, "sky_zenith_color", DEFAULT_SKY_ZENITH_COLOR
+                )
+                self._water_program["u_eye"].value = (
                     float(eye_position[0]),
                     float(eye_position[1]),
+                    float(eye_position[2]),
+                )
+                self._water_program["u_wave_dirs"].value = getattr(
+                    scene, "water_waves", DEFAULT_WATER_WAVES
+                )
+                self._water_program["u_ripple"].value = getattr(
+                    scene, "water_ripple", DEFAULT_WATER_RIPPLE
+                )
+                self._water_program["u_wave_phase"].value = getattr(
+                    scene, "water_phase", (0.0, 0.0)
+                )
+                self._water_program["u_fresnel"].value = getattr(
+                    scene, "water_fresnel", DEFAULT_WATER_FRESNEL
                 )
                 ctx.enable(ctx.BLEND)
                 ctx.blend_func = (ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA)
