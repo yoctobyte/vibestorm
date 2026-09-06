@@ -228,6 +228,59 @@ class DayCycleTextureTests(unittest.TestCase):
 
         self.assertNotIn(UUID(int=0), found)
 
+    def test_the_document_names_two_more_that_are_read_and_not_fetched(self) -> None:
+        """A decision, so it is written down as one rather than left implicit.
+
+        The live document names five real texture ids, not three. The other
+        two are the water's `transparent_texture` and the sky's `bloom_id`,
+        and both were fetched once to find out what they are: a 256x256 sheet
+        of flat blue with no alpha channel anywhere -- despite the name -- and
+        a white disc with a radial alpha falloff. One is the painted substitute
+        for a water surface this viewer draws properly, the other is a bloom
+        sprite for a pass that does not exist here.
+
+        So they are parsed, because the document says them, and kept out of
+        the fetch list, because a texture nobody draws costs a round trip and
+        a slot in the texture budget. This asserts both halves: the ids are
+        read, and they are not queued.
+        """
+        environment = _live_environment()
+        water = dict(environment.water_track)[0.0]
+        sky = dict(environment.sky_track)[0.0]
+
+        self.assertEqual(
+            water.transparent_texture, "2bfd3884-7e27-69b9-ba3a-3e673f680004"
+        )
+        self.assertEqual(sky.bloom_id, "3c59f7fe-9dc8-47f9-8aaf-a9dd1fbc3bef")
+        fetched = [str(asset) for asset in environment.texture_assets()]
+        self.assertNotIn(water.transparent_texture, fetched)
+        self.assertNotIn(sky.bloom_id, fetched)
+
+    def test_a_texture_that_changes_at_a_keyframe_is_not_half_blended(self) -> None:
+        """Which is the rule for every id, the two unfetched ones included.
+
+        `_blend_water` and `_blend_sky` interpolate every number across a
+        keyframe boundary, and a texture is not a number: half of one asset id
+        is not an asset. Checked on the two added last, because the pattern is
+        easy to follow and easy to leave out.
+        """
+        first = WaterSettings(transparent_texture="a")
+        second = WaterSettings(transparent_texture="b")
+        environment = RegionEnvironment(
+            day_length=100.0,
+            water_track=((0.0, first), (0.5, second)),
+            sky_track=(
+                (0.0, SkySettings(bloom_id="a")),
+                (0.5, SkySettings(bloom_id="b")),
+            ),
+        )
+
+        # A fifth of the way between the two keyframes, and four fifths.
+        self.assertEqual(environment.water_at(0.1).transparent_texture, "a")
+        self.assertEqual(environment.water_at(0.4).transparent_texture, "b")
+        self.assertEqual(environment.sky_at(0.1).bloom_id, "a")
+        self.assertEqual(environment.sky_at(0.4).bloom_id, "b")
+
     def test_one_texture_used_all_day_is_listed_once(self) -> None:
         # The live cycle names the same moon in all eight keyframes.
         found = _live_environment().texture_assets()

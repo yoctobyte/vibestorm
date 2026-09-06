@@ -76,6 +76,15 @@ class WaterSettings:
     wave1_direction: Vec2 = (1.05, -0.42)
     wave2_direction: Vec2 = (1.11, -1.16)
     normal_map: str = ""
+    #: A painted picture of water, and the name is misleading: the asset
+    #: OpenSim's default cycle names here is a 256x256 sheet of flat blue with
+    #: faint ripples in it and **no alpha channel at all** -- fetched and
+    #: measured, every pixel opaque. It is the sheet a viewer lays on the
+    #: surface when it is not drawing one, which is a lower-fidelity version
+    #: of what `viewer3d` already does from the numbers beside it and
+    #: `normal_map`. So it is read and not drawn, and deliberately not
+    #: fetched either; see `texture_assets`.
+    transparent_texture: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,6 +135,14 @@ class SkySettings:
     cloud_id: str = ""
     sun_id: str = ""
     moon_id: str = ""
+    #: A glow sprite: a white disc with a radial alpha falloff, 256x256,
+    #: fetched and measured. It is what a viewer multiplies over bright things
+    #: in a bloom pass, and there is no bloom pass here -- the same standing
+    #: as `blur_multiplier` on the water side. Whether it is *the sun's* halo
+    #: in particular the document does not say, and the sky already draws its
+    #: own from `sun_disc`, so using it there would be a guess dressed as the
+    #: region's own asset. Read, not drawn, not fetched.
+    bloom_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -176,6 +193,15 @@ class RegionEnvironment:
         the default cycle, which is the document's way of saying *no texture*
         rather than a missing field -- so a null is skipped here like any
         other absent asset, and the caller draws its own.
+
+        Two real ids are deliberately left out: the water's
+        `transparent_texture` and the sky's `bloom_id`. Both are real assets
+        and both were fetched to find out what they are -- a flat opaque sheet
+        of blue, and a white disc with a radial alpha falloff. Neither is
+        something this renderer draws, and a texture nobody draws costs a
+        round trip and a slot in the texture budget for nothing. See their
+        fields for what they are and why. This is the one list the fetcher
+        works from, so leaving them out is the decision, not an omission.
         """
         found: list[UUID] = []
         seen: set[UUID] = set()
@@ -285,6 +311,7 @@ def _read_water(frame: Mapping[str, object]) -> WaterSettings:
         wave1_direction=_vec2(frame.get("wave1_direction"), default.wave1_direction),
         wave2_direction=_vec2(frame.get("wave2_direction"), default.wave2_direction),
         normal_map=str(frame.get("normal_map") or ""),
+        transparent_texture=str(frame.get("transparent_texture") or ""),
     )
 
 
@@ -330,6 +357,7 @@ def _read_sky(frame: Mapping[str, object]) -> SkySettings:
         cloud_id=str(frame.get("cloud_id") or ""),
         sun_id=str(frame.get("sun_id") or ""),
         moon_id=str(frame.get("moon_id") or ""),
+        bloom_id=str(frame.get("bloom_id") or ""),
     )
 
 
@@ -373,6 +401,9 @@ def _blend_water(a: WaterSettings, b: WaterSettings, t: float) -> WaterSettings:
         wave2_direction=_lerp2(a.wave2_direction, b.wave2_direction, t),
         # A texture cannot be half another texture: it changes at the keyframe.
         normal_map=a.normal_map if t < 0.5 else b.normal_map,
+        transparent_texture=(
+            a.transparent_texture if t < 0.5 else b.transparent_texture
+        ),
     )
 
 
@@ -405,6 +436,7 @@ def _blend_sky(a: SkySettings, b: SkySettings, t: float) -> SkySettings:
         cloud_id=a.cloud_id if t < 0.5 else b.cloud_id,
         sun_id=a.sun_id if t < 0.5 else b.sun_id,
         moon_id=a.moon_id if t < 0.5 else b.moon_id,
+        bloom_id=a.bloom_id if t < 0.5 else b.bloom_id,
     )
 
 

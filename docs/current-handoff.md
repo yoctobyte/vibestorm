@@ -358,6 +358,39 @@ quantity -- and it is the second time in two passes that it has been the one
 survivor.
 
 
+**A -- the two textures nobody draws, settled (2026-09-06).** The live day
+cycle names *five* real texture ids, not three. Two of them nothing here has
+ever read: the water's `transparent_texture` and the sky's `bloom_id` -- and
+the second was not even on the gap list, which is how an omission hides.
+
+Both were fetched from this OpenSim's own asset service and looked at, which
+is the only way to answer what they are.
+
+- **`transparent_texture` (2bfd3884) is opaque.** A 256x256 sheet of flat
+  blue with faint ripples painted into it, and no alpha channel anywhere --
+  every pixel measured at 255. Despite the name it is not a transparency map;
+  it is the picture a viewer lays on the water when it is not drawing a
+  surface. This one draws a surface: the region's own normal map, its own
+  Fresnel numbers, and its own sky in the mirror. The sheet is a lower-fidelity
+  version of what is already there.
+- **`bloom_id` (3c59f7fe) is a glow sprite.** A white disc with a radial alpha
+  falloff. It is what a bloom pass multiplies over bright things, and there is
+  no bloom pass here -- the same standing as `blur_multiplier`, which is the
+  other half of that same absent pass. Whether it is *the sun's* halo in
+  particular the document does not say, and the sky already draws its own from
+  `sun_disc`; using it there would be a guess wearing the region's colours.
+
+So both are parsed -- the document says them, and a later pass that grows a
+bloom wants the id -- and both are kept out of `texture_assets`, which is the
+one list the fetcher works from. A texture nobody draws costs a round trip and
+a slot in the texture budget for nothing. Six mutations, six killed, including
+the two that put either id back into the fetch list.
+
+The point worth keeping is the method: *fetch the asset and look at it.* Two
+passes of this handoff described `transparent_texture` from its name alone and
+got it backwards.
+
+
 **A -- the HUD was drawn for the monitor, not for its own window
 (2026-09-06).** Found by taking a screenshot of the running viewer at
 1280x800 and looking at it, which is the second time that has been the whole
@@ -1725,9 +1758,9 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      wavelength and the steepness are still this viewer's constants rather
      than the region's. Sun glitter followed in the same pass, and is not a
      specular model: it is the sun the sky pass draws, off one shared GLSL
-     string, seen in a mirror. What is left here is `transparent_texture` --
-     a fourth asset id in the water frame that nothing parses; it fetches, and
-     it is an opaque blue sheet rather than anything transparent. The sea shows
+     string, seen in a mirror. `transparent_texture` is closed in the tenth
+     pass and closed as a *decision*: it is read, and deliberately neither
+     drawn nor fetched -- see below. The sea shows
      back the region's cloud layer as well as its sun since the ninth pass
      and the moon since the tenth, all three off the same one shared GLSL
      string each, and there is a test that compares the two passes against
@@ -1740,7 +1773,8 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**Under the water.**~~ Done in the seventh pass: every pass that draws
      the world fogs, the sky comes through the surface only where the water is
      thin enough, and the surface from below is a ceiling. `blur_multiplier`
-     is what is left of it -- there is no blur pass to give it to.
+     is what is left of it -- there is no blur pass to give it to, and the
+     sky's `bloom_id` is the sprite that pass would use.
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
