@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from vibestorm.sync.naming import file_name_for_item, safe_filename
+from vibestorm.viewer.ui_scale import scale_the_window_can_hold
 from vibestorm.viewer3d.chat_ticker import TickerEntry, draw_ticker
 from vibestorm.viewer3d.text_panel import PANEL_PADDING, draw_rows, panel_height, wrap_lines
 from vibestorm.world.asset_types import ASSET_TYPE_BY_NAME, asset_type_to_int
@@ -156,7 +157,11 @@ class HUD:
         self._pygame = pygame
         self._pygame_gui = pygame_gui
         self.screen_size = screen_size
-        self.ui_scale = max(0.75, float(ui_scale))
+        # Kept as asked for as well as as used: `resize` needs the original to
+        # compare against the new window, or dragging a window small and back
+        # large again would leave the HUD at the smaller scale for good.
+        self.requested_ui_scale = max(0.75, float(ui_scale))
+        self.ui_scale = scale_the_window_can_hold(self.requested_ui_scale, screen_size)
         self.on_chat_submit = on_chat_submit
         self.on_zoom_in = on_zoom_in
         self.on_zoom_out = on_zoom_out
@@ -1226,6 +1231,7 @@ class HUD:
         # Tear down + rebuild on resize. pygame_gui's set_window_resolution exists
         # but element rects are absolute, so a rebuild is the safest way.
         self.screen_size = screen_size
+        self.ui_scale = scale_the_window_can_hold(self.requested_ui_scale, screen_size)
         # Every element is rebuilt below and the caller reallocates the HUD
         # surface, so nothing about the previous frame still applies.
         self._redraw_forced = True

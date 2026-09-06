@@ -358,6 +358,49 @@ quantity -- and it is the second time in two passes that it has been the one
 survivor.
 
 
+**A -- the HUD was drawn for the monitor, not for its own window
+(2026-09-06).** Found by taking a screenshot of the running viewer at
+1280x800 and looking at it, which is the second time that has been the whole
+technique. Two thirds of the frame was an empty chat window with "no chat
+yet" in it, and the world was behind it.
+
+The chat window was not the bug. `_auto_ui_scale` asks how large a pixel is
+on the *monitor* -- 2.0 on this one -- and nothing then asked whether the
+window could hold a HUD at that size. At scale 2 in a 1280-wide frame the
+layout has 640x410 logical pixels to work with, and it does not fit in that:
+the chat window came out 890x550, the heightmap window sat with thirty-five
+of its 750 pixels on screen, the inspector and the asset viewer were each
+larger than the whole frame, and the login panel ran off the top and the
+bottom. Every widget was equally oversized.
+
+`vibestorm/viewer/ui_scale.py` caps it: the scale the monitor asks for,
+brought down to what the window holds of `UI_DESIGN_SIZE`, in the same
+quarter steps and rounded down, asking both sides -- a letterbox window holds
+two of the layout across and one of it down, and scaling to the wide side
+puts the status bar off the bottom. The cap stops at 1.0, so a small window
+at a scale of one is left alone: shrinking the type in an ordinary small
+window was never the complaint. The HUD and the login screen both read it,
+which also means the type does not change size between logging in and
+arriving, and both keep the scale *as asked for* beside the one in use --
+deriving the next from the current would ratchet, and every shrink would be
+permanent.
+
+The owner's default window is 1180x820 at a scale of one, so at two it is
+2360x1640 and holds the layout exactly; nothing there changes. What changes
+is the shrunken window, and the owner shrinks the window -- *"we have around
+14fps. that raises to 20fps if i shrink the window"*.
+
+**And `resize` on the login screen crashed.** It called
+`manager.clear()`, which pygame_gui has not got, so dragging the window while
+the login screen was up raised `AttributeError` out of the event loop. It is
+`clear_and_reset()`. Nothing caught it because nothing in the suite had ever
+resized anything -- the whole method was unreachable from the tests, and
+writing the first test that called it is what found it. Nine mutations on the
+cap, all nine killed, two of them only after a letterbox case was added: with
+every test window a scaled copy of the design frame, asking only the width
+and asking only the height give the same answer.
+
+
 **A -- the sky turns, and the stars turn with it (2026-09-06).** The
 last thing in the night sky that was this client's own idea rather than the
 region's. `star_field` hashed a *world* direction, so the field was nailed to

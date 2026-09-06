@@ -50,6 +50,25 @@ class LoginScreenTests(unittest.TestCase):
         self.assertEqual(screen.uri_entry.get_text(), "https://login.agni.lindenlab.com/cgi-bin/login.cgi")
         self.assertEqual(screen.start_entry.get_text(), "last")
 
+    def test_resizing_the_window_does_not_take_the_viewer_down(self) -> None:
+        """`resize` called `manager.clear()`, which pygame_gui has not got.
+
+        So dragging the window while the login screen was up raised
+        `AttributeError` straight out of the event loop. Nothing caught it
+        because nothing here had ever resized anything -- the whole method
+        was unreachable from the tests.
+        """
+        from vibestorm.viewer.login_screen import LoginScreen
+
+        screen = LoginScreen((800, 600))
+        self.pygame.display.set_mode((1024, 768))
+
+        screen.resize((1024, 768))
+
+        self.assertEqual(screen.screen_size, (1024, 768))
+        self.assertIsNotNone(screen.login_button)
+        self.assertIsNotNone(screen.preset_dropdown)
+
     def test_quit_button_sets_quit_requested(self) -> None:
         from vibestorm.viewer.login_screen import LoginScreen
 

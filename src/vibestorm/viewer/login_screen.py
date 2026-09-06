@@ -17,6 +17,7 @@ from vibestorm import __version__
 from vibestorm.login.client import LoginClient, LoginError
 from vibestorm.login.models import LoginCredentials, LoginRequest
 from vibestorm.util import credentials
+from vibestorm.viewer.ui_scale import scale_the_window_can_hold
 
 if TYPE_CHECKING:
     from vibestorm.login.models import LoginBootstrap
@@ -72,7 +73,11 @@ class LoginScreen:
         args: argparse.Namespace | None = None,
     ):
         self.screen_size = screen_size
-        self.ui_scale = ui_scale
+        # Kept as asked for as well as as used, like the HUD's: `resize` needs
+        # the original to compare against the new window, or dragging a window
+        # small and back large would leave the type at the smaller size.
+        self.requested_ui_scale = ui_scale
+        self.ui_scale = scale_the_window_can_hold(ui_scale, screen_size)
 
         manager_kwargs = {}
         if theme_path is not None:
@@ -304,9 +309,14 @@ class LoginScreen:
     def resize(self, size: tuple[int, int]) -> None:
         """Handle screen resize events."""
         self.screen_size = size
+        self.ui_scale = scale_the_window_can_hold(self.requested_ui_scale, size)
         self.manager.set_window_resolution(size)
 
-        self.manager.clear()
+        # `clear_and_reset`, not `clear`: pygame_gui's manager has no `clear`,
+        # and calling it raised `AttributeError` -- so resizing the window
+        # while the login screen was up took the viewer down with it. Nothing
+        # caught it because nothing resized the window in a test.
+        self.manager.clear_and_reset()
         self._build_ui()
         self._apply_preset_defaults()
 
