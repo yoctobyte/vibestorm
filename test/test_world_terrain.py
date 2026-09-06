@@ -577,5 +577,80 @@ class HeightmapGrowthTests(unittest.TestCase):
             )
 
 
+class HeightAtTests(unittest.TestCase):
+    """`RegionHeightmap.height_at`, against the surface the renderer draws.
+
+    The mesh puts the first and last samples on the region's two edges, so the
+    spacing is `size_m / (count - 1)` and not one metre. Every case below is
+    about that: a sampler that indexed by the metre would pass the corners and
+    fail everywhere in between.
+    """
+
+    def _ramp(self, width: int = 5, height: int = 5):
+        from vibestorm.world.terrain import RegionHeightmap
+
+        # Height equals the column index, so the expected answer at any point
+        # is just its fractional column.
+        samples = [float(col) for _ in range(height) for col in range(width)]
+        return RegionHeightmap(width=width, height=height, samples=samples)
+
+    def test_the_corner_samples_land_on_the_corners(self) -> None:
+        ramp = self._ramp()
+
+        self.assertAlmostEqual(ramp.height_at(0.0, 0.0, size_m=256.0), 0.0)
+        self.assertAlmostEqual(ramp.height_at(256.0, 0.0, size_m=256.0), 4.0)
+        self.assertAlmostEqual(ramp.height_at(256.0, 256.0, size_m=256.0), 4.0)
+
+    def test_a_point_between_two_samples_is_between_their_heights(self) -> None:
+        ramp = self._ramp()
+
+        # Halfway along, which on a five-sample ramp is column 2.
+        self.assertAlmostEqual(ramp.height_at(128.0, 128.0, size_m=256.0), 2.0)
+        # A quarter of the way between columns 1 and 2.
+        self.assertAlmostEqual(ramp.height_at(80.0, 0.0, size_m=256.0), 1.25)
+
+    def test_the_grid_is_stretched_over_the_region_not_laid_out_by_the_metre(
+        self,
+    ) -> None:
+        from vibestorm.world.terrain import RegionHeightmap
+
+        # 256 samples over 256 m: the samples are 256/255 m apart, so the
+        # middle of the region falls between samples 127 and 128 rather than
+        # on 128. This is the case that separates the drawn surface from the
+        # one a per-metre sampler would report.
+        samples = [float(col) for _ in range(2) for col in range(256)]
+        heightmap = RegionHeightmap(width=256, height=2, samples=samples)
+
+        self.assertAlmostEqual(
+            heightmap.height_at(128.0, 0.0, size_m=256.0), 127.5, places=5
+        )
+
+    def test_the_north_south_axis_is_read_the_same_way(self) -> None:
+        from vibestorm.world.terrain import RegionHeightmap
+
+        # Height equals the row index this time, so an x-only sampler would
+        # answer 0 everywhere.
+        samples = [float(row) for row in range(5) for _ in range(5)]
+        heightmap = RegionHeightmap(width=5, height=5, samples=samples)
+
+        self.assertAlmostEqual(heightmap.height_at(0.0, 128.0, size_m=256.0), 2.0)
+        self.assertAlmostEqual(heightmap.height_at(0.0, 256.0, size_m=256.0), 4.0)
+
+    def test_a_point_off_the_grid_clamps_to_the_nearest_edge(self) -> None:
+        ramp = self._ramp()
+
+        self.assertAlmostEqual(ramp.height_at(-50.0, 10.0, size_m=256.0), 0.0)
+        self.assertAlmostEqual(ramp.height_at(900.0, 10.0, size_m=256.0), 4.0)
+
+    def test_a_heightmap_with_no_span_does_not_divide_by_zero(self) -> None:
+        from vibestorm.world.terrain import RegionHeightmap
+
+        single = RegionHeightmap(width=1, height=1, samples=[7.0])
+
+        self.assertAlmostEqual(single.height_at(100.0, 100.0, size_m=256.0), 7.0)
+        self.assertAlmostEqual(single.height_at(0.0, 0.0, size_m=0.0), 7.0)
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -246,5 +246,183 @@ class Camera3DPresetTests(unittest.TestCase):
         self.assertGreater(camera.target[0], camera.eye_position[0])
 
 
+def _slope_west_of(edge_x: float, *, low: float = 0.0, high: float = 40.0):
+    """Ground that is `high` west of `edge_x` and `low` east of it."""
+
+    def ground(x: float, y: float) -> float | None:
+        return high if x < edge_x else low
+
+    return ground
+
+
+class EyeClearOfTheGroundTests(unittest.TestCase):
+    """The camera is not allowed inside the hill it is standing on.
+
+    Found by rendering a third-person camera at the foot of a ridge and
+    looking at it: the frame was a wall of flat green with the sea visible
+    underneath it, which is what the inside of the terrain looks like. The
+    default camera sits ten metres behind the avatar, so any slope steeper
+    than about eighteen degrees put it there.
+    """
+
+    def test_an_eye_in_clear_air_is_left_where_it_was(self) -> None:
+        from vibestorm.viewer3d.camera import eye_clear_of_the_ground
+
+        eye = (10.0, 0.0, 50.0)
+
+        self.assertEqual(
+            eye_clear_of_the_ground(eye, (0.0, 0.0, 50.0), lambda x, y: 0.0), eye
+        )
+
+    def test_an_eye_in_the_ground_is_pulled_back_towards_the_target(self) -> None:
+        from vibestorm.viewer3d.camera import (
+            GROUND_CLEARANCE_M,
+            eye_clear_of_the_ground,
+        )
+
+        target = (0.0, 0.0, 10.0)
+        eye = (-10.0, 0.0, 10.0)  # ten metres west, inside the ridge
+        ground = _slope_west_of(-5.0, low=0.0, high=40.0)
+
+        held = eye_clear_of_the_ground(eye, target, ground)
+
+        self.assertGreater(held[0], eye[0], "the eye was not pulled in at all")
+        self.assertLess(held[0], target[0], "the eye was pulled past the target")
+        self.assertGreaterEqual(
+            held[2], ground(held[0], held[1]) + GROUND_CLEARANCE_M - 1e-6
+        )
+
+    def test_pulling_in_does_not_change_where_the_camera_looks_from(self) -> None:
+        from vibestorm.viewer3d.camera import _normalize, _sub, eye_clear_of_the_ground
+
+        target = (0.0, 0.0, 10.0)
+        eye = (-8.0, -6.0, 4.0)
+        ground = _slope_west_of(-2.0, low=0.0, high=40.0)
+
+        held = eye_clear_of_the_ground(eye, target, ground)
+
+        wanted = _normalize(_sub(eye, target))
+        got = _normalize(_sub(held, target))
+        for axis in range(3):
+            self.assertAlmostEqual(got[axis], wanted[axis], places=5)
+
+    def test_the_camera_stops_at_the_near_side_of_a_ridge(self) -> None:
+        from vibestorm.viewer3d.camera import eye_clear_of_the_ground
+
+        # A ridge close to the target, a wide pocket of clear air beyond it,
+        # and solid ground further out with the eye buried in that. Halfway
+        # along the line is in the pocket, so a bisection finds it clear and
+        # converges on the far side of a ridge the camera cannot see over --
+        # nine metres from the avatar with a hill in between. A march out from
+        # the target has to meet the near face first.
+        def ground(x: float, y: float) -> float | None:
+            return 40.0 if (-2.5 <= x <= -1.0 or x <= -9.0) else 0.0
+
+        held = eye_clear_of_the_ground((-10.0, 0.0, 10.0), (0.0, 0.0, 10.0), ground)
+
+        self.assertGreater(held[0], -1.0, "the camera ended up behind the ridge")
+        self.assertLess(held[0], -0.9, "the camera did not come out to the ridge")
+
+    def test_an_eye_under_ground_with_no_way_back_is_lifted_instead(self) -> None:
+        from vibestorm.viewer3d.camera import (
+            GROUND_CLEARANCE_M,
+            eye_clear_of_the_ground,
+        )
+
+        # The target is buried too, so there is nowhere on the line to retreat
+        # to. Drawing the world from above the ground beats drawing it from
+        # inside.
+        held = eye_clear_of_the_ground(
+            (5.0, 6.0, 1.0), (0.0, 0.0, 1.0), lambda x, y: 20.0
+        )
+
+        self.assertEqual(held[0], 5.0)
+        self.assertEqual(held[1], 6.0)
+        self.assertAlmostEqual(held[2], 20.0 + GROUND_CLEARANCE_M)
+
+    def test_an_eye_sitting_on_its_target_is_lifted_rather_than_divided_by(
+        self,
+    ) -> None:
+        from vibestorm.viewer3d.camera import eye_clear_of_the_ground
+
+        held = eye_clear_of_the_ground(
+            (3.0, 3.0, 0.0), (3.0, 3.0, 0.0), lambda x, y: 10.0
+        )
+
+        self.assertAlmostEqual(held[2], 10.5)
+
+    def test_where_there_is_no_ground_there_is_no_constraint(self) -> None:
+        from vibestorm.viewer3d.camera import eye_clear_of_the_ground
+
+        eye = (-10.0, 0.0, -400.0)
+
+        self.assertEqual(
+            eye_clear_of_the_ground(eye, (0.0, 0.0, 10.0), lambda x, y: None), eye
+        )
+
+
+class CameraEyeTests(unittest.TestCase):
+    """Which modes are held off the ground, and which are not."""
+
+    def _camera(self, mode: str):
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D()
+        camera.target = (0.0, 0.0, 10.0)
+        camera.eye_position = (-10.0, 0.0, 10.0)
+        camera.distance = 10.0
+        camera.yaw = math.pi  # due west of the target
+        camera.pitch = 0.0
+        camera.set_mode(mode)
+        camera.ground_height = _slope_west_of(-5.0, low=0.0, high=40.0)
+        return camera
+
+    def test_the_orbit_camera_is_held_off_the_ground(self) -> None:
+        camera = self._camera("orbit")
+
+        self.assertGreater(camera.eye()[0], camera.orbit_eye()[0])
+
+    def test_the_avatar_behind_camera_is_held_off_the_ground(self) -> None:
+        # `set_avatar_behind` leaves the camera in "free" mode, and that is the
+        # camera the viewer starts in.
+        camera = self._camera("free")
+
+        self.assertGreater(camera.eye()[0], camera.eye_position[0])
+
+    def test_the_first_person_camera_is_left_where_the_avatar_is(self) -> None:
+        # The eye in "eye" mode is the avatar's own head. If that is inside a
+        # hill the simulator put it there, and moving it would only make the
+        # picture disagree with where the avatar is standing.
+        camera = self._camera("eye")
+
+        self.assertEqual(camera.eye(), camera.eye_position)
+
+    def test_a_camera_that_has_not_been_told_the_ground_goes_where_it_is_put(
+        self,
+    ) -> None:
+        camera = self._camera("free")
+        camera.ground_height = None
+
+        self.assertEqual(camera.eye(), camera.eye_position)
+
+    def test_the_map_camera_looks_down_from_above_the_target(self) -> None:
+        camera = self._camera("map")
+
+        self.assertEqual(camera.eye(), (0.0, 0.0, 20.0))
+
+    def test_the_view_matrix_is_drawn_from_the_eye_that_was_held_back(self) -> None:
+        from vibestorm.viewer3d.camera import look_at
+
+        camera = self._camera("free")
+
+        self.assertEqual(
+            camera.view_matrix(), look_at(camera.eye(), camera.target)
+        )
+        self.assertNotEqual(
+            camera.view_matrix(), look_at(camera.eye_position, camera.target)
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -142,6 +142,30 @@ class LayerDecodeStats:
     height_mean: float | None
 
 
+def _grid_coordinate(world: float, count: int, size_m: float) -> float:
+    """A world metre along one axis, as a (fractional) column of the grid."""
+    if count < 2 or size_m <= 0.0:
+        return 0.0
+    return world * float(count - 1) / size_m
+
+
+def _bilinear(
+    samples: list[float], width: int, height: int, col: float, row: float
+) -> float:
+    """`samples` read between its cells, clamped at the edges."""
+    col = min(max(col, 0.0), float(width - 1))
+    row = min(max(row, 0.0), float(height - 1))
+    c0 = int(col)
+    r0 = int(row)
+    c1 = min(c0 + 1, width - 1)
+    r1 = min(r0 + 1, height - 1)
+    fc = col - c0
+    fr = row - r0
+    south = samples[r0 * width + c0] * (1.0 - fc) + samples[r0 * width + c1] * fc
+    north = samples[r1 * width + c0] * (1.0 - fc) + samples[r1 * width + c1] * fc
+    return south * (1.0 - fr) + north * fr
+
+
 @dataclass(slots=True)
 class RegionHeightmap:
     """Accumulated 256x256 terrain samples for one region.
@@ -200,6 +224,33 @@ class RegionHeightmap:
             self.samples[dst:dst + patch_size] = patch.heights[src:src + patch_size]
         self.patch_keys.add((patch.header.patch_x, patch.header.patch_y))
         self.revision += 1
+
+    def height_at(
+        self, x: float, y: float, *, size_m: float = float(REGION_SIZE_METERS)
+    ) -> float:
+        """The ground height at a point on the region, in metres.
+
+        Interpolated the way the terrain is *drawn*, which is not the same as
+        one sample per metre. The mesh puts the corner samples on the corners
+        of a `size_m` square, so column `c` sits at ``c / (width - 1) * size_m``
+        -- with 256 samples over 256 m that is a stretch of 256/255, and a
+        sampler that read ``samples[int(y)][int(x)]`` would be up to a whole
+        sample out at the far edge. A camera's clearance is smaller than that,
+        so the difference is the difference between clearing the ground and
+        not.
+
+        Bilinear between the four surrounding samples, which is the surface the
+        two triangles of a grid cell approximate. Points off the grid clamp to
+        the nearest edge sample; whether there is any ground out there at all
+        is the caller's question, not this one's.
+        """
+        return _bilinear(
+            self.samples,
+            self.width,
+            self.height,
+            _grid_coordinate(x, self.width, size_m),
+            _grid_coordinate(y, self.height, size_m),
+        )
 
     @property
     def patch_count(self) -> int:

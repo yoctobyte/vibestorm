@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import math
 import struct
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Literal
 
 REGION_SIZE_METERS: float = 256.0
@@ -35,6 +36,21 @@ DEFAULT_FOV_Y_RADIANS: float = math.radians(60.0)
 DEFAULT_NEAR_PLANE_M: float = 0.1
 DEFAULT_FAR_PLANE_M: float = 1024.0
 DEFAULT_UP: tuple[float, float, float] = (0.0, 0.0, 1.0)
+
+#: How high the camera is held over the ground it would otherwise be inside.
+#:
+#: The near plane is 0.1 m, so anything below about that lets the hillside the
+#: camera is standing in clip through the middle of the picture. Half a metre
+#: leaves the ground where it belongs -- underfoot -- without the camera
+#: visibly floating when it is pulled in against a slope.
+GROUND_CLEARANCE_M: float = 0.5
+
+#: How high the ground is at a world point, or `None` where there is none.
+#:
+#: A callable rather than a heightmap so the camera keeps knowing nothing about
+#: terrain decoding, and so the answer can be `None`: the drawn terrain stops
+#: at the region's edge, and a camera out over the void is not inside anything.
+GroundHeight = Callable[[float, float], "float | None"]
 
 
 def _normalize(v: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -116,6 +132,76 @@ def pack_mat4(m: tuple[float, ...]) -> bytes:
     return struct.pack("16f", *m)
 
 
+def eye_clear_of_the_ground(
+    eye: tuple[float, float, float],
+    target: tuple[float, float, float],
+    ground_height: GroundHeight,
+    *,
+    clearance_m: float = GROUND_CLEARANCE_M,
+    step_m: float = 1.0,
+) -> tuple[float, float, float]:
+    """`eye`, pulled in towards `target` until it is out of the ground.
+
+    Pulled in rather than lifted: shortening the distance keeps the direction
+    the viewer is looking from, which is what they asked for, where raising the
+    eye silently changes the angle. It is also what a camera in any viewer does
+    when you back it into a wall.
+
+    The march starts at the target and stops at the first blocked sample, which
+    is a ray cast and not a bisection: a heightfield along a line is not
+    monotone, and a bisection would happily jump a ridge and put the camera on
+    the far side of it. `step_m` is a metre because the samples are a metre
+    apart and a finer march would only be reading the same four samples again;
+    the bisection afterwards is what makes the result smooth enough not to pop
+    as the camera turns.
+
+    If the target itself is underground there is nothing to pull back to -- the
+    avatar is already inside the hill -- so the eye is lifted straight up
+    instead, which at least draws the world from outside it.
+    """
+
+    def blocked(point: tuple[float, float, float]) -> bool:
+        ground = ground_height(point[0], point[1])
+        return ground is not None and point[2] < ground + clearance_m
+
+    if not blocked(eye):
+        return eye
+
+    dx = eye[0] - target[0]
+    dy = eye[1] - target[1]
+    dz = eye[2] - target[2]
+    span = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    def along(t: float) -> tuple[float, float, float]:
+        return (target[0] + dx * t, target[1] + dy * t, target[2] + dz * t)
+
+    if span < 1e-6 or blocked(target):
+        ground = ground_height(eye[0], eye[1])
+        if ground is None:
+            return eye
+        return (eye[0], eye[1], ground + clearance_m)
+
+    # The eye is known to be blocked, so t=1 is the far end of the bracket
+    # whether or not the coarse march finds something nearer.
+    clear_t = 0.0
+    blocked_t = 1.0
+    steps = max(2, int(span / max(step_m, 1e-3)))
+    for i in range(1, steps):
+        t = i / steps
+        if blocked(along(t)):
+            blocked_t = t
+            break
+        clear_t = t
+
+    for _ in range(8):
+        middle = 0.5 * (clear_t + blocked_t)
+        if blocked(along(middle)):
+            blocked_t = middle
+        else:
+            clear_t = middle
+    return along(clear_t)
+
+
 @dataclass(slots=True)
 class Camera3D:
     """Mode-aware camera. Today only ``map`` mode is fully implemented.
@@ -140,6 +226,15 @@ class Camera3D:
     distance: float = 8.0
     eye_position: tuple[float, float, float] = (128.0, 128.0, 30.0)
     target: tuple[float, float, float] = (128.0, 128.0, 22.0)
+
+    #: The ground under this camera, if anyone has told it. Set by whoever has
+    #: the region's terrain in hand -- the renderer, once a frame -- because a
+    #: camera that imported the heightmap would be a camera that knew how to
+    #: decode LayerData. `None` means nobody has said, and then the camera goes
+    #: wherever it is put.
+    ground_height: GroundHeight | None = field(
+        default=None, compare=False, repr=False
+    )
 
     # ----- 2D transform (Map mode) -----------------------------------------
 
@@ -293,25 +388,45 @@ class Camera3D:
         tx, ty, tz = self.target
         return (tx + offset[0], ty + offset[1], tz + offset[2])
 
+    def eye(self) -> tuple[float, float, float]:
+        """Where the camera actually is, in the active mode.
+
+        - ``orbit``: derived from yaw/pitch/distance around target.
+        - ``eye`` / ``free``: ``eye_position``, as set.
+        - ``map``: above the target, matching the ortho framing.
+
+        Held clear of the ground where `ground_height` says there is any, in
+        the two modes that look *at* something: orbit, and the ``free`` the
+        avatar-behind preset uses. Not in ``eye``, which is first person -- the
+        eye there is the avatar's own head, and where that goes is the
+        simulator's business, not this camera's.
+
+        One method rather than the same three-way branch spelled out at each
+        call site. The renderer wants the eye for the water pass, `pick` wants
+        it for the ray, and `view_matrix` wants it for the picture; when they
+        were three copies, a camera held off the ground in the picture would
+        still have been underground in the ray.
+        """
+        if self.mode == "orbit":
+            raw = self.orbit_eye()
+        elif self.mode in ("eye", "free"):
+            raw = self.eye_position
+        else:  # "map" -- top-down from above target
+            tx, ty, tz = self.target
+            return (tx, ty, tz + max(self.distance, 1.0))
+        if self.ground_height is None or self.mode == "eye":
+            return raw
+        return eye_clear_of_the_ground(raw, self.target, self.ground_height)
+
     def view_matrix(self) -> tuple[float, ...]:
         """4x4 column-major view matrix for the active 3D mode.
 
-        - ``orbit``: eye is computed from yaw/pitch/distance around target.
-        - ``eye`` / ``free``: ``eye_position`` and ``target`` are used
-          directly. Step 6 doesn't yet wire input for those, but the
-          matrix still works once they are driven.
-        - ``map``: callers should not draw 3D in map mode, but for
-          completeness this returns a top-down view from above the
-          target, matching the current ortho framing.
+        Callers should not draw 3D in map mode, but for completeness that
+        branch returns a top-down view from above the target.
         """
-        if self.mode == "orbit":
-            eye = self.orbit_eye()
-            return look_at(eye, self.target)
-        if self.mode in ("eye", "free"):
-            return look_at(self.eye_position, self.target)
-        # "map" — top-down from above target
-        tx, ty, tz = self.target
-        return look_at((tx, ty, tz + max(self.distance, 1.0)), self.target, up=(0.0, 1.0, 0.0))
+        if self.mode == "map":
+            return look_at(self.eye(), self.target, up=(0.0, 1.0, 0.0))
+        return look_at(self.eye(), self.target)
 
     def projection_matrix(
         self,

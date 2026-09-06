@@ -399,5 +399,123 @@ class TextureUnitTests(unittest.TestCase):
         )
 
 
+class GroundHeightForTests(unittest.TestCase):
+    """The sampler the camera is handed, against the mesh it has to agree with.
+
+    The whole constraint is worth nothing if this reports a different surface
+    from the one on the screen, so these are all about the seam between the
+    two: the same span, the same vertical scale, and nothing outside the square
+    the mesh covers.
+    """
+
+    def _scene(self, samples, *, width, height):
+        from vibestorm.viewer3d.scene import Scene
+        from vibestorm.world.terrain import RegionHeightmap
+
+        scene = Scene()
+        scene.terrain_heightmap = RegionHeightmap(
+            width=width, height=height, samples=samples, revision=1
+        )
+        return scene
+
+    def test_a_region_that_has_sent_no_terrain_has_no_ground(self) -> None:
+        from vibestorm.viewer3d.perspective import ground_height_for
+        from vibestorm.viewer3d.scene import Scene
+
+        self.assertIsNone(ground_height_for(Scene()))
+
+    def test_the_ground_is_where_the_mesh_puts_it(self) -> None:
+        from vibestorm.viewer3d.perspective import (
+            REGION_GROUND_SIZE_M,
+            ground_height_for,
+            terrain_mesh_from_heightmap,
+        )
+
+        samples = [float(col + 2 * row) for row in range(4) for col in range(4)]
+        scene = self._scene(samples, width=4, height=4)
+        ground = ground_height_for(scene)
+        vertices, _ = terrain_mesh_from_heightmap(samples, width=4, height=4)
+
+        # Every vertex of the drawn mesh, asked of the sampler.
+        for index in range(0, len(vertices), 5):
+            x, y, z = vertices[index : index + 3]
+            self.assertAlmostEqual(
+                ground(x, y), z, places=5, msg=f"disagreed at {(x, y)}"
+            )
+        self.assertAlmostEqual(ground(REGION_GROUND_SIZE_M, 0.0), 3.0, places=5)
+
+    def test_the_debug_vertical_scale_moves_the_ground_with_the_picture(self) -> None:
+        from vibestorm.viewer3d.perspective import ground_height_for
+
+        scene = self._scene([10.0] * 4, width=2, height=2)
+        scene.terrain_z_scale = 3.0
+
+        self.assertAlmostEqual(ground_height_for(scene)(50.0, 50.0), 30.0)
+
+    def test_off_the_region_there_is_no_ground_to_be_inside_of(self) -> None:
+        from vibestorm.viewer3d.perspective import (
+            REGION_GROUND_SIZE_M,
+            ground_height_for,
+        )
+
+        ground = ground_height_for(self._scene([10.0] * 4, width=2, height=2))
+
+        self.assertIsNone(ground(-1.0, 128.0))
+        self.assertIsNone(ground(128.0, -1.0))
+        self.assertIsNone(ground(REGION_GROUND_SIZE_M + 1.0, 128.0))
+        self.assertIsNone(ground(128.0, REGION_GROUND_SIZE_M + 1.0))
+        self.assertIsNotNone(ground(0.0, 0.0))
+        self.assertIsNotNone(ground(REGION_GROUND_SIZE_M, REGION_GROUND_SIZE_M))
+
+
+
+class PickFromTheHeldCameraTests(unittest.TestCase):
+    """The ray is cast from where the picture was drawn from.
+
+    The eye used to be worked out separately in three places. Two of them now
+    agree because they call the same method; this is the third. A pick cast
+    from an eye the renderer never drew from selects whatever happens to be
+    between the two, which for a camera pulled out of a hillside is the
+    hillside's worth of prims behind the viewer.
+    """
+
+    def _renderer(self, mode: str):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        camera = Camera3D(
+            target=(128.0, 128.0, 32.0),
+            eye_position=(118.0, 128.0, 29.0),
+            screen_size=(100, 100),
+        )
+        camera.set_mode(mode)
+        camera.ground_height = lambda x, y: 30.0
+        return PerspectiveRenderer(camera)
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        scene = Scene()
+        # On the line of sight, between where the camera was asked to go and
+        # where it was held: in front of the buried eye, behind the held one.
+        behind = _cube(77, position=(120.5, 128.0, 29.75))
+        scene.object_entities = {behind.local_id: behind}
+        return scene
+
+    def test_a_prim_behind_the_held_camera_is_not_picked(self) -> None:
+        renderer = self._renderer("free")
+
+        self.assertIsNone(renderer.pick(50, 50, self._scene(), aspect=1.0))
+
+    def test_the_same_prim_is_picked_from_the_eye_that_was_not_held(self) -> None:
+        # First person is not held off the ground, so this is the same ray from
+        # the buried origin -- and it hits, which is what says the test above
+        # is measuring the origin and not the geometry.
+        renderer = self._renderer("eye")
+
+        self.assertEqual(renderer.pick(50, 50, self._scene(), aspect=1.0), 77)
+
+
+
 if __name__ == "__main__":
     unittest.main()

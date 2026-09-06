@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-06 (tenth pass)
+Last updated: 2026-09-06 (eleventh pass)
 
 ## The Owner's Priorities
 
@@ -314,6 +314,71 @@ water leaves at a steep angle over most of the sea, so the samples land close
 together, where the sky pass fans its rays across a whole hemisphere including
 the horizon, where `dir.xy / dir.z` runs away and every neighbouring pixel
 reads a different part of the field.
+
+
+**A -- the camera stopped standing inside the hill (2026-09-06).** Found the
+way the last three were: render the thing and look at it. A third-person
+camera at the foot of a ridge drew a flat green wall across the top of the
+frame with the sea visible underneath it, which is what the *inside* of the
+terrain looks like -- the underside of the ground above, and the world seen
+out past the edge of it below.
+
+Nothing in the camera had ever heard of terrain. The default preset sits ten
+metres behind the avatar and 3.2 m up, so any slope steeper than about
+eighteen degrees put it in the ground; the orbit camera pitched down did the
+same on flat land the moment it went below the target. Both are ordinary
+things to do.
+
+`eye_clear_of_the_ground` pulls the eye in along the line to the target until
+it clears, rather than lifting it: shortening the distance keeps the direction
+the viewer asked to look from, where raising the eye silently changes the
+angle. It is also what a camera does in any viewer when you back it into a
+wall.
+
+Three details are load-bearing and each has a test that fails without it:
+
+- **It is a march, not a bisection.** A heightfield along a line is not
+  monotone. Given a ridge near the avatar, clear air beyond it and the eye
+  buried further out, a bisection probes the middle, finds the pocket clear and
+  converges *behind* the ridge -- a camera nine metres away with a hill in the
+  way. The march starts at the target and stops at the first blocked sample,
+  which is a ray cast and cannot do that. This was the one mutant that survived
+  the first battery: the original test's ridge happened to sit where the
+  bisection's first probe landed, so both answers agreed.
+- **The sampler is the drawn surface, not the heightmap by the metre.**
+  `terrain_mesh_from_heightmap` puts the corner samples on the region's
+  corners, so 256 samples are laid out 256/255 m apart and the middle of the
+  region falls *between* samples 127 and 128. A sampler indexing by `int(x)`
+  would agree at the corners and be most of a metre out at the far edge --
+  wider than the clearance it is being compared against.
+  `RegionHeightmap.height_at` interpolates the same span, and there is a test
+  that asks it for every vertex the mesh builder emits.
+- **Off the region there is no ground.** The mesh covers exactly the region's
+  square and draws nothing beyond it, so a camera out over the void is not
+  inside anything; clamping to the edge sample there would invent a hill that
+  is not on the screen and shove the camera up over it.
+
+First person is deliberately *not* held off the ground. The eye there is the
+avatar's own head; if the simulator has put that inside a hill, moving the
+camera only makes the picture disagree with where the avatar is standing. That
+exemption is also how the GL test shows its own negative: the same buried point
+rendered in `eye` mode gives back the upside-down frame -- terrain at the top,
+sky at the bottom -- that the held camera no longer draws.
+
+The eye was being worked out in *three* places with the same three-way branch
+copied out: `view_matrix`, the water pass, and `pick`. They are one method now,
+`Camera3D.eye()`. That was not tidying: with three copies, a camera held off
+the ground in the picture would still have cast its pick ray from underground,
+and the water fog would have been computed for a viewer who was not where the
+picture was taken from. There is a test that picks a prim lying between the two
+eyes and requires the held one to miss it.
+
+Twelve mutations, twelve killed after the ridge test was rebuilt.
+
+What this does *not* do is occlusion. The camera still looks through hills and
+through prims that stand between it and the avatar; only its own position is
+constrained. That is a raycast against all geometry rather than against the
+heightfield, and it is a separate piece of work.
 
 
 **A -- and the moon, which is what a night sea is recognised by
@@ -1796,6 +1861,11 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
    - ~~**`cloud_shadow`.**~~ Spent: it multiplies the diffuse light and
      leaves the ambient alone, so cloud dims the sun over the ground without
      turning a cloudy noon into dusk.
+   - **The camera does not see round anything.** It is held out of the
+     ground since the eleventh pass, but nothing stops it looking *through* a
+     hill or a prim standing between it and the avatar. That is a raycast
+     against all the geometry rather than against the heightfield, and it is
+     the largest remaining piece of "the camera behaves like a viewer's".
    - **The sky's own unread fields.** `gamma`, `max_y`, `glow`,
      `density_multiplier`, `distance_multiplier` and `haze_density` are all
      parsed and none is drawn. Most belong to the Windlight atmospheric

@@ -6730,3 +6730,83 @@ class RegionWeatherGLTests(_GLTestBase):
         self.assertGreater(dawn[0], dawn[2])
         # Night is cold: more blue than red.
         self.assertGreater(night[2], night[0])
+
+
+class CameraInsideTheGroundGLTests(_GLTestBase):
+    """What the frame looks like when the camera is in the hill, and after.
+
+    The unit tests either side of this one check the arithmetic. This one
+    checks the picture, because the arithmetic being right is not the claim --
+    the claim is that the viewer stops drawing the world from inside the
+    terrain, and the way that showed up in the first place was a screenshot
+    that was a flat green wall with the sea underneath it.
+    """
+
+    #: Flat ground well above sea level, so the only thing that can fill the
+    #: top of the frame is sky or the inside of the terrain.
+    GROUND_Z = 30.0
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+        from vibestorm.world.terrain import RegionHeightmap
+
+        scene = Scene()
+        scene.water_height = -10.0
+        scene.terrain_heightmap = RegionHeightmap(
+            width=2,
+            height=2,
+            samples=[self.GROUND_Z] * 4,
+            revision=1,
+        )
+        return scene
+
+    def _camera(self, mode: str):
+        from vibestorm.viewer3d.camera import Camera3D
+
+        camera = Camera3D(
+            target=(128.0, 128.0, self.GROUND_Z + 2.0),
+            eye_position=(118.0, 128.0, self.GROUND_Z - 1.0),
+        )
+        camera.set_mode(mode)
+        return camera
+
+    def _sky_and_ground(self, mode: str):
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        width, height = self.FBO_SIZE
+        renderer = PerspectiveRenderer(self._camera(mode), ctx=self.ctx)
+        try:
+            self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0)
+            renderer.render_gl(self._scene(), aspect=1.0)
+            top = self._read_pixel(width // 2, 1)
+            bottom = self._read_pixel(width // 2, height - 2)
+            return renderer.camera, top, bottom
+        finally:
+            renderer.clear_caches()
+
+    def test_a_camera_in_the_ground_still_draws_the_sky_above_it(self) -> None:
+        camera, top, bottom = self._sky_and_ground("free")
+
+        self.assertGreater(
+            camera.eye()[0],
+            camera.eye_position[0],
+            "the camera was left where it was asked to go",
+        )
+        self.assertGreater(top[2], top[1], f"the top of the frame is not sky: {top}")
+        self.assertGreater(
+            bottom[1], bottom[2], f"the bottom of the frame is not ground: {bottom}"
+        )
+
+    def test_the_same_camera_unheld_draws_the_inside_of_the_hill(self) -> None:
+        # First person is deliberately not held off the ground, so it is also
+        # the way to see what the held camera is being saved from: the frame
+        # comes out upside down. The terrain fills the top, because that is
+        # its underside, and the sky fills the bottom, because from below the
+        # ground the world has an edge you can see out past.
+        camera, top, bottom = self._sky_and_ground("eye")
+
+        self.assertEqual(camera.eye(), camera.eye_position)
+        self.assertGreater(top[1], top[2], f"expected terrain at the top: {top}")
+        self.assertGreater(
+            bottom[2], bottom[1], f"expected sky under the ground: {bottom}"
+        )

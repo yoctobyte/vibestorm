@@ -68,7 +68,7 @@ if TYPE_CHECKING:
     import moderngl
     import pygame
 
-    from vibestorm.viewer3d.camera import Camera3D
+    from vibestorm.viewer3d.camera import Camera3D, GroundHeight
     from vibestorm.viewer3d.scene import Scene, SceneEntity
 
 
@@ -1919,6 +1919,29 @@ class _ShapeMesh:
     index_count: int
 
 
+def ground_height_for(scene: Scene) -> GroundHeight | None:
+    """How high the terrain is under a point, for the scene's own heightmap.
+
+    `None` when the region has sent no terrain yet, which is also when there is
+    nothing drawn for a camera to be inside of. Off the region's square the
+    sampler answers `None` too: `terrain_mesh_from_heightmap` lays the samples
+    over exactly that square and draws nothing beyond it, so a camera out there
+    is over the void rather than in the ground, and pulling it in would be
+    inventing a hill that is not on the screen.
+    """
+    heightmap = scene.terrain_heightmap
+    if heightmap is None:
+        return None
+    z_scale = float(getattr(scene, "terrain_z_scale", 1.0))
+
+    def ground(x: float, y: float) -> float | None:
+        if not (0.0 <= x <= REGION_GROUND_SIZE_M and 0.0 <= y <= REGION_GROUND_SIZE_M):
+            return None
+        return heightmap.height_at(x, y, size_m=REGION_GROUND_SIZE_M) * z_scale
+
+    return ground
+
+
 def terrain_mesh_from_heightmap(
     samples: list[float] | tuple[float, ...],
     *,
@@ -2155,17 +2178,19 @@ class PerspectiveRenderer:
         if aspect <= 0.0:
             return
 
+        # The ground this frame, handed to the camera before anything asks it
+        # where it is: the camera holds itself clear of the terrain, and it
+        # cannot do that until someone who has the heightmap tells it where the
+        # terrain is. Once a frame, because the heightmap can change under it.
+        self.camera.ground_height = ground_height_for(scene)
         view = self.camera.view_matrix()
         proj = self.camera.projection_matrix(aspect)
         # Where the viewer is standing, in the same terms every mode agrees
         # on. Only the water pass wants it, to know how far away the far sea
-        # is, but working it out here keeps `view_matrix`'s two branches from
-        # being spelled out twice.
-        eye_position = (
-            self.camera.orbit_eye()
-            if self.camera.mode == "orbit"
-            else self.camera.eye_position
-        )
+        # is, but it has to be the same eye `view_matrix` just drew from --
+        # including any pull-in off the ground -- or the sea is fogged for a
+        # camera that is not where the picture is taken from.
+        eye_position = self.camera.eye()
         view_data = struct.pack("16f", *view)
         proj_data = struct.pack("16f", *proj)
         sun_direction = lighting_direction(scene)
@@ -2421,10 +2446,7 @@ class PerspectiveRenderer:
 
         # Unproject screen to ray
         camera = self.camera
-        if camera.mode == "orbit":
-            eye = camera.orbit_eye()
-        else:
-            eye = camera.eye_position
+        eye = camera.eye()
 
         # Reconstruct camera frame
         from vibestorm.viewer3d.camera import (
@@ -3942,6 +3964,7 @@ __all__ = [
     "DEFAULT_SUN_DIRECTION",
     "PerspectiveRenderer",
     "generated_texture_uv",
+    "ground_height_for",
     "lighting_direction",
     "model_matrix",
     "terrain_line_indices",
