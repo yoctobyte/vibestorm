@@ -14,6 +14,7 @@ from vibestorm.udp.control_flags import DIRECTION_BITS, AgentControlFlags
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import ReplyTaskInventoryMessage, parse_improved_instant_message
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, LL_ZERO_CODE_FLAG, build_packet, split_packet
+from vibestorm.udp.recent import RecentSequences
 from vibestorm.udp.session import (
     LiveCircuitSession,
     SessionConfig,
@@ -21,6 +22,35 @@ from vibestorm.udp.session import (
     _next_pending_object_texture_id,
 )
 from vibestorm.udp.zerocode import decode_zerocode
+
+
+def _region_handshake_packet(*, sequence: int, reliable: bool = True) -> bytes:
+    """One RegionHandshake, addressed by sequence number.
+
+    The body is only here to make the packet a real one; every test that uses
+    it cares about the header.
+    """
+    sim_owner = UUID("12345678-1234-5678-1234-567812345678")
+    cache_id = UUID("87654321-4321-8765-4321-876543218765")
+    region_id = UUID("aaaaaaaa-1111-bbbb-2222-cccccccccccc")
+    body = bytearray()
+    body += (9).to_bytes(4, "little")
+    body += bytes([13])
+    body += bytes([4])
+    body += b"Test"
+    body += sim_owner.bytes
+    body += bytes([1])
+    body += pack("<f", 20.0)
+    body += pack("<f", 1.0)
+    body += cache_id.bytes
+    body += b"\x00" * (16 * 8)
+    body += b"\x00" * (4 * 8)
+    body += region_id.bytes
+    return build_packet(
+        bytes([0xFF, 0xFF, 0x00, 0x94]) + bytes(body),
+        sequence=sequence,
+        flags=LL_RELIABLE_FLAG if reliable else 0,
+    )
 
 
 class LiveCircuitSessionTests(unittest.TestCase):
@@ -90,27 +120,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)
 
-        sim_owner = UUID("12345678-1234-5678-1234-567812345678")
-        cache_id = UUID("87654321-4321-8765-4321-876543218765")
-        region_id = UUID("aaaaaaaa-1111-bbbb-2222-cccccccccccc")
-        body = bytearray()
-        body += (9).to_bytes(4, "little")
-        body += bytes([13])
-        body += bytes([4])
-        body += b"Test"
-        body += sim_owner.bytes
-        body += bytes([1])
-        body += pack("<f", 20.0)
-        body += pack("<f", 1.0)
-        body += cache_id.bytes
-        body += b"\x00" * (16 * 8)
-        body += b"\x00" * (4 * 8)
-        body += region_id.bytes
-        inbound = build_packet(
-            bytes([0xFF, 0xFF, 0x00, 0x94]) + bytes(body),
-            sequence=22,
-            flags=LL_RELIABLE_FLAG,
-        )
+        inbound = _region_handshake_packet(sequence=22)
 
         packets = session.handle_incoming(inbound, 11.0)
 
@@ -994,27 +1004,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session = LiveCircuitSession(self.bootstrap, self.dispatcher)
         session.start(10.0)
 
-        sim_owner = UUID("12345678-1234-5678-1234-567812345678")
-        cache_id = UUID("87654321-4321-8765-4321-876543218765")
-        region_id = UUID("aaaaaaaa-1111-bbbb-2222-cccccccccccc")
-        body = bytearray()
-        body += (9).to_bytes(4, "little")
-        body += bytes([13])
-        body += bytes([4])
-        body += b"Test"
-        body += sim_owner.bytes
-        body += bytes([1])
-        body += pack("<f", 20.0)
-        body += pack("<f", 1.0)
-        body += cache_id.bytes
-        body += b"\x00" * (16 * 8)
-        body += b"\x00" * (4 * 8)
-        body += region_id.bytes
-        inbound = build_packet(
-            bytes([0xFF, 0xFF, 0x00, 0x94]) + bytes(body),
-            sequence=22,
-            flags=LL_RELIABLE_FLAG,
-        )
+        inbound = _region_handshake_packet(sequence=22)
 
         first_packets = session.handle_incoming(inbound, 11.0)
         second_packets = session.handle_incoming(inbound, 11.1)
@@ -1032,6 +1022,69 @@ class LiveCircuitSessionTests(unittest.TestCase):
         self.assertEqual(self.dispatcher.dispatch(split_packet(second_packets[0]).message).summary.name, "PacketAck")
         self.assertEqual(session.received_messages["RegionHandshake"], 2)
         self.assertTrue(any(event.kind == "transport.reliable_duplicate" for event in session.events))
+
+    def test_a_resend_that_keeps_arriving_stays_a_duplicate(self) -> None:
+        # The simulator gives up on an unacked reliable packet never, so a
+        # sequence whose acks are being lost keeps arriving behind an
+        # unbounded amount of other traffic. Recognising it has to survive
+        # that, which it only does if asking also refreshes the memory --
+        # `seen` in one call rather than `in` and then `add`. With a window
+        # this small, sixteen fresh sequences would push it out on their own.
+        # Collected through the callback rather than read off `session.events`,
+        # which is a bounded log and would quietly drop the early ones.
+        seen: list[SessionEvent] = []
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher, on_event=seen.append)
+        session.start(10.0)
+        session.seen_reliable_sequences = RecentSequences(window=4)
+
+        session.handle_incoming(_region_handshake_packet(sequence=22), 11.0)
+        for step in range(100):
+            session.handle_incoming(_region_handshake_packet(sequence=100 + step), 12.0 + step)
+            session.handle_incoming(_region_handshake_packet(sequence=22), 12.5 + step)
+
+        duplicates = [event for event in seen if event.kind == "transport.reliable_duplicate"]
+        self.assertEqual(len(duplicates), 100)
+        self.assertTrue(all("seq=22 " in event.detail for event in duplicates), duplicates[:3])
+
+    def test_and_one_that_stops_arriving_is_forgotten(self) -> None:
+        # The control: the test above would pass just as well against a
+        # window that never forgot anything, which is the leak this replaced.
+        seen: list[SessionEvent] = []
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher, on_event=seen.append)
+        session.start(10.0)
+        session.seen_reliable_sequences = RecentSequences(window=4)
+
+        session.handle_incoming(_region_handshake_packet(sequence=22), 11.0)
+        for step in range(100):
+            session.handle_incoming(_region_handshake_packet(sequence=100 + step), 12.0 + step)
+        session.handle_incoming(_region_handshake_packet(sequence=22), 200.0)
+
+        self.assertFalse(any(event.kind == "transport.reliable_duplicate" for event in seen))
+
+    def test_unreliable_traffic_does_not_use_up_the_window(self) -> None:
+        # The memory is for resends, and only reliable packets are resent.
+        # Letting unreliable ones in would still be *correct* -- their
+        # sequence numbers are distinct, so nothing would be wrongly called a
+        # duplicate -- which is exactly why this needs a test rather than a
+        # comment. The cost is invisible: terse object updates and layer data
+        # are most of a busy region's traffic, so the window would empty in a
+        # fraction of the time and a real resend would age out before it
+        # arrived. Here a hundred unreliable packets go by and the reliable
+        # one is still recognised.
+        seen: list[SessionEvent] = []
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher, on_event=seen.append)
+        session.start(10.0)
+        session.seen_reliable_sequences = RecentSequences(window=4)
+
+        session.handle_incoming(_region_handshake_packet(sequence=22), 11.0)
+        for step in range(100):
+            session.handle_incoming(
+                _region_handshake_packet(sequence=100 + step, reliable=False), 12.0 + step
+            )
+        self.assertEqual(len(session.seen_reliable_sequences), 1)
+
+        session.handle_incoming(_region_handshake_packet(sequence=22), 200.0)
+        self.assertTrue(any(event.kind == "transport.reliable_duplicate" for event in seen))
 
     def test_session_emits_events_to_callback(self) -> None:
         seen: list[SessionEvent] = []

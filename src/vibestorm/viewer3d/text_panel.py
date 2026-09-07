@@ -48,6 +48,23 @@ def wrap_line(text: str, *, font: TickerFont, max_width: int) -> list[str]:
     return rows
 
 
+#: How many wrapped lines a panel cache may hold before it is emptied.
+#:
+#: The cache is keyed by the *text*, and the two lines of the diagnostics
+#: panel that pay for it are the two that change -- the framerate and the
+#: sim's own stats. So every refresh puts a string in that will never be
+#: asked for again, once a second, for as long as the panel is open: an hour
+#: is three and a half thousand entries and an overnight session is a hundred
+#: thousand, none of which can ever be hit.
+#:
+#: A panel is eighteen lines, so anything past a few hundred is entirely
+#: made of misses and emptying it costs one re-wrap of the lines that are
+#: still on screen. Bounded here rather than by the caller because this is
+#: the only thing that writes to the dict, and a promise about a container's
+#: size that its one writer does not keep is not a promise.
+WRAP_CACHE_LIMIT = 512
+
+
 def wrap_lines(
     lines: Sequence[str],
     *,
@@ -61,7 +78,9 @@ def wrap_lines(
     what drawing a readout costs. Pass a ``cache`` and the lines that did not
     change between refreshes are free -- on the diagnostics panel that is
     sixteen of eighteen, since only the framerate and the sim's own stats move.
-    The caller owns the dict and should drop it when the width changes.
+    The caller owns the dict and should drop it when the width changes; this
+    empties it at ``WRAP_CACHE_LIMIT`` so that a panel left open all night
+    does not fill memory with lines nobody will ask for twice.
     """
     rows: list[str] = []
     for line in lines:
@@ -71,6 +90,8 @@ def wrap_lines(
         key = (line, max_width)
         wrapped = cache.get(key)
         if wrapped is None:
+            if len(cache) >= WRAP_CACHE_LIMIT:
+                cache.clear()
             wrapped = wrap_line(line, font=font, max_width=max_width)
             cache[key] = wrapped
         rows.extend(wrapped)
@@ -146,6 +167,7 @@ def draw_lines(
 
 __all__ = [
     "PANEL_PADDING",
+    "WRAP_CACHE_LIMIT",
     "draw_lines",
     "draw_rows",
     "panel_height",

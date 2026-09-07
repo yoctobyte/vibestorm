@@ -389,7 +389,7 @@ def _len_of(owner_get, *names: str):
     return read
 
 
-def build_health_probe(scene, renderer, client, *, interval_s: float) -> HealthProbe:
+def build_health_probe(scene, renderer, client, hud, *, interval_s: float) -> HealthProbe:
     """Every container in the viewer that a long run could quietly fill.
 
     Chosen by reading for the shape rather than by suspicion: a dict or a set
@@ -468,14 +468,30 @@ def build_health_probe(scene, renderer, client, *, interval_s: float) -> HealthP
         "region.parcel_properties": _len_of(session, "parcel_properties_by_local_id"),
         "region.object_physics": _len_of(session, "object_physics"),
         "region.object_costs": _len_of(session, "object_costs"),
+        # --- the HUD, which is the one part of this viewer whose containers
+        # are keyed by *text*. A wrapped-line cache keyed by the line and a
+        # panel that reports a framerate never hit each other.
+        "hud.wrap_cache": _len_of(lambda: hud, "_diagnostics_wrap_cache"),
+        "hud.ui_elements": _ui_element_count(hud),
+        "hud.inspector_rows": _len_of(lambda: hud, "_inspector_row_details"),
+        "hud.inventory_rows": _len_of(lambda: hud, "_inventory_row_details"),
         # --- the loop itself
         "loop.tasks": _asyncio_task_count,
     }
     counters = {
         "udp.total_received": _int_of(session, "total_received"),
         "udp.agent_updates": _int_of(session, "agent_update_count"),
-        "udp.acks_received": _int_of(session, "packet_acks_received"),
-        "eq.polls": _int_of(session, "event_queue_polls"),
+        # Both ack channels. Acks reach this client either as a `PacketAck`
+        # message or appended to the tail of any packet, and reading only one
+        # of them makes a busy circuit look like a silent one.
+        "udp.packet_acks": _int_of(session, "packet_acks_received"),
+        "udp.appended_acks": _int_of(session, "appended_acks_received"),
+        "udp.pings_answered": _int_of(session, "ping_requests_handled"),
+        # Attempts first, because it is the one that answers "is the poll
+        # loop alive". The other two sit perfectly still on a quiet queue,
+        # which reads in the report exactly like a loop that has died.
+        "eq.attempts": _int_of(session, "event_queue_attempts"),
+        "eq.batches": _int_of(session, "event_queue_polls"),
         "eq.events": _int_of(session, "event_queue_events"),
         "world.object_updates": _int_of(view, "object_update_events"),
     }
@@ -514,6 +530,23 @@ def _fetched_asset_bytes(owner_get):
         if not assets:
             return 0.0
         return float(sum(len(blob) for blob in assets.values()))
+
+    return read
+
+
+def _ui_element_count(hud):
+    """How many live pygame_gui elements the HUD is holding.
+
+    A widget rebuilt rather than reused leaves the old one in the manager's
+    sprite group, where it goes on being drawn and goes on costing layout.
+    Nothing else in the viewer would notice.
+    """
+
+    def read() -> float:
+        manager = getattr(hud, "manager", None)
+        if manager is None:
+            return 0.0
+        return float(len(manager.get_sprite_group().sprites()))
 
     return read
 
@@ -1157,7 +1190,11 @@ async def run_viewer(args: argparse.Namespace) -> int:
     soak_log = SoakLog(Path(soak_path)) if soak_path else None
     probe = (
         build_health_probe(
-            scene, renderer, client, interval_s=float(getattr(args, "soak_interval", 30.0))
+            scene,
+            renderer,
+            client,
+            hud,
+            interval_s=float(getattr(args, "soak_interval", 30.0)),
         )
         if soak_log is not None
         else None

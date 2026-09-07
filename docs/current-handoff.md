@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-07 (fourteenth pass)
+Last updated: 2026-09-07 (fifteenth pass)
 
 ## The Owner's Priorities
 
@@ -19,6 +19,218 @@ get a folder's contents in, and keep the two in step. D is the piece with real
 missing code.
 
 ### Where each stands
+
+**A -- and the soak found one on its first run (2026-09-07).** Two hours
+against the quiet local region -- three prims and one avatar -- and of fifty
+container gauges exactly one came back `growing`: `udp.seen_sequences`, at
+1,415 entries over the two hours -- 671 an hour, at a rate that had not
+fallen by the end. Every other container settled or went flat.
+
+`LiveCircuitSession.seen_reliable_sequences` was a `set[int]` that nothing
+ever took anything out of. Every reliable packet's sequence number went in and
+stayed for the length of the session. It is the only container in this client
+that grows with **every packet** rather than with the size of the world, which
+is what makes it the one whose cost is measured in hours instead of in prims,
+and why no amount of staring at a frame would ever have found it.
+
+What it is *for* is recognising a resend. `udp/recent.py` keeps two sets and
+swaps them when the newer fills -- eviction as one assignment rather than one
+bookkeeping step per packet -- so what is remembered swings between one window
+and two and never exceeds two. 8192 sequence numbers is tens of seconds of a
+busy region's traffic, and both halves full measures 505 kB, which is the
+whole point: it is a *bound*.
+
+Sizing it needed a fact about the simulator, and the first version got that
+fact half right. OpenSim retries an unacked reliable packet every RTO -- 1000
+ms by default, capped at 3000, and never backed off, which is now pinned in
+`test/test_opensim_source_pins.py` along with the clamp and the fact that
+nothing else writes the timeout. So *consecutive copies* are seconds apart.
+The chain as a whole is another matter: OpenSim gives up on an unacked packet
+never. The sixty-second timeout that exists is measured from the last packet
+the simulator *received*, so it fires when the viewer falls silent, not when a
+packet goes unacked -- which means a viewer that is talking while its acks are
+being lost can see copies of one sequence arriving for minutes. A window sized
+to one RTO would forget it mid-chain and hand the same message up twice.
+
+That is what `seen` is for: it answers and remembers in one call, so an
+arrival always buys another window and the bound applies to how long an *idle*
+sequence is kept. The receive path used to ask `in` and then `add`, which
+looks equivalent and is not -- on a hit it returned early, so the `add` never
+ran and nothing was ever refreshed.
+
+**Which the tests only caught on the second try, and only because of a
+mutant.** The first version put the refresh inside `add`, with a test that
+added every arrival unconditionally. Planting the old behaviour left it
+green: the test's own caller re-added on every arrival, so it never exercised
+the path the shipped caller takes. The surviving mutant was the finding --
+the refresh was dead code exactly where it mattered. The tests now drive
+`seen` the way `handle_incoming` does, ask once and act on the answer, and
+there is a session-level pair as well: a sequence that keeps arriving behind
+a hundred others stays a duplicate, and one that stops arriving does not.
+That second one is the control, because the first would pass just as happily
+against the unbounded set this replaced.
+
+The trade that is left is stated as a test rather than left in a comment: a
+resend that arrives after a whole idle window is handled twice. On messages
+that are near enough idempotent -- an object update re-applied says the same
+thing -- that is the cheaper of the two failures, and it is the trade every
+viewer makes.
+
+**And a second one of exactly the same shape, found by looking rather than by
+measuring, once the shape was known.** `wrap_lines` caches wrapped text keyed
+by *the text*. The diagnostics panel is eighteen lines of which two -- the
+framerate and the sim's own stats -- are a new string every refresh, once a
+second, for as long as the panel is open. Those two can never be hit and were
+kept anyway: three and a half thousand entries an hour, a hundred thousand
+overnight, none of them reachable. It is emptied at `WRAP_CACHE_LIMIT` now,
+and the bound lives in `wrap_lines` rather than in the caller, because that is
+the only thing that writes to the dict and a promise about a container's size
+that its one writer does not keep is not a promise.
+
+This one is behind `--diagnostics` and so was never in a default session --
+which is precisely why it needed finding by hand: the soak that would have
+caught it is the soak nobody runs.
+
+**Two things the report got wrong about itself, and both are now fixed
+instruments rather than findings.** `eq.polls` counted event-queue *batches
+decoded*, not polls made, so a quiet queue -- which long-polls and returns
+nothing -- read as `stalled`, which is the report's word for a session that
+has gone deaf. And `udp.acks_received` counted only `PacketAck` messages,
+while acks reach this client two ways: as that message, or appended to the
+tail of any packet. Reading one channel makes a busy circuit look silent.
+There are now `eq.attempts` (every trip round the poll loop, answered or not
+-- the one number that says the loop is still running) beside `eq.batches`,
+and `udp.packet_acks` beside `udp.appended_acks`.
+
+The lesson is the one this project keeps relearning in new costumes: **an
+instrument that reads plausibly is not the same as an instrument that reads
+correctly**, and the way to tell is to make it say something you can check.
+
+**And a third thing the same report said, which is a gap rather than a fix.**
+`udp.pending_reliable` came back `settled` at 6 -- first 0, peak 6, last 6.
+Six reliable packets this client sent in two hours were never acknowledged,
+and nothing ever tried again. `_build_outbound_packet` records
+`pending_reliable[sequence] = label`: the label, not the bytes, so a resend
+is not merely absent but currently impossible -- the packet is gone by the
+time anyone could want it back. The only readers are the ack handler, which
+pops, and the snapshot, which sorts the keys for display.
+
+The simulator's half of this is now pinned: it resends *its* unacked packets
+every RTO for as long as the client is talking, and gives up never. We do the
+opposite. A lost `CompleteAgentMovement` or `AgentThrottle` strands the
+session with no symptom other than a thing that never happens, which is the
+hardest kind of bug to go looking for and the easiest kind to measure. The
+shape of the fix is in the notes; the one thing it must not do is take a new
+sequence number, because then the simulator sees two packets and this client
+has invented the duplicate storm it spent today learning to survive.
+
+**And the report was wrong about two of its own gauges, in a way only a
+second reading of a real run could show.** `proc.rss_bytes` and
+`proc.py_blocks` came back `settling` -- the word for a cache that filled and
+is levelling off. Broken into thirds they are not:
+
+    proc.rss_bytes    148 MB/h    24 MB/h    42 MB/h
+    proc.py_blocks    259 k/h     46 k/h     50 k/h
+
+The rate fell and then rose. What made the report say otherwise was the rule:
+`settling` meant the second half grew less than half as much as the first,
+and the first half of any run contains the startup burst. Nothing after that
+burst can fail such a test. A process that spends a hundred and fifty megabytes
+getting going and then leaks forty an hour for ever reads as settling for the
+life of the session -- which is exactly the failure the whole instrument exists to
+catch, arriving as a reassuring word.
+
+The rule now throws the first third away and compares the middle stretch with
+the last. Which was **also wrong**, in the opposite direction, and the same
+run said so within the minute: with the first third gone,
+`udp.seen_sequences` -- the flat leak this entry is about -- went 773, 681,
+668 an hour and flipped to `settling`, because a rate that fell by two per
+cent had fallen. A container filling at a steady rate is the
+canonical leak and a steady rate wobbles; "lower than before" calls half of
+all leaks settled.
+
+So the final rule keeps the halving that the original was reaching for and
+only moves it somewhere it can work: the rate must at least halve between the
+middle stretch and the last. All three gauges then read `growing`, which is
+what they are.
+
+Both errors were caught by pointing the instrument at a two-hour run and
+reading it, not by a test -- the tests agreed with both wrong rules, because
+the fixtures were written by the same person who wrote the rules. What the
+tests hold now are the two shapes that broke it, with the real numbers in the
+comments, and a mutation battery over the rule: thirteen planted, thirteen
+killed, one of them only after a fixture that had been passing for the wrong
+reason was replaced. **A verdict is an instrument too, and it needs the same
+treatment as a gauge: make it say something you can check.**
+
+That leaves the finding underneath, which is real and is not fixed here.
+RSS climbs about 45 MB an hour and allocated blocks about 52,000 an hour on a
+region with three prims in it -- 340 MB to 489 MB over the two hours, while every one of the forty-odd container
+gauges is settled or flat. Something is growing that nothing on the report
+names. A type histogram sampled at the same cadence is the next instrument,
+and the second soak is what says whether it is worth building.
+
+**A fix that was designed and then not written, because reading the numbers
+said it was already covered.** `_pump_neighbours` -- which flushes the acks a
+child circuit owes -- is called from exactly one place: the `except
+TimeoutError` branch of the receive loop. That reads like starvation: a
+neighbour's acks sit unsent for as long as the root circuit keeps talking,
+and every unacked packet is resent every RTO for ever. A time-based
+`drain_acks_due(now)` was drafted.
+
+Two constants make it a non-event. `receive_timeout_seconds` is **0.25**, so
+on any region quiet enough to have a gap the acks go out four times a second
+-- comfortably inside a 1000 ms RTO. And `ACK_BATCH` is **10**, so on a
+region busy enough to have no gap the batch fills and flushes on its own. The
+uncovered case is the narrow middle: steady traffic, fewer than ten reliable
+packets from the neighbour, and never a quarter-second of silence.
+
+Which does not make the reasoning wasted -- it makes it *finished*. The cost
+of reading two constants was a few minutes; the cost of the fix would have
+been new time-based state in the hottest loop this client has, justified by a
+failure mode that the existing two paths already bracket. Recorded here so
+the next agent to notice the single call site does not redesign it.
+
+**And with that door closed, the repeated handshakes are half explained,
+which is worth more than the guess that was there.** Four `RegionHandshake`
+packets in ninety seconds on a child circuit that answered every one had been
+sitting on the gap list under "the likeliest reading is that OpenSim resends
+on region-info changes, but nobody has checked". A dotted grep of the
+reference tree finds `.SendRegionHandshake()` in exactly three places, and
+none of them is that:
+
+- `LLUDPServer.cs:1629`, when the circuit is created, for a login rather than
+  a teleport -- which a child circuit does go through, since it opens with
+  `UseCircuitCode`;
+- `ScenePresence.cs:2272`, completing the movement, when this is not a region
+  crossing -- which a child circuit does *not*, because we never send
+  `CompleteAgentMovement` on one;
+- `ScenePresence.cs:4064`, in `SendInitialData`, behind the terrain-PBR flag
+  and after `NeedInitialData = -1`, so at most once.
+
+So a child circuit has one certain sender and one possible one, not four, and
+none of them periodic. A repeated `UseCircuitCode` -- the one thing this
+client could plausibly do that looks like it should trigger another -- gets
+none: while the circuit is being made the resend is acked and dropped under a
+comment reading "ignore viewer resends", and once it exists the packet never
+reaches the handler, the whole path being inside
+`if (!Scene.TryGetClient(endPoint, out client))`.
+
+What that leaves is a sharper question than the one it replaces. Two of the
+four are accounted for; the other two are either resends or a sender not in
+this version of the source, and those two possibilities look completely
+different on the wire -- a resend carries `MSG_RESENT` and reuses its
+sequence number, and a fresh send does neither. That is one run of
+`tools/probe_neighbour_acks.py`, and it is now a yes-or-no rather than a
+fishing trip.
+
+The first version of that count was **wrong**, and the test is what said so.
+Grepping `SendRegionHandshake()` undotted also matches the method's own
+definition and the commented-out call in `LLClientView`; an eyeballed pass
+had two senders and a puzzle, and asserting the number found the third on the
+first run, before it reached the documentation. That is the case for pinning
+a count rather than describing one, and it is the same lesson as the gauge
+that would have read flat-zero: **the check has to be able to fail.**
 
 **A -- 2026-09-05: the frame is no longer the problem, and the world looks
 right.** Two more rounds since the note below, both driven by measurement
@@ -871,7 +1083,22 @@ the step, 0 of 16,384 channels move; without it, 4,025 do. A third test
 forbids the cheapest fix of all, which is not drawing the wall: a hole there
 shows the sky through it, which is the picture the walls exist to prevent.
 
-Twelve mutants planted.
+Two more pairs came out of the battery, aimed at the normal itself. A wrong
+normal does not draw a wrong-*looking* colour, it draws a plausible one, so
+what checks it is the Fresnel term -- the one thing in this shader that asks
+the normal a sharp question. Standing square in front of a wall, how much sky
+the surface shows *at a grazing angle* cannot matter: turn that term from
+nothing to everything and the frame must not move. A normal left pointing up
+is seen edge-on from there and one never turned toward the eye points away
+from it, and both read as fully grazing, which is the opposite of the truth.
+The far-side camera is the half that bites: the near-side one stands where the
+built normal already faces and cannot see the missing turn at all.
+
+Twelve mutants, eleven killed. The survivor is equivalent by construction --
+flipping a wall underwater is undone by the turn toward the viewer directly
+below it. One timed out at ten minutes under a load average of 17, which is
+the software GL stack and not this repo; planted by hand afterwards it fails
+in 0.67 s.
 
 **A -- nothing here had ever run for more than a few minutes (2026-09-07).**
 Every measurement in this project so far has been of one frame or one tick.
@@ -2511,8 +2738,15 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      for the 2D one, which has no angle to measure). `normal_map` followed in
      the eighth: the surface is the region's own sheet, laid in each wave's
      frame, with the sines kept as the fallback until it arrives. The
-     wavelength and the steepness are still this viewer's constants rather
-     than the region's. Sun glitter followed in the same pass, and is not a
+     ~~wavelength and the steepness are still this viewer's constants rather
+     than the region's.~~ Stale, and corrected on 2026-09-07 by reading the
+     code rather than by changing it: both come off the wire already.
+     `normal_scale` sets the wavelength (`water_wave_number`) and
+     `scale_above`/`scale_below` set the steepness. What stays constant is
+     only the *unit* each is measured in -- how many metres one repeat of a
+     normal map is, and what a distortion strength is worth as an angle --
+     and those have to be, because the document gives dimensionless factors
+     and no lengths at all. Sun glitter followed in the same pass, and is not a
      specular model: it is the sun the sky pass draws, off one shared GLSL
      string, seen in a mirror. `transparent_texture` is closed in the tenth
      pass and closed as a *decision*: it is read, and deliberately neither
@@ -2539,12 +2773,22 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      region's own, and are drawn at its offset; its textures and mesh assets
      go through this region's capabilities behind our own prims; and its own
      sea level, off its own handshake, is the level its sea is drawn at.
-   - **The neighbour resends its handshake a few times an hour.** Measured
-     over ninety seconds: four `RegionHandshake` packets, each answered
-     reliably, with terrain flowing throughout -- so the first reply plainly
-     arrived. Harmless, and unexplained. The likeliest reading is that
-     OpenSim resends on region-info changes rather than that the reply is
-     being missed, but nobody has checked.
+   - **The neighbour sends its handshake more than once.** Measured over
+     ninety seconds: four `RegionHandshake` packets, each answered reliably,
+     with terrain flowing throughout -- so the first reply plainly arrived.
+     Half of it is explained now, from the source rather than by guessing,
+     and pinned in `test/test_opensim_source_pins.py`: there are exactly
+     three `.SendRegionHandshake()` call sites in OpenSim, of which a *child*
+     circuit can reach two -- the circuit being created, and `SendInitialData`
+     behind the terrain-PBR flag -- and neither is periodic. (The third is
+     `CompleteMovement`, which a child circuit never reaches because we never
+     send `CompleteAgentMovement` on one. A fourth mention is a call inside a
+     comment block.) The earlier guess here, that OpenSim resends on
+     region-info changes, is not in this version of the source at all.
+     What is left is the other two packets, and they are either resends or a
+     sender this reading has not found -- which look nothing alike on the
+     wire, since a resend carries `MSG_RESENT` and reuses its sequence
+     number. `tools/probe_neighbour_acks.py` answers it in one run.
    - ~~**The camera does not see round anything.**~~ Spent. A ridge between
      the camera and the avatar pulls it in, and so does a prim: the ground is
      marched and the prims are cast against, in that order, and the nearer

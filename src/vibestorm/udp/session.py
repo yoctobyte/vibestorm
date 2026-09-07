@@ -164,6 +164,7 @@ from vibestorm.udp.messages import (
 )
 from vibestorm.udp.neighbour import NeighbourCircuit
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
+from vibestorm.udp.recent import RecentSequences
 from vibestorm.udp.template import (
     DecodedMessageNumber,
     MessageDispatch,
@@ -348,7 +349,11 @@ class LiveCircuitSession:
     on_event: Callable[[SessionEvent], None] | None = None
     next_sequence: int = 1
     pending_reliable: dict[int, str] = field(default_factory=dict)
-    seen_reliable_sequences: set[int] = field(default_factory=set)
+    #: The reliable sequence numbers seen lately -- bounded, and deliberately
+    #: not a `set`. It used to be one, holding every reliable packet of the
+    #: whole session; see `vibestorm.udp.recent` for what a soak measured and
+    #: why a window is enough.
+    seen_reliable_sequences: RecentSequences = field(default_factory=RecentSequences)
     queued_acks: list[int] = field(default_factory=list)
     received_messages: Counter[str] = field(default_factory=Counter)
     total_received: int = 0
@@ -429,7 +434,15 @@ class LiveCircuitSession:
     parcel_properties_request_sent: bool = False
     event_queue_url: str | None = None
     event_queue_ack: int = 0
+    #: Batches decoded, not polls made -- a quiet queue long-polls and returns
+    #: nothing, and none of those land here. The two were one field and the
+    #: distinction cost nothing until a soak report read a quiet queue as a
+    #: dead one; `event_queue_attempts` is the liveness half.
     event_queue_polls: int = 0
+    #: Every trip round the poll loop, answered or not. This is what says the
+    #: loop is still running: it climbs on a silent queue, where every other
+    #: number about the event queue sits perfectly still.
+    event_queue_attempts: int = 0
     event_queue_events: int = 0
     # Most-recent typed EQG event. Set immediately before the session event
     # fires, so the WorldClient bridge reads the one that triggered it — the
@@ -593,10 +606,13 @@ class LiveCircuitSession:
         if view.header.is_reliable and view.header.sequence not in self.queued_acks:
             self.queued_acks.append(view.header.sequence)
         if view.header.is_reliable:
-            if view.header.sequence in self.seen_reliable_sequences:
+            # Asking and remembering in one call, not two: a duplicate has to
+            # refresh the window as well as be recognised by it, or a sequence
+            # the simulator is still resending ages out mid-chain and the
+            # message gets handled a second time.
+            if self.seen_reliable_sequences.seen(view.header.sequence):
                 self._record_event(now, "transport.reliable_duplicate", f"seq={view.header.sequence} msg={dispatched.summary.name}")
                 return self._flush_transport_packets(now)
-            self.seen_reliable_sequences.add(view.header.sequence)
             self._record_event(now, "transport.reliable_in", f"seq={view.header.sequence} msg={dispatched.summary.name}")
 
         if dispatched.summary.name == "PacketAck":
@@ -4364,6 +4380,7 @@ async def _run_event_queue_loop(
     long-poll timeout on a quiet queue is normal, not fatal.
     """
     while session.close_reason is None:
+        session.event_queue_attempts += 1
         try:
             result = await client.poll_once(
                 url,

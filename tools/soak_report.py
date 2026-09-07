@@ -25,14 +25,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from vibestorm.viewer3d.health import (  # noqa: E402
     format_growth_report,
     growth_report,
+    pace_report,
     read_soak_log,
 )
 
 DEFAULT_COUNTERS = (
     "udp.total_received",
     "udp.agent_updates",
-    "udp.acks_received",
-    "eq.polls",
+    "udp.packet_acks",
+    "udp.appended_acks",
+    "udp.pings_answered",
+    "eq.attempts",
+    "eq.batches",
     "eq.events",
     "world.object_updates",
 )
@@ -61,12 +65,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no samples in {args.log}", file=sys.stderr)
         return 1
 
-    span = float(samples[-1].get("elapsed_s", 0.0)) - float(samples[0].get("elapsed_s", 0.0))
-    frames = int(samples[-1].get("frame", 0))
-    print(
-        f"{len(samples)} samples over {span / 60.0:.1f} min, {frames:,d} frames "
-        f"({frames / span:.1f} fps mean)" if span > 0 else f"{len(samples)} samples"
-    )
+    pace = pace_report(samples)
+    if pace is None:
+        print(f"{len(samples)} samples -- too few to say anything about the pace")
+    else:
+        print(
+            f"{len(samples)} samples over {pace.span_s / 60.0:.1f} min, "
+            f"{pace.frames:,d} frames"
+        )
+        print(
+            f"  frame rate   {pace.fps_first_half:.1f} fps in the first half, "
+            f"{pace.fps_second_half:.1f} in the second "
+            f"({pace.slowed_by * 100:+.0f}% slower)"
+        )
+        asked = (
+            f" (asked for every {pace.interval_s:.0f} s)"
+            if pace.interval_s is not None
+            else ""
+        )
+        print(
+            f"  gaps         {pace.shortest_gap_s:.1f} s shortest, "
+            f"{pace.longest_gap_s:.1f} s longest{asked}"
+        )
     print()
 
     report = growth_report(samples, counters=args.counters)

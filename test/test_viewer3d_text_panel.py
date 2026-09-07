@@ -13,6 +13,7 @@ import unittest
 
 from vibestorm.viewer3d.text_panel import (
     PANEL_PADDING,
+    WRAP_CACHE_LIMIT,
     draw_rows,
     panel_height,
     wrap_line,
@@ -32,6 +33,54 @@ class FakeFont:
 
     def render_premul(self, text: str, colour) -> object:  # pragma: no cover
         raise AssertionError("these tests do not draw")
+
+
+class WrapCacheIsBoundedTests(unittest.TestCase):
+    """A cache keyed by text, in front of a panel whose text keeps changing.
+
+    The diagnostics panel reports a framerate and the sim's own stats, so two
+    of its eighteen lines are a *new string* on every refresh -- once a second
+    for as long as the panel is open. Those two can never be hit, and before
+    this they were kept anyway: three and a half thousand entries an hour, a
+    hundred thousand overnight, none of them reachable.
+
+    The panel is eighteen lines, so a cache in the hundreds is already made
+    almost entirely of misses and emptying it costs one re-wrap of what is
+    still on screen.
+    """
+
+    def test_a_line_that_never_repeats_does_not_fill_memory(self) -> None:
+        font = FakeFont()
+        cache: dict[tuple[str, int], list[str]] = {}
+
+        for tick in range(WRAP_CACHE_LIMIT * 4):
+            wrap_lines((f"fps: {tick}.0",), font=font, max_width=200, cache=cache)
+            self.assertLessEqual(len(cache), WRAP_CACHE_LIMIT)
+
+    def test_the_lines_that_do_repeat_are_still_cached(self) -> None:
+        # The bound must not cost the thing the cache is for. Emptying it
+        # re-wraps what is on screen once, and after that the steady lines
+        # are free again.
+        font = FakeFont()
+        cache: dict[tuple[str, int], list[str]] = {}
+        steady = ("region: Somewhere", "objects: 32")
+
+        wrap_lines(steady, font=font, max_width=200, cache=cache)
+        before = font.size_calls
+        wrap_lines(steady, font=font, max_width=200, cache=cache)
+
+        self.assertEqual(font.size_calls, before)
+
+    def test_emptying_it_does_not_change_what_is_drawn(self) -> None:
+        # The rows have to be right across the sweep, not only either side of
+        # it -- a cache that returned nothing for the line that triggered its
+        # own clear would lose a row from the panel.
+        font = FakeFont()
+        cache: dict[tuple[str, int], list[str]] = {}
+        for tick in range(WRAP_CACHE_LIMIT + 5):
+            line = f"aaa bbb ccc ddd {tick}"
+            rows = wrap_lines((line,), font=font, max_width=80, cache=cache)
+            self.assertEqual(rows, wrap_line(line, font=font, max_width=80))
 
 
 class WrapTests(unittest.TestCase):

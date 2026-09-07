@@ -26,6 +26,7 @@ from pathlib import Path
 from uuid import UUID
 
 from vibestorm.viewer3d.health import (
+    MIN_SAMPLES_FOR_TREND,
     MIN_SAMPLES_FOR_VERDICT,
     PROCESS_GAUGES,
     Growth,
@@ -33,6 +34,7 @@ from vibestorm.viewer3d.health import (
     SoakLog,
     format_growth_report,
     growth_report,
+    pace_report,
     process_rss_bytes,
     read_soak_log,
 )
@@ -208,7 +210,54 @@ class GrowthVerdictTests(unittest.TestCase):
         self.assertAlmostEqual(report[0].late_rate_per_hour, 12000.0)
 
     def test_a_series_that_decelerates_hard_is_settling_not_growing(self) -> None:
-        report = growth_report(_samples("a", [0, 500, 1000, 1010, 1020, 1030]))
+        # 500, 500, 200, 100, 40: still slowing at the end, which is what
+        # settling has to mean.
+        report = growth_report(_samples("a", [0, 500, 1000, 1200, 1300, 1340]))
+        assert report[0].verdict == "settling"
+
+    def test_a_burst_and_then_a_steady_climb_is_growing(self) -> None:
+        # The shape that caught this out, taken from a real soak: RSS grew
+        # 148 MB in the first third of a two-hour run, 24 in the second and
+        # 42 in the third. Against the start that is a tiny second half and
+        # reads as settling; against the middle it is a rate that stopped
+        # falling, which is a leak with a loud first minute in front of it.
+        report = growth_report(_samples("a", [0, 1000, 1010, 1020, 1030, 1040]))
+        assert report[0].verdict == "growing"
+
+    def test_a_flat_rate_that_wobbles_downward_is_still_growing(self) -> None:
+        # The canonical leak: a container filling at a steady rate. Steady
+        # rates wobble, and the wobble is as likely to go down as up -- this
+        # one loses five per cent over the last stretch. Reading "the rate
+        # fell" as settling calls half of all leaks settled. Taken from the
+        # same soak: 773, 681 then 668 entries an hour, which is a flat leak
+        # with noise on it and was reported as settling for one commit.
+        report = growth_report(_samples("a", [0, 50, 100, 200, 300, 395]))
+        assert report[0].verdict == "growing"
+
+    def test_and_the_same_climb_without_the_burst_is_growing_too(self) -> None:
+        # The control: the verdict must come from the trend, not from the
+        # presence of a spike to be unimpressed by.
+        report = growth_report(_samples("a", [0, 10, 20, 30, 40, 50]))
+        assert report[0].verdict == "growing"
+
+    def test_a_run_too_short_to_show_a_trend_does_not_claim_one(self) -> None:
+        # Five samples is past `too-short` and short of a trend. Of the two
+        # words left, the report says the one that costs a second look rather
+        # than the one that costs the finding.
+        #
+        # These numbers converge hard -- 12.5 a second over the middle
+        # stretch and 1.7 over the last -- so the trend test would call them
+        # settling if it were allowed to run. That is the point: a fixture
+        # that reads the same either way proves nothing about the guard, and
+        # the first version of this test used one.
+        short = _samples("a", [0, 1000, 1500, 1750, 1800])
+        assert len(short) < MIN_SAMPLES_FOR_TREND
+        assert growth_report(short)[0].verdict == "growing"
+
+    def test_and_the_same_shape_with_one_more_sample_does(self) -> None:
+        # The control: nothing about the numbers makes them growing, only the
+        # length of the run.
+        report = growth_report(_samples("a", [0, 1000, 1500, 1750, 1800, 1810]))
         assert report[0].verdict == "settling"
 
     def test_a_series_that_shrinks_back_is_settled(self) -> None:
@@ -314,6 +363,130 @@ class ReportShapeTests(unittest.TestCase):
         assert names == {"a"}
 
 
+class PaceTests(unittest.TestCase):
+    """What the loop did, as against what it was holding on to.
+
+    A viewer that is fine for an hour and drawing at five frames a second by
+    the fourth has failed in the way this whole file exists to catch, and not
+    one gauge in the report says so: every container can be perfectly stable
+    while the loop grinds to a halt.
+    """
+
+    def _run(self, fps_pairs, *, step: float = 30.0):
+        samples = []
+        frame = 0
+        for i, fps in enumerate(fps_pairs):
+            samples.append({"elapsed_s": i * step, "frame": frame})
+            frame += int(fps * step)
+        return samples
+
+    def test_a_steady_run_reads_the_same_at_both_ends(self) -> None:
+        pace = pace_report(self._run([30.0] * 8))
+        assert pace is not None
+        self.assertAlmostEqual(pace.fps_first_half, 30.0, places=1)
+        self.assertAlmostEqual(pace.fps_second_half, 30.0, places=1)
+        self.assertAlmostEqual(pace.slowed_by, 0.0, places=2)
+
+    def test_a_run_that_grinds_down_says_so(self) -> None:
+        # 30 fps for the first half, 10 for the second.
+        pace = pace_report(self._run([30.0] * 4 + [10.0] * 4))
+        assert pace is not None
+        self.assertGreater(pace.fps_first_half, pace.fps_second_half)
+        self.assertGreater(pace.slowed_by, 0.5)
+
+    def test_a_run_that_speeds_up_reads_as_negative(self) -> None:
+        pace = pace_report(self._run([10.0] * 4 + [30.0] * 4))
+        assert pace is not None
+        self.assertLess(pace.slowed_by, 0.0)
+
+    def test_a_stall_shows_as_a_gap_a_mean_would_hide(self) -> None:
+        # Samples are taken from inside the frame loop, so a gap far longer
+        # than the interval is the loop having stopped. Averaged over an hour
+        # a ten-second freeze is invisible.
+        samples = [
+            {"elapsed_s": 0.0, "frame": 0},
+            {"elapsed_s": 30.0, "frame": 900},
+            {"elapsed_s": 75.0, "frame": 1000},
+            {"elapsed_s": 105.0, "frame": 1900},
+        ]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertAlmostEqual(pace.longest_gap_s, 45.0)
+        self.assertAlmostEqual(pace.shortest_gap_s, 30.0)
+
+    def test_the_cadence_comes_off_the_samples_not_out_of_the_gaps(self) -> None:
+        # The shortest gap is not the cadence. The last sample is written from
+        # the shutdown path, moments after a scheduled one, so on a real
+        # two-hour run at thirty seconds the shortest gap was five -- and the
+        # header said "asked for every 5 s", which is a report describing its
+        # own artefact as the thing it was told to do.
+        samples = [
+            {"elapsed_s": 0.0, "frame": 0, "soak_interval_s": 30.0},
+            {"elapsed_s": 30.0, "frame": 180, "soak_interval_s": 30.0},
+            {"elapsed_s": 60.0, "frame": 360, "soak_interval_s": 30.0},
+            {"elapsed_s": 65.0, "frame": 390, "soak_interval_s": 30.0},
+        ]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertAlmostEqual(pace.shortest_gap_s, 5.0)
+        self.assertAlmostEqual(pace.interval_s, 30.0)
+
+    def test_a_log_that_never_recorded_it_says_nothing_rather_than_guessing(self) -> None:
+        # Logs written before the probe recorded the cadence still read, and
+        # the one thing they must not do is produce a plausible number.
+        samples = [
+            {"elapsed_s": 0.0, "frame": 0},
+            {"elapsed_s": 30.0, "frame": 180},
+            {"elapsed_s": 60.0, "frame": 360},
+        ]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertIsNone(pace.interval_s)
+
+    def test_the_probe_records_what_it_was_asked_for(self) -> None:
+        probe = HealthProbe(interval_s=30.0)
+        sample = probe.sample(elapsed_s=0.0, frame=1)
+        self.assertAlmostEqual(sample["soak_interval_s"], 30.0)
+
+    def test_too_few_samples_is_no_answer_rather_than_a_wrong_one(self) -> None:
+        self.assertIsNone(pace_report([{"elapsed_s": 0.0, "frame": 0}]))
+
+    def test_a_run_with_no_time_between_samples_does_not_divide_by_zero(self) -> None:
+        samples = [{"elapsed_s": 0.0, "frame": i} for i in range(5)]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertEqual(pace.fps_first_half, 0.0)
+        self.assertEqual(pace.slowed_by, 0.0)
+
+    def test_a_sample_missing_its_frame_number_is_skipped_not_fatal(self) -> None:
+        # Logs are appended to and concatenated, and this file has already
+        # renamed series once. A line that is valid JSON but has not got the
+        # fields must cost that line, not the whole report.
+        samples = [
+            {"elapsed_s": 0.0, "frame": 0},
+            {"elapsed_s": 30.0},
+            {"elapsed_s": 60.0, "frame": None},
+            {"elapsed_s": 90.0, "frame": 900},
+            {"elapsed_s": 120.0, "frame": 1200},
+        ]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertEqual(pace.frames, 1200)
+
+    def test_the_frame_count_is_the_run_and_not_the_last_number(self) -> None:
+        # A log appended to across two runs starts its frame count again;
+        # taking the last value alone would report the second run's frames as
+        # the whole thing.
+        samples = [
+            {"elapsed_s": 0.0, "frame": 1000},
+            {"elapsed_s": 30.0, "frame": 1900},
+            {"elapsed_s": 60.0, "frame": 2800},
+        ]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertEqual(pace.frames, 1800)
+
+
 class FormatTests(unittest.TestCase):
     def test_every_row_is_one_line_naming_its_verdict(self) -> None:
         report = growth_report(_samples("cache.size", [0, 10, 20, 30, 40]))
@@ -365,6 +538,25 @@ class GaugeWiringTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
+    def _hud(self):
+        """A real HUD, because a `None` one would read as zero everywhere.
+
+        Which is the exact blindness the rest of this class exists to rule
+        out: every HUD gauge would be flat at nothing for the whole run and
+        the report would call the viewer clean.
+        """
+        try:
+            import pygame
+            import pygame_gui  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - optional viewer extra
+            self.skipTest(f"viewer dependencies unavailable: {exc}")
+        from vibestorm.viewer3d.hud import HUD
+
+        pygame.init()
+        pygame.display.set_mode((800, 600))
+        self.addCleanup(pygame.quit)
+        return HUD((800, 600), on_chat_submit=lambda _text: None)
+
     def _probe_and_parts(self):
         from vibestorm.udp.dispatch import MessageDispatcher
         from vibestorm.viewer3d.app import build_health_probe
@@ -378,7 +570,10 @@ class GaugeWiringTests(unittest.TestCase):
         renderer = PerspectiveRenderer(Camera3D())
         session = _live_session(MessageDispatcher.from_repo_root(REPO_ROOT))
         client = _FakeClient(session)
-        return build_health_probe(scene, renderer, client, interval_s=1.0), scene, session
+        probe = build_health_probe(
+            scene, renderer, client, self._hud(), interval_s=1.0
+        )
+        return probe, scene, session
 
     def test_no_gauge_is_unreadable_against_a_built_viewer(self) -> None:
         probe, _scene, _session = self._probe_and_parts()
@@ -402,7 +597,11 @@ class GaugeWiringTests(unittest.TestCase):
         from vibestorm.viewer3d.scene import Scene
 
         probe = build_health_probe(
-            Scene(), PerspectiveRenderer(Camera3D()), _FakeClient(None), interval_s=1.0
+            Scene(),
+            PerspectiveRenderer(Camera3D()),
+            _FakeClient(None),
+            self._hud(),
+            interval_s=1.0,
         )
         sample = probe.sample(elapsed_s=0.0, frame=0)
         self.assertEqual(sorted(k for k, v in sample.items() if v is None), [])
@@ -453,6 +652,44 @@ class GaugeWiringTests(unittest.TestCase):
         self.assertEqual(after["udp.seen_sequences"], 3.0)
         self.assertEqual(after["asset.fetched"], 1.0)
         self.assertEqual(after["asset.fetched_bytes"], 100.0)
+
+    def test_the_hud_gauges_watch_this_hud_and_not_nothing(self) -> None:
+        """A gauge aimed at `None` is the `_MISSING` trap by another road.
+
+        `_len_of` answers zero for an owner that is not there yet, which is
+        right -- there is no circuit before login. But it means a gauge
+        pointed at nothing at all reads zero for the whole run and looks
+        exactly like a container that never grew. Nothing can tell the two
+        apart from the log, so it has to be told apart here: fill the thing
+        the gauge names and the gauge has to move.
+        """
+        from vibestorm.viewer3d.app import build_health_probe
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+        from vibestorm.viewer3d.scene import Scene
+
+        hud = self._hud()
+        probe = build_health_probe(
+            Scene(), PerspectiveRenderer(Camera3D()), _FakeClient(None), hud, interval_s=1.0
+        )
+        before = probe.sample(elapsed_s=0.0, frame=0)
+        hud._diagnostics_wrap_cache[("a line", 100)] = ["a line"]
+        after = probe.sample(elapsed_s=1.0, frame=1)
+        self.assertEqual(before["hud.wrap_cache"], 0.0)
+        self.assertEqual(after["hud.wrap_cache"], 1.0)
+        # And a HUD that is really there has widgets in it.
+        self.assertGreater(after["hud.ui_elements"], 0.0)
+
+    def test_the_two_ack_channels_are_not_the_same_number(self) -> None:
+        # Acks arrive as a `PacketAck` message or appended to any packet.
+        # Two gauges reading one field would make a circuit acked entirely
+        # one way look like one acked both, or silent.
+        probe, _scene, session = self._probe_and_parts()
+        session.packet_acks_received = 3
+        session.appended_acks_received = 7
+        sample = probe.sample(elapsed_s=0.0, frame=0)
+        self.assertEqual(sample["udp.packet_acks"], 3.0)
+        self.assertEqual(sample["udp.appended_acks"], 7.0)
 
 
 class _FakeClient:

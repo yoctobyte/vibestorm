@@ -782,10 +782,11 @@ void main() {
 #: water sitting beside the reflection of the real one.
 #:
 #: The disc is at the size the region asked for, through `sun_scale`. The haze
-#: around it does not scale with it -- that is `glow`, which is parsed nowhere
-#: and identical in all eight of the default cycle's keyframes, so there is no
-#: evidence in this document for which way either of its two numbers runs, and
-#: a guess dressed as a reading is worse than an honest constant.
+#: around it does not scale with it -- that is `glow`, which is read off the
+#: document and then drawn nowhere, and identical in all eight of the default
+#: cycle's keyframes, so there is no evidence in this document for what its
+#: components mean, and a guess dressed as a reading is worse than an honest
+#: constant.
 _SUN_IN_SKY_GLSL = """
 vec3 sun_in_sky(vec3 dir, vec3 sun_dir, vec2 disc) {
     // Pure falloff on the angle to the light direction the day cycle gives

@@ -40,6 +40,11 @@ Gauge = Callable[[], float]
 #: two apiece.
 MIN_SAMPLES_FOR_VERDICT = 4
 
+#: Below this, `settling` is not offered at all -- see `_rate_is_still_falling`.
+#: Six is the fewest that gives two comparable stretches after the first third
+#: is discarded, which at the default cadence is three minutes of a soak.
+MIN_SAMPLES_FOR_TREND = 6
+
 
 def process_rss_bytes() -> float:
     """Resident set size of this process, in bytes.
@@ -113,7 +118,17 @@ class HealthProbe:
 
     def sample(self, *, elapsed_s: float, frame: int) -> dict[str, Any]:
         self._last_at = elapsed_s
-        out: dict[str, Any] = {"elapsed_s": round(elapsed_s, 3), "frame": frame}
+        # The cadence goes in the sample rather than being inferred from it.
+        # A report that reads the shortest observed gap and calls it "asked
+        # for" is reading the tightest hitch in the run: the final sample is
+        # written from the shutdown path moments after a scheduled one, so the
+        # shortest gap is an artefact, and it made a 30-second soak print
+        # "asked for every 5 s".
+        out: dict[str, Any] = {
+            "elapsed_s": round(elapsed_s, 3),
+            "frame": frame,
+            "soak_interval_s": self.interval_s,
+        }
         for name, read in PROCESS_GAUGES.items():
             out[name] = _read(read)
         for name, read in self.gauges.items():
@@ -189,6 +204,81 @@ def read_soak_log(path: Path) -> list[dict[str, Any]]:
             if isinstance(obj, dict):
                 samples.append(obj)
     return samples
+
+
+@dataclass(frozen=True)
+class Pace:
+    """How the run's own frame rate held up, and whether it ever stopped.
+
+    A viewer that is fine for an hour and drawing at five frames a second by
+    the fourth has failed in exactly the way this file exists to catch, and
+    no gauge in the report says so: every container can be perfectly stable
+    while the loop grinds. The frame counter and the clock are in every
+    sample already, so this costs nothing to work out and is the first thing
+    worth reading.
+
+    ``longest_gap_s`` is the other half. Samples are taken from inside the
+    frame loop, so a gap far longer than the interval is the loop having
+    stopped -- a hitch, a blocking call, a garbage collection nobody
+    budgeted for. A mean frame rate hides those completely.
+    """
+
+    frames: int
+    span_s: float
+    fps_first_half: float
+    fps_second_half: float
+    longest_gap_s: float
+    shortest_gap_s: float
+    #: What the run was *asked* for, straight off the samples -- `None` for a
+    #: log written before the probe recorded it, in which case the report says
+    #: nothing rather than guessing.
+    interval_s: float | None
+
+    @property
+    def slowed_by(self) -> float:
+        """Fraction of the early frame rate that has been lost by the end."""
+        if self.fps_first_half <= 0.0:
+            return 0.0
+        return 1.0 - (self.fps_second_half / self.fps_first_half)
+
+
+def pace_report(samples: Sequence[Mapping[str, Any]]) -> Pace | None:
+    """What the loop did, as opposed to what it was holding on to."""
+    points = [
+        (float(s["elapsed_s"]), int(s["frame"]))
+        for s in samples
+        if isinstance(s.get("elapsed_s"), (int, float)) and isinstance(s.get("frame"), int)
+    ]
+    if len(points) < 3:
+        return None
+    mid = len(points) // 2
+    span = points[-1][0] - points[0][0]
+    gaps = [b[0] - a[0] for a, b in zip(points, points[1:], strict=False)]
+    return Pace(
+        frames=points[-1][1] - points[0][1],
+        span_s=span,
+        fps_first_half=_fps(points[0], points[mid]),
+        fps_second_half=_fps(points[mid], points[-1]),
+        longest_gap_s=max(gaps) if gaps else 0.0,
+        shortest_gap_s=min(gaps) if gaps else 0.0,
+        interval_s=_asked_for(samples),
+    )
+
+
+def _asked_for(samples: Sequence[Mapping[str, Any]]) -> float | None:
+    """The cadence the run was asked for, if the samples say."""
+    for sample in samples:
+        value = sample.get("soak_interval_s")
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
+def _fps(start: tuple[float, int], end: tuple[float, int]) -> float:
+    seconds = end[0] - start[0]
+    if seconds <= 0.0:
+        return 0.0
+    return (end[1] - start[1]) / seconds
 
 
 @dataclass(frozen=True)
@@ -275,6 +365,39 @@ def _late_rate_per_hour(points: Sequence[tuple[float, float]]) -> float:
     return (end_v - start_v) * 3600.0 / span
 
 
+def _rate(first: tuple[float, float], last: tuple[float, float]) -> float:
+    span = last[0] - first[0]
+    if span <= 0.0:
+        return 0.0
+    return (last[1] - first[1]) / span
+
+
+def _rate_is_converging(points: Sequence[tuple[float, float]]) -> bool:
+    """Has the rate at least halved between the middle stretch and the last?
+
+    Two decisions, and both were wrong once.
+
+    *The first third is thrown away.* Every run begins with caches filling, so
+    any comparison against the start is dominated by it: a process that burns
+    a hundred megabytes in its first twenty minutes and then leaks forty an
+    hour for ever has a second half far smaller than its first, and reads as
+    settling on any early-versus-late test. That is measured, not imagined --
+    a two-hour run went 182 MB an hour, then 16, then 39, and was reported as
+    settling.
+
+    *And the fall has to be a halving, not merely a fall.* A container filling
+    at a flat rate is the canonical leak, and a flat rate wobbles: a couple of
+    per cent either way is noise, so "lower than before" calls half of all
+    leaks settled. Halving is the same convergence test the early-versus-late
+    rule was reaching for -- it was only ever applied in the wrong place.
+    """
+    count = len(points)
+    first, second = count // 3, 2 * count // 3
+    middle = _rate(points[first], points[second])
+    last = _rate(points[second], points[-1])
+    return last < middle / 2.0
+
+
 def _verdict(points: Sequence[tuple[float, float]], kind: str) -> str:
     values = [v for _, v in points]
     if len(points) < MIN_SAMPLES_FOR_VERDICT:
@@ -282,7 +405,6 @@ def _verdict(points: Sequence[tuple[float, float]], kind: str) -> str:
     if max(values) == min(values):
         return "flat"
     mid = len(points) // 2
-    early = values[mid] - values[0]
     late = values[-1] - values[mid]
     if kind == "counter":
         # A counter is supposed to climb. The failure is the opposite one: a
@@ -291,9 +413,13 @@ def _verdict(points: Sequence[tuple[float, float]], kind: str) -> str:
         return "stalled" if late <= 0.0 else "rising"
     if late <= 0.0:
         return "settled"
-    if early > 0.0 and late < early / 2.0:
-        return "settling"
-    return "growing"
+    if len(points) < MIN_SAMPLES_FOR_TREND:
+        # Not enough to see a trend in, so do not claim one. Of the two words
+        # available the alarming one is the safe default: a short run that
+        # says "growing" costs a second look, and one that says "settling"
+        # costs the finding.
+        return "growing"
+    return "settling" if _rate_is_converging(points) else "growing"
 
 
 def format_growth_report(report: Sequence[Growth], *, limit: int = 0) -> str:
@@ -322,12 +448,15 @@ def _num(value: float) -> str:
 __all__ = [
     "Gauge",
     "Growth",
+    "Pace",
     "HealthProbe",
+    "MIN_SAMPLES_FOR_TREND",
     "MIN_SAMPLES_FOR_VERDICT",
     "PROCESS_GAUGES",
     "SoakLog",
     "format_growth_report",
     "growth_report",
+    "pace_report",
     "process_rss_bytes",
     "read_soak_log",
 ]
