@@ -101,6 +101,12 @@ class HealthProbe:
     gauges: Mapping[str, Gauge] = field(default_factory=dict)
     counters: Mapping[str, Gauge] = field(default_factory=dict)
     interval_s: float = 30.0
+    #: How long the run was asked to last, if it was asked for anything. Goes
+    #: into every sample so the report can say whether the run it is reading
+    #: is the run somebody meant to take -- a soak that is cut short reads
+    #: exactly like a short soak otherwise, and a two-hour question answered
+    #: by thirteen minutes of data is worse than no answer.
+    run_seconds: float = 0.0
     #: Wall clock of the last sample, in the caller's own units, so the probe
     #: never reads a clock the tests then have to freeze.
     _last_at: float | None = field(default=None, repr=False)
@@ -129,6 +135,8 @@ class HealthProbe:
             "frame": frame,
             "soak_interval_s": self.interval_s,
         }
+        if self.run_seconds > 0.0:
+            out["soak_run_seconds"] = self.run_seconds
         for name, read in PROCESS_GAUGES.items():
             out[name] = _read(read)
         for name, read in self.gauges.items():
@@ -233,6 +241,27 @@ class Pace:
     #: log written before the probe recorded it, in which case the report says
     #: nothing rather than guessing.
     interval_s: float | None
+    #: How long the run was meant to last, same rules. `cut_short` is the
+    #: question it exists to answer.
+    run_seconds: float | None
+
+    @property
+    def cut_short(self) -> bool:
+        """Did the run end well before it was asked to?
+
+        A soak that dies early reads exactly like a short soak: the report is
+        happy, every verdict is computed over whatever arrived, and nobody is
+        told that the two-hour question was answered with thirteen minutes.
+        Measured on 2026-09-07, when logging a probe in as the same avatar
+        closed a running soak's circuit and the report said nothing at all.
+
+        The tolerance is one sampling interval, because the last sample lands
+        wherever the loop happened to be.
+        """
+        if self.run_seconds is None:
+            return False
+        slack = self.interval_s if self.interval_s is not None else 0.0
+        return self.span_s < self.run_seconds - slack
 
     @property
     def slowed_by(self) -> float:
@@ -261,14 +290,15 @@ def pace_report(samples: Sequence[Mapping[str, Any]]) -> Pace | None:
         fps_second_half=_fps(points[mid], points[-1]),
         longest_gap_s=max(gaps) if gaps else 0.0,
         shortest_gap_s=min(gaps) if gaps else 0.0,
-        interval_s=_asked_for(samples),
+        interval_s=_asked_for(samples, "soak_interval_s"),
+        run_seconds=_asked_for(samples, "soak_run_seconds"),
     )
 
 
-def _asked_for(samples: Sequence[Mapping[str, Any]]) -> float | None:
-    """The cadence the run was asked for, if the samples say."""
+def _asked_for(samples: Sequence[Mapping[str, Any]], key: str) -> float | None:
+    """What the run was asked for under `key`, if the samples say."""
     for sample in samples:
-        value = sample.get("soak_interval_s")
+        value = sample.get(key)
         if isinstance(value, (int, float)) and value > 0:
             return float(value)
     return None

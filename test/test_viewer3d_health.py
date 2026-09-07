@@ -723,3 +723,60 @@ def _live_session(dispatcher):
         message="ok",
     )
     return LiveCircuitSession(bootstrap, dispatcher)
+
+
+class CutShortTests(unittest.TestCase):
+    """A soak that dies early reads exactly like a short soak.
+
+    Which is how ninety minutes went missing on 2026-09-07: logging a probe
+    in as the same avatar closed the running soak's circuit, the viewer shut
+    down cleanly at thirteen minutes of a two-hour run, and the report said
+    nothing whatsoever about it -- every verdict computed happily over an
+    eighth of the data that was asked for.
+    """
+
+    def _samples(self, *, span_s: float, run_seconds: float | None) -> list[dict]:
+        out = []
+        elapsed = 0.0
+        frame = 0
+        while elapsed <= span_s:
+            sample = {"elapsed_s": elapsed, "frame": frame, "soak_interval_s": 30.0}
+            if run_seconds is not None:
+                sample["soak_run_seconds"] = run_seconds
+            out.append(sample)
+            elapsed += 30.0
+            frame += 180
+        return out
+
+    def test_a_run_that_stopped_early_says_so(self) -> None:
+        pace = pace_report(self._samples(span_s=780.0, run_seconds=7200.0))
+        assert pace is not None
+        self.assertTrue(pace.cut_short)
+
+    def test_a_run_that_went_the_distance_does_not(self) -> None:
+        pace = pace_report(self._samples(span_s=7200.0, run_seconds=7200.0))
+        assert pace is not None
+        self.assertFalse(pace.cut_short)
+
+    def test_landing_one_sample_short_is_not_being_cut_short(self) -> None:
+        # The last sample lands wherever the loop happened to be, so the
+        # tolerance is one interval. Without it every completed run in the
+        # world reports as truncated and the warning stops meaning anything.
+        pace = pace_report(self._samples(span_s=7180.0, run_seconds=7200.0))
+        assert pace is not None
+        self.assertFalse(pace.cut_short)
+
+    def test_a_run_that_never_said_how_long_it_meant_to_be_claims_nothing(self) -> None:
+        pace = pace_report(self._samples(span_s=780.0, run_seconds=None))
+        assert pace is not None
+        self.assertIsNone(pace.run_seconds)
+        self.assertFalse(pace.cut_short)
+
+    def test_the_probe_records_the_length_it_was_asked_for(self) -> None:
+        probe = HealthProbe(interval_s=30.0, run_seconds=7200.0)
+        self.assertEqual(probe.sample(elapsed_s=0.0, frame=1)["soak_run_seconds"], 7200.0)
+
+    def test_and_records_nothing_when_it_was_not_asked_for_a_length(self) -> None:
+        # `--run-seconds` is optional; a run with no end is not a truncated one.
+        probe = HealthProbe(interval_s=30.0)
+        self.assertNotIn("soak_run_seconds", probe.sample(elapsed_s=0.0, frame=1))

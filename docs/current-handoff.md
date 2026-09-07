@@ -171,6 +171,31 @@ gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
 
+**A -- a soak that dies reads exactly like a soak that was short
+(2026-09-07).** The local grid has one avatar. `local/vibestorm-login.env`
+and `local/vibestorm-login-tester.env` are the same account, so two sessions
+cannot run at once: the newer login makes OpenSim close the older circuit,
+and the older process shuts down *cleanly*, exit code 0.
+
+A three-minute run of `tools/probe_neighbour_acks.py` therefore killed a
+two-hour soak at the thirteen-minute mark, and **nothing said so**. Not the
+viewer's log, which ended normally. Not the report, which described thirteen
+minutes as though thirteen minutes were the question. Every verdict in it was
+computed over an eighth of the data that had been asked for, and every one of
+them looked exactly as confident as usual.
+
+That is the same failure this instrument keeps finding in itself and the
+sharpest version of it yet: not a wrong number, but a *right* number
+answering a question nobody asked. The probe now records `--run-seconds` in
+every sample and the report opens with a loud `** CUT SHORT **` line when the
+span falls more than one interval below it. A log written before the change
+says nothing rather than guessing, which is the same rule the cadence
+follows.
+
+The operational half is worth stating too, because it will catch the next
+agent: **while a soak is running, the sim is off limits.** Check
+`pgrep -f vibestorm.viewer3d.app` before anything that logs in.
+
 **A -- and the region next door had the same hole, plus one of its own
 (2026-09-07).** `NeighbourCircuit` sends three kinds of reliable packet --
 `UseCircuitCode`, `AgentThrottle`, and a `RegionHandshakeReply` for every

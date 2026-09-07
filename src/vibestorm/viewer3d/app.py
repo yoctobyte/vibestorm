@@ -389,7 +389,9 @@ def _len_of(owner_get, *names: str):
     return read
 
 
-def build_health_probe(scene, renderer, client, hud, *, interval_s: float) -> HealthProbe:
+def build_health_probe(
+    scene, renderer, client, hud, *, interval_s: float, run_seconds: float = 0.0
+) -> HealthProbe:
     """Every container in the viewer that a long run could quietly fill.
 
     Chosen by reading for the shape rather than by suspicion: a dict or a set
@@ -502,7 +504,12 @@ def build_health_probe(scene, renderer, client, hud, *, interval_s: float) -> He
         "eq.events": _int_of(session, "event_queue_events"),
         "world.object_updates": _int_of(view, "object_update_events"),
     }
-    return HealthProbe(gauges=gauges, counters=counters, interval_s=interval_s)
+    return HealthProbe(
+        gauges=gauges,
+        counters=counters,
+        interval_s=interval_s,
+        run_seconds=run_seconds,
+    )
 
 
 def _int_of(owner_get, name: str):
@@ -1202,6 +1209,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             client,
             hud,
             interval_s=float(getattr(args, "soak_interval", 30.0)),
+            run_seconds=float(getattr(args, "run_seconds", 0.0) or 0.0),
         )
         if soak_log is not None
         else None

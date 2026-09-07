@@ -75,6 +75,15 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(samples)} samples over {pace.span_s / 60.0:.1f} min, "
             f"{pace.frames:,d} frames"
         )
+        if pace.cut_short and pace.run_seconds is not None:
+            # First line, and loud, because everything below it is computed
+            # over a run that did not happen: a soak cut short reads exactly
+            # like a short soak, and every verdict inherits that quietly.
+            print(
+                f"  ** CUT SHORT: asked for {pace.run_seconds / 60.0:.0f} min, "
+                f"got {pace.span_s / 60.0:.1f}. Treat everything below as a "
+                f"partial run. **"
+            )
         print(
             f"  frame rate   {pace.fps_first_half:.1f} fps in the first half, "
             f"{pace.fps_second_half:.1f} in the second "
