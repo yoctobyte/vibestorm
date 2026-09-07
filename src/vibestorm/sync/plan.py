@@ -198,13 +198,16 @@ def plan_push(
     can_create_gestures: bool = False,
     can_create_textures: bool = False,
     existing_texture_names: Collection[str] = (),
+    existing_texture_ids: Collection[str] = (),
 ) -> list[PushEntry]:
     """What to send from the folder into the object.
 
     ``rows_by_name`` maps an in-world item name to a row carrying ``item_id``,
     ``asset_id`` and a numeric ``asset_type``. It holds the *text* rows only;
-    ``existing_texture_names`` carries the names of the texture rows, which
-    take a different path below and need only to be recognised.
+    ``existing_texture_names`` and ``existing_texture_ids`` carry the names
+    and item ids of the texture rows, which take a different path below and
+    need only to be recognised -- by binding first, name second, for the
+    same reason the text rows are.
     """
     from vibestorm.sync.naming import match_files_to_rows
 
@@ -245,8 +248,10 @@ def plan_push(
     entries.extend(
         _plan_textures(
             images,
+            state=state,
             can_create_textures=can_create_textures,
             existing=frozenset(name.lower() for name in existing_texture_names),
+            existing_ids=frozenset(existing_texture_ids),
         )
     )
     for path in sorted(ignored):
@@ -375,8 +380,10 @@ def plan_push(
 def _plan_textures(
     images: list[Path],
     *,
+    state: SyncState,
     can_create_textures: bool,
     existing: frozenset[str],
+    existing_ids: frozenset[str],
 ) -> list[PushEntry]:
     """Textures are created, never replaced -- and that is the protocol's rule.
 
@@ -400,6 +407,25 @@ def _plan_textures(
     entries: list[PushEntry] = []
     for path in sorted(images):
         item_name = safe_filename(path.stem)
+        # Binding before name, exactly as the text rows are matched. A copy
+        # whose name collided arrived as `sunset 1`, so the row in the object
+        # is not called what the file is called and never will be -- and a
+        # name-only check therefore reported "not there" and uploaded it
+        # again, on that push and on every push after it.
+        record = state.by_file_name(path.name)
+        if record is not None and record.item_id and record.item_id in existing_ids:
+            entries.append(
+                PushEntry(
+                    path=path,
+                    file_name=path.name,
+                    item_name=record.item_name or item_name,
+                    action=SKIP,
+                    reason="already in the object; this client cannot replace a texture",
+                    asset_type=TEXTURE_ASSET_TYPE,
+                    item_id=record.item_id,
+                )
+            )
+            continue
         if item_name.lower() in existing:
             entries.append(
                 PushEntry(

@@ -206,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser(
         "sync-object",
-        help="Sync an in-world object's scripts and notecards with a local folder.",
+        help="Sync an in-world object's text assets with a local folder.",
     )
     sync_parser.add_argument("--login-uri", required=True)
     sync_parser.add_argument("--first", required=True)
@@ -221,7 +221,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser.add_argument(
         "--folder",
         required=True,
-        help="Local folder holding the object's scripts and notecards.",
+        help="Local folder holding the object's scripts, notecards and gestures.",
     )
     sync_parser.add_argument(
         "--pull",

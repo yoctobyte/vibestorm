@@ -62,7 +62,7 @@ class TaskNotecardUploadResult:
 
 @dataclass(slots=True)
 class TaskInventoryUploadClient:
-    """Perform two-step task inventory updates (scripts and notecards)."""
+    """Perform two-step task inventory updates (scripts, notecards, gestures)."""
 
     timeout_seconds: float = 10.0
 

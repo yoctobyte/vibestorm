@@ -396,7 +396,9 @@ async def push_folder_to_object(
     # Texture rows are not planned against -- nothing here can update one --
     # but their *names* decide whether an image in the folder is a new item or
     # a second copy of one that is already there.
-    texture_names = [row.name for row in all_rows if row.asset_type == TEXTURE_ASSET_TYPE]
+    texture_rows = [row for row in all_rows if row.asset_type == TEXTURE_ASSET_TYPE]
+    texture_names = [row.name for row in texture_rows]
+    texture_ids = [str(row.item_id) for row in texture_rows if row.item_id is not None]
 
     files = [path for path in sorted(folder.iterdir()) if path.is_file() and path.name[0] != "."]
     can_create_notecards = bool(notecard_agent_cap and agent_folder_id)
@@ -411,6 +413,7 @@ async def push_folder_to_object(
         can_create_gestures=can_create and can_create_gestures,
         can_create_textures=can_create and can_create_textures,
         existing_texture_names=texture_names,
+        existing_texture_ids=texture_ids,
     )
 
     to_create = [entry for entry in entries if entry.action == TRANSFER and entry.create]
