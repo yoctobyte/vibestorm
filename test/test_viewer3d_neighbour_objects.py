@@ -572,3 +572,130 @@ class NeighbourObjectGLTests(unittest.TestCase):
         finally:
             renderer.clear_caches()
         self.assertNotEqual(correct[:3], behind_us[:3])
+
+
+class RandomisedNeighbourAgreementTests(unittest.TestCase):
+    """The same net as the root region's, one region over.
+
+    A neighbouring region used to be rebuilt from nothing every frame, which
+    made it correct by construction and slow. It carries its last build now,
+    which makes it exactly as capable of quietly keeping an answer that has
+    stopped being true -- and it reaches that state through
+    `refresh_neighbours`, which the root region's differential never touches:
+    a different offset, a different cache, a different region handle stamped
+    on every entity.
+    """
+
+    OPERATIONS = 150
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from vibestorm.udp.dispatch import MessageDispatcher
+
+        cls.dispatcher = MessageDispatcher.from_repo_root(
+            Path(__file__).resolve().parents[1]
+        )
+
+    def _circuit(self, handle: int, view):
+        from vibestorm.udp.neighbour import NeighbourCircuit
+
+        return NeighbourCircuit(
+            handle=handle,
+            address=("127.0.0.1", 9001),
+            agent_id=UUID(int=1),
+            session_id=UUID(int=2),
+            circuit_code=7,
+            dispatcher=self.dispatcher,
+            world_view=view,
+        )
+
+    def _session(self, circuits: dict, *, root: int = ROOT_HANDLE):
+        class _Session:
+            region_handle = root
+            neighbours = circuits
+            texture_paths: dict = {}
+
+        return _Session()
+
+    def _step(self, rng, view, next_id):
+        """One plausible thing the region next door does."""
+        ids = list(view.objects)
+        choice = rng.randrange(7)
+        if choice == 0 or not ids:
+            parent = 0
+            if ids and rng.random() < 0.5:
+                parent = view.objects[rng.choice(ids)].local_id
+            view.objects[UUID(int=next_id)] = _prim(
+                next_id, (rng.uniform(0.0, 256.0), rng.uniform(0.0, 256.0), 25.0),
+                parent_id=parent,
+            )
+            return next_id + 1
+        if choice == 1:
+            view.objects.pop(rng.choice(ids))
+            return next_id
+        if choice in (2, 3):
+            key = rng.choice(ids)
+            was = view.objects[key]
+            here = was.position or (rng.uniform(0.0, 256.0), 20.0, 25.0)
+            view.objects[key] = _prim(
+                was.local_id, (here[0] + rng.uniform(-1.0, 1.0), here[1], here[2]),
+                parent_id=was.parent_id, uid=key.int,
+            )
+            return next_id
+        if choice == 4:
+            key = rng.choice(ids)
+            was = view.objects[key]
+            others = [view.objects[k].local_id for k in ids if k != key]
+            parent = rng.choice(others) if others and rng.random() < 0.7 else 0
+            view.objects[key] = _prim(
+                was.local_id,
+                was.position or (rng.uniform(0.0, 256.0), 30.0, 25.0),
+                parent_id=parent, uid=key.int,
+            )
+            return next_id
+        if choice == 5:
+            local_id = 900 + rng.randrange(4)
+            view.terse_objects[local_id] = _terse(
+                local_id, (rng.uniform(0.0, 256.0), 10.0, 20.0),
+                is_avatar=rng.random() < 0.3,
+            )
+            return next_id
+        if view.terse_objects:
+            view.terse_objects.pop(rng.choice(list(view.terse_objects)))
+        return next_id
+
+    @staticmethod
+    def _drawn(scene):
+        def values(entities):
+            return {
+                key: (e.position, e.rotation, e.pcode, e.parent_id, e.region_handle)
+                for key, e in entities.items()
+            }
+
+        return values(scene.neighbour_object_entities), values(
+            scene.neighbour_avatar_entities
+        )
+
+    def test_a_carried_neighbour_agrees_with_a_fresh_scene_throughout(self) -> None:
+        import random
+
+        from vibestorm.viewer3d.scene import Scene
+
+        for seed in (1, 2, 3, 5, 8):
+            rng = random.Random(seed)
+            view = _view()
+            circuits = {NORTH_HANDLE: self._circuit(NORTH_HANDLE, view)}
+            session = self._session(circuits)
+            carried = Scene()
+            next_id = 1
+            for step in range(self.OPERATIONS):
+                next_id = self._step(rng, view, next_id)
+                carried.refresh_neighbours(session)
+                fresh = Scene()
+                fresh.refresh_neighbours(session)
+                if self._drawn(carried) != self._drawn(fresh):
+                    self.fail(
+                        f"seed {seed} diverged at step {step} "
+                        f"({len(view.objects)} objects, "
+                        f"{len(view.terse_objects)} terse)"
+                    )

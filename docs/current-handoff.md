@@ -323,6 +323,23 @@ the randomised harness cannot reach, because it does one per frame. That is
 worth keeping as a shape: a differential harness that steps one operation at a
 time can only find bugs that one operation causes.
 
+**A -- and every one of those savings, times the regions in view
+(2026-09-07).** `_refresh_neighbour_entities` handed `_build_entities` a cache
+and a placement map but never a *previous build*, so a region next door paid
+full price for every frame: no repeat frame, no patched transforms, no patched
+entities. A mainland avatar has regions on several sides. It carries the whole
+record per handle now -- which is also less bookkeeping than carrying two
+pieces of it, since the build holds its own cache and placement -- and still
+throws the lot away when the offset moves, which is what walking across a
+border does to every one of them.
+
+That makes the neighbour path exactly as capable of quietly keeping an answer
+that has stopped being true as the root region's, and it reaches that state
+through a different function: a different offset, a different cache, a
+different region handle stamped on every entity. So it has its own randomised
+differential now, at `RandomisedNeighbourAgreementTests`, and 300 seeds by 250
+random operations were run against it before the commit.
+
 **A -- the other fifteen-thousand-prim loop (2026-09-07).** Patching the
 transforms left the entity walk: for every prim in the region, two dictionary
 lookups and an identity check to conclude that the entity already in hand is

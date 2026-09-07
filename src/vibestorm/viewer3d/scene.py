@@ -553,12 +553,12 @@ class Scene:
     #: and it would select whatever prim holds that id underfoot.
     neighbour_object_entities: dict[tuple[int, int], SceneEntity] = field(default_factory=dict)
     neighbour_avatar_entities: dict[tuple[int, int], SceneEntity] = field(default_factory=dict)
-    #: One entity cache and one placement map per neighbouring region, kept
-    #: beside the offset they were built at. Per region because both are keyed
-    #: by local id, and thrown away when the offset moves -- which is what
-    #: walking across a region boundary does to every one of them.
+    #: Last frame's build per neighbouring region, kept beside the offset it
+    #: was built at. Per region because everything in it is keyed by local id,
+    #: and thrown away when the offset moves -- which is what walking across a
+    #: region boundary does to every one of them.
     _neighbour_caches: dict[
-        int, tuple[tuple[float, float], dict, dict]
+        int, tuple[tuple[float, float], object]
     ] = field(default_factory=dict, repr=False)
     sun_phase: float | None = None
     sun_direction: tuple[float, float, float] | None = None
@@ -1219,23 +1219,32 @@ class Scene:
         keyed by local id, which is per region, and the ``is`` fast path would
         hand a neighbour's entity back for a prim underfoot.
         """
-        fresh: dict[int, tuple[tuple[float, float], dict, dict]] = {}
+        fresh: dict[int, tuple[tuple[float, float], object]] = {}
         for handle, circuit in sorted(neighbours.items()):
             offset = circuit.offset_from(root)
             remembered = self._neighbour_caches.get(handle)
             if remembered is None or remembered[0] != offset:
-                cache: dict = {}
-                placement: dict = {}
+                previous = None
             else:
-                _, cache, placement = remembered
+                previous = remembered[1]
+            # `previous` and not just its cache: a region next door is the same
+            # shape of work as the one underfoot and was paying full price for
+            # every frame of it -- no repeat frame, no patched transforms, no
+            # patched entities -- times however many regions are in view. The
+            # build carries its own cache and placement, so handing the whole
+            # record back is also less bookkeeping than handing back two
+            # pieces of it.
             built = _build_entities(
                 getattr(circuit, "world_view", None),
-                cache=cache,
-                previous_placement=placement,
+                cache=previous.cache if previous is not None else {},  # type: ignore[union-attr]
+                previous_placement=(
+                    previous.placement if previous is not None else {}  # type: ignore[union-attr]
+                ),
+                previous=previous,  # type: ignore[arg-type]
                 offset=offset,
                 region_handle=handle,
             )
-            fresh[handle] = (offset, built.cache, built.placement)
+            fresh[handle] = (offset, built)
             for local_id, entity in built.objects.items():
                 self.neighbour_object_entities[(handle, local_id)] = entity
             for local_id, entity in built.avatars.items():
