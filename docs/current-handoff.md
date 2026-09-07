@@ -579,6 +579,24 @@ meshes at all: run 4 recorded `asset.mesh_attempted = 0` for two hours. Second
 Life is made of them, so this path has never run against real content and will
 run against nothing but, the moment **B** works.
 
+**And the two next to it, which are already sound.** Written down so the next
+sweep does not redo them. A *sculpt* map is sampled rather than read: at most
+`max_samples` indices are taken along each axis, defaulting to 32, so the
+vertex count is 1,024 whatever the map's size -- and the decoded pixels behind
+it are now bounded by the J2K budget above. And `parse_binary_llsd` takes a
+declared element count straight into `range(count)`, which is the shape of a
+hazard, but every path out of it reads and every read is bounds-checked: an
+array claiming 2,147,483,647 elements with no data behind it raises "LLSD
+value is truncated" in under a millisecond, and a negative count yields an
+empty list. The loop is bounded by the length of the data, which is bounded
+by the inflate above it.
+
+**The sweep, closed.** Prim transforms gated at three doors; labels capped at
+the wire's own limit; terrain and the chat ticker checked and left alone with
+the reasons pinned; J2K rasters bounded by header; mesh blocks bounded by
+inflate; sculpts and LLSD counts found already sound. `zlib`/`gzip` appear
+nowhere else in `src/`.
+
 **A -- the chat ticker, checked and left alone (2026-09-07).** The same
 sweep as the hover-text cap, one input over, and this one comes back
 negative. Chat arrives from other avatars and from scripts, so its length is
