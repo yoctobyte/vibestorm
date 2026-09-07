@@ -803,7 +803,12 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
     """
 
     def _run(
-        self, *, packets: int, seed_unacked: bool = False, run_for: float = 0.0
+        self,
+        *,
+        packets: int,
+        seed_unacked: bool = False,
+        seed_neighbour_unacked: bool = False,
+        run_for: float = 0.0,
     ) -> list[tuple[bytes, tuple[str, int]]]:
         from unittest.mock import patch
 
@@ -842,7 +847,7 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
                             now=loop.time(),
                             label="TestOutbound",
                         )
-                    client.current.neighbours[NORTH_HANDLE] = NeighbourCircuit(
+                    circuit = NeighbourCircuit(
                         handle=NORTH_HANDLE,
                         address=address,
                         agent_id=AGENT,
@@ -850,6 +855,12 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
                         circuit_code=0x12345678,
                         dispatcher=self.dispatcher,
                     )
+                    if seed_neighbour_unacked:
+                        # `start` builds `UseCircuitCode` and `AgentThrottle`
+                        # and records both as unacked. Nothing here sends them
+                        # -- the point is what happens to them afterwards.
+                        circuit.start()
+                    client.current.neighbours[NORTH_HANDLE] = circuit
                 if int(state["left"]) > 0:
                     # Back to back, with no idle moment between them: under the
                     # old wiring the receive timeout never fires and the batch
@@ -941,3 +952,41 @@ class ResendsGoOutFromTheLoopTests(AcksAreFlushedEveryPassTests):
         sent = self._run(packets=1, seed_unacked=True, run_for=0.6)
         to_sim = [data for data, _ in sent if split_packet(data).header.is_resent]
         self.assertEqual(to_sim, [], "a packet was resent before it was due")
+
+
+class ChildResendsGoOutFromTheLoopTests(AcksAreFlushedEveryPassTests):
+    """And the child circuit's resends need a call site too.
+
+    A `NeighbourCircuit` has no clock of its own, so its sweep is driven from
+    `_pump_neighbours` alongside the acks -- deliberately the same call, so
+    there is one place for both to fall out of rather than two. A mutant that
+    deleted the resend half of that call survived the first battery, because
+    everything testing the sweep tested the method. This is the test that was
+    missing.
+    """
+
+    def test_a_child_circuit_resends_what_was_never_acked(self) -> None:
+        from vibestorm.udp.packet import split_packet
+        from vibestorm.udp.zerocode import decode_zerocode
+
+        sent = self._run(packets=1, seed_neighbour_unacked=True, run_for=1.6)
+        resent = [
+            data
+            for data, addr in sent
+            if addr == ("127.0.0.1", 9001)
+            and split_packet(decode_zerocode(data)).header.is_resent
+        ]
+        self.assertTrue(resent, "the region next door was never told again")
+
+    def test_and_not_before_it_is_due(self) -> None:
+        from vibestorm.udp.packet import split_packet
+        from vibestorm.udp.zerocode import decode_zerocode
+
+        sent = self._run(packets=1, seed_neighbour_unacked=True, run_for=0.6)
+        resent = [
+            data
+            for data, addr in sent
+            if addr == ("127.0.0.1", 9001)
+            and split_packet(decode_zerocode(data)).header.is_resent
+        ]
+        self.assertEqual(resent, [], "a child packet was resent before it was due")

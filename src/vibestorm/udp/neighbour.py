@@ -80,10 +80,12 @@ from vibestorm.udp.messages import (
     encode_use_circuit_code,
     parse_layer_data,
     parse_object_update_cached,
+    parse_packet_ack,
     parse_region_handshake,
     parse_start_ping_check,
 )
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, PacketView, build_packet, split_packet
+from vibestorm.udp.reliable import PendingReliable, remember
 from vibestorm.udp.zerocode import decode_zerocode, encode_zerocode
 from vibestorm.world.models import WorldView
 from vibestorm.world.terrain import RegionHeightmap, TerrainDecodeError
@@ -164,6 +166,15 @@ class NeighbourCircuit:
     next_sequence: int = 1
     queued_acks: list[int] = field(default_factory=list)
 
+    #: The reliable packets this circuit has sent and not seen acked. A child
+    #: circuit sends three -- `UseCircuitCode`, `AgentThrottle` and a
+    #: `RegionHandshakeReply` per handshake -- and losing the first means the
+    #: region next door never opens at all, which shows up as a neighbour that
+    #: is simply missing.
+    pending_reliable: dict[int, PendingReliable] = field(default_factory=dict)
+    reliable_resends: int = 0
+    reliable_abandoned: int = 0
+
     def __post_init__(self) -> None:
         self.world_updater = WorldUpdater(self.world_view)
 
@@ -200,17 +211,24 @@ class NeighbourCircuit:
                     self.circuit_code, self.session_id, self.agent_id
                 ),
                 reliable=True,
+                label="UseCircuitCode",
             ),
             self._packet(
                 encode_agent_throttle(
                     self.agent_id, self.session_id, self.circuit_code
                 ),
                 reliable=True,
+                label="AgentThrottle",
             ),
         ]
 
     def _packet(
-        self, message: bytes, *, reliable: bool = False, zerocoded: bool = False
+        self,
+        message: bytes,
+        *,
+        reliable: bool = False,
+        zerocoded: bool = False,
+        label: str = "",
     ) -> bytes:
         sequence = self.next_sequence
         self.next_sequence += 1
@@ -219,7 +237,18 @@ class NeighbourCircuit:
             sequence=sequence,
             flags=LL_RELIABLE_FLAG if reliable else 0,
         )
-        return encode_zerocode(packet) if zerocoded else packet
+        if zerocoded:
+            packet = encode_zerocode(packet)
+        if reliable:
+            # No time to record: this circuit has no clock, and everything it
+            # does is driven by a packet arriving rather than by a tick. The
+            # sweep starts the clock the first time it sees one, which is what
+            # `PendingReliable.sent_at` being optional is for.
+            dropped = remember(
+                self.pending_reliable, sequence, label=label, packet=packet, now=None
+            )
+            self.reliable_abandoned += len(dropped)
+        return packet
 
     def drain_acks(self) -> list[bytes]:
         """Whatever acks are owed, as at most one packet."""
@@ -245,6 +274,15 @@ class NeighbourCircuit:
             self.received["<undecodable>"] += 1
             return []
 
+        # Acks reach this circuit two ways -- appended to the tail of any
+        # packet, or as a `PacketAck` message -- and until this it read
+        # neither. `PacketAck` was counted in `received` and thrown away, so
+        # every reliable packet this circuit sent stayed unacknowledged for
+        # ever as far as it knew, which is fine while nothing resends and
+        # becomes a burst of five the moment something does.
+        for ack in view.appended_acks:
+            self.pending_reliable.pop(ack, None)
+
         if view.header.is_reliable:
             self.queued_acks.append(view.header.sequence)
 
@@ -256,6 +294,13 @@ class NeighbourCircuit:
 
         name = dispatched.summary.name
         self.received[name] += 1
+        if name == "PacketAck":
+            try:
+                for ack in parse_packet_ack(dispatched).packets:
+                    self.pending_reliable.pop(ack, None)
+            except (MessageDecodeError, ValueError):
+                self.received["PacketAck:undecodable"] += 1
+            return self._acks_if_full()
         replies: list[bytes] = []
         try:
             if name == "RegionHandshake":
@@ -269,6 +314,26 @@ class NeighbourCircuit:
         except (MessageDecodeError, TerrainDecodeError, ValueError):
             self.received[f"{name}:undecodable"] += 1
         return replies + self._acks_if_full()
+
+    def drain_resends(self, now: float) -> list[bytes]:
+        """Reliable packets this circuit sent and never saw acked, sent again.
+
+        Same rules as the root circuit's, and the same reason: OpenSim resends
+        for ever and this side used to resend never. A lost `UseCircuitCode`
+        here does not degrade the neighbour, it means there is no neighbour --
+        the region next door simply never appears, and nothing says why.
+        """
+        packets: list[bytes] = []
+        for sequence, pending in list(self.pending_reliable.items()):
+            if not pending.due(now):
+                continue
+            if pending.spent:
+                del self.pending_reliable[sequence]
+                self.reliable_abandoned += 1
+                continue
+            packets.append(pending.going_again(now))
+            self.reliable_resends += 1
+        return packets
 
     def _acks_if_full(self) -> list[bytes]:
         return self.drain_acks() if len(self.queued_acks) >= ACK_BATCH else []
@@ -288,6 +353,7 @@ class NeighbourCircuit:
             encode_region_handshake_reply(self.agent_id, self.session_id, 0),
             reliable=True,
             zerocoded=True,
+            label="RegionHandshakeReply",
         )]
 
     def _on_layer_data(self, dispatched: object) -> None:
@@ -316,6 +382,7 @@ class NeighbourCircuit:
                 ),
                 reliable=True,
                 zerocoded=True,
+                label="RequestMultipleObjects",
             )
         ]
 

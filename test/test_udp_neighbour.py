@@ -27,6 +27,7 @@ from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import parse_packet_ack
 from vibestorm.udp.neighbour import ACK_BATCH, NeighbourCircuit
 from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
+from vibestorm.udp.reliable import PENDING_RELIABLE_LIMIT, RELIABLE_RESEND_AFTER_S
 from vibestorm.udp.zerocode import decode_zerocode
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -648,3 +649,153 @@ class AckingTests(NeighbourCircuitTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheChildCircuitResendsTooTests(NeighbourCircuitTestCase):
+    """A child circuit sent three reliable packets and forgot all of them.
+
+    `UseCircuitCode`, `AgentThrottle`, and a `RegionHandshakeReply` for every
+    handshake. Losing the first does not degrade the neighbour, it means there
+    is no neighbour -- the region next door never appears and nothing says
+    why, which is indistinguishable from a viewer that does not draw
+    neighbours at all.
+
+    It also read no acks. `PacketAck` was counted in `received` and thrown
+    away, and appended acks were never looked at, so as far as this circuit
+    knew nothing it sent had ever been acknowledged. Harmless while nothing
+    resends; a burst of five per packet the moment something does. The ack
+    handling and the resends had to arrive together.
+    """
+
+    def setUp(self) -> None:
+        self.child = self.circuit()
+
+    def test_what_it_sends_is_remembered(self) -> None:
+        self.child.start()
+        labels = {p.label for p in self.child.pending_reliable.values()}
+        self.assertEqual(labels, {"UseCircuitCode", "AgentThrottle"})
+
+    def test_an_unacked_one_goes_out_again(self) -> None:
+        self.child.start()
+        (first, *_) = sorted(self.child.pending_reliable)
+        self.assertEqual(self.child.drain_resends(100.0), [])
+        again = self.child.drain_resends(100.0 + RELIABLE_RESEND_AFTER_S)
+        self.assertEqual(len(again), 2)
+        sequences = [split_packet(decode_zerocode(p)).header.sequence for p in again]
+        self.assertIn(first, sequences)
+
+    def test_and_it_carries_the_resent_bit_and_its_own_sequence(self) -> None:
+        self.child.start()
+        before = sorted(self.child.pending_reliable)
+        self.child.drain_resends(100.0)
+        again = self.child.drain_resends(101.0)
+        self.assertEqual(
+            sorted(split_packet(decode_zerocode(p)).header.sequence for p in again),
+            before,
+        )
+        self.assertTrue(
+            all(split_packet(decode_zerocode(p)).header.is_resent for p in again)
+        )
+
+    def test_a_packet_ack_stops_it_being_resent(self) -> None:
+        # The message form. Until this it was counted and dropped.
+        self.child.start()
+        acked = sorted(self.child.pending_reliable)[0]
+        self.child.handle_incoming(
+            build_packet(
+                bytes([0xFF, 0xFF, 0xFF, 0xFB])
+                + bytes([1])
+                + acked.to_bytes(4, "little"),
+                sequence=500,
+            )
+        )
+        self.assertNotIn(acked, self.child.pending_reliable)
+
+    def test_an_appended_ack_stops_it_too(self) -> None:
+        # The other channel. Reading one of the two makes a circuit that is
+        # being acked perfectly look like one that is being ignored.
+        self.child.start()
+        acked = sorted(self.child.pending_reliable)[0]
+        self.child.handle_incoming(
+            build_packet(
+                bytes([0xFF, 0xFF, 0x00, 0x06]) + bytes([0, 0, 0xFF, 0xFF, 0xFF]),
+                sequence=501,
+                appended_acks=(acked,),
+            )
+        )
+        self.assertNotIn(acked, self.child.pending_reliable)
+
+    def test_an_ack_clears_the_one_it_names_and_no_others(self) -> None:
+        # The failure this guards is silent and total: a circuit that treats
+        # any ack as an ack for everything stops resending the packet that was
+        # actually lost, which is the one case the whole path exists for.
+        self.child.start()
+        acked, kept = sorted(self.child.pending_reliable)
+        self.child.handle_incoming(
+            build_packet(
+                bytes([0xFF, 0xFF, 0xFF, 0xFB])
+                + bytes([1])
+                + acked.to_bytes(4, "little"),
+                sequence=500,
+            )
+        )
+        self.assertNotIn(acked, self.child.pending_reliable)
+        self.assertIn(kept, self.child.pending_reliable)
+
+    def test_and_an_appended_ack_is_just_as_narrow(self) -> None:
+        self.child.start()
+        acked, kept = sorted(self.child.pending_reliable)
+        self.child.handle_incoming(
+            build_packet(
+                bytes([0xFF, 0xFF, 0x00, 0x06]) + bytes([0, 0, 0xFF, 0xFF, 0xFF]),
+                sequence=501,
+                appended_acks=(acked,),
+            )
+        )
+        self.assertNotIn(acked, self.child.pending_reliable)
+        self.assertIn(kept, self.child.pending_reliable)
+
+    def test_it_gives_up_rather_than_talking_to_a_wall(self) -> None:
+        self.child.start()
+        now = 100.0
+        for _ in range(30):
+            now += RELIABLE_RESEND_AFTER_S
+            self.child.drain_resends(now)
+        self.assertEqual(self.child.pending_reliable, {})
+        self.assertEqual(self.child.reliable_abandoned, 2)
+
+    def test_the_unacked_packets_are_bounded(self) -> None:
+        for _ in range(PENDING_RELIABLE_LIMIT * 3):
+            self.child._packet(b"\x02\x10", reliable=True, label="Filler")
+            self.assertLessEqual(
+                len(self.child.pending_reliable), PENDING_RELIABLE_LIMIT
+            )
+
+    def test_making_room_drops_the_oldest_rather_than_the_newest(self) -> None:
+        # Which way round matters. Dropping what was just sent means the
+        # newest packet -- the one still most likely to be in flight and worth
+        # retrying -- is the one that never gets a second chance, while stale
+        # ones nobody is waiting on any more keep their place.
+        for _ in range(PENDING_RELIABLE_LIMIT):
+            self.child._packet(b"\x02\x10", reliable=True, label="Filler")
+        oldest = next(iter(self.child.pending_reliable))
+        newest_before = max(self.child.pending_reliable)
+
+        self.child._packet(b"\x02\x10", reliable=True, label="TheNewOne")
+        self.assertNotIn(oldest, self.child.pending_reliable)
+        self.assertIn(newest_before, self.child.pending_reliable)
+        self.assertEqual(
+            self.child.pending_reliable[max(self.child.pending_reliable)].label,
+            "TheNewOne",
+        )
+
+    def test_an_unreliable_packet_is_not_remembered(self) -> None:
+        self.child._packet(b"\x02\x10", reliable=False, label="Filler")
+        self.assertEqual(self.child.pending_reliable, {})
+
+    def test_the_acks_it_sends_are_not_themselves_remembered(self) -> None:
+        # `drain_acks` builds an unreliable packet, and an ack that expected an
+        # ack would never stop.
+        self.child.queued_acks = [1, 2, 3]
+        self.child.drain_acks()
+        self.assertEqual(self.child.pending_reliable, {})

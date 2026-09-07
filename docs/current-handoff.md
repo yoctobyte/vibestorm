@@ -171,6 +171,48 @@ gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
 
+**A -- and the region next door had the same hole, plus one of its own
+(2026-09-07).** `NeighbourCircuit` sends three kinds of reliable packet --
+`UseCircuitCode`, `AgentThrottle`, and a `RegionHandshakeReply` for every
+handshake -- and forgot all of them the same way the root circuit did. Losing
+the first does not degrade the neighbour: it means there *is* no neighbour.
+The region next door simply never appears, which from the outside is
+indistinguishable from a viewer that does not draw neighbours at all.
+
+It also read no acks whatsoever. `PacketAck` was counted in `received` and
+thrown away; appended acks were never looked at. Harmless while nothing
+resends -- and a burst of five per packet the moment something does. So the
+ack handling and the resends had to land together, and they did.
+
+`vibestorm/udp/reliable.py` now holds what both circuits need: the record,
+the timings, the bound, and `marked_resent`. The two differ only in their
+clock -- the root circuit has `now` passed into nearly everything, a child
+circuit has none and is driven entirely by packets arriving -- so the child's
+sweep gets its `now` from `_pump_neighbours`, on the same call as the acks.
+Deliberately the same call: one place for both to fall out of instead of two.
+
+**Which is exactly what the battery caught, on the line where that comment
+is.** A mutant that deleted the resend half of the pump survived: every test
+of the sweep tested the *method*, and the method was fine. That is the third
+time in one day the same shape has appeared -- `_pump_neighbours` itself, then
+`drain_resends`, now the child's -- and the rule it keeps writing is worth
+stating plainly: **a correct function reached from nowhere passes every test
+of the function.** The loop-driven tests are cheap and they are the only ones
+that catch it.
+
+Twenty planted over the child circuit and the shared record, seventeen killed
+first time. The three survivors were all real:
+
+- an ack that cleared *everything* rather than the one sequence it names --
+  silent and total, since it stops resending the packet that was actually
+  lost, which is the only case the path exists for;
+- dropping the newest rather than the oldest when the bound is reached, so
+  the packet most likely still in flight is the one that never gets a second
+  chance;
+- and the missing call site above.
+
+Twenty of twenty now.
+
 **A -- this client had never resent a packet in its life (2026-09-07).** The
 same soak that found the unbounded set left six entries in
 `udp.pending_reliable` at the end of two hours: six reliable packets sent,
@@ -237,10 +279,9 @@ fifteen now.
 Still open, and the reason `udp.reliable_resends` and
 `udp.reliable_abandoned` are on the soak report from here: a resend is not a
 failure on its own, but a session that resends steadily is one whose acks are
-not arriving, and nothing else on that report would say so. The neighbour
-circuits do not resend either -- they send `UseCircuitCode`, `AgentThrottle`
-and `RegionHandshakeReply` reliably and forget them the same way. Same fix,
-different class, not done here.
+not arriving, and nothing else on that report would say so. (The neighbour
+circuits had the same hole, and it is closed too -- see the entry above,
+which also cost them an ack path they had never had.)
 
 **A fix that was designed, then talked out of on the strength of two
 constants, and then put back by one measurement (2026-09-07).**

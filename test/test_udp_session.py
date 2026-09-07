@@ -21,10 +21,12 @@ from vibestorm.udp.packet import (
     split_packet,
 )
 from vibestorm.udp.recent import RecentSequences
-from vibestorm.udp.session import (
+from vibestorm.udp.reliable import (
     PENDING_RELIABLE_LIMIT,
     RELIABLE_RESEND_AFTER_S,
     RELIABLE_RESEND_ATTEMPTS,
+)
+from vibestorm.udp.session import (
     LiveCircuitSession,
     SessionConfig,
     SessionEvent,
