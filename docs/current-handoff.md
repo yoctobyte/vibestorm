@@ -4371,6 +4371,52 @@ first -- edit the row while it is running and the shutdown writes it back.
 it spins on `Console.KeyAvailable` and writes a gigabyte of the same error a
 minute.
 
+## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
+
+The two below are about test *data*. This one is about test *reach*, it cost a
+real bug, and it is the one most likely to happen again, because every
+individual test involved is a good test.
+
+The gesture round trip's mutation battery ran eighteen mutants and eight
+survived. All eight were one thing: every test drove a piece --
+`_encode_for_upload`, `upload_task_gesture`, `create_task_texture`,
+`create_task_script_rows` -- and **nothing drove the loop that decides which
+piece runs**. So a gesture could be routed to the notecard capability, fall
+through to the notecard uploader, or have its validation error swallowed
+entirely, with every one of those tests green.
+
+The suspicion that followed was worth more than the fix: the two types built
+earlier had been built by the same hand, and nothing about them was different.
+The same battery pointed at notecards and textures returned **eleven survivors
+of twelve**. Notecards could go out through the script capability. Either
+create flag could stop reaching the planner. Either capability could stop
+being resolved. None of it subtle; all of it in the one place nothing looked.
+
+**And one of the eleven was live.** `_plan_textures` matched an image against
+the object by name only. The simulator renames a copy whose name collides --
+`sunset` arrives as `sunset 1` -- so after the first push the row is not
+called what the file is called and never will be. The name check said "not
+there" and uploaded it again: `sunset 2` next push, `sunset 3` after that,
+without limit. The rest of this client stopped using names as the primary key
+when that same rename was found live, and this section's own D entry says so;
+the texture path was added afterwards and never got it.
+
+The live verification tool did not catch it because it exercised the case
+where nothing collided, which is the case where names work. It now plants a
+notecard of the same name first, so the object has to rename the copy, and
+counts rows after three pushes.
+
+`test/test_sync_wiring.py` is the standing answer and states the rule in its
+docstring: **a type is not wired up until a test drives
+`push_folder_to_object` and observes which capability the bytes went to.** Add
+the fourth asset type and that file is where its two tests go.
+
+The general form, which is not specific to sync: when a feature is *dispatch* --
+a table, a chain of `elif`, a set of capability urls -- the piece tests and the
+dispatch tests are different tests, and having a lot of the first says nothing
+about the second. A quick way to find out which you have: mutate the dispatch,
+not the piece.
+
 ## Two Ways A Test Can Agree With A Bug
 
 Both of these happened on 2026-09-02, hours apart, and they are the same
