@@ -25,7 +25,18 @@ from vibestorm.udp.messages import (
     parse_simulator_viewer_time,
 )
 from vibestorm.udp.template import MessageDispatch
-from vibestorm.world.models import WorldView
+from vibestorm.world.models import WorldView, time_dilation_ratio
+
+
+def _dilation(raw: int) -> str:
+    """The wire value and what it means: ``64512 (0.98)``.
+
+    `TimeDilation` is a 0-to-1 float packed into a U16, so the raw number on
+    its own reads as an error code rather than as "this region is keeping up".
+    Both, because a capture is compared against the wire value and a reader is
+    not.
+    """
+    return f"{raw} ({time_dilation_ratio(raw):.2f})"
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,7 +115,8 @@ class WorldUpdater:
                     kind="world.object_update_partial",
                     detail=(
                         f"region_handle={summary.region_handle} "
-                        f"objects={summary.object_count} dilation={summary.time_dilation} "
+                        f"objects={summary.object_count} "
+                        f"dilation={_dilation(summary.time_dilation)} "
                         f"reason={exc}"
                     ),
                 )
@@ -128,7 +140,8 @@ class WorldUpdater:
             ]
             detail = (
                 f"region_handle={object_update.region_handle} "
-                f"objects={len(object_update.objects)} dilation={object_update.time_dilation}"
+                f"objects={len(object_update.objects)} "
+                f"dilation={_dilation(object_update.time_dilation)}"
             )
             if interest_details:
                 detail += " " + " ; ".join(interest_details)
@@ -153,7 +166,7 @@ class WorldUpdater:
                 kind="world.improved_terse_object_update",
                 detail=(
                     f"region_handle={terse.region_handle} "
-                    f"objects={len(terse.objects)} dilation={terse.time_dilation} "
+                    f"objects={len(terse.objects)} dilation={_dilation(terse.time_dilation)} "
                     f"rich_entries={rich_entries}"
                     + (f" local_ids={','.join(local_ids)}" if local_ids else "")
                 ),
@@ -174,7 +187,7 @@ class WorldUpdater:
                 kind="world.object_update_cached",
                 detail=(
                     f"region_handle={cached.region_handle} "
-                    f"objects={len(cached.objects)} dilation={cached.time_dilation}"
+                    f"objects={len(cached.objects)} dilation={_dilation(cached.time_dilation)}"
                     + (f" local_ids={','.join(local_ids)}" if local_ids else "")
                 ),
             )
@@ -204,7 +217,7 @@ class WorldUpdater:
                 detail=(
                     f"region_handle={compressed.region_handle} "
                     f"objects={len(compressed.objects)} decoded={len(entries)} "
-                    f"dilation={compressed.time_dilation}"
+                    f"dilation={_dilation(compressed.time_dilation)}"
                 ),
             )
 

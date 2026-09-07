@@ -102,6 +102,15 @@ COARSE_HEIGHT_STEP_M = 4.0
 #: possibilities, and nothing in the message separates them.
 COARSE_HEIGHT_UNKNOWN = 0
 
+#: What a `TimeDilation` of this means: no lag at all.
+#:
+#: The field is a U16 in every object-update header, and it is a 0-to-1 float
+#: packed into one -- OpenSim writes `Utils.FloatZeroOneToushort(TimeDilation)`,
+#: pinned in `test_opensim_source_pins.py`. So a header saying 64512 is a
+#: region running at 0.98 of real time, and a log that prints 64512 is a log
+#: that reads as an error code.
+TIME_DILATION_FULL = 0xFFFF
+
 
 @dataclass(slots=True, frozen=True)
 class CoarseAgentLocation:
@@ -634,3 +643,19 @@ def self_avatar_position(world_view: object) -> tuple[float, float, float] | Non
         if getattr(terse, "is_avatar", False):
             return getattr(terse, "position", None)
     return None
+
+
+def time_dilation_ratio(raw: int) -> float:
+    """An object-update header's `TimeDilation`, as the 0-to-1 number it is.
+
+    1.0 is a region keeping up; anything less is one falling behind, and it is
+    the first number to look at when the world moves in treacle.
+
+    The decoders keep the wire value, because that is what arrived and a
+    decode that quietly rescales is one nobody can check against a capture.
+    This is the reading of it, and it is used for display only -- the exact
+    denominator (`0xFFFF`, the usual convention for a zero-to-one packing) is
+    not in the committed OpenSim source, only the call that does the packing,
+    so a difference of one part in 65,535 is not a claim worth making.
+    """
+    return max(0.0, min(1.0, raw / TIME_DILATION_FULL))

@@ -410,3 +410,40 @@ class CoarseLocationHeightTests(unittest.TestCase):
             r"\s*data\[pos\+\+\] = \(byte\)CoarseLocations\[i\]\.Y;",
             "SendCoarseLocationUpdate no longer sends X and Y as plain metres",
         )
+
+
+class TimeDilationTests(unittest.TestCase):
+    """Why `dilation=64512` is a region running at 0.98 of real time.
+
+    The field is a U16 in every object-update header. Nothing on the wire says
+    it is a fraction; these are the lines that do.
+
+    What is *not* pinned is the conversion itself: `Utils` belongs to
+    libopenmetaverse and is not in this copy, so the exact denominator is a
+    convention rather than something read. The client only uses the ratio to
+    print, where one part in 65,535 cannot matter.
+    """
+
+    def setUp(self) -> None:
+        self.client = _source("UDP", "LLClientView.cs")
+
+    def test_the_header_field_is_a_zero_to_one_float_in_a_ushort(self) -> None:
+        if self.client is None:
+            self.skipTest("referencedocs/UDP/LLClientView.cs not present")
+        self.assertIn(
+            "Utils.FloatZeroOneToushort(m_scene.TimeDilation)",
+            self.client,
+            "the object-update header no longer packs TimeDilation as a zero-to-one ushort",
+        )
+
+    def test_and_the_other_sender_says_the_range_out_loud(self) -> None:
+        # The same value, packed by a function that names its bounds. Two
+        # senders agreeing is what makes the range a fact rather than a guess
+        # about what a helper called `FloatZeroOneToushort` does.
+        if self.client is None:
+            self.skipTest("referencedocs/UDP/LLClientView.cs not present")
+        self.assertIn(
+            "Utils.FloatToUInt16(m_scene.TimeDilation, 0.0f, 1.0f)",
+            self.client,
+            "no sender states TimeDilation's 0..1 range explicitly any more",
+        )

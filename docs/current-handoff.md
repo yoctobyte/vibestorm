@@ -396,6 +396,42 @@ one line that computes it from a message had no test at all, and a live
 screenshot found in one glance what 2,430 tests could not. The new tests feed
 the view instead of the scene.
 
+**A -- the same defect one field over, and an instrument so it is the last
+one found by squinting (2026-09-07).** `TimeDilation` is a U16 in every
+object-update header and it is a 0-to-1 float packed into one -- OpenSim
+writes `Utils.FloatZeroOneToushort(m_scene.TimeDilation)`, and a second sender
+spells the range out as `FloatToUInt16(..., 0.0f, 1.0f)`, which is what makes
+the range a fact rather than a guess about what a helper's name means. Five
+session-log lines printed the raw number, so a region running at 0.98 of real
+time logged as `dilation=64512`, which reads as an error code. They print
+`64512 (0.98)` now. The decoders still keep the wire value: it is what
+arrived, and a capture is compared against it.
+
+That is log-only and would not be worth an entry on its own. What is worth one
+is that it is the *third* instance of one shape of mistake -- a wire integer
+shown in a place where a reader will take it for a value -- and the first two
+were found by reading a screenshot. So `tools/verify_hud_readouts.py` makes
+the reading repeatable: it logs in, waits for the region to settle, builds a
+scene the way the viewer does, and then computes each claim again from the
+`WorldView` by a different route and compares.
+
+* **Where we are** -- against our own `ObjectUpdate`, skipped while seated
+  because the seat's frame is not the region's.
+* **The region and its sea** -- name and water height against the handshake,
+  and the under/above verdict recomputed.
+* **What got drawn** -- the scene's entity count against a count made without
+  the scene: roots directly, and a child only where every parent above it
+  arrived. Drawing fewer than that is a prim that lost its place; drawing more
+  than the simulator says the region holds is worse, and is a failure on its
+  own.
+* **Avatars** -- against pcode 47 in the view, with the coarse blip count
+  beside it.
+
+It rezzes nothing, opens no window, and can be run against any region the
+agent can reach. It is not a substitute for looking: it checks the claims the
+viewer makes, not the picture. But a claim it checks cannot go wrong quietly
+again.
+
 **A -- a region that is not still is still mostly still (2026-09-07).** The
 repeat frame above catches the case where *nothing* moved. On a live mainland
 region something always has: "not a repeat" means a few dozen prims out of

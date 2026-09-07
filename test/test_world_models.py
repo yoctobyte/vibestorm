@@ -13,8 +13,10 @@ from vibestorm.udp.messages import (
 from vibestorm.world.models import (
     COARSE_HEIGHT_STEP_M,
     CoarseAgentLocation,
+    TIME_DILATION_FULL,
     WorldView,
     self_avatar_position,
+    time_dilation_ratio,
 )
 
 
@@ -245,3 +247,31 @@ class SelfAvatarPositionTests(unittest.TestCase):
 
     def test_an_empty_view_says_it_does_not_know(self) -> None:
         self.assertIsNone(self_avatar_position(_Stub()))
+
+
+class TimeDilationTests(unittest.TestCase):
+    """A U16 that is a fraction, and reads as an error code until it is read.
+
+    Every object-update header carries one. OpenSim packs it with
+    `Utils.FloatZeroOneToushort`, pinned in `test_opensim_source_pins.py`, so
+    the wire value is a 0-to-1 float scaled up -- and a session log saying
+    `dilation=64512` says nothing to anybody.
+
+    The decoders keep the wire value on purpose: it is what arrived, and a
+    capture is compared against it. This is the reading, and it is for display.
+    """
+
+    def test_a_full_scale_value_is_a_region_keeping_up(self) -> None:
+        self.assertEqual(time_dilation_ratio(TIME_DILATION_FULL), 1.0)
+
+    def test_a_zero_is_a_region_stopped(self) -> None:
+        self.assertEqual(time_dilation_ratio(0), 0.0)
+
+    def test_the_number_that_reads_as_an_error_code_is_a_fraction(self) -> None:
+        self.assertAlmostEqual(time_dilation_ratio(64512), 0.984, places=3)
+
+    def test_it_stays_a_fraction_whatever_arrives(self) -> None:
+        # A malformed header must not produce a dilation of 1.4 in a log, and
+        # must not raise on the way to one.
+        self.assertEqual(time_dilation_ratio(70000), 1.0)
+        self.assertEqual(time_dilation_ratio(-5), 0.0)
