@@ -490,6 +490,57 @@ one layer up: a reader consults the comment to interpret the row and concludes
 leak. Corrected, and the bound it now claims was already pinned by two tests
 in `test_udp_recent_sequences.py`.
 
+**A -- a texture states its own size, and the decoder believed it
+(2026-09-07).** The hostile-input sweep again, on the last unbounded path
+from the wire into memory. This one comes back positive, and one half of it
+was a live crash path rather than a cost.
+
+`decode_j2k` opened the bytes and called `load()`. `Image.open` reads the
+header and stops, so the size is known for free -- and `load()` then allocates
+`width x height x bands` of whatever that header claimed. A header is cheap to
+write: patch a four-by-four image's `ihdr` box and SIZ marker to say
+8192x8192 and Pillow reports 8192x8192, which at four bytes a pixel is 268 MB
+asked for by four pixels of actual content. The viewer's own
+`MAX_OBJECT_TEXTURE_EDGE` shrinks what it draws to 512, but afterwards, which
+is the wrong side of the allocation.
+
+**The half that was a crash.** Above `Image.MAX_IMAGE_PIXELS` Pillow raises
+`DecompressionBombError` from inside `open` itself. That class subclasses
+`Exception` directly and **not** `OSError`, so `decode_j2k`'s handler never
+saw it and it left the function as itself -- past a docstring promising
+`J2KDecodeError`. Both callers in `session.py` catch `J2KDecodeError` and
+nothing else, so a 30,000-square header went straight into the session's task.
+Demonstrated, not reasoned about: the forged header is in the tests.
+
+**And the half that is not demonstrated, said plainly.** A raster *under*
+Pillow's limit decodes silently, and 89 megapixels is 358 MB. Building a real
+codestream that large to prove it would mean allocating it here, so it is not
+claimed as reproduced -- the forged headers fail as broken streams, because
+four pixels do not make an 8192-square image. What is established is that the
+size is believed and the allocation follows it.
+
+**The fix is a budget this project owns.** `MAX_TEXTURE_EDGE = 4096`, checked
+against `image.width * image.height` after `open` and before `load()`, where
+it costs nothing. Sixteen times the area of the largest texture either grid
+accepts (1024x1024) and two hundred and fifty times a map tile, so nothing
+legitimate is near it -- a guard that fires on ordinary content gets raised
+until it fires on nothing.
+
+Deliberately **not** left to Pillow's own guard, for two reasons that are
+tested rather than asserted. `Image.MAX_IMAGE_PIXELS` is a mutable module
+global this application never sets, so its value is whatever the installed
+version defaults to and whatever any other import has since done to it; one
+test sets it to `None` and finds the answer unchanged. And between one and
+two times that limit Pillow only *warns* -- so on the version measured
+(89,478,485) a raster of 89 to 179 megapixels decodes with a warning and
+716 MB behind it.
+
+Ten mutants, ten killed -- but the first run left one alive and it is the
+useful one. A square fixture cannot fix a pixel budget: 4097x4096 is four
+thousand pixels past the limit, so `> MAX_TEXTURE_PIXELS + 1` passed it and
+nothing else in the file noticed. The constant counts pixels, so the boundary
+test now does too -- one pixel either side, on a raster one pixel tall.
+
 **A -- the chat ticker, checked and left alone (2026-09-07).** The same
 sweep as the hover-text cap, one input over, and this one comes back
 negative. Chat arrives from other avatars and from scripts, so its length is
