@@ -186,7 +186,7 @@ class RegionOfRootsTests(unittest.TestCase):
 
         placed = _region_frame_transforms(
             world.objects, world.terse_objects, cache={}, previous={}
-        )
+        ).placed
 
         self.assertEqual(placed, {})
 
@@ -200,7 +200,7 @@ class RegionOfRootsTests(unittest.TestCase):
 
         placed = _region_frame_transforms(
             world.objects, world.terse_objects, cache={}, previous={}
-        )
+        ).placed
 
         self.assertIn(2, placed)
         self.assertAlmostEqual(placed[2][0][0], 12.0)

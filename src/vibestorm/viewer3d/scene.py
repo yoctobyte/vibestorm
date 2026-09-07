@@ -16,7 +16,7 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NamedTuple
 from uuid import UUID
 
 from vibestorm.viewer3d.atmosphere import (
@@ -1381,6 +1381,21 @@ class _BuiltEntities:
     #: the ones -- `_nothing_moved` needs both halves of the world to say the
     #: frame is a repeat.
     terse: dict[int, object]
+    #: Every prim's own transform in the region's frame, and the instance each
+    #: one was read off. Carried so the next frame can patch what moved
+    #: instead of rebuilding all of it: measured at 6.77 ms per 15,000 prims
+    #: to build against 0.06 ms to patch the 150 that moved.
+    transforms: dict[int, tuple[int, object, object]] = field(default_factory=dict)
+    sources: dict[int, object] = field(default_factory=dict)
+    #: Which ids in `transforms` came from a terse update. A full update takes
+    #: the entry off a terse one for the same id, and this is what says an
+    #: entry is still the terse one's to overwrite -- `objects` is keyed by
+    #: full id, so it cannot be asked whether a local id is in it.
+    terse_only: set[int] = field(default_factory=set)
+    #: How many entries in `transforms` have a parent. Kept as a count rather
+    #: than a flag so patching can maintain it exactly -- unparenting the last
+    #: linked prim in the region has to be able to turn the composing back off.
+    parented: int = 0
 
 
 def _build_entities(
@@ -1422,9 +1437,24 @@ def _build_entities(
     shifted = bool(offset_x or offset_y)
     # Empty unless something in view has a parent, so a region of
     # unlinked prims never pays for this.
-    placed = _region_frame_transforms(
-        objects, terse_objects, cache=cache, previous=previous_placement
-    )
+    #
+    # Two ways in. The frame is not a repeat, but "not a repeat" on a live
+    # region means a few dozen prims moved out of fifteen thousand, and
+    # rebuilding every prim's own transform to change fifty of them is 6.77 ms
+    # a frame of arriving back where it started. `_changed_transform_sources`
+    # names the ones that moved for the price of the scan that already had to
+    # happen; when it can account for every prim it did *not* name, last
+    # frame's transforms are patched instead of rebuilt.
+    frame = None
+    if previous is not None:
+        frame = _patched_region_frame(
+            objects, terse_objects, previous, previous_placement
+        )
+    if frame is None:
+        frame = _region_frame_transforms(
+            objects, terse_objects, cache=cache, previous=previous_placement
+        )
+    placed = frame.placed
 
     # Full ObjectUpdate-derived objects (have rich data).
     #
@@ -1567,6 +1597,10 @@ def _build_entities(
         cache=fresh_cache,
         placement=placed,
         terse=dict(terse_objects),
+        transforms=frame.transforms,
+        sources=frame.sources,
+        terse_only=frame.terse_only,
+        parented=frame.parented,
     )
 
 
@@ -1591,6 +1625,16 @@ def _nothing_moved(objects: dict, terse_objects: dict, previous: _BuiltEntities)
     cache = previous.cache
     if len(cache) != len(objects):
         return False
+    # The counts above are the entity cache's, and the entity cache cannot see
+    # a prim it never built an entity for -- a child whose parent has not
+    # arrived. Remove that orphan and the two lengths agree again while the
+    # region has in fact changed, which is a frame called a repeat that is not
+    # one. Every prim on this path is positioned and cached (an unpositioned or
+    # orphaned one has no cache entry, and the length check above would have
+    # caught it), so what `transforms` should hold is exactly the objects plus
+    # the terse-only ids -- and if it holds more, something left the region.
+    if len(previous.sources) != len(objects) + len(previous.terse_only):
+        return False
     cache_get = cache.get
     for obj in objects.values():
         was = cache_get(obj.local_id)
@@ -1606,13 +1650,27 @@ def _nothing_moved(objects: dict, terse_objects: dict, previous: _BuiltEntities)
     return True
 
 
+class _RegionFrame(NamedTuple):
+    """One frame's answer to "where is everything, in the region's frame?"
+
+    `placed` is what the entity build reads. The other three are what the
+    *next* frame reads, to patch this answer rather than recompute it.
+    """
+
+    placed: dict[int, tuple[tuple[float, float, float], tuple[float, float, float, float]]]
+    transforms: dict[int, tuple[int, object, object]]
+    sources: dict[int, object]
+    terse_only: set[int]
+    parented: int
+
+
 def _region_frame_transforms(
     objects: dict,
     terse_objects: dict,
     *,
     cache: dict,
     previous: dict,
-) -> dict[int, tuple[tuple[float, float, float], tuple[float, float, float, float]]]:
+) -> _RegionFrame:
     """Where everything parented actually is, in the region's frame.
 
     A prim with a parent reports where it is *relative to that parent* --
@@ -1620,14 +1678,16 @@ def _region_frame_transforms(
     every child of every linkset, and every attachment on every avatar, is
     drawn a few metres from the region corner.
 
-    Returns ``{}`` when nothing in view has a parent, which is the whole of a
-    region of unlinked prims and the whole of the local test region. The
+    ``placed`` is ``{}`` when nothing in view has a parent, which is the whole
+    of a region of unlinked prims and the whole of the local test region. The
     caller only looks anything up for a parented object, so an empty result
     and a region with no parents are the same thing.
 
     Terse-only objects are included as roots: ``ImprovedTerseObjectUpdate``
     carries no parent id, and a linkset root seen only tersely is still the
-    frame its children hang off.
+    frame its children hang off. They go in whether or not anything is
+    parented, so that what is handed to the next frame is the whole region
+    either way -- a linkset arriving must not find half a map waiting for it.
 
     ``cache`` is the caller's entity cache from last frame and ``previous`` the
     answer this gave then. Between them they say which prims are still the
@@ -1635,9 +1695,11 @@ def _region_frame_transforms(
     keeps the exact transform tuples it had, which is what lets the caller
     recognise its children as unchanged in turn.
     """
-    transforms: dict[int, tuple[int, tuple[float, float, float], object]] = {}
+    transforms: dict[int, tuple[int, object, object]] = {}
+    sources: dict[int, object] = {}
+    terse_only: set[int] = set()
     unchanged: set[int] = set()
-    parented = False
+    parented = 0
     # Straight attribute access, not `getattr(obj, "position", None)`. This
     # loop is the one thing in a frame that runs for *every* prim in view
     # whether or not anything moved, and the defensive form costs three times
@@ -1655,25 +1717,152 @@ def _region_frame_transforms(
         local_id = obj.local_id
         parent_id = obj.parent_id
         if parent_id:
-            parented = True
+            parented += 1
         transforms[local_id] = (parent_id, position, obj.rotation)
+        sources[local_id] = obj
         was = cache_get(local_id)
         if was is not None and was[0] is obj:
             unchanged_add(local_id)
-    if not parented:
-        # Nothing to compose, and the resolve would walk every prim in the
-        # region to say so.
-        return {}
     for terse in terse_objects.values():
-        if terse.local_id in transforms:
+        local_id = terse.local_id
+        if local_id in transforms:
             continue
         # No entry in the entity cache to compare against, so a terse-only
         # root always counts as moved. It is a prim whose full update has not
         # arrived; there is rarely anything hanging off one.
-        transforms[terse.local_id] = (0, terse.position, terse.rotation)
-    return resolve_world_transforms(  # type: ignore[arg-type]
-        transforms, unchanged=unchanged, previous=previous
+        transforms[local_id] = (0, terse.position, terse.rotation)
+        sources[local_id] = terse
+        terse_only.add(local_id)
+    placed = (
+        resolve_world_transforms(  # type: ignore[arg-type]
+            transforms, unchanged=unchanged, previous=previous
+        )
+        if parented
+        # Nothing to compose, and the resolve would walk every prim in the
+        # region to say so.
+        else {}
     )
+    return _RegionFrame(placed, transforms, sources, terse_only, parented)
+
+
+def _patched_region_frame(
+    objects: dict,
+    terse_objects: dict,
+    previous: _BuiltEntities,
+    previous_placement: dict,
+) -> _RegionFrame | None:
+    """Last frame's transforms with only what moved written over.
+
+    Returns ``None`` when last frame's answer cannot be patched into this one
+    and has to be rebuilt from scratch.
+
+    The frame is not a repeat, but "not a repeat" on a live region means a few
+    dozen prims moved out of fifteen thousand, and rebuilding every prim's own
+    transform to change fifty of them is 6.77 ms a frame of arriving back
+    where it started. The scan that finds the fifty costs exactly what the
+    repeat check costs -- 2.32 ms either way, measured, because bailing early
+    and collecting as it goes are the same walk -- so the patch is very nearly
+    free once the frame has been shown not to be a repeat.
+
+    What it must not do is patch through a *removal*. An id that has gone is
+    still sitting in last frame's transforms and nothing here would ever visit
+    it, so it would go on composing its children forever. It is caught by
+    arithmetic rather than by a second walk over the whole region: every prim
+    that should have an entry is either one this found in last frame's sources
+    or one it did not, so
+
+        len(previous.sources) + added == live
+
+    exactly when nothing was dropped. An add and a remove in the same frame do
+    not cancel, because the added one is counted on the left as well.
+
+    A prim whose position is ``None`` has no entry -- `_region_frame_transforms`
+    skips it -- so it reads as added on every frame it is in view, which is
+    what keeps the arithmetic balanced for it. Nothing is written for it.
+
+    Copied rather than edited in place. `_BuiltEntities` is a record of one
+    frame -- the repeat path hands the very same one back -- and a frame that
+    reaches into the previous frame's dictionaries has made the record of what
+    was drawn a lie. The copy is 0.2 ms per 15,000 prims against the 6.77 ms
+    it stands in for, and the decline path throws it away.
+    """
+    old_get = previous.sources.get
+    transforms = dict(previous.transforms)
+    sources = dict(previous.sources)
+    terse_only = set(previous.terse_only)
+    parented = previous.parented
+    changed_ids: set[int] = set()
+    added = 0
+    live = 0
+    for obj in objects.values():
+        local_id = obj.local_id
+        position = obj.position
+        if position is None:
+            # It has no entry of its own and never counts as one, exactly as
+            # the full build skips it. If it *had* one it has to go -- but
+            # only if the entry is still its own: a terse update for the same
+            # local id owns that entry, and deleting it here would both drop a
+            # prim and, because the terse loop puts it straight back, count it
+            # twice. That miscount is what let a removal elsewhere in the
+            # region patch straight through: the two cancelled.
+            if local_id not in terse_only:
+                entry = transforms.pop(local_id, None)
+                if entry is not None:
+                    del sources[local_id]
+                    if entry[0]:
+                        parented -= 1
+            continue
+        live += 1
+        was = old_get(local_id)
+        if was is obj:
+            continue
+        if was is None:
+            added += 1
+        changed_ids.add(local_id)
+        entry = transforms.get(local_id)
+        if entry is not None and entry[0]:
+            parented -= 1
+        parent_id = obj.parent_id
+        if parent_id:
+            parented += 1
+        transforms[local_id] = (parent_id, position, obj.rotation)
+        sources[local_id] = obj
+        terse_only.discard(local_id)
+    for terse in terse_objects.values():
+        local_id = terse.local_id
+        current = sources.get(local_id)
+        if current is not None and local_id not in terse_only:
+            # A full update owns this id, exactly as `_region_frame_transforms`
+            # gives the full object the entry. Counting it here as well would
+            # say the region had grown by one.
+            continue
+        live += 1
+        if current is terse:
+            continue
+        if old_get(local_id) is None:
+            added += 1
+        changed_ids.add(local_id)
+        entry = transforms.get(local_id)
+        if entry is not None and entry[0]:
+            parented -= 1
+        transforms[local_id] = (0, terse.position, terse.rotation)
+        sources[local_id] = terse
+        terse_only.add(local_id)
+    if len(previous.sources) + added != live:
+        return None
+    if not parented:
+        return _RegionFrame({}, transforms, sources, terse_only, parented)
+    # A set difference at C speed, not 15,000 `set.add` calls in the loop
+    # above: the complement is the big side here, and building it a name at a
+    # time is most of what the patch just saved. Measured -- a `__contains__`
+    # wrapper standing in for the set instead is *slower* than the set,
+    # 2.80 ms against 1.85 for 15,000 membership tests.
+    placed = resolve_world_transforms(  # type: ignore[arg-type]
+        transforms,
+        unchanged=transforms.keys() - changed_ids,
+        previous=previous_placement,
+    )
+    return _RegionFrame(placed, transforms, sources, terse_only, parented)
 
 
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:

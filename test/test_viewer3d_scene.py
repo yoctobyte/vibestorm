@@ -1852,7 +1852,7 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
     Seeded, so a failure is reproducible; the seed is in the subTest.
     """
 
-    OPERATIONS = 120
+    OPERATIONS = 200
 
     def _prim(self, index, local_id, parent_id, position):
         from vibestorm.world.models import WorldObject
@@ -1887,10 +1887,31 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
 
         return values(scene.object_entities), values(scene.avatar_entities)
 
+    def _state(self, scene):
+        """What the frame carries forward, not just what it drew.
+
+        Comparing the entities alone is too loose a net for carried state. A
+        prim stranded in the carried transforms -- an orphan whose parent
+        never came, removed on a frame where the entity counts happened to
+        agree -- draws nothing either way, so the two screens match while one
+        scene is quietly still composing a prim that left the region. It
+        surfaces as a wrong position only once something parents onto it,
+        thousands of frames later and nowhere near the frame that caused it.
+        Two real bugs were invisible to `_shape` and immediate here.
+        """
+        built = scene._built
+        return (
+            built.transforms,
+            built.placement,
+            built.parented,
+            built.terse_only,
+            set(built.sources),
+        )
+
     def _step(self, rng, view, next_index):
         """One plausible thing a simulator does, chosen at random."""
         full_ids = list(view.objects)
-        choice = rng.randrange(7)
+        choice = rng.randrange(9)
         if choice == 0 or not full_ids:
             # A prim arrives, sometimes parented to one already here.
             parent = 0
@@ -1908,9 +1929,10 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
             # A prim moves: a new instance, exactly as an update gives.
             key = rng.choice(full_ids)
             was = view.objects[key]
+            here = was.position or (rng.uniform(0.0, 256.0), 20.0, 25.0)
             view.objects[key] = self._prim(
                 key.int, was.local_id, was.parent_id,
-                (was.position[0] + rng.uniform(-1.0, 1.0), was.position[1], was.position[2]),
+                (here[0] + rng.uniform(-1.0, 1.0), here[1], here[2]),
             )
             return next_index
         if choice == 4:
@@ -1920,7 +1942,8 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
             others = [view.objects[k].local_id for k in full_ids if k != key]
             parent = rng.choice(others) if others and rng.random() < 0.7 else 0
             view.objects[key] = self._prim(
-                key.int, was.local_id, parent, was.position
+                key.int, was.local_id, parent,
+                was.position or (rng.uniform(0.0, 256.0), 30.0, 25.0),
             )
             return next_index
         if choice == 5:
@@ -1928,6 +1951,32 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
             view.terse_objects[local_id] = self._terse(
                 local_id, (rng.uniform(0.0, 256.0), 10.0, 20.0)
             )
+            return next_index
+        if choice == 6:
+            # A prim with nowhere to be. `WorldObject.position` is optional
+            # and the build skips these, so they are in the world without
+            # being in the transforms -- the one shape the patch's accounting
+            # has to get right without ever seeing an entry for it.
+            key = rng.choice(full_ids)
+            was = view.objects[key]
+            view.objects[key] = self._prim(key.int, was.local_id, was.parent_id, None)
+            return next_index
+        if choice == 7:
+            # A full update arrives for an id that was terse-only, or leaves
+            # one behind: the same local id changing which half of the world
+            # owns it, which is the crossing the two scans divide between them.
+            local_id = 900 + rng.randrange(4)
+            key = UUID(int=local_id)
+            if key in view.objects:
+                view.objects.pop(key)
+                view.terse_objects[local_id] = self._terse(local_id, (5.0, 5.0, 25.0))
+            else:
+                view.terse_objects.setdefault(
+                    local_id, self._terse(local_id, (5.0, 5.0, 25.0))
+                )
+                view.objects[key] = self._prim(
+                    local_id, local_id, 0, (rng.uniform(0.0, 256.0), 6.0, 25.0)
+                )
             return next_index
         if view.terse_objects:
             view.terse_objects.pop(rng.choice(list(view.terse_objects)))
@@ -1938,7 +1987,7 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
 
         from vibestorm.world.models import WorldView
 
-        for seed in (1, 2, 3, 5, 8):
+        for seed in (1, 2, 3, 5, 8, 13, 21, 34, 55, 89):
             rng = random.Random(seed)
             view = WorldView()
             carried = Scene()
@@ -1948,7 +1997,10 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
                 carried.refresh_from_world_view(view)
                 fresh = Scene()
                 fresh.refresh_from_world_view(view)
-                if self._shape(carried) != self._shape(fresh):
+                if (
+                    self._shape(carried) != self._shape(fresh)
+                    or self._state(carried) != self._state(fresh)
+                ):
                     self.fail(
                         f"seed {seed} diverged at step {step} "
                         f"({len(view.objects)} objects, "
@@ -1973,3 +2025,43 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
 
         self.assertGreater(carried.repeat_frames, 0)
         self.assertGreater(carried.rebuilt_frames, 0)
+
+    def test_the_run_actually_patches_and_actually_rebuilds(self):
+        """Same argument one level down.
+
+        The differential run above would pass just as well if every frame took
+        the full rebuild: agreeing with a fresh scene is exactly what a fresh
+        scene does. The patch is the thing under test, so the run has to be
+        shown to have taken it -- and to have declined it, because declining
+        is how removals stay correct.
+        """
+        import random
+        from unittest import mock
+
+        from vibestorm.viewer3d import scene as scene_module
+        from vibestorm.world.models import WorldView
+
+        patched = 0
+        declined = 0
+        real_patch = scene_module._patched_region_frame
+
+        def counting(*args, **kwargs):
+            nonlocal patched, declined
+            answer = real_patch(*args, **kwargs)
+            if answer is None:
+                declined += 1
+            else:
+                patched += 1
+            return answer
+
+        rng = random.Random(3)
+        view = WorldView()
+        carried = Scene()
+        next_index = 1
+        with mock.patch.object(scene_module, "_patched_region_frame", counting):
+            for _ in range(self.OPERATIONS):
+                next_index = self._step(rng, view, next_index)
+                carried.refresh_from_world_view(view)
+
+        self.assertGreater(patched, 0)
+        self.assertGreater(declined, 0)
