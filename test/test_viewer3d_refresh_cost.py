@@ -66,6 +66,23 @@ def _world(*objects):
     return view
 
 
+def _terse(local_id: int, position, *, is_avatar: bool = False):
+    from vibestorm.world.models import TerseWorldObject
+
+    return TerseWorldObject(
+        local_id=local_id,
+        state=0,
+        region_handle=0,
+        time_dilation=0,
+        position=position,
+        velocity=(0.0, 0.0, 0.0),
+        acceleration=(0.0, 0.0, 0.0),
+        rotation=IDENTITY,
+        angular_velocity=(0.0, 0.0, 0.0),
+        is_avatar=is_avatar,
+    )
+
+
 class TransformIdentityTests(unittest.TestCase):
     """`resolve_world_transforms` hands back the *same* tuple, not an equal one.
 
@@ -204,3 +221,121 @@ class RegionOfRootsTests(unittest.TestCase):
 
         self.assertIn(2, placed)
         self.assertAlmostEqual(placed[2][0][0], 12.0)
+
+
+class CarriedTransformsTests(unittest.TestCase):
+    """The frame patches last frame's transforms; here is what that must not lose.
+
+    Every one of these was written against a surviving mutant -- a change to
+    the patch that no existing test could tell from the real thing. The
+    randomised differential in `test_viewer3d_scene` walks one simulator
+    operation per frame, and each of these needs two in the same frame, which
+    is why they are here rather than left to it.
+    """
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        return Scene()
+
+    def test_a_full_update_takes_the_id_off_the_terse_one(self) -> None:
+        """A full update for a terse-only id owns that id from then on.
+
+        Leave the id marked as the terse update's and two things go wrong at
+        once: the terse entry is written back over the full one, so the prim
+        is drawn where the terse update last said rather than where the full
+        one does, and the id is counted twice -- which is a spare +1 in the
+        accounting, enough to hide a removal elsewhere in the same frame.
+        Both faults are in this one frame, and the second is why the removed
+        prim below is part of the test rather than a test of its own.
+        """
+        world = _world(
+            _prim(8, (100.0, 100.0, 20.0)),
+            _prim(9, (1.0, 0.0, 0.0), parent_id=7),
+        )
+        world.terse_objects[7] = _terse(7, (5.0, 5.0, 25.0))
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+        self.assertAlmostEqual(scene.object_entities[9].position[0], 6.0)
+
+        world.remember_object(_prim(7, (50.0, 50.0, 25.0)))
+        world.objects.pop(UUID(int=8))
+        scene.refresh_from_world_view(world)
+
+        self.assertAlmostEqual(scene.object_entities[9].position[0], 51.0)
+        self.assertNotIn(8, scene.object_entities)
+        self.assertNotIn(8, scene._built.transforms)
+
+    def test_a_frame_does_not_edit_the_frame_before_it(self) -> None:
+        """`_BuiltEntities` is the record of one frame, and stays it.
+
+        The repeat path hands the very same record back rather than building
+        an equal one, so a frame that reached into the previous frame's
+        dictionaries would make the record of what was drawn a lie -- and the
+        lie would be retrospective, which is the kind nothing catches.
+        """
+        world = _world(_prim(1, (10.0, 10.0, 20.0)), _prim(2, (12.0, 10.0, 20.0)))
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+        first = scene._built
+        before = dict(first.transforms), dict(first.sources), set(first.terse_only)
+
+        world.remember_object(_prim(1, (60.0, 10.0, 20.0)))
+        world.remember_object(_prim(3, (7.0, 7.0, 20.0)))
+        scene.refresh_from_world_view(world)
+
+        self.assertEqual(
+            (dict(first.transforms), dict(first.sources), set(first.terse_only)),
+            before,
+        )
+        self.assertIsNot(scene._built, first)
+
+    def _patch_outcomes(self, scene, world):
+        """Refresh once, saying whether the patch was taken or declined."""
+        from unittest import mock
+
+        from vibestorm.viewer3d import scene as scene_module
+
+        taken = []
+        real = scene_module._patched_region_frame
+
+        def spy(*args, **kwargs):
+            answer = real(*args, **kwargs)
+            taken.append(answer is not None)
+            return answer
+
+        with mock.patch.object(scene_module, "_patched_region_frame", spy):
+            scene.refresh_from_world_view(world)
+        return taken
+
+    def test_an_arrival_is_patched_rather_than_rebuilt(self) -> None:
+        """An arrival is not a removal, and the accounting has to know which.
+
+        The check that catches a removal is a count, and a prim that arrives
+        moves that count too. Stop counting arrivals and every frame with one
+        reads as a frame that dropped something: still correct, because the
+        answer is then rebuilt from scratch, and slower every time -- which no
+        test of what was drawn can see.
+        """
+        world = _world(_prim(1, (10.0, 10.0, 20.0)))
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+
+        world.remember_object(_prim(2, (12.0, 10.0, 20.0)))
+        self.assertEqual(self._patch_outcomes(scene, world), [True])
+
+        world.terse_objects[7] = _terse(7, (5.0, 5.0, 25.0))
+        self.assertEqual(self._patch_outcomes(scene, world), [True])
+
+    def test_a_removal_is_declined_rather_than_patched(self) -> None:
+        """The other half of the same count, and the half that has to hold.
+
+        A patched removal leaves the prim composing its children forever.
+        """
+        world = _world(_prim(1, (10.0, 10.0, 20.0)), _prim(2, (12.0, 10.0, 20.0)))
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+
+        world.objects.pop(UUID(int=2))
+        self.assertEqual(self._patch_outcomes(scene, world), [False])
+        self.assertNotIn(2, scene._built.transforms)
