@@ -539,6 +539,11 @@ class Scene:
     # nothing moved can hand the same four dictionaries straight back rather
     # than rebuild four equal ones. See ``_nothing_moved``.
     _built: object | None = field(default=None, repr=False)
+    #: Frames whose entity build was skipped because nothing had moved, and
+    #: frames that did the work. Counters, not gauges: both only rise, and it
+    #: is the *ratio* that says whether the fast path is worth its check.
+    repeat_frames: int = 0
+    rebuilt_frames: int = 0
     #: The prims and avatars standing in the regions next door, keyed by
     #: ``(region handle, local id)``. Deliberately not merged into
     #: ``object_entities``: that dict is keyed by a bare local id, and it is
@@ -1279,12 +1284,22 @@ class Scene:
         self.sun_direction = _as_vec3(raw_sun_direction)
         self._refresh_environment(world_view, time_snapshot)
 
+        was = self._built
         built = _build_entities(
             world_view,
             cache=self._entity_cache,
             previous_placement=self._placement,
             previous=self._built,
         )
+        # Counted rather than asserted. The bench says a repeat frame costs
+        # 3 ms instead of 31 on a still 15,000-prim region; what it cannot say
+        # is how often a *live* region has one, and a saving that never
+        # happens is not a saving. These two are the ratio, in the soak log,
+        # from the run rather than from a benchmark's idea of a quiet world.
+        if built is was:
+            self.repeat_frames += 1
+        else:
+            self.rebuilt_frames += 1
         self._built = built
         self.object_entities = built.objects
         self.avatar_entities = built.avatars
@@ -1340,9 +1355,17 @@ def _as_vec3(value: object | None) -> tuple[float, float, float] | None:
         return None
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class _BuiltEntities:
     """What one region's `WorldView` came to this frame.
+
+    ``eq=False`` on purpose. This is a record of *which* build, not a value:
+    the only question ever asked of two of them is whether the frame handed
+    the previous one straight back, and the generated ``__eq__`` answers that
+    by walking four dictionaries of fifteen thousand entries -- a deeper walk
+    than the one the fast path exists to avoid, arriving at the same answer.
+    Falling back to identity makes writing it the slow way impossible rather
+    than merely unwise.
 
     `cache` and `placement` are what the next frame is handed back: keeping
     them beside the entities is what lets a second region be walked with the

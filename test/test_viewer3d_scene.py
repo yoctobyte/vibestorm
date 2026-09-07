@@ -1754,3 +1754,81 @@ class RepeatCheckUsesIdentityTests(unittest.TestCase):
         scene.refresh_from_world_view(view)
 
         self.assertEqual(scene.object_entities[10].position, (9.0, 2.0, 3.0))
+
+
+class RepeatFramesAreCountedTests(unittest.TestCase):
+    """A saving that never happens is not a saving.
+
+    The bench says a repeat frame costs 3 ms instead of 31 on a still
+    15,000-prim region. What a bench cannot say is how often a live region has
+    one -- and if the answer is "never", the check is pure overhead and the
+    measurement was of a world this client does not see. So both halves go in
+    the soak log and the run answers it.
+    """
+
+    def _view(self):
+        from vibestorm.world.models import WorldObject, WorldView
+
+        def prim(index, local_id, position):
+            return WorldObject(
+                full_id=UUID(int=index), local_id=local_id, parent_id=0,
+                pcode=PCODE_PRIM, material=0, click_action=0, scale=(1.0, 1.0, 1.0),
+                state=0, crc=0, update_flags=0, region_handle=0, time_dilation=0,
+                object_data_size=0, position=position, rotation=(0.0, 0.0, 0.0, 1.0),
+                variant="prim_basic", name_values={}, texture_entry_size=0,
+                texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+                ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+                default_texture_id=None,
+            )
+
+        view = WorldView()
+        view.objects[UUID(int=1)] = prim(1, 10, (1.0, 2.0, 3.0))
+        return view, prim
+
+    def test_a_still_frame_counts_as_a_repeat(self):
+        view, _prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        self.assertEqual((scene.repeat_frames, scene.rebuilt_frames), (0, 1))
+
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual((scene.repeat_frames, scene.rebuilt_frames), (1, 1))
+
+    def test_a_frame_that_moved_counts_as_a_rebuild(self):
+        view, prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        scene.refresh_from_world_view(view)
+
+        view.objects[UUID(int=1)] = prim(1, 10, (9.0, 2.0, 3.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual((scene.repeat_frames, scene.rebuilt_frames), (1, 2))
+
+    def test_a_frame_with_no_world_at_all_is_neither(self):
+        """It never reaches the build, so counting it either way is a lie
+        about how often the check paid."""
+        scene = Scene()
+        scene.refresh_from_world_view(None)
+        self.assertEqual((scene.repeat_frames, scene.rebuilt_frames), (0, 0))
+
+
+class BuiltEntitiesIsARecordNotAValueTests(unittest.TestCase):
+    def test_two_identical_builds_are_not_equal(self):
+        """`_BuiltEntities` declares `eq=False`, and this is why.
+
+        The one question asked of two of them is whether the frame handed the
+        previous one straight back. A generated `__eq__` answers it by walking
+        four dictionaries of fifteen thousand entries -- deeper than the walk
+        the fast path exists to avoid, for the same answer. Identity is the
+        only comparison that means anything here.
+        """
+        from vibestorm.viewer3d.scene import _BuiltEntities
+
+        def build():
+            return _BuiltEntities(objects={}, avatars={}, cache={}, placement={}, terse={})
+
+        self.assertNotEqual(build(), build())
+        one = build()
+        self.assertEqual(one, one)

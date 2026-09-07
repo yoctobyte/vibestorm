@@ -655,6 +655,24 @@ class GaugeWiringTests(unittest.TestCase):
         self.assertEqual(after["asset.fetched"], 1.0)
         self.assertEqual(after["asset.fetched_bytes"], 100.0)
 
+    def test_the_repeat_counters_are_not_each_other(self) -> None:
+        """Two counters on the same object that both exist and both read as
+        numbers: swapping the pair passes every other check in this class.
+        The only thing that can tell them apart is a scene driven through a
+        pattern whose answer is known."""
+        from vibestorm.world.models import WorldView
+
+        probe, scene, _session = self._probe_and_parts()
+        view = WorldView()
+        scene.refresh_from_world_view(view)  # a build
+        scene.refresh_from_world_view(view)  # a repeat
+        scene.refresh_from_world_view(view)  # another repeat
+
+        sample = probe.sample(elapsed_s=0.0, frame=0)
+
+        self.assertEqual(sample["scene.repeat_frames"], 2.0)
+        self.assertEqual(sample["scene.rebuilt_frames"], 1.0)
+
     def test_the_hud_gauges_watch_this_hud_and_not_nothing(self) -> None:
         """A gauge aimed at `None` is the `_MISSING` trap by another road.
 

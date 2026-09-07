@@ -41,6 +41,8 @@ DEFAULT_COUNTERS = (
     "eq.batches",
     "eq.events",
     "world.object_updates",
+    "scene.repeat_frames",
+    "scene.rebuilt_frames",
 )
 
 

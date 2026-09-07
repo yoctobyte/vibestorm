@@ -543,6 +543,12 @@ def build_health_probe(
         "eq.batches": _int_of(session, "event_queue_polls"),
         "eq.events": _int_of(session, "event_queue_events"),
         "world.object_updates": _int_of(view, "object_update_events"),
+        # The two halves of "was the repeat check worth having". A run where
+        # `scene.repeat_frames` stays near zero is a run in which it never
+        # paid, and the bench that measured it was measuring a world this
+        # client does not see.
+        "scene.repeat_frames": _int_of(lambda: scene, "repeat_frames"),
+        "scene.rebuilt_frames": _int_of(lambda: scene, "rebuilt_frames"),
     }
     return HealthProbe(
         gauges=gauges,

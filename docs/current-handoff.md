@@ -210,6 +210,25 @@ every behavioural test and quietly walks two dozen fields per prim per frame.
 `_RefusesToBeComparedByValue` raises if anything asks -- the wrong answer is
 made impossible to obtain rather than merely slow.
 
+**And it is counted, not just benched.** `scene.repeat_frames` and
+`scene.rebuilt_frames` go into the soak log. A bench can say a repeat frame
+costs 3 ms instead of 31; only a run can say how often a live region has one,
+and a saving that never happens is not a saving -- if the ratio comes back
+near zero, the check is pure overhead and the benchmark was measuring a world
+this client does not see. Reading them is the first thing to do with the next
+soak.
+
+Two mutants on that pair survived the first pass and are worth recording,
+because both are the same shape: a wrong thing that is not wrong *enough* to
+show up. Swapping the two gauge names passed everything -- the wiring test
+asks whether a gauge reaches something, not whether it reaches the right
+something, and both counters exist on the same object. And comparing the build
+records with `==` rather than `is` was behaviourally identical while walking
+four dictionaries of fifteen thousand entries a frame -- a deeper walk than
+the one the fast path exists to avoid, for the same answer.
+`_BuiltEntities` is now `eq=False`, which makes writing it the slow way
+impossible rather than merely unwise.
+
 **Mutation, 12 mutants: 10 killed, 2 equivalent.** Both equivalents are the
 `self._built = None` lines in the region reset and the no-view path. Neither is
 observable: both aliases the reset already clears, and a new region's prims are
