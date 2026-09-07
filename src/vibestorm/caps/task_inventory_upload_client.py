@@ -152,6 +152,39 @@ class TaskInventoryUploadClient:
             )
         return await self.upload_notecard_bytes(prelude.uploader_url, notecard_bytes, user_agent=user_agent)
 
+    async def upload_task_gesture(
+        self,
+        capability_url: str,
+        item_id: UUID,
+        task_id: UUID,
+        gesture_bytes: bytes,
+        *,
+        udp_listen_port: int | None = None,
+        user_agent: str = "Vibestorm",
+    ) -> TaskNotecardUploadResult:
+        """Upload a gesture update to an object's task inventory.
+
+        The same two hops as a notecard, against
+        `UpdateGestureTaskInventory`. OpenSim registers that capability and
+        `UpdateGestureAgentInventory` against one `SimpleOSDMapHandler`, the
+        way it does the notecard pair, so nothing below the capability URL
+        differs -- which is why this is nine lines and not a second protocol.
+        """
+        prelude = await self.request_uploader(
+            capability_url,
+            {"item_id": item_id, "task_id": task_id},
+            udp_listen_port=udp_listen_port,
+            user_agent=user_agent,
+        )
+        if prelude.state != "upload":
+            raise TaskInventoryUploadError(
+                f"Task inventory gesture upload returned unexpected prelude "
+                f"state {prelude.state!r}"
+            )
+        return await self.upload_notecard_bytes(
+            prelude.uploader_url, gesture_bytes, user_agent=user_agent, label="gesture"
+        )
+
     async def request_uploader(
         self,
         capability_url: str,
@@ -188,12 +221,22 @@ class TaskInventoryUploadClient:
         notecard_bytes: bytes,
         *,
         user_agent: str = "Vibestorm",
+        label: str = "notecard",
     ) -> TaskNotecardUploadResult:
+        """POST the asset bytes to the uploader URL the prelude named.
+
+        ``label`` only names the thing in error messages. This hop is
+        identical for a notecard and a gesture because OpenSim registers both
+        capabilities against a single `SimpleOSDMapHandler` -- pinned by
+        `TaskInventoryUpdateCapabilityTests` -- and a failure that says
+        "notecard" while uploading a gesture costs somebody an hour.
+        """
         return await asyncio.to_thread(
             self._upload_notecard_bytes_sync,
             uploader_url,
             notecard_bytes,
             user_agent,
+            label,
         )
 
     def _request_uploader_sync(
@@ -309,6 +352,7 @@ class TaskInventoryUploadClient:
         uploader_url: str,
         notecard_bytes: bytes,
         user_agent: str,
+        label: str = "notecard",
     ) -> TaskNotecardUploadResult:
         request = urllib.request.Request(
             uploader_url,
@@ -332,14 +376,14 @@ class TaskInventoryUploadClient:
                 )
         except TimeoutError as exc:
             raise TaskInventoryUploadError(
-                f"notecard task upload timed out after {self.timeout_seconds:.1f}s"
+                f"{label} task upload timed out after {self.timeout_seconds:.1f}s"
             ) from exc
         except socket.timeout as exc:
             raise TaskInventoryUploadError(
-                f"notecard task upload timed out after {self.timeout_seconds:.1f}s"
+                f"{label} task upload timed out after {self.timeout_seconds:.1f}s"
             ) from exc
         except urllib.error.URLError as exc:
-            raise TaskInventoryUploadError(f"notecard task upload failed: {exc.reason}") from exc
+            raise TaskInventoryUploadError(f"{label} task upload failed: {exc.reason}") from exc
         except LlsdError as exc:
             # The body arrived and was not LLSD -- a proxy's error page, a
             # truncated response. Converted here rather than left to the
@@ -347,16 +391,16 @@ class TaskInventoryUploadClient:
             # letting it through would only rename the exception that
             # escapes.
             raise TaskInventoryUploadError(
-                f"notecard task upload response was not valid LLSD: {exc}"
+                f"{label} task upload response was not valid LLSD: {exc}"
             ) from exc
 
         if not isinstance(payload, dict):
-            raise TaskInventoryUploadError("notecard task upload completion did not return an LLSD map")
+            raise TaskInventoryUploadError(f"{label} task upload completion did not return an LLSD map")
 
         state = _parse_str(payload.get("state"))
         if state not in {"complete", "upload"}:
             raise TaskInventoryUploadError(
-                _extract_error_message(payload) or f"notecard task upload returned state {state!r}"
+                _extract_error_message(payload) or f"{label} task upload returned state {state!r}"
             )
 
         return TaskNotecardUploadResult(

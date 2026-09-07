@@ -641,6 +641,16 @@ class TaskInventoryUpdateCapabilityTests(unittest.TestCase):
         name."""
         self.assertGreaterEqual(len(self.REGISTRATION.findall(self.source)), 5)
 
+    def test_the_name_this_client_asks_for_is_one_that_is_registered(self) -> None:
+        """The constant, checked against the source rather than against
+        itself. Every test that mentions `GESTURE_TASK_CAP_NAME` uses the
+        constant on both sides, so renaming it to the agent-inventory
+        capability -- a real name, registered elsewhere, that does nothing
+        for a task row -- left all of them green."""
+        from vibestorm.sync.engine import GESTURE_TASK_CAP_NAME
+
+        self.assertIn(GESTURE_TASK_CAP_NAME, self.REGISTRATION.findall(self.source))
+
     def test_nothing_registers_a_texture_update(self) -> None:
         """If a future OpenSim adds one, this is the test whose name says
         what just became possible."""

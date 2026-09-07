@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 
+from vibestorm.assets.gesture import GestureDecodeError, decode_gesture
 from vibestorm.assets.notecard import decode_notecard, encode_notecard
 from vibestorm.caps.asset_upload_client import AssetUploadError
 from vibestorm.caps.client import CapabilityClient, CapabilityError
@@ -56,9 +57,13 @@ NOTECARD_AGENT_CAP_NAME = "UpdateNotecardAgentInventory"
 #: sees the result only once the item is copied across. It is how a texture
 #: gets in, because unlike a notecard there is nothing to fill in afterwards.
 NEW_FILE_CAP_NAME = "NewFileAgentInventory"
+#: Replacing the asset behind a gesture row. Registered against the same
+#: handler as the notecard capability, so the exchange is identical.
+GESTURE_TASK_CAP_NAME = "UpdateGestureTaskInventory"
 
 NOTECARD_ASSET_TYPE = 7
 SCRIPT_ASSET_TYPE = 10
+GESTURE_ASSET_TYPE = 21
 TEXTURE_ASSET_TYPE = 0
 
 
@@ -69,6 +74,7 @@ class SyncCaps:
     script: str | None = None
     notecard: str | None = None
     notecard_agent: str | None = None
+    gesture: str | None = None
     new_file: str | None = None
 
     @property
@@ -160,9 +166,12 @@ def _decode_for_disk(data: bytes, asset_type: int) -> tuple[bytes, str | None]:
     but it can also carry embedded inventory items that re-encoding the text
     would drop. Such a file is written for reading and marked unpushable.
 
-    Everything outside the two text types is written byte-for-byte and marked
-    unpushable too. Exporting a texture is useful; pretending we could author
-    one back is not.
+    A gesture is its own asset bytes -- line-based UTF-8 with no container
+    around it -- so it is written as it arrived and *is* pushable.
+
+    Everything outside the three text types is written byte-for-byte and
+    marked unpushable too. Exporting a texture is useful; pretending we could
+    author one back is not.
     """
     if asset_type not in TEXT_ASSET_TYPES:
         return data, f"{ASSET_NAME_BY_TYPE.get(asset_type, 'this')} assets are exported, not edited"
@@ -178,9 +187,20 @@ def _decode_for_disk(data: bytes, asset_type: int) -> tuple[bytes, str | None]:
 
 
 def _encode_for_upload(data: bytes, asset_type: int) -> bytes:
-    """The bytes to send, given what is on disk."""
+    """The bytes to send, given what is on disk.
+
+    A gesture is checked rather than encoded. Nothing on the far side looks
+    at it -- a script that will not compile comes back with errors, and a
+    notecard has no structure to get wrong, but a malformed gesture is stored
+    exactly as sent and only fails when somebody tries to play it. Parsing it
+    here means this client never uploads a gesture it cannot itself read,
+    which is the strongest check available without a viewer.
+    """
     if asset_type == NOTECARD_ASSET_TYPE:
         return encode_notecard(data.decode("utf-8", errors="replace"))
+    if asset_type == GESTURE_ASSET_TYPE:
+        decode_gesture(data)
+        return data
     return data
 
 
@@ -207,6 +227,7 @@ async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCa
             *SCRIPT_TASK_CAP_NAMES,
             NOTECARD_TASK_CAP_NAME,
             NOTECARD_AGENT_CAP_NAME,
+            GESTURE_TASK_CAP_NAME,
             NEW_FILE_CAP_NAME,
         ],
         udp_listen_port=session.caps_udp_listen_port,  # type: ignore[attr-defined]
@@ -216,6 +237,7 @@ async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCa
         script=first_resolved(caps, SCRIPT_TASK_CAP_NAMES),
         notecard=first_resolved(caps, [NOTECARD_TASK_CAP_NAME]),
         notecard_agent=first_resolved(caps, [NOTECARD_AGENT_CAP_NAME]),
+        gesture=first_resolved(caps, [GESTURE_TASK_CAP_NAME]),
         new_file=first_resolved(caps, [NEW_FILE_CAP_NAME]),
     )
 
@@ -326,6 +348,7 @@ async def push_folder_to_object(
     script_cap: str | None,
     notecard_cap: str | None = None,
     notecard_agent_cap: str | None = None,
+    gesture_cap: str | None = None,
     new_file_cap: str | None = None,
     agent_folder_id: UUID | None = None,
     can_create: bool = True,
@@ -497,7 +520,11 @@ async def push_folder_to_object(
             outcome.skipped.append((entry.file_name, "no inventory row to upload onto"))
             continue
 
-        cap = script_cap if asset_type == SCRIPT_ASSET_TYPE else notecard_cap
+        cap = {
+            SCRIPT_ASSET_TYPE: script_cap,
+            NOTECARD_ASSET_TYPE: notecard_cap,
+            GESTURE_ASSET_TYPE: gesture_cap,
+        }.get(asset_type)
         if not cap:
             outcome.skipped.append((entry.file_name, "no capability for this asset type"))
             continue
@@ -506,6 +533,11 @@ async def push_folder_to_object(
             body = _encode_for_upload(entry.path.read_bytes(), asset_type)
         except OSError as exc:
             outcome.failed.append((entry.file_name, f"could not read it: {exc}"))
+            continue
+        except GestureDecodeError as exc:
+            # Refused before the round trip, not after: the simulator would
+            # have taken it.
+            outcome.failed.append((entry.file_name, f"not a readable gesture: {exc}"))
             continue
 
         _report(on_progress, f"uploading {entry.file_name}")
@@ -523,6 +555,14 @@ async def push_folder_to_object(
                         (entry.file_name, f"did not compile: {_compile_error(result)}")
                     )
                     continue
+            elif asset_type == GESTURE_ASSET_TYPE:
+                await uploader.upload_task_gesture(
+                    cap,
+                    item_id,
+                    task_id,
+                    body,
+                    udp_listen_port=session.caps_udp_listen_port,  # type: ignore[attr-defined]
+                )
             else:
                 await uploader.upload_task_notecard(
                     cap,

@@ -1617,6 +1617,7 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                     notecard_cap=caps.notecard,
                     notecard_agent_cap=caps.notecard_agent,
                     new_file_cap=caps.new_file,
+                    gesture_cap=caps.gesture,
                     agent_folder_id=bootstrap.inventory_root_folder_id,
                     on_progress=progress,
                 )
@@ -1641,6 +1642,7 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                     notecard_cap=caps.notecard,
                     notecard_agent_cap=caps.notecard_agent,
                     new_file_cap=caps.new_file,
+                    gesture_cap=caps.gesture,
                     agent_folder_id=bootstrap.inventory_root_folder_id,
                     poll_seconds=args.poll_seconds,
                     stop_event=stop_event,

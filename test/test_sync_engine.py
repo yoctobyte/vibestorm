@@ -77,6 +77,9 @@ class _EngineCase(unittest.IsolatedAsyncioTestCase):
         self.assets: dict[UUID, bytes] = {}
         self.items: list[ObjectInventoryItem] = []
         self.uploads: list[tuple[UUID, bytes]] = []
+        # (kind, capability url) per upload, so a test can tell a gesture
+        # that went out through the notecard path from one that did not.
+        self.calls: list[tuple[str, str]] = []
         self.created_names: list[str] = []
         self.compile_ok = True
 
@@ -116,6 +119,7 @@ class _EngineCase(unittest.IsolatedAsyncioTestCase):
                 pass
 
             async def upload_task_script(self, cap, item_id, task_id, body, **kwargs):
+                outer.calls.append(("script", cap))
                 outer.uploads.append((item_id, body))
                 # A push changes the asset, exactly as the sim does; without
                 # this the round-trip test would pass for the wrong reason.
@@ -123,6 +127,13 @@ class _EngineCase(unittest.IsolatedAsyncioTestCase):
                 return FakeUploadResult(compiled=outer.compile_ok, errors=[] if outer.compile_ok else ["syntax error"])
 
             async def upload_task_notecard(self, cap, item_id, task_id, body, **kwargs):
+                outer.calls.append(("notecard", cap))
+                outer.uploads.append((item_id, body))
+                outer._reassign_asset(item_id)
+                return FakeUploadResult()
+
+            async def upload_task_gesture(self, cap, item_id, task_id, body, **kwargs):
+                outer.calls.append(("gesture", cap))
                 outer.uploads.append((item_id, body))
                 outer._reassign_asset(item_id)
                 return FakeUploadResult()
@@ -151,6 +162,10 @@ class _EngineCase(unittest.IsolatedAsyncioTestCase):
         )
 
     async def push(self, **kwargs) -> SyncOutcome:
+        # Overridable, unlike the other two: a test needs to see what a sim
+        # that does not offer the gesture capability does.
+        kwargs.setdefault("gesture_cap", "http://cap/gesture")
+
         class FakeSession:
             caps_udp_listen_port = None
 
@@ -166,18 +181,15 @@ class _EngineCase(unittest.IsolatedAsyncioTestCase):
             **kwargs,
         )
 
-    def asyncSetUp_patchers(self):
-        pass
+    def patch(self, obj, name, value):
+        original = getattr(obj, name)
+        setattr(obj, name, value)
+        self.addCleanup(setattr, obj, name, original)
 
 
 class PullTests(_EngineCase):
     async def asyncSetUp(self) -> None:
         self._install(lambda obj, name, value: self.patch(obj, name, value))
-
-    def patch(self, obj, name, value):
-        original = getattr(obj, name)
-        setattr(obj, name, value)
-        self.addCleanup(setattr, obj, name, original)
 
     async def test_a_script_is_written_and_recorded(self) -> None:
         self.add_asset("Greeter", b"default { state_entry() {} }")
@@ -243,11 +255,6 @@ class PullTests(_EngineCase):
 class PushTests(_EngineCase):
     async def asyncSetUp(self) -> None:
         self._install(lambda obj, name, value: self.patch(obj, name, value))
-
-    def patch(self, obj, name, value):
-        original = getattr(obj, name)
-        setattr(obj, name, value)
-        self.addCleanup(setattr, obj, name, original)
 
     async def test_an_edited_file_is_uploaded(self) -> None:
         item = self.add_asset("Greeter", b"original")

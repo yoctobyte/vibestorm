@@ -21,7 +21,7 @@ from vibestorm.world.asset_types import ASSET_NAME_BY_TYPE
 #: Asset types this project round-trips as editable text: notecard and LSL
 #: source. Anything else can be *exported* as bytes but is never uploaded back,
 #: because nothing here knows how to author one.
-TEXT_ASSET_TYPES = frozenset({7, 10})
+TEXT_ASSET_TYPES = frozenset({7, 10, 21})
 
 #: Suffixes for asset types whose container this tree has actually seen. Every
 #: entry below is backed by bytes OpenSim wrote -- the live probe on 2026-09-05
@@ -43,10 +43,11 @@ _UPLOAD_KIND_BY_SUFFIX = {
     ".lsl": ("lsltext", "lsl"),
     ".txt": ("notecard", "notecard"),
     ".nc": ("notecard", "notecard"),
+    ".gesture": ("gesture", "gesture"),
 }
 
 #: The asset type each uploadable suffix ends up as in world.
-_ASSET_TYPE_BY_UPLOAD_KIND = {"lsltext": 10, "notecard": 7}
+_ASSET_TYPE_BY_UPLOAD_KIND = {"lsltext": 10, "notecard": 7, "gesture": 21}
 
 
 def safe_filename(value: str) -> str:
