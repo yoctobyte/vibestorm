@@ -61,6 +61,7 @@ from vibestorm.login.models import LoginCredentials, LoginRequest  # noqa: E402
 from vibestorm.udp.dispatch import MessageDispatcher  # noqa: E402
 from vibestorm.udp.neighbour import NeighbourCircuit  # noqa: E402
 from vibestorm.udp.packet import parse_packet_header  # noqa: E402
+from vibestorm.udp.reliable import RELIABLE_RESEND_ATTEMPTS  # noqa: E402
 from vibestorm.udp.session import SessionConfig, run_live_session  # noqa: E402
 from vibestorm.udp.world_client import WorldClient  # noqa: E402
 
@@ -228,13 +229,26 @@ def report(seen, seconds: float, client) -> int:
             for name, count in circuit.received.most_common(8):
                 print(f"    {name:32s} {count}")
 
-    # Not the neighbour's problem, but the same run answers it for free: this
-    # client records the reliable packets it sent and never resends them, so
-    # anything still here at the end was lost and nothing tried again.
-    if session is not None and session.pending_reliable:
-        print(f"\n--- {len(session.pending_reliable)} of our own reliable packets never acked ---")
-        for sequence, label in sorted(session.pending_reliable.items()):
-            print(f"  seq={sequence:<6} {label}")
+    # Not the neighbour's problem, but the same run answers it for free.
+    if session is not None:
+        print(
+            f"\nour own reliable packets: {session.reliable_resends} resent, "
+            f"{session.reliable_abandoned} given up on, "
+            f"{len(session.pending_reliable)} still waiting"
+        )
+        for sequence, pending in sorted(session.pending_reliable.items()):
+            print(
+                f"  seq={sequence:<6} {pending.label} "
+                f"attempt {pending.attempts} of {RELIABLE_RESEND_ATTEMPTS}"
+            )
+        for handle, circuit in session.neighbours.items():
+            if circuit.reliable_resends or circuit.pending_reliable:
+                print(
+                    f"  {circuit.region_name or handle:#018x}: "
+                    f"{circuit.reliable_resends} resent, "
+                    f"{circuit.reliable_abandoned} given up on, "
+                    f"{len(circuit.pending_reliable)} still waiting"
+                )
 
     print()
     if repeats:
