@@ -4087,8 +4087,7 @@ complete path.
 
 **D -- done, live-verified 2026-09-05; two kinds added since.** Scripts
 and notecards below, then textures (2026-09-07, live-verified) and
-gestures (2026-09-07, `d9ce170`, **not yet live-verified** -- soak run 5
-owned the sim). The three that remain out are sounds, animations and
+gestures (2026-09-07, live-verified 2026-09-08). The three that remain out are sounds, animations and
 meshes, each of which needs an encoder or validator this client lacks;
 see the Object Sync Track section for why that is a boundary and not a
 to-do list.
@@ -4371,6 +4370,32 @@ first -- edit the row while it is running and the shutdown writes it back.
 it spins on `Console.KeyAvailable` and writes a gigabyte of the same error a
 minute.
 
+## Soak Run 5 Is Discarded, And The Report Now Says So (2026-09-08)
+
+Run 5 sampled every 30.0 s for forty-five minutes and then produced a single
+gap of **9,548 seconds**. The owner's own build had this machine at a load
+average of 356; the client drew 518 frames in two and a half hours, which is
+0.05 fps. Every container in the log kept its shape, so all fifty verdicts read
+as normal, and all fifty described a process that was barely running.
+
+The report already printed the machine load above the results, with a comment
+saying it was printed first because it decides whether to believe them.
+**Printing a condition is not refusing a conclusion.** A reader handed fifty
+plausible verdicts under one line about load will act on the verdicts.
+
+`Pace.starved` now measures it off the sampler's own interval rather than off
+the load: samples are taken from inside the frame loop, so the interval a run
+asked for is also a claim about how often the loop runs, and a gap several
+times that is the loop not being scheduled. That needs no core count and is
+the same number on any machine. Four times the interval, boundary pinned --
+healthy runs here hold 30.0 s to a tenth of a second across two hours.
+
+This is the third time the instrument has been the finding rather than the
+run: see also the sawtooth-phase entry and the cut-short one. The pattern is
+worth naming -- **a soak measures the machine unless something checks that it
+did not** -- and `ps -eo pid,pcpu,etimes,comm --sort=-pcpu | head` before
+believing any long measurement remains the cheap version.
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a
@@ -4535,7 +4560,14 @@ appears in it.
   notecard capability, so the push is `upload_task_gesture` -- nine lines on
   top of `upload_notecard_bytes` -- rather than a second protocol.
   `.gesture` is now in `TEXT_ASSET_TYPES` (7, 10, 21), so pull writes it and
-  push sends it back. **Not yet verified live**: soak run 5 owned the sim.
+  push sends it back, and an unmatched `.gesture` creates its row by the
+  notecard's two-hop route.
+
+  **Verified live on 2026-09-08** by `tools/verify_gesture_sync.py`: a folder
+  push creates the row, OpenSim types it `gesture`, a pull writes it back byte
+  for byte, an edit updates the asset in place rather than adding a row, the
+  asset fetched back is the edited gesture and it decodes, and a malformed
+  gesture is refused with the object's asset untouched.
 
   The one part that is not shared is the check. `_encode_for_upload` parses a
   gesture before sending it, which neither of the other two text types needs:
@@ -4561,6 +4593,30 @@ appears in it.
   `BunchOfCaps.cs` on a **commented-out** registration line, so a client that
   asks for it gets nothing. A first pass at the source pin counted it and
   said six; the pin now matches registrations rather than mentions.
+
+  **The inventory type had to be measured**, and this is the part worth
+  reading before adding the next type. A gesture is asset type 21 and
+  inventory *type* 20 -- the first type this client creates where the two
+  enumerations disagree, notecards being 7/7 and textures 0/0 -- and libomv's
+  `InventoryType` table is not in the committed OpenSim source, so there was
+  nothing here to pin it against. It was read off the **grid library**
+  instead, the 123-item default inventory every install ships:
+
+      0 -> 0    5 -> 18   7 -> 7    10 -> 10
+      13 -> 18  20 -> 19  21 -> 20  56 -> 25
+
+  `INV_TYPE_BY_ASSET_TYPE` in `caps/inventory_types` holds it and the live
+  tool re-reads it from the library every run. Clothing and body parts are
+  both 18, so the *asset* type is the only thing separating them; an animation
+  is 20/19 and a gesture 21/20, adjacent enough that passing the asset type
+  for both makes a gesture arrive as an animation.
+
+  The first version of that check read the *account's* gestures rather than
+  the library's, and it is a small classic. The account had none; the tool's
+  own crashed run left one behind; the next run found "1 gesture, inv_type
+  [20]" and said ok. **A check that can confirm an unpinned number with a
+  value it supplied itself is worse than no check** -- it converts "unknown"
+  into "verified" and nothing downstream can tell.
 
   Of the three names left, **Material** and **Settings** are the plausible
   next ones -- both carry structured text the way a gesture does -- but
