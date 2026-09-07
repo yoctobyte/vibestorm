@@ -27,6 +27,7 @@ from uuid import UUID
 
 from vibestorm.viewer3d.health import (
     CONDITION_NAMES,
+    GC_COUNTERS,
     MIN_SAMPLES_FOR_TREND,
     MIN_SAMPLES_FOR_VERDICT,
     OBJECT_CENSUS_PREFIX,
@@ -36,6 +37,7 @@ from vibestorm.viewer3d.health import (
     SoakLog,
     TypeCensus,
     format_growth_report,
+    freeze_static_heap,
     growth_report,
     machine_load_1m,
     pace_report,
@@ -1144,3 +1146,89 @@ class ConditionsTests(unittest.TestCase):
 
         with mock.patch("os.getloadavg", side_effect=OSError("no such thing here")):
             self.assertEqual(machine_load_1m(), 0.0)
+
+
+class CyclicGarbageTests(unittest.TestCase):
+    """The leak that is not a leak, and the two things that expose it.
+
+    pygame_gui builds a small graph of objects for every line of text it
+    lays out, and those objects refer to each other -- so only the *cyclic*
+    collector frees them. CPython runs its oldest generation when pending
+    long-lived allocations pass a quarter of the long-lived total, and a
+    viewer's static heap is most of that total and never garbage: it does
+    nothing but push the threshold up until the collection that would free
+    the text objects stops arriving in time. Soak run 3 was flat for
+    fifty-five minutes and then climbed to a gigabyte.
+    """
+
+    def test_freezing_takes_what_is_alive_out_of_the_collector_s_reach(self) -> None:
+        import gc
+
+        self.addCleanup(gc.unfreeze)
+        held = [object() for _ in range(64)]
+        before = len(gc.get_objects())
+        frozen = freeze_static_heap()
+
+        self.assertGreater(frozen, 0)
+        # `gc.get_objects()` does not report the permanent generation, which
+        # is also what makes the object census in a soak read as the world
+        # rather than as the viewer plus the world.
+        self.assertLess(len(gc.get_objects()), before)
+        self.assertEqual(len(held), 64)
+
+    def test_the_collection_counts_are_readable_and_rise(self) -> None:
+        import gc
+
+        for name, read in GC_COUNTERS.items():
+            value = float(read())
+            assert math.isfinite(value), name
+            assert value >= 0.0, name
+        before = GC_COUNTERS["gc.gen2"]()
+        gc.collect()
+        self.assertGreater(GC_COUNTERS["gc.gen2"](), before)
+
+    def test_every_collection_count_is_declared_a_counter(self) -> None:
+        """Or the report calls the fix a leak.
+
+        These only ever rise. Left as gauges they are three permanent
+        `growing` rows at the top of every soak report, which is how a report
+        stops being read -- and they are in it precisely so that a *slowing*
+        `gc.gen2` against a climbing `obj._total` can be seen for what it is.
+        """
+        import sys
+        from pathlib import Path as _Path
+
+        sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "tools"))
+        from soak_report import DEFAULT_COUNTERS
+
+        for name in GC_COUNTERS:
+            self.assertIn(name, DEFAULT_COUNTERS)
+
+    def test_the_viewer_declares_them(self) -> None:
+        from vibestorm.viewer3d.app import build_health_probe
+
+        probe = build_health_probe(
+            _StubScene(), _StubRenderer(), _StubClient(), _StubHud(), interval_s=30.0
+        )
+        for name in GC_COUNTERS:
+            self.assertIn(name, probe.counters)
+
+
+class _StubScene:
+    object_entities: dict = {}
+    avatar_entities: dict = {}
+
+
+class _StubRenderer:
+    pass
+
+
+class _StubClient:
+    current = None
+
+    def world_view(self):
+        return None
+
+
+class _StubHud:
+    pass

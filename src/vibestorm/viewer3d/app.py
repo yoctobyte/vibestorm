@@ -85,7 +85,13 @@ from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient, WorldClientError
 from vibestorm.viewer3d.camera import Camera, CameraPreset
 from vibestorm.viewer3d.gl_compositor import GLCompositor
-from vibestorm.viewer3d.health import HealthProbe, SoakLog, TypeCensus
+from vibestorm.viewer3d.health import (
+    GC_COUNTERS,
+    HealthProbe,
+    SoakLog,
+    TypeCensus,
+    freeze_static_heap,
+)
 from vibestorm.viewer3d.hud import HUD, ObjectAssetSelection
 from vibestorm.viewer3d.input import handle_event
 from vibestorm.viewer3d.perspective import PerspectiveRenderer
@@ -549,6 +555,7 @@ def build_health_probe(
         # client does not see.
         "scene.repeat_frames": _int_of(lambda: scene, "repeat_frames"),
         "scene.rebuilt_frames": _int_of(lambda: scene, "rebuilt_frames"),
+        **GC_COUNTERS,
     }
     return HealthProbe(
         gauges=gauges,
@@ -1251,6 +1258,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
     soak_log = SoakLog(Path(soak_path)) if soak_path else None
     probe = probe_for_args(args, scene, renderer, client, hud, soak_log=soak_log)
     run_seconds = float(getattr(args, "run_seconds", 0.0) or 0.0)
+    # Here and not earlier: everything above is the viewer itself and lives as
+    # long as the process, and everything after this line is the world, which
+    # does not. See `freeze_static_heap` -- a prim frozen here would be a real
+    # leak the moment its region went away.
+    frozen = freeze_static_heap()
+    print(f"[viewer3d] gc.freeze objects={frozen}", flush=True)
     frame_number = 0
     elapsed_s = 0.0
     try:

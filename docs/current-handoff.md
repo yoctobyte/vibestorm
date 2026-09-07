@@ -245,11 +245,80 @@ A log written before this says nothing rather than 0.0. Filling in a zero
 would have every soak before 2026-09-07 claim it was measured on an idle
 machine, which is exactly the claim they cannot support.
 
-**What run 4 is now.** Run 3 with the condition gauges and nothing else, so
-that there is one soak on the record whose numbers can be read at all. Only
-after that is the `--max-fps 6` experiment worth running, because until the
-report can say what the machine was doing, its result is as uninterpretable as
-run 3's was.
+**What run 4 is now.** Run 3 with the condition gauges and the `gc.freeze()`
+below, so that there is one soak on the record whose numbers can be read at
+all. Only after that is the `--max-fps 6` experiment worth running, because
+until the report can say what the machine was doing, its result is as
+uninterpretable as run 3's was.
+
+**A -- the leak was real, and it was the garbage collector's arithmetic
+(2026-09-07).** The section above is right that run 3's climb began when
+somebody else's build started, and wrong to stop there. Run 3 ran the full two
+hours and ended at **RSS 481 MB -> 1.04 GB**, with `obj.list` 5,541 -> 41,976
+and `TextBoxLayout` 132 -> 3,333, while `udp.total_received` and `frame` were
+straight lines from end to end. The inputs never changed. Something was
+keeping one text object per HUD line, forever.
+
+The objects are *cyclic garbage*: pygame_gui builds a small graph per laid-out
+line, the parts of it refer to each other, and only the cyclic collector frees
+them. So the question is not what holds a reference -- nothing does -- but why
+the collection stops arriving. CPython runs its oldest generation when
+`long_lived_pending > long_lived_total / 4`. A viewer's static heap is most of
+`long_lived_total` and is never garbage; it does nothing but push that
+threshold up, until a quarter of it is more text objects than the run
+produces.
+
+The harness that settled it is `tools/gc_pressure.py`: a real HUD with its
+diagnostics panel open, driven for twenty thousand frames with no window, and
+the heap sampled by type as it goes. What makes it work is that the sampling
+loop does **no** `gc.collect()` of its own. The first version called one before
+each census and reported a clean heap for as long as it was asked to -- a
+census that collects first cannot see a collection failing to happen. Removing
+that call reproduced the sawtooth on the first run, and the file now says so at
+the top so it does not get put back.
+
+    mode=none  frames=20000            mode=freeze  frames=20000
+      frame     list   deque  TextBox     frame     list   deque  TextBox
+          0     4382     346      105         0        6       0        0
+      12000    20894    3346     1605     10000     2266     409      204
+      14000     5048     472      168     12000      396      69       34
+    one full gc.collect(): 20.6 ms      one full gc.collect(): 2.0 ms
+
+Live objects sawtooth between 36,000 and 64,000 when left alone, and sit
+between 700 and 4,000 after `gc.freeze()`. The collection that ends each tooth
+costs **20.6 ms** in the first column and **2.0 ms** in the second -- a
+twenty-millisecond stall is a dropped frame at 30 fps and two at 60, so the
+old behaviour was not only growing, it was stuttering.
+
+`health.freeze_static_heap()` calls `gc.collect()` and then `gc.freeze()`,
+which moves everything alive at that instant into a permanent generation the
+collector never walks again. `app.py` calls it **immediately before the frame
+loop, after the session is up but before the world arrives** -- and that
+placement is the whole safety argument, not a convenience. Anything frozen is
+never freed. A prim frozen here would be a genuine leak the moment its region
+went away, so the call has to happen while the heap is the viewer and nothing
+else. It prints what it froze (`gc.freeze objects=12689`) so a later run can
+see whether that number has quietly started tracking the world.
+
+Three counters go on the sample -- `gc.gen0`, `gc.gen1`, `gc.gen2`, straight
+off `gc.get_stats()` -- and all three are declared **counters** in
+`tools/soak_report.py`, with a test that says so. Left as gauges they would be
+three permanent `growing` rows at the top of every report, which is how a
+report stops being read. They are there for one comparison: a `gc.gen2` that
+slows while `obj._total` climbs is this bug, by name, without a two-hour rerun.
+
+**Run 3 and run 4 do not compare on `obj.*`.** `gc.get_objects()` does not
+report the permanent generation, so from run 4 on the census counts the world
+and no longer the viewer plus the world. Run 4's opening `obj._total` will be
+far below run 3's and that is the fix working, not a different scene. Within a
+run the trend still means exactly what it meant.
+
+**What is deliberately not done.** A region of 15,000 prims makes 15,000
+long-lived objects, and `long_lived_total` climbs with them; freezing the
+startup heap buys headroom, it does not repeal the arithmetic. The follow-up
+is a periodic explicit `gc.collect()` on a measured budget, and it is left out
+on purpose so that run 4 measures **one** change. Two fixes in one soak is a
+soak that cannot say which one worked.
 
 **A -- a region that is not still is still mostly still (2026-09-07).** The
 repeat frame above catches the case where *nothing* moved. On a live mainland
@@ -376,7 +445,9 @@ Two changes, and neither closes it completely:
   to the truth on a machine somebody else is compiling on.
 
 And the load is printed at the bottom, for the same reason the soak report
-prints it at the top.
+prints it at the top. (The change rode in on `3bb4c40`, whose message is about
+the composing patch and does not mention it -- so this is the entry that
+records it.)
 
 Re-measured under that method, at load 15, before and after the composing
 patch:

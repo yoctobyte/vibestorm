@@ -43,6 +43,9 @@ DEFAULT_COUNTERS = (
     "world.object_updates",
     "scene.repeat_frames",
     "scene.rebuilt_frames",
+    "gc.gen0",
+    "gc.gen1",
+    "gc.gen2",
 )
 
 
