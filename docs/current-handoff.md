@@ -534,6 +534,90 @@ noisiest thing on it. The condition gauges caught it, which is what they are
 for -- but only because somebody went and read them. The `stepped` verdict is
 what makes the row stop asking.
 
+**A -- the size of every HTTP body was the far end's decision
+(2026-09-07).** The hostile-input sweep, taken one layer further out than
+the two bombs below, and it comes back positive on every fetch this client
+makes.
+
+Eleven call sites -- every cap resolution, every asset fetch, the
+event-queue poll -- read the body with `response.read()` and no argument.
+That reads until the server stops sending. A grid serving a two gigabyte
+body takes the viewer down with it, and it does not take malice: a
+misconfigured CDN or a bug in a region nobody has looked at in years does
+the same thing.
+
+**The bounds already in place do not help, and the reason is the
+recurring one.** `MAX_TEXTURE_PIXELS` refuses an oversized raster and
+`MAX_MESH_BLOCK_BYTES` refuses an over-inflating block, but both are
+checked once the bytes are in memory. A guard on the wrong side of an
+allocation is not a guard. `read_bounded` in `util/http_body.py` reads in
+chunks and stops one byte past the limit -- one byte, because that is how
+"too big" is told from "exactly at the limit" without reading the rest of
+it -- at 64 MB for asset bodies and 16 MB for LLSD, which carries
+structure rather than content.
+
+`Content-Length` is consulted first so that a truthful server lets us
+refuse before transferring anything, and it is never the bound. A header
+is a claim, which is precisely what the J2K size below turned out to be.
+
+**The caller passes its own exception type in.** Not because a shared one
+would be inconvenient but because a shared one would be *missed*: that is
+how `DecompressionBombError` got past `decode_j2k`. Passing the type in
+makes a new escape impossible rather than merely unlikely.
+
+**The test doubles had to become honest first, and that is the part worth
+remembering.** Seventeen hand-rolled fake responses across eight files had
+`read()` with no argument, returning the whole body in one go. That was a
+faithful double while the clients read the same way. It stopped being one
+the moment a ceiling existed, and a fake that ignores the argument cannot
+tell a bounded read from an unbounded one -- it reports every ceiling as
+working, *including a missing one*. They now serve from a cursor out of
+`test/http_fakes.py`, and three grew real headers; one of them had
+`headers = self`, which answered `get_content_type` and nothing else.
+
+The tests that matter assert on what the response was **asked for**, not
+on what came back, because a length check after the read passes every
+other test in the file while guarding nothing. A source scan fails the
+suite if any module that speaks `urllib.request` grows a twelfth
+unbounded read, because the defect is not any one of those lines -- it is
+that `response.read()` is the obvious thing to write and is always wrong.
+
+**And the login path, which the scan could not see.** `login/client.py`
+speaks XML-RPC, not `urllib.request`, and had both halves of the same
+problem on the one code path that runs before the user has been told
+anything.
+
+`Transport.parse_response` loops on `stream.read(1024)` and feeds every
+piece to the parser until the server stops. The *reads* are bounded; the
+accumulation is not. `TimeoutTransport` already existed to set a socket
+timeout, so the loop is replaced there at 8 MB against a real login struct
+of a few kilobytes -- counting decompressed bytes, because `Transport`
+asks for gzip and unwraps it in that method, and deflate reaches about
+1,029:1. A test builds an over-limit body that compresses to under it, so
+that line cannot quietly move.
+
+The other half was a crash. `xml.parsers.expat.ExpatError` is neither an
+`xmlrpc.client.Error` nor an `OSError`, so a truncated response -- or a
+proxy's HTML error page, which is how this actually happens -- left
+`_login_sync` as itself, past four handlers, and reached the user as a
+traceback instead of a failed login. **This is the third time this exact
+shape has appeared**, after `DecompressionBombError` and the SimStats
+field name, and the pattern is now clear enough to state: the exception
+that escapes is the one raised by a layer you did not write.
+
+Checked and deliberately not changed: libexpat's own billion-laughs
+protection is active in this interpreter and refuses a 614-byte document
+claiming a billion characters, at 57 MB peak. That defence belongs to the
+library and there is nothing to add -- but it raises `ExpatError`, which
+is half of why the escape above mattered.
+
+Batteries: 11 of 11 on the HTTP reader, 11 of 11 on the login transport.
+Two of those die by hanging the suite rather than reddening it, which is
+a detection and is recorded as one. One mutant on the HTTP reader was
+equivalent -- a guard against a negative `Content-Length`, which is not
+over any limit -- so the guard was removed rather than left there
+implying it did something.
+
 **A -- a texture states its own size, and the decoder believed it
 (2026-09-07).** The hostile-input sweep again, on the last unbounded path
 from the wire into memory. This one comes back positive, and one half of it
