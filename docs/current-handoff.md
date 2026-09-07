@@ -4262,48 +4262,51 @@ The probe clears what it set. A following `./run.sh census` reporting the five
 back under `absent=` is the restore check; leaving them set would make every
 later census read them as real region content.
 
-## Object Sync Track
+## Object Sync Track — done, and what is actually left (rewritten 2026-09-07)
 
-The next coherent file feature track is object-local script/notecard sync, not
-more generic user-inventory upload.
+**This section used to be a five-step plan for building object sync, and every
+step of it had been built.** It was left standing as a to-do list for a year
+of commits, which is a worse failure than an out-of-date note: a next agent
+reads "Implement it in this order" and implements it again. Rewritten as a
+record, with the remaining gap stated once and precisely.
 
-Implement it in this order:
+Verified present in the tree on 2026-09-07:
 
-1. Add a task-inventory asset update CAP client beside
-   `src/vibestorm/caps/asset_upload_client.py`.
-   - Resolve `UpdateScriptTask` first, then fall back to
-     `UpdateScriptTaskInventory` for script rows.
-   - Resolve `UpdateNotecardTaskInventory` for notecard rows.
-   - Match OpenSim's two-step shape: POST LLSD metadata to the CAP, receive
-     `state=upload` plus `uploader`, then POST raw file bytes to the uploader.
-2. Start with updating existing object inventory items only.
-   - Script metadata is `item_id`, `task_id`, and `is_script_running`.
-   - Notecard task updates appear to share the broader item-asset update path;
-     verify the exact request keys against `referencedocs/Caps/BunchOfCaps/UpdateItemAsset.cs`
-     before coding.
-   - Do not create new object inventory rows yet; that can follow after update
-     is proven live.
-3. Add a narrow sync planner in `viewer3d`.
-   - Use the selected object's `task_id` as the local folder key:
-     `local/asset-downloads/<task-id>/`.
-   - Match `.lsl` files to visible script inventory rows and `.txt` / `.nc`
-     files to visible notecard rows by sanitized item name.
-   - For the first pass, upload only exact name matches and report skipped
-     files in chat/status.
-4. Wire Object Inspector `Upload` to selected-object sync when an object
-   inventory row set is loaded; keep the current user-inventory upload as the
-   fallback when no selected object context exists.
-5. Live verify on local OpenSim with `./run.sh tester viewer3d`:
-   download an object's scripts/notecards, edit one local file, upload/sync,
-   reload task inventory, and view the item again.
+* `src/vibestorm/caps/task_inventory_upload_client.py` — the task-inventory
+  asset update CAP client, beside `asset_upload_client.py` as planned.
+* `SCRIPT_TASK_CAP_NAMES = ["UpdateScriptTask", "UpdateScriptTaskInventory"]`
+  and `NOTECARD_TASK_CAP_NAME` in `sync/engine.py`: current name first, legacy
+  alias as the fallback.
+* `sync/plan.py` and `sync/engine.py` — the planner and the transfer engine,
+  with `TRANSFER` / `SKIP` / `CONFLICT` outcomes per row.
+* `HUD._sync_selected_object_to_folder`, wired to the Object Inspector.
 
-Keep these scope limits for the first pass:
+Two of the first pass's scope limits have since been lifted, so the list of
+what sync will not do is shorter than this section used to claim.
+`create_task_script_rows` and `create_task_notecard` mean missing object
+inventory rows *are* created now, and `include_binary` exports the types sync
+cannot author. Still deliberately out of scope, and still accurate: no
+deletes, no merges, no recursive folders, no automatic upload on every change.
 
-- no bidirectional conflict resolution
-- no deletes
-- no creating missing object inventory items
-- no recursive folder sync
-- no automatic upload on every file change
+**The one real gap, for D.** Text assets round-trip -- scripts and notecards,
+types 10 and 7, `TEXT_ASSET_TYPES`. Everything else is **export-only**, by a
+decision recorded in `engine.py` and worth keeping in view rather than
+rediscovering: *"Everything outside the two text types is written
+byte-for-byte and marked unpushable too. Exporting a texture is useful;
+pretending we could author one back is not."*
+
+That decision is right about *round-tripping* an asset this client decoded.
+It is not the same question as **D** -- "upload a whole folder into an
+in-world selected object" -- where the folder is one the owner assembled and
+the texture in it is a PNG they made, not something exported from world.
+Uploading that is a different operation from updating an existing item:
+`NewFileAgentInventory`, a J2K encode, then a task-inventory row. So a folder
+containing a script and a texture currently uploads the script and reports the
+texture skipped, which is honest but is not all of D.
+
+Whether to build that is the owner's call, because it decides what D means.
+It is the largest remaining piece of C/D/E and nothing else in the track is
+blocked behind it.
 
 ## Update 2026-08-14: Self-Checking Ledgers, IM, Teleport
 
