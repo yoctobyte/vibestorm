@@ -446,6 +446,86 @@ one line that computes it from a message had no test at all, and a live
 screenshot found in one glance what 2,430 tests could not. The new tests feed
 the view instead of the scene.
 
+**A -- one prim could take the whole viewer down, and nothing local would
+ever send it (2026-09-07).** `test_decoder_fuzz.py` covers bytes that do not
+parse. This is the other half: updates that parse *perfectly* and mean
+something impossible. A position of NaN, a rotation of infinity, a scale of
+1e300 -- every one of those is a well-formed `ObjectUpdate`, and every one of
+them reached the renderer untouched.
+
+The failure is not a smear. `_instance_blob` packs each model matrix with
+`struct.pack("19f", ...)`, and `struct.pack` **raises `OverflowError`** on a
+finite number too large for a 32-bit float:
+
+    >>> struct.pack("<f", 1e300)
+    OverflowError: float too large to pack with f format
+
+Inside the draw loop, on a frame, from one prim among fifteen thousand. NaN
+and infinity pack without complaint and go on to smear geometry across the
+frame instead, which is the milder half of the same problem.
+
+So a transform that is not a place gets no place, exactly like one whose
+parent never arrived -- and the machinery for that already exists and already
+knows how to carry it. `linkset.is_a_place` is seven chained comparisons
+against `FLOAT32_MAX`, and the chain does three jobs at once: a NaN fails both
+halves, an infinity fails the upper half, and so does a finite number too big
+to narrow. A region is 256 m across and the largest varregion 8,192, so
+nothing legitimate comes within thirty-five orders of magnitude of the bound.
+
+Four things it took a while to get right:
+
+* **The composed result is checked, not the reported offsets.** Two prims each
+  well inside the bound compose to a child outside it, so a parent and a child
+  that are each drawable produce a child that is not.
+* **A prim that loses its place this way has to be reported as moved**, or
+  last frame's entity stays on screen at last frame's position. It joins the
+  `pending` walk at the end of the resolve, which already exists for exactly
+  this.
+* **The resolve is not enough on its own.** A region with nothing parented
+  never calls it -- composing is skipped when there is nothing to compose,
+  which is the whole local test region -- so a root's position reaches the
+  entity build unexamined. The gate is in both places, and the end-to-end test
+  is what found that: the scene still drew all four bad prims after the
+  resolve was fixed.
+* **There are three doors, not two.** `ImprovedTerseObjectUpdate` carries raw
+  floats and no parent id, so a terse-only prim is neither composed by the
+  resolve nor built by the loop that gates full updates -- it gets a
+  placeholder of its own, into the same instance buffer. Found by asking the
+  question a third time rather than by a test.
+* **Scale needs its own gate.** It is not part of a transform, because it is
+  not relative and is never composed, but it lands in the same matrix and
+  packs through the same `struct.pack`. A zero or negative scale is *not*
+  rejected: nothing and inside-out are pictures, not crashes, and leaving them
+  out would be the client deciding what content is allowed.
+
+The test that matters is the last one in the file: build a scene from nine
+hostile prims and pack every entity it produced. It fails on an
+`OverflowError` rather than on an assertion, which is the actual bug rather
+than a proxy for it.
+
+Twelve mutants, twelve killed, first time -- including the four that matter
+most: dropping either gate, dropping either half of the transform check, and
+not reporting a lost place as a move.
+
+**Terrain was checked and left alone, on purpose.** A NaN height smears the
+ground mesh the same way, but it cannot crash: the terrain path builds its
+vertices with `array("f", ...)`, which turns 1e300 into an infinity silently
+where `struct.pack` raises. And 4,000 random blobs through `decode_layer_blob`
+produced *no* decoded patches at all -- the group header rejects every one --
+so there is no demonstration that a non-finite height is even reachable.
+Guarding it would be a guess dressed as a fix. Recorded here so the next
+person knows the question was asked rather than missed; if a real grid ever
+produces one, the guard goes in `RegionHeightmap.apply_patch` and this
+paragraph is the reason it was not there already.
+
+Cost, measured back to back on the same machine: somewhere between nothing and
+seven per cent on the frames that rebuild entities, which is to say **inside
+this machine's noise floor** -- best-of-three rounds still swung ±10% between
+identical runs at load 4, and two of the nine rows came out *faster* with the
+gates in. It is ten comparisons per rebuilt entity and it is only paid on
+prims that changed. Worth re-measuring on a quiet machine if that path is ever
+the bottleneck again; not worth optimising against noise now.
+
 **A -- the same defect one field over, and an instrument so it is the last
 one found by squinting (2026-09-07).** `TimeDilation` is a U16 in every
 object-update header and it is a 0-to-1 float packed into one -- OpenSim

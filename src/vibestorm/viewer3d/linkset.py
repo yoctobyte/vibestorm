@@ -33,11 +33,20 @@ Two cases that matter as much as the arithmetic:
   routinely seen before its root. Such a child is reported unresolved rather
   than guessed at -- drawing it at its raw position is the bug this module
   exists to fix, and drawing it at the origin is no better.
+- **A number that is not a place.** A NaN or an infinity in a position or a
+  rotation is not a coordinate, and a viewer that hands one to the graphics
+  card does not draw one bad prim: a non-finite vertex takes its whole
+  triangle somewhere undefined, and on most hardware that is a smear across
+  the frame. So it is treated exactly like the missing parent above -- no
+  place, therefore nothing drawn. Nothing local sends one; the main grid is
+  full of content this client has never seen, and "without crashes" is the
+  first line of the brief.
 """
 
 from __future__ import annotations
 
 from collections.abc import Container, Mapping
+from itertools import chain
 
 Vec3 = tuple[float, float, float]
 Quat = tuple[float, float, float, float]
@@ -94,6 +103,47 @@ def compose(parent: Transform, child: Transform) -> Transform:
     )
 
 
+#: The largest magnitude a 32-bit float holds.
+#:
+#: The renderer packs every model matrix with `struct.pack("...f", ...)`, and
+#: that raises `OverflowError` on a number past this -- inside the draw loop,
+#: on a frame, from one prim. Not a smear: a crash. So the bound belongs here,
+#: where a prim can still be left out, and not in a vertex buffer where it
+#: cannot. A region is 256 m across and the largest varregion is 8,192, so
+#: nothing legitimate comes within thirty-five orders of magnitude of it.
+FLOAT32_MAX = 3.4028235e38
+
+
+def is_a_place(transform: Transform) -> bool:
+    """Whether a resolved transform is somewhere rather than nowhere.
+
+    Seven floats, each of which has to be a number the graphics card can be
+    given. The chained comparison is doing three jobs at once: a NaN fails
+    both halves of it, an infinity fails the upper half, and so does a finite
+    number too big to narrow to a float32 -- which is the one that crashes
+    rather than smears.
+
+    Checked on transforms as they are *made* -- newly arrived roots and
+    freshly composed children -- and not on the ones carried over from last
+    frame, which were checked when they were made. On a still region that is a
+    handful of prims a frame; on the first frame it is the region, once.
+
+    Composition is why the *result* is checked rather than the input: two
+    numbers well inside the bound add to one outside it, so a parent and a
+    child that are each somewhere can compose to a child that is nowhere.
+    """
+    position, rotation = transform
+    return (
+        -FLOAT32_MAX <= position[0] <= FLOAT32_MAX
+        and -FLOAT32_MAX <= position[1] <= FLOAT32_MAX
+        and -FLOAT32_MAX <= position[2] <= FLOAT32_MAX
+        and -FLOAT32_MAX <= rotation[0] <= FLOAT32_MAX
+        and -FLOAT32_MAX <= rotation[1] <= FLOAT32_MAX
+        and -FLOAT32_MAX <= rotation[2] <= FLOAT32_MAX
+        and -FLOAT32_MAX <= rotation[3] <= FLOAT32_MAX
+    )
+
+
 def resolve_world_transforms(
     local_transforms: Mapping[int, tuple[int, Vec3, Quat | None]],
     *,
@@ -140,6 +190,12 @@ def resolve_world_transforms(
     if moved is None:
         moved = set()
 
+    # Ids with no place *and* no hope of one: a position or rotation that is
+    # not a number. Kept apart from `pending`, which is retried every pass,
+    # because retrying these would never help -- but they need the same
+    # ending, since one of them may have had a place last frame.
+    nowhere: list[int] = []
+
     known_get = known.get
     resolved_get = resolved.get
     moved_add = moved.add
@@ -148,8 +204,12 @@ def resolve_world_transforms(
         if not parent_id:
             was = known_get(local_id) if local_id in unchanged else None
             if was is None:
+                here = (position, turn)
+                if not is_a_place(here):
+                    nowhere.append(local_id)
+                    continue
                 moved_add(local_id)
-                resolved[local_id] = (position, turn)
+                resolved[local_id] = here
             else:
                 resolved[local_id] = was
         else:
@@ -176,8 +236,13 @@ def resolve_world_transforms(
                 continue
             was = known_get(local_id) if local_id in unchanged else None
             if was is None or parent_id in moved:
+                here = compose(parent, (entry[1], entry[2]))
+                if not is_a_place(here):
+                    nowhere.append(local_id)
+                    progressed = True
+                    continue
                 moved_add(local_id)
-                resolved[local_id] = compose(parent, (entry[1], entry[2]))
+                resolved[local_id] = here
             else:
                 resolved[local_id] = was
             progressed = True
@@ -191,7 +256,7 @@ def resolve_world_transforms(
     # to hear about the ones that had one last time -- losing a placement is a
     # change, and the only other way to notice it is to compare every id in
     # last frame's answer against this one.
-    for local_id in pending:
+    for local_id in chain(pending, nowhere):
         if local_id in known:
             moved_add(local_id)
 
@@ -199,11 +264,13 @@ def resolve_world_transforms(
 
 
 __all__ = [
+    "FLOAT32_MAX",
     "IDENTITY",
     "Quat",
     "Transform",
     "Vec3",
     "compose",
+    "is_a_place",
     "quat_multiply",
     "quat_rotate",
     "resolve_world_transforms",

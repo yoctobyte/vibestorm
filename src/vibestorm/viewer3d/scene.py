@@ -76,7 +76,13 @@ from vibestorm.viewer3d.avatar_pose import (
     pose_for_motion,
     sit_pose,
 )
-from vibestorm.viewer3d.linkset import IDENTITY, compose, resolve_world_transforms
+from vibestorm.viewer3d.linkset import (
+    FLOAT32_MAX,
+    IDENTITY,
+    compose,
+    is_a_place,
+    resolve_world_transforms,
+)
 from vibestorm.world.chat_types import (
     CHAT_TYPE_SAY,
     CHAT_TYPE_START_TYPING,
@@ -1346,6 +1352,27 @@ def _asset_id(raw: str) -> UUID | None:
     return None if asset_id.int == 0 else asset_id
 
 
+def _is_a_size(scale: object) -> bool:
+    """Whether a scale is three numbers the graphics card can be given.
+
+    The chained comparison rejects a NaN, an infinity and a finite number too
+    large to narrow to a float32 in one go -- see `linkset.is_a_place`, which
+    does the same for a position and says why the last of those is a crash
+    rather than a smear. A zero or a negative scale is *not* rejected: a
+    degenerate prim draws nothing and a mirrored one draws inside out, and
+    neither takes the frame with it.
+    """
+    try:
+        x, y, z = scale  # type: ignore[misc]
+    except (TypeError, ValueError):
+        return False
+    return (
+        -FLOAT32_MAX <= x <= FLOAT32_MAX
+        and -FLOAT32_MAX <= y <= FLOAT32_MAX
+        and -FLOAT32_MAX <= z <= FLOAT32_MAX
+    )
+
+
 def _as_vec3(value: object | None) -> tuple[float, float, float] | None:
     if value is None:
         return None
@@ -1563,6 +1590,21 @@ def _build_entities(
             position = (position[0] + offset_x, position[1] + offset_y, position[2])
 
         scale = getattr(obj, "scale", (1.0, 1.0, 1.0))
+        if not is_a_place((position, rot if rot is not None else IDENTITY)) or not _is_a_size(
+            scale
+        ):
+            # A prim whose position, rotation or size is not a number the
+            # graphics card can be given is left out, exactly like one whose
+            # parent never arrived -- see `linkset.is_a_place`, which says why
+            # that is a crash rather than a smear.
+            #
+            # Checked here as well as in the resolve, and not instead of it,
+            # because a region with nothing parented never calls the resolve:
+            # composing is skipped entirely when there is nothing to compose,
+            # so a root's position reaches this loop unexamined. The resolve's
+            # copy is still the one that matters for a linkset, where it also
+            # stops a child being composed off a parent that is nowhere.
+            continue
         yaw = _quat_to_yaw(rot)
         name = None
         properties = getattr(obj, "properties_family", None)
@@ -1618,6 +1660,13 @@ def _build_entities(
         position = terse.position
         if shifted:
             position = (position[0] + offset_x, position[1] + offset_y, position[2])
+        if not is_a_place((position, terse.rotation or IDENTITY)):
+            # The third door into the same room. A terse update carries raw
+            # floats and no parent id, so it is neither composed nor gated by
+            # the loop above -- and a placeholder at NaN packs into the same
+            # instance buffer as anything else. Its scale is the fixed
+            # placeholder, so there is nothing to check there.
+            continue
         entity = SceneEntity(
             local_id=terse.local_id,
             pcode=pcode,
