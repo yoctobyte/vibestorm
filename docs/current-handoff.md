@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-07 (fifteenth pass)
+Last updated: 2026-09-07 (sixteenth pass)
 
 ## The Owner's Priorities
 
@@ -170,6 +170,81 @@ region with three prims in it -- 340 MB to 489 MB over the two hours, while ever
 gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
+
+**A -- the leak that no gauge names, and the instrument for it
+(2026-09-07).** Two hours against the quiet local region: `proc.rss_bytes`
+climbed 45 MB an hour and `proc.py_blocks` 52,000 an hour, both still climbing
+at the end, while every one of the forty-odd container gauges came back
+`settled` or `flat`. Fifty-two thousand blocks an hour against forty-five
+megabytes is about 865 bytes a block, so whatever it is, it is not small and
+there is a lot of it.
+
+Adding another gauge cannot find this. A gauge names a container somebody
+thought of, and the whole content of the finding is that nobody thought of
+this one. So `TypeCensus` counts *every* live object by type, on the same
+cadence as everything else, and the report ranks the type names exactly the
+way it ranks the gauges. `--soak-objects` turns it on; it is off by default
+because it walks the heap, and it times itself into `obj._census_ms` so a
+long `longest_gap_s` in the report can be told from the instrument stopping
+the world to count.
+
+Two properties make the record readable afterwards, and both are the kind of
+thing that looks like a detail until the run is over.
+
+*A name once reported keeps being reported.* The naive instrument writes down
+the current top forty, and the leak is precisely the type that is **not** in
+the first top forty -- it climbs into it halfway through. Its series would
+then start halfway through the run with nothing to compare the end against.
+So the census follows a name for ever once it has seen it, reporting zero if
+the type is gone, which is a fact rather than a gap.
+
+*And it is bounded*, because an instrument that grows without bound while
+hunting a thing that grows without bound is not funny twice. 512 names, and
+`obj._untracked_types` says how many were dropped rather than dropping them
+quietly -- a process minting classes at runtime would hit that ceiling, and
+that would itself be the finding.
+
+**What it cannot see, stated up front.** `gc.get_objects()` returns only what
+the collector tracks, which excludes `str`, `bytes`, `int` and `float`. A
+million leaked strings held in one list reads here as that list's type being
+perfectly ordinary. So a census that finds nothing is not "no leak": it is a
+leak in something untracked or something native, and `tracemalloc` grouped by
+allocation site is the next instrument after this one, not a fallback.
+
+**What run 1's own numbers already say about the shape.** Read minute by
+minute rather than as one rate, the leak has a start. `proc.py_blocks` fills
+to about 425,000 in the first twenty minutes -- caches, and expected -- then
+sits between 425,000 and 430,000 for twenty more, and from roughly minute
+forty climbs at a steady 750 blocks a minute for the remaining eighty, all
+the way to 489,539. Not a curve that flattens: a straight line.
+
+`proc.rss_bytes` is the *worse* of the two readings and it is worth knowing
+why, because it reads like a second finding and is not one. RSS sits at
+exactly 443.2 MB from minute twelve to minute sixty and only then starts to
+climb. Blocks were already growing for twenty minutes of that. The allocator
+was handing out memory it already held, and RSS moved when the free pool ran
+out -- so RSS *lags*, and its "45 MB an hour" is an average across a flat
+stretch and a steep one. `proc.py_blocks` is the leading indicator, and the
+one to read first.
+
+750 blocks a minute at seven frames a second is under two blocks a frame, and
+at 718 bytes a block whatever it is is not small. Which is exactly the size of
+thing a type histogram names in one run.
+
+**Mutation:** 29 mutants, all killed, over two batteries. The first battery's
+baseline was red and the reason is worth writing down: killing an earlier
+battery with `pkill` left one mutant applied, the next battery captured *that*
+as its original, and so it measured everything against a file that was already
+wrong -- two of its anchors "not found", one test failing throughout, and one
+mutant reported as surviving that could not have been. This is the hazard the
+standing rule exists for, and `pkill` is a second way to trip it: check `git
+diff` on the mutated file before trusting a battery's baseline.
+
+**Not covered, and said rather than glossed:** nothing drives the viewer's own
+frame loop, so a mutant that passes `soak_log=None` at the call site in
+`main`'s loop would survive. `probe_for_args` exists to shrink that gap to one
+line -- everything downstream of the command line is now testable -- but the
+one line is still untested.
 
 **A -- a soak that dies reads exactly like a soak that was short
 (2026-09-07).** The local grid has one avatar. `local/vibestorm-login.env`

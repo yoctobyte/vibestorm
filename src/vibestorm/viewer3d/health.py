@@ -24,16 +24,19 @@ is not a crash, and nothing else in this client would notice it.
 
 from __future__ import annotations
 
+import gc
 import json
 import math
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 Gauge = Callable[[], float]
+Census = Callable[[], Mapping[str, float]]
 
 #: How many samples a growth verdict needs before it means anything. Two
 #: points are a line through anything; the halves the verdict rests on need
@@ -87,6 +90,107 @@ PROCESS_GAUGES: dict[str, Gauge] = {
 }
 
 
+#: Every name a census emits starts with this, so a census can never be
+#: mistaken for -- or quietly overwrite -- a gauge somebody declared.
+OBJECT_CENSUS_PREFIX = "obj."
+
+#: How many types are picked up from each reading. Forty because the report is
+#: read by eye and the tail of a type histogram is thousands of names with two
+#: objects apiece; the leak is not down there.
+OBJECT_CENSUS_TOP = 40
+
+#: A ceiling on the names the census will follow, because an instrument that
+#: grows without bound while looking for something that grows without bound is
+#: not funny twice. Reached only by a process minting classes at runtime --
+#: which would itself be the finding, and `obj._untracked_types` says so.
+OBJECT_CENSUS_LIMIT = 512
+
+
+def _type_name(cls: type) -> str:
+    module = getattr(cls, "__module__", "") or ""
+    name = getattr(cls, "__qualname__", None) or getattr(cls, "__name__", "?")
+    if module in ("", "builtins"):
+        return name
+    return f"{module}.{name}"
+
+
+class TypeCensus:
+    """How many live objects of each type there are, on the soak's cadence.
+
+    The instrument the rest of this file could not be. Forty-odd container
+    gauges all read `settled` over two hours while RSS climbed forty-five
+    megabytes an hour and `proc.py_blocks` fifty-two thousand: something was
+    growing that no gauge named, and no amount of adding gauges finds a thing
+    nobody has thought of. A histogram names it without being told.
+
+    **What it cannot see.** `gc.get_objects()` returns only what the collector
+    tracks, which excludes every atomic object -- `str`, `bytes`, `int`,
+    `float`. A million leaked strings held by one list shows up here as that
+    list's *type* being ordinary and `proc.py_blocks` climbing anyway. So a
+    census that finds nothing is not "no leak": it is a leak in something
+    untracked, and the next instrument after this one is `tracemalloc`.
+
+    **What it costs.** A full traversal of the heap, which is why it is off
+    unless asked for and why it times itself into `obj._census_ms`: a soak
+    report that shows a two-second `longest_gap_s` should be able to tell a
+    hitch in the viewer from the instrument stopping the world to count.
+
+    **Why the names stick.** A type reported in one sample and not the next
+    has no series, and a leak is exactly the type that climbs *into* the top
+    forty halfway through a run. So every name once reported keeps being
+    reported -- at zero if it is gone, which is a fact and not a gap.
+    """
+
+    def __init__(
+        self,
+        *,
+        top: int = OBJECT_CENSUS_TOP,
+        limit: int = OBJECT_CENSUS_LIMIT,
+        objects: Callable[[], Iterable[object]] = gc.get_objects,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> None:
+        self._top = top
+        self._limit = limit
+        self._objects = objects
+        self._clock = clock
+        self._tracked: list[str] = []
+        self._tracked_set: set[str] = set()
+
+    @property
+    def tracked(self) -> tuple[str, ...]:
+        return tuple(self._tracked)
+
+    def counts(self) -> dict[str, int]:
+        """The raw histogram, every type, no truncation."""
+        tally: dict[str, int] = {}
+        for obj in self._objects():
+            name = _type_name(type(obj))
+            tally[name] = tally.get(name, 0) + 1
+        return tally
+
+    def __call__(self) -> dict[str, float]:
+        started = self._clock()
+        tally = self.counts()
+        for name, _count in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))[
+            : self._top
+        ]:
+            if name in self._tracked_set or len(self._tracked) >= self._limit:
+                continue
+            self._tracked.append(name)
+            self._tracked_set.add(name)
+        out: dict[str, float] = {
+            f"{OBJECT_CENSUS_PREFIX}{name}": float(tally.get(name, 0))
+            for name in self._tracked
+        }
+        out[f"{OBJECT_CENSUS_PREFIX}_total"] = float(sum(tally.values()))
+        out[f"{OBJECT_CENSUS_PREFIX}_types"] = float(len(tally))
+        out[f"{OBJECT_CENSUS_PREFIX}_untracked_types"] = float(
+            sum(1 for name in tally if name not in self._tracked_set)
+        )
+        out[f"{OBJECT_CENSUS_PREFIX}_census_ms"] = (self._clock() - started) * 1000.0
+        return out
+
+
 @dataclass
 class HealthProbe:
     """Reads a named set of numbers, on a cadence, without ever raising.
@@ -100,6 +204,12 @@ class HealthProbe:
 
     gauges: Mapping[str, Gauge] = field(default_factory=dict)
     counters: Mapping[str, Gauge] = field(default_factory=dict)
+    #: Readings that come in bunches, because one traversal answers for all of
+    #: them at once -- a type histogram is the reason this exists. Each is
+    #: called once per sample and returns a whole mapping; a census that
+    #: raises contributes nothing rather than ending the run, and a census may
+    #: never overwrite a name already in the sample.
+    censuses: Sequence[Census] = ()
     interval_s: float = 30.0
     #: How long the run was asked to last, if it was asked for anything. Goes
     #: into every sample so the report can say whether the run it is reading
@@ -143,6 +253,12 @@ class HealthProbe:
             out[name] = _read(read)
         for name, read in self.counters.items():
             out[name] = _read(read)
+        for census in self.censuses:
+            for name, value in _read_census(census).items():
+                # First writer wins. The prefix should make a collision
+                # impossible; if one happens anyway, the declared gauge is the
+                # one somebody is reading the report for.
+                out.setdefault(name, value)
         return out
 
     @property
@@ -161,6 +277,25 @@ def _read(read: Gauge) -> float | None:
     if not math.isfinite(value):
         return None
     return value
+
+
+def _read_census(census: Census) -> Mapping[str, float]:
+    try:
+        reading = census()
+    except Exception:
+        # Same rule as `_read`, for the same reason, and it bites harder here:
+        # a census walks the whole heap while the viewer is running, so it has
+        # more ways to fail than any single gauge does.
+        return {}
+    if not isinstance(reading, Mapping):
+        return {}
+    return {
+        name: value
+        for name, value in reading.items()
+        if isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    }
 
 
 class SoakLog:
@@ -476,13 +611,18 @@ def _num(value: float) -> str:
 
 
 __all__ = [
+    "Census",
     "Gauge",
     "Growth",
     "Pace",
     "HealthProbe",
     "MIN_SAMPLES_FOR_TREND",
     "MIN_SAMPLES_FOR_VERDICT",
+    "OBJECT_CENSUS_LIMIT",
+    "OBJECT_CENSUS_PREFIX",
+    "OBJECT_CENSUS_TOP",
     "PROCESS_GAUGES",
+    "TypeCensus",
     "SoakLog",
     "format_growth_report",
     "growth_report",

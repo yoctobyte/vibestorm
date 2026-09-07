@@ -85,7 +85,7 @@ from vibestorm.udp.session import SessionConfig, run_live_session
 from vibestorm.udp.world_client import WorldClient, WorldClientError
 from vibestorm.viewer3d.camera import Camera, CameraPreset
 from vibestorm.viewer3d.gl_compositor import GLCompositor
-from vibestorm.viewer3d.health import HealthProbe, SoakLog
+from vibestorm.viewer3d.health import HealthProbe, SoakLog, TypeCensus
 from vibestorm.viewer3d.hud import HUD, ObjectAssetSelection
 from vibestorm.viewer3d.input import handle_event
 from vibestorm.viewer3d.perspective import PerspectiveRenderer
@@ -332,6 +332,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=30.0,
         help="Seconds between health samples. Only used with --soak-log.",
     )
+    parser.add_argument(
+        "--soak-objects",
+        action="store_true",
+        help=(
+            "Also count live objects by type in every health sample. Answers "
+            "the question the named gauges cannot -- what is growing that "
+            "nobody thought to gauge -- at the price of walking the whole heap "
+            "each time, which the report shows as obj._census_ms. Only used "
+            "with --soak-log."
+        ),
+    )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument(
@@ -389,8 +400,37 @@ def _len_of(owner_get, *names: str):
     return read
 
 
+def probe_for_args(args, scene, renderer, client, hud, *, soak_log) -> HealthProbe | None:
+    """Turn the soak flags into a probe, or into nothing at all.
+
+    Its own function because a correct `build_health_probe` reached with the
+    wrong arguments is invisible: every test of the builder passes while
+    `--soak-objects` never arrives, and the run comes back without the one
+    reading it was started for. Here the whole translation from command line
+    to probe is one thing a test can call.
+    """
+    if soak_log is None:
+        return None
+    return build_health_probe(
+        scene,
+        renderer,
+        client,
+        hud,
+        interval_s=float(getattr(args, "soak_interval", 30.0)),
+        run_seconds=float(getattr(args, "run_seconds", 0.0) or 0.0),
+        census_objects=bool(getattr(args, "soak_objects", False)),
+    )
+
+
 def build_health_probe(
-    scene, renderer, client, hud, *, interval_s: float, run_seconds: float = 0.0
+    scene,
+    renderer,
+    client,
+    hud,
+    *,
+    interval_s: float,
+    run_seconds: float = 0.0,
+    census_objects: bool = False,
 ) -> HealthProbe:
     """Every container in the viewer that a long run could quietly fill.
 
@@ -507,6 +547,7 @@ def build_health_probe(
     return HealthProbe(
         gauges=gauges,
         counters=counters,
+        censuses=(TypeCensus(),) if census_objects else (),
         interval_s=interval_s,
         run_seconds=run_seconds,
     )
@@ -1202,18 +1243,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
     screenshot_path = Path(args.screenshot) if getattr(args, "screenshot", None) else None
     soak_path = getattr(args, "soak_log", None)
     soak_log = SoakLog(Path(soak_path)) if soak_path else None
-    probe = (
-        build_health_probe(
-            scene,
-            renderer,
-            client,
-            hud,
-            interval_s=float(getattr(args, "soak_interval", 30.0)),
-            run_seconds=float(getattr(args, "run_seconds", 0.0) or 0.0),
-        )
-        if soak_log is not None
-        else None
-    )
+    probe = probe_for_args(args, scene, renderer, client, hud, soak_log=soak_log)
     run_seconds = float(getattr(args, "run_seconds", 0.0) or 0.0)
     frame_number = 0
     elapsed_s = 0.0

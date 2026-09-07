@@ -28,10 +28,12 @@ from uuid import UUID
 from vibestorm.viewer3d.health import (
     MIN_SAMPLES_FOR_TREND,
     MIN_SAMPLES_FOR_VERDICT,
+    OBJECT_CENSUS_PREFIX,
     PROCESS_GAUGES,
     Growth,
     HealthProbe,
     SoakLog,
+    TypeCensus,
     format_growth_report,
     growth_report,
     pace_report,
@@ -780,3 +782,255 @@ class CutShortTests(unittest.TestCase):
         # `--run-seconds` is optional; a run with no end is not a truncated one.
         probe = HealthProbe(interval_s=30.0)
         self.assertNotIn("soak_run_seconds", probe.sample(elapsed_s=0.0, frame=1))
+
+
+class _Alpha:
+    pass
+
+
+class _Beta:
+    pass
+
+
+#: The census qualifies a name with its module, and this file's module name
+#: depends on how the suite was invoked. Ask the code rather than guess.
+ALPHA = f"{_Alpha.__module__}._Alpha"
+BETA = f"{_Beta.__module__}._Beta"
+
+
+def _census_of(objects, **kwargs) -> TypeCensus:
+    """A census over a fixed list, so the heap the test walks is the test's."""
+    return TypeCensus(objects=lambda: list(objects), **kwargs)
+
+
+class TypeCensusTests(unittest.TestCase):
+    """The instrument for the leak nobody has a gauge for.
+
+    Every named gauge read `settled` over two hours while RSS climbed forty-
+    five megabytes an hour. Adding gauges cannot find a thing nobody has
+    thought of; counting every live object by type can. What these tests hold
+    it to is the two properties that make the record readable afterwards:
+    the counts are the real counts, and a name once reported never disappears
+    from the series.
+    """
+
+    def test_counts_are_the_counts(self):
+        census = _census_of([_Alpha(), _Alpha(), _Beta()])
+        self.assertEqual(census.counts()[ALPHA], 2)
+        self.assertEqual(census.counts()[BETA], 1)
+
+    def test_names_carry_their_module(self):
+        """Two classes called `Node` in two modules are two leaks or none.
+
+        A bare `__name__` merges them, and a merged series can climb while
+        both halves sit still -- or hide one climbing inside the other.
+        """
+        census = _census_of([_Alpha()])
+        self.assertIn(ALPHA, census.counts())
+        self.assertNotIn("_Alpha", census.counts())
+
+    def test_builtins_are_not_qualified(self):
+        census = _census_of([{}, {}])
+        self.assertEqual(census.counts()["dict"], 2)
+
+    def test_reading_is_prefixed_and_numeric(self):
+        reading = _census_of([_Alpha()])()
+        self.assertTrue(all(name.startswith(OBJECT_CENSUS_PREFIX) for name in reading))
+        self.assertEqual(reading[OBJECT_CENSUS_PREFIX + ALPHA], 1.0)
+
+    def test_totals_are_reported(self):
+        reading = _census_of([_Alpha(), _Alpha(), _Beta()])()
+        self.assertEqual(reading[f"{OBJECT_CENSUS_PREFIX}_total"], 3.0)
+        self.assertEqual(reading[f"{OBJECT_CENSUS_PREFIX}_types"], 2.0)
+
+    def test_a_name_once_reported_keeps_being_reported(self):
+        """The leak is the type that is *not* in the first top forty.
+
+        Which makes the naive instrument -- report the current top N -- useless
+        for exactly the case it was built for: the series starts halfway
+        through the run, so there is nothing to compare the end against.
+        """
+        heap = [_Alpha(), _Alpha(), _Alpha()]
+        census = _census_of(heap, top=1)
+        first = census()
+        self.assertIn(OBJECT_CENSUS_PREFIX + ALPHA, first)
+
+        heap[:] = [_Beta()] * 9
+        second = census()
+        self.assertEqual(
+            second[OBJECT_CENSUS_PREFIX + ALPHA], 0.0
+        )
+        self.assertEqual(
+            second[OBJECT_CENSUS_PREFIX + BETA], 9.0
+        )
+
+    def test_only_the_top_types_are_followed(self):
+        """The tail of a real histogram is thousands of names with two objects
+        apiece, and the leak is not down there. A census that follows all of
+        them buries the finding and fills the log with noise."""
+        census = _census_of([_Alpha(), _Alpha(), _Alpha(), _Beta()], top=1)
+        reading = census()
+        self.assertIn(OBJECT_CENSUS_PREFIX + ALPHA, reading)
+        self.assertNotIn(OBJECT_CENSUS_PREFIX + BETA, reading)
+
+    def test_a_type_that_climbs_in_later_is_picked_up(self):
+        heap = [_Alpha()]
+        census = _census_of(heap, top=1)
+        self.assertNotIn(
+            OBJECT_CENSUS_PREFIX + BETA, census()
+        )
+        heap[:] = [_Beta()] * 4
+        self.assertEqual(
+            census()[OBJECT_CENSUS_PREFIX + BETA], 4.0
+        )
+
+    def test_the_instrument_does_not_grow_without_bound(self):
+        """An unbounded thing hunting an unbounded thing is not funny twice."""
+        heap = [_Alpha()]
+        census = _census_of(heap, top=10, limit=2)
+        census()
+        heap[:] = [_Beta(), {}, [], (), set()]
+        census()
+        self.assertLessEqual(len(census.tracked), 2)
+
+    def test_truncation_is_declared_rather_than_silent(self):
+        heap = [_Alpha(), _Beta(), {}, []]
+        census = _census_of(heap, top=10, limit=2)
+        reading = census()
+        self.assertEqual(len(census.tracked), 2)
+        self.assertEqual(reading[f"{OBJECT_CENSUS_PREFIX}_untracked_types"], 2.0)
+
+    def test_nothing_is_untracked_when_everything_fits(self):
+        reading = _census_of([_Alpha(), _Beta()], top=10, limit=10)()
+        self.assertEqual(reading[f"{OBJECT_CENSUS_PREFIX}_untracked_types"], 0.0)
+
+    def test_the_cost_of_the_reading_is_in_the_reading(self):
+        """So a hitch in the report can be told from the instrument itself."""
+        ticks = iter([1.0, 1.25])
+        census = TypeCensus(objects=lambda: [_Alpha()], clock=lambda: next(ticks))
+        self.assertAlmostEqual(
+            census()[f"{OBJECT_CENSUS_PREFIX}_census_ms"], 250.0, places=3
+        )
+
+    def test_the_real_heap_is_walkable(self):
+        """The shipped default is `gc.get_objects`, not the test's list."""
+        reading = TypeCensus()()
+        self.assertGreater(reading[f"{OBJECT_CENSUS_PREFIX}_total"], 100.0)
+        self.assertGreater(reading[f"{OBJECT_CENSUS_PREFIX}dict"], 0.0)
+
+
+class CensusInProbeTests(unittest.TestCase):
+    """A census may not overwrite a gauge, and may not end the run."""
+
+    def test_census_names_reach_the_sample(self):
+        probe = HealthProbe(censuses=[lambda: {"obj.Thing": 3.0}])
+        self.assertEqual(probe.sample(elapsed_s=0.0, frame=1)["obj.Thing"], 3.0)
+
+    def test_a_census_that_raises_costs_only_itself(self):
+        def boom():
+            raise RuntimeError("the heap moved")
+
+        probe = HealthProbe(gauges={"a": lambda: 7.0}, censuses=[boom])
+        sample = probe.sample(elapsed_s=0.0, frame=1)
+        self.assertEqual(sample["a"], 7.0)
+        self.assertNotIn("obj.Thing", sample)
+
+    def test_one_census_raising_does_not_silence_another(self):
+        def boom():
+            raise RuntimeError("no")
+
+        probe = HealthProbe(censuses=[boom, lambda: {"obj.Thing": 1.0}])
+        self.assertEqual(probe.sample(elapsed_s=0.0, frame=1)["obj.Thing"], 1.0)
+
+    def test_a_census_cannot_overwrite_a_declared_gauge(self):
+        probe = HealthProbe(
+            gauges={"scene.prims": lambda: 12.0},
+            censuses=[lambda: {"scene.prims": 999.0}],
+        )
+        self.assertEqual(probe.sample(elapsed_s=0.0, frame=1)["scene.prims"], 12.0)
+
+    def test_unreadable_census_values_are_dropped_not_written(self):
+        """A `None` in a gauge means "unreadable"; in a census it is noise.
+
+        A gauge is declared once and its absence is a wiring bug worth seeing.
+        A census invents its own names every sample, so a junk value there has
+        nothing to say and would only give the report a series of nulls to
+        reason about.
+        """
+        probe = HealthProbe(
+            censuses=[
+                lambda: {
+                    "obj.Good": 4.0,
+                    "obj.Text": "many",
+                    "obj.Flag": True,
+                    "obj.Nan": float("nan"),
+                }
+            ]
+        )
+        sample = probe.sample(elapsed_s=0.0, frame=1)
+        self.assertEqual(sample["obj.Good"], 4.0)
+        for name in ("obj.Text", "obj.Flag", "obj.Nan"):
+            self.assertNotIn(name, sample)
+
+    def test_no_census_by_default(self):
+        """The heap walk is opt-in, so an ordinary soak pays nothing for it."""
+        probe = HealthProbe(gauges={"a": lambda: 1.0})
+        self.assertEqual(
+            [k for k in probe.sample(elapsed_s=0.0, frame=1) if k.startswith("obj.")],
+            [],
+        )
+
+
+class CensusWiringTests(unittest.TestCase):
+    """`--soak-objects` and nothing else turns the heap walk on."""
+
+    def test_the_flag_parses(self):
+        from vibestorm.viewer3d.app import build_parser
+
+        args = build_parser().parse_args(["--soak-objects"])
+        self.assertTrue(args.soak_objects)
+        self.assertFalse(build_parser().parse_args([]).soak_objects)
+
+    def test_the_flags_reach_the_probe(self):
+        """The wiring, not the builder.
+
+        A perfect `build_health_probe` called without the flag is a soak that
+        comes back missing the one reading it was started for, and every test
+        of the builder passes while it happens.
+        """
+        from vibestorm.viewer3d.app import build_parser, probe_for_args
+
+        args = build_parser().parse_args(
+            ["--soak-objects", "--soak-interval", "7", "--run-seconds", "60"]
+        )
+        probe = probe_for_args(args, None, None, None, None, soak_log=object())
+        self.assertIsNotNone(probe)
+        self.assertEqual(len(list(probe.censuses)), 1)
+        self.assertEqual(probe.interval_s, 7.0)
+        self.assertEqual(probe.run_seconds, 60.0)
+
+    def test_no_soak_log_means_no_probe(self):
+        from vibestorm.viewer3d.app import build_parser, probe_for_args
+
+        args = build_parser().parse_args(["--soak-objects"])
+        self.assertIsNone(
+            probe_for_args(args, None, None, None, None, soak_log=None)
+        )
+
+    def test_without_the_flag_the_probe_has_no_census(self):
+        from vibestorm.viewer3d.app import build_parser, probe_for_args
+
+        args = build_parser().parse_args([])
+        probe = probe_for_args(args, None, None, None, None, soak_log=object())
+        self.assertEqual(list(probe.censuses), [])
+
+    def test_the_probe_declares_a_census_only_when_asked(self):
+        from vibestorm.viewer3d.app import build_health_probe
+
+        off = build_health_probe(None, None, None, None, interval_s=30.0)
+        self.assertEqual(list(off.censuses), [])
+        on = build_health_probe(
+            None, None, None, None, interval_s=30.0, census_objects=True
+        )
+        self.assertEqual(len(list(on.censuses)), 1)
+        self.assertIsInstance(list(on.censuses)[0], TypeCensus)
