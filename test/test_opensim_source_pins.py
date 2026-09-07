@@ -579,39 +579,44 @@ class TextureUploadFallsThroughToTypeZeroTests(unittest.TestCase):
         self.assertIn("textureAsset.Data = texture_list[i].AsBinary();", self.source)
 
 
-class NoTextureUpdateCapabilityTests(unittest.TestCase):
-    """Why a texture is uploaded and never replaced.
+class TaskInventoryUpdateCapabilityTests(unittest.TestCase):
+    """Which asset types can have the asset behind a task row replaced.
 
     This client reports an image whose name is already in an object as
     skipped, and the comment beside that used to read as an admission -- "the
     asset behind a row is updated through a capability per asset type, and
     this client has two". That phrasing invites a reader to go and implement
-    the third.
-
-    There is no third. OpenSim registers six `Update*TaskInventory`
-    capabilities and none of them is for a texture, so replacing the asset
-    behind a texture row is not something a viewer does at all: it uploads a
-    new asset and points at it. The limitation is the protocol's, and a
-    reader who does not know that will spend an afternoon finding out.
+    the third. There is no texture one to implement: replacing a texture is
+    not something a viewer does at all, it uploads a new asset and points at
+    it.
 
     The list is also a map of what *could* be round-tripped and is not.
     `UpdateGestureTaskInventory` is the interesting one -- a gesture is a
     line-based text format this client already decodes.
+
+    **Registrations, not mentions.** The first version of this test searched
+    for the capability *strings* and reported six. One of the six,
+    `UpdateAnimSetTaskInventory`, is on a commented-out line: a client asking
+    for it gets nothing back, and a test that counts it is doing the thing a
+    source pin exists to prevent -- matching text instead of behaviour.
     """
+
+    #: `RegisterSimpleHandler("Name", handler, flag)` on a line that is not
+    #: commented out. The leading `(?!\s*//)` is the whole point.
+    REGISTRATION = re.compile(
+        r'^(?!\s*//)\s*m_HostCapsObj\.RegisterSimpleHandler\("(Update[A-Za-z]+TaskInventory)"',
+        re.MULTILINE,
+    )
 
     def setUp(self) -> None:
         self.source = _source("Caps", "BunchOfCaps", "BunchOfCaps.cs")
         if self.source is None:
             self.skipTest("referencedocs/Caps/BunchOfCaps/BunchOfCaps.cs is not committed")
 
-    def _task_update_caps(self) -> set[str]:
-        return set(re.findall(r'"(Update[A-Za-z]+TaskInventory)"', self.source))
-
-    def test_the_task_update_capabilities_are_these_six(self) -> None:
+    def test_five_task_update_capabilities_are_registered(self) -> None:
         self.assertEqual(
-            self._task_update_caps(),
+            set(self.REGISTRATION.findall(self.source)),
             {
-                "UpdateAnimSetTaskInventory",
                 "UpdateGestureTaskInventory",
                 "UpdateMaterialTaskInventory",
                 "UpdateNotecardTaskInventory",
@@ -620,10 +625,32 @@ class NoTextureUpdateCapabilityTests(unittest.TestCase):
             },
         )
 
-    def test_none_of_them_is_for_a_texture(self) -> None:
-        """Stated separately from the list above so the failure reads right:
-        if a future OpenSim adds one, this is the test whose name says what
-        just became possible."""
-        self.assertNotIn("UpdateTextureTaskInventory", self.source)
-        self.assertFalse([cap for cap in self._task_update_caps() if "Texture" in cap])
+    def test_the_animset_one_is_present_but_commented_out(self) -> None:
+        """Worth its own test because the string is there and the capability
+        is not. A client that went looking for `UpdateAnimSetTaskInventory`
+        in this file would find it and be wrong."""
+        self.assertIn(
+            "//m_HostCapsObj.RegisterSimpleHandler(\"UpdateAnimSetTaskInventory\"",
+            self.source,
+        )
+        self.assertNotIn("UpdateAnimSetTaskInventory", self.REGISTRATION.findall(self.source))
 
+    def test_the_scan_would_notice_a_registration(self) -> None:
+        """The floor. A regex that matched nothing would pass the two tests
+        above by accident -- one for being empty, one for not containing a
+        name."""
+        self.assertGreaterEqual(len(self.REGISTRATION.findall(self.source)), 5)
+
+    def test_nothing_registers_a_texture_update(self) -> None:
+        """If a future OpenSim adds one, this is the test whose name says
+        what just became possible."""
+        self.assertNotIn("UpdateTextureTaskInventory", self.source)
+
+    def test_the_gesture_capability_shares_the_notecard_s_handler_shape(self) -> None:
+        """Which is why a gesture round trip would be the notecard one again
+        rather than a new protocol: both the agent and task variants of each
+        pair are registered against a single `SimpleOSDMapHandler`."""
+        self.assertIn("new SimpleOSDMapHandler(\"POST\", GetNewCapPath(), UpdateGestureItemAsset)",
+                      self.source)
+        self.assertIn("new SimpleOSDMapHandler(\"POST\", GetNewCapPath(), UpdateNotecardItemAsset)",
+                      self.source)

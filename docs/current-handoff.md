@@ -4456,12 +4456,26 @@ appears in it.
 
 **What is still out of scope, and why each is a different problem:**
 
-* **Replacing a texture that is already there.** A create would land as
-  `sunset 1`, so an image whose name is already in the object is reported
-  skipped. Replacing needs an asset-update capability per type and this
-  client has two, both for text. A push is therefore only *partly*
-  idempotent for textures -- the second run says skipped, not unchanged, and
-  skipped is the honest word: nothing was compared.
+* **Replacing a texture that is already there** -- which is the protocol's
+  rule, not this client's shortfall. The asset behind a task row is replaced
+  through a capability per asset type, and OpenSim registers five: Gesture,
+  Material, Notecard, Script, Settings. There is no texture one, because
+  replacing a texture is not something a viewer does -- it uploads a new
+  asset and points at it. So an image whose name is already in the object is
+  reported skipped, and a push is only *partly* idempotent for textures: the
+  second run says skipped, not unchanged, and skipped is the honest word,
+  because nothing was compared.
+
+  That list is a map of what could be round-tripped and is not.
+  **`UpdateGestureTaskInventory`** is the one worth looking at: a gesture is
+  line-based UTF-8 that `assets/gesture.py` already decodes, and it shares
+  its handler with the notecard capability this client already speaks, so the
+  round trip would be the notecard one again rather than a new protocol.
+
+  Beware the sixth name. `UpdateAnimSetTaskInventory` appears in
+  `BunchOfCaps.cs` on a **commented-out** registration line, so a client that
+  asks for it gets nothing. A first pass at the source pin counted it and
+  said six; the pin now matches registrations rather than mentions.
 * **Sounds, animations, meshes.** Each needs its own encoder or validator.
   A suffix map that claimed them would create correctly typed items holding
   the owner's raw file, which no consumer can read, and report success. Not
