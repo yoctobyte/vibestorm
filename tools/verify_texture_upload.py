@@ -280,7 +280,83 @@ async def _check_folder_push(client, bootstrap, caps, local_id: int, created_ids
             failures.append(f"the second push created {second.created} all over again")
         if not any(file_name == f"{name}.png" for file_name, _ in second.skipped):
             failures.append("the second push did not report the texture as skipped")
+
+        failures.extend(
+            await _check_collision(
+                client, bootstrap, caps, local_id=local_id, created_ids=created_ids
+            )
+        )
     return failures
+
+
+async def _check_collision(client, bootstrap, caps, *, local_id, created_ids):
+    """The same idempotency, for a name the object has to change.
+
+    Everything above exercises the case where nothing collides, which is the
+    case where matching by name happens to work. When the object already holds
+    a row by that name the copy arrives as ``<name> 1``, and a planner matching
+    on the name then reports "not there" and uploads it again -- ``<name> 2``
+    on the next push, ``<name> 3`` after that, without limit. That is a real
+    bug this tool did not catch, found later by a mutation battery, and this
+    is the step that would have.
+    """
+    import tempfile
+
+    from vibestorm.sync.task_inventory import await_object_inventory
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as raw:
+        folder = Path(raw)
+        name = f"collide-texture-{os.getpid()}"
+
+        # A *notecard* of that name, so the texture planner's own
+        # already-there check cannot see it and the create really runs.
+        note_folder = Path(raw) / "note"
+        note_folder.mkdir()
+        (note_folder / f"{name}.txt").write_bytes(b"placeholder, to collide with")
+        await _push(client, bootstrap, caps, local_id=local_id, folder=note_folder)
+
+        (folder / f"{name}.png").write_bytes(_marker_png())
+        for attempt in (1, 2, 3):
+            outcome = await _push(client, bootstrap, caps, local_id=local_id, folder=folder)
+            print(f"    collision push {attempt}: {outcome.summary()}")
+            if attempt > 1 and outcome.created:
+                failures.append(
+                    f"push {attempt} created {outcome.created} again after a rename"
+                )
+
+        snapshot = await await_object_inventory(client, local_id)
+        rows = [
+            item
+            for item in (snapshot.items if snapshot else ())
+            if item.name.startswith(name)
+        ]
+        for row in rows:
+            if row.item_id is not None:
+                created_ids.append(row.item_id)
+        print(f"    rows named {name!r}*: {[row.name for row in rows]}")
+        # One notecard and one texture. A third row means a copy per push.
+        if len(rows) != 2:
+            failures.append(f"expected 2 rows starting {name!r}, found {len(rows)}")
+    return failures
+
+
+async def _push(client, bootstrap, caps, *, local_id, folder):
+    return await push_folder_to_object(
+        client,
+        client.current,
+        handle=client.current_handle or 0,
+        task_id=TASK_ID,
+        local_id=local_id,
+        folder=folder,
+        script_cap=caps.script,
+        notecard_cap=caps.notecard,
+        notecard_agent_cap=caps.notecard_agent,
+        gesture_cap=caps.gesture,
+        gesture_agent_cap=caps.gesture_agent,
+        new_file_cap=caps.new_file,
+        agent_folder_id=bootstrap.inventory_root_folder_id,
+    )
 
 
 async def _texture_cap(client) -> str | None:
