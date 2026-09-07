@@ -594,8 +594,13 @@ by the inflate above it.
 **The sweep, closed.** Prim transforms gated at three doors; labels capped at
 the wire's own limit; terrain and the chat ticker checked and left alone with
 the reasons pinned; J2K rasters bounded by header; mesh blocks bounded by
-inflate; sculpts and LLSD counts found already sound. `zlib`/`gzip` appear
-nowhere else in `src/`.
+inflate; sculpts and LLSD counts found already sound. The other asset decoders
+were checked too and need nothing -- `animation.py` bounds a joint count by
+what the remaining bytes could hold and rejects a negative keyframe count,
+`wearable.py` checks a declared count against the lines it has, `gesture.py`
+stops at an unrecognised step type rather than guessing a field count, and
+`notecard.py` refuses a non-zero embedded-item count outright. `zlib`/`gzip`
+appear nowhere else in `src/`.
 
 **A -- the chat ticker, checked and left alone (2026-09-07).** The same
 sweep as the hover-text cap, one input over, and this one comes back

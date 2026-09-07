@@ -370,3 +370,138 @@ class HostileLabelTests(unittest.TestCase):
         width, height = font.size("W" * HOVER_TEXT_MAX_CHARS)
         self.assertLess(width, 8192)
         self.assertLess(height * HOVER_TEXT_MAX_LINES, 8192)
+
+
+def _gl_context():
+    try:
+        import moderngl
+    except ImportError:  # pragma: no cover - viewer extra not installed
+        return None, "moderngl not installed"
+    try:
+        return moderngl.create_standalone_context(), None
+    except Exception as exc:  # pragma: no cover - no GPU, no EGL, headless CI
+        return None, f"standalone GL context unavailable: {exc}"
+
+
+class HostilePrimsOnScreenTests(unittest.TestCase):
+    """The gates keep bad prims out. Do the good ones still arrive?
+
+    Every other test in this file asserts an *absence* -- that a prim which is
+    nowhere is not in `object_entities`. An absence is exactly what a gate that
+    rejects everything also produces, so a file made only of those tests would
+    stay green if the viewer drew nothing at all. This one renders through real
+    GL and asks the opposite question, which is the one the owner's priority A
+    is actually about: a legitimate prim standing next to four hostile ones has
+    to reach the picture, and the frame carrying it has to survive being asked
+    to.
+
+    Skips cleanly where there is no GPU; on the developer's box it exercises
+    real GL, the same way the neighbour-object tests do.
+    """
+
+    FBO_SIZE = (64, 64)
+
+    def setUp(self) -> None:
+        ctx, err = _gl_context()
+        if ctx is None:
+            self.skipTest(err)
+        self.ctx = ctx
+        self._colour = ctx.texture(self.FBO_SIZE, components=4)
+        self._depth = ctx.depth_renderbuffer(self.FBO_SIZE)
+        self.fbo = ctx.framebuffer(color_attachments=[self._colour], depth_attachment=self._depth)
+        self.fbo.use()
+        ctx.viewport = (0, 0, *self.FBO_SIZE)
+
+    def tearDown(self) -> None:
+        self.fbo.release()
+        self._depth.release()
+        self._colour.release()
+        self.ctx.release()
+
+    def _renderer(self):
+        from vibestorm.viewer3d.camera import Camera3D
+
+        # Standing south of the prim and looking straight at it, so the centre
+        # ray hits it and nothing else.
+        camera = Camera3D(eye_position=(128.0, 100.0, 25.0), target=(128.0, 128.0, 25.0))
+        camera.set_mode("eye")
+        return PerspectiveRenderer(camera, ctx=self.ctx)
+
+    def _scene(self, *prims):
+        scene = Scene()
+        scene.render_water = False
+        scene.render_terrain = False
+        if prims:
+            scene.refresh_from_world_view(_world(*prims))
+        return scene
+
+    def _centre_after_drawing(self, renderer, scene) -> tuple:
+        # The renderer does not clear depth -- the app does that before calling
+        # it -- so a second frame into the same buffer must clear, or it is
+        # depth-tested against the first and nothing new appears.
+        self.ctx.clear(red=0.0, green=0.0, blue=0.0, alpha=1.0, depth=1.0)
+        renderer.render_gl(scene, aspect=1.0)
+        data = self.fbo.read(components=4)
+        width, height = self.FBO_SIZE
+        x = y = 32
+        offset = (((height - 1) - y) * width + x) * 4
+        return tuple(data[offset : offset + 4])
+
+    @staticmethod
+    def _good():
+        """Big enough at 28 m to cover the centre of the frame."""
+        return _prim(100, position=(128.0, 128.0, 25.0), scale=(8.0, 8.0, 8.0))
+
+    @staticmethod
+    def _hostile():
+        return (
+            _prim(1, position=(NAN, NAN, NAN)),
+            _prim(2, position=(INF, 0.0, 0.0)),
+            _prim(3, position=(1e300, 0.0, 0.0)),
+            _prim(4, rotation=(NAN, 0.0, 0.0, 1.0)),
+            _prim(5, scale=(NAN, 1.0, 1.0)),
+        )
+
+    def test_a_good_prim_reaches_the_picture(self) -> None:
+        """The control the rest of this class is measured against."""
+        renderer = self._renderer()
+        try:
+            empty = self._centre_after_drawing(renderer, self._scene())
+            drawn = self._centre_after_drawing(renderer, self._scene(self._good()))
+        finally:
+            renderer.clear_caches()
+        self.assertNotEqual(empty[:3], drawn[:3], "the prim never reached the picture")
+
+    def test_and_it_still_does_with_five_hostile_prims_beside_it(self) -> None:
+        """The whole point of the gates, stated as a presence rather than an absence.
+
+        Same prim, same camera, same pixel -- with a NaN position, an infinite
+        one, one too large for float32, a NaN rotation and a NaN scale in the
+        same region. If the gates were too broad, or if one bad prim took the
+        draw call down with it, this pixel goes back to being the background.
+        """
+        renderer = self._renderer()
+        try:
+            alone = self._centre_after_drawing(renderer, self._scene(self._good()))
+            crowded = self._centre_after_drawing(
+                renderer, self._scene(self._good(), *self._hostile())
+            )
+        finally:
+            renderer.clear_caches()
+        self.assertEqual(
+            alone[:3], crowded[:3], "five unplaceable prims changed what the good one looks like"
+        )
+        self.assertNotEqual(
+            crowded[:3], (0, 0, 0), "the frame came back empty with hostile prims in the region"
+        )
+
+    def test_a_region_of_nothing_but_hostile_prims_still_draws_a_frame(self) -> None:
+        """It should be empty. What it must not be is an exception."""
+        renderer = self._renderer()
+        try:
+            background = self._centre_after_drawing(renderer, self._scene())
+            hostile_only = self._centre_after_drawing(renderer, self._scene(*self._hostile()))
+        finally:
+            renderer.clear_caches()
+        self.assertEqual(background[:3], hostile_only[:3])
+
