@@ -8,7 +8,6 @@ submesh Position/TriangleList arrays into one indexed mesh.
 
 from __future__ import annotations
 
-import gzip
 import math
 import struct
 import zlib
@@ -215,15 +214,70 @@ def _need_tag(data: bytes, offset: int, tag: bytes, what: str) -> None:
         raise SLMeshDecodeError(f"missing {what}")
 
 
-def _decompress_mesh_block(data: bytes) -> bytes:
+#: The largest a single LOD block may inflate to, in bytes.
+#:
+#: Deflate's ceiling is about 1,029 to 1 and this decoder used to take it:
+#: `zlib.decompress` has no output bound, so a 510 kB block of compressible
+#: bytes inflates to **524 MB in 2.3 seconds** -- measured, not estimated --
+#: and a five megabyte one to five gigabytes. The block's *compressed* size is
+#: bounded, because `decode_sl_mesh_asset` requires it to lie inside the asset;
+#: nothing bounded what came out. It runs on the render thread, from
+#: `perspective.py`, on an asset any object owner chooses.
+#:
+#: Unlike the J2K path there is no upstream guard to fall back on. Pillow at
+#: least has `Image.MAX_IMAGE_PIXELS`; `zlib.decompress` has nothing, which is
+#: why the bounded form below uses `decompressobj` and a `max_length` rather
+#: than a check after the fact -- by then the memory is spent.
+#:
+#: 64 MB is many times what any real LOD block holds and is here to make the
+#: failure a decode error instead of the machine swapping.
+MAX_MESH_BLOCK_BYTES = 64 * 1024 * 1024
+
+
+def _inflate(data: bytes, *, wbits: int, max_bytes: int) -> bytes:
+    """Inflate `data`, refusing to produce more than `max_bytes`.
+
+    `zlib.decompressobj().decompress(data, max_length)` stops at the bound and
+    leaves whatever input it has not read in `unconsumed_tail`, so a non-empty
+    tail is exactly "there was more, and it did not fit". Raising there is the
+    point: a check on `len(result)` afterwards would already have allocated
+    the thing it was meant to prevent.
+    """
+    engine = zlib.decompressobj(wbits)
+    out = engine.decompress(data, max_bytes)
+    if engine.unconsumed_tail:
+        raise SLMeshDecodeError(
+            f"mesh block inflates past {max_bytes:,} bytes, which this client will not decode"
+        )
+    # `flush()` returns nothing here on any payload measured -- from 26 bytes
+    # inflating to 4 kB up to 65 kB inflating to 64 MB, the excess always shows
+    # up as unconsumed *input* above and never as buffered output.
+    #
+    # A `len(out) > max_bytes` check after this line was written and then taken
+    # out again, which is worth recording because it looked like free safety.
+    # It is not: by the time there is a length to measure the memory has been
+    # allocated, so it cannot prevent the one thing this function exists to
+    # prevent -- it only relabels a bomb that already went off. And it made
+    # things actively worse, because a mutation battery that removes the
+    # `max_bytes` argument entirely then still sees an `SLMeshDecodeError` come
+    # back and calls the guard tested. The check that cannot help was hiding
+    # the removal of the check that can.
+    return out + engine.flush()
+
+
+def _decompress_mesh_block(data: bytes, *, max_bytes: int = MAX_MESH_BLOCK_BYTES) -> bytes:
     errors: list[str] = []
-    for label, func in (
-        ("gzip", gzip.decompress),
-        ("zlib", zlib.decompress),
-        ("raw-deflate-after-zlib-header", lambda blob: zlib.decompress(blob[2:], -zlib.MAX_WBITS)),
+    for label, blob, wbits in (
+        ("gzip", data, 16 + zlib.MAX_WBITS),
+        ("zlib", data, zlib.MAX_WBITS),
+        ("raw-deflate-after-zlib-header", data[2:], -zlib.MAX_WBITS),
     ):
         try:
-            return func(data)
+            return _inflate(blob, wbits=wbits, max_bytes=max_bytes)
+        except SLMeshDecodeError:
+            # The bound, not a framing mismatch. Trying the next framing would
+            # only inflate the same bomb again by another route.
+            raise
         except (OSError, zlib.error) as exc:
             errors.append(f"{label}: {exc}")
     raise SLMeshDecodeError("mesh block decompression failed: " + "; ".join(errors))

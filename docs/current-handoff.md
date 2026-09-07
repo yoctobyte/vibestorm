@@ -541,6 +541,44 @@ thousand pixels past the limit, so `> MAX_TEXTURE_PIXELS + 1` passed it and
 nothing else in the file noticed. The constant counts pixels, so the boundary
 test now does too -- one pixel either side, on a raster one pixel tall.
 
+**A -- and the mesh decoder was the same bug with no upstream net
+(2026-09-07).** `decode_sl_mesh_asset` bounds the *compressed* block, which
+has to lie inside the asset, and nothing bounded what came out of it. Deflate
+reaches about 1,029 to 1, measured here: **510 kB inflates to 524 MB in 2.3
+seconds**, five megabytes to five gigabytes. On the render thread, from
+`perspective.py`, on an asset any object owner chooses. The J2K path at least
+had Pillow's `MAX_IMAGE_PIXELS` behind it; `zlib.decompress` has no output
+bound at all.
+
+All three framings go through `zlib.decompressobj` with a `max_length` now --
+gzip as `16 + MAX_WBITS`, which retires the separate `gzip` import. The bound
+is checked where it can still refuse rather than where it can only report: a
+non-empty `unconsumed_tail` is exactly "there was more, and it did not fit".
+
+**Four things the battery found, and one of them was in the fix.** A
+`len(out) > max_bytes` check after the flush looked like free safety. It is
+not: there is no length to measure until the memory exists, so it cannot
+prevent the one thing the function is for -- and with it in place, removing
+the `max_bytes` argument *entirely* still raised an `SLMeshDecodeError`, so
+the check that could not help was hiding the removal of the check that could.
+Both mutants went back to dying once it came out. Two of the three framings
+then turned out to have no test at all -- swapping gzip's window bits for
+zlib's, and dropping the two-byte skip from the raw-deflate branch, both
+survived the whole file. The fixture for that branch has to carry a prefix
+that is *not* a valid zlib header, because a real `\x78\x9c` one is a valid
+zlib stream and the framing above it swallows the test whole. And
+`MAX_MESH_BLOCK_BYTES` had a floor asserted with no ceiling, so raising it to
+2^60 passed: a bound of a billion gigabytes bounds nothing.
+
+Eight of nine killed. The survivor is dropping `engine.flush()`, which on
+every payload measured returns nothing -- the excess always arrives as
+unconsumed input -- so the two are the same function on today's zlib.
+
+**Why this one matters more than its region does.** The test sim has no
+meshes at all: run 4 recorded `asset.mesh_attempted = 0` for two hours. Second
+Life is made of them, so this path has never run against real content and will
+run against nothing but, the moment **B** works.
+
 **A -- the chat ticker, checked and left alone (2026-09-07).** The same
 sweep as the hover-text cap, one input over, and this one comes back
 negative. Chat arrives from other avatars and from scripts, so its length is
