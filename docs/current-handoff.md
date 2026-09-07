@@ -4421,25 +4421,51 @@ inventory rows *are* created now, and `include_binary` exports the types sync
 cannot author. Still deliberately out of scope, and still accurate: no
 deletes, no merges, no recursive folders, no automatic upload on every change.
 
-**The one real gap, for D.** Text assets round-trip -- scripts and notecards,
-types 10 and 7, `TEXT_ASSET_TYPES`. Everything else is **export-only**, by a
-decision recorded in `engine.py` and worth keeping in view rather than
-rediscovering: *"Everything outside the two text types is written
-byte-for-byte and marked unpushable too. Exporting a texture is useful;
-pretending we could author one back is not."*
+**The one real gap, for D -- closed for textures on 2026-09-07.** Text
+assets round-trip -- scripts and notecards, types 10 and 7,
+`TEXT_ASSET_TYPES`. The decision recorded in `engine.py` was: *"Everything
+outside the two text types is written byte-for-byte and marked unpushable
+too. Exporting a texture is useful; pretending we could author one back is
+not."*
 
-That decision is right about *round-tripping* an asset this client decoded.
-It is not the same question as **D** -- "upload a whole folder into an
+That is right about *round-tripping* an asset this client decoded, and it
+was never the same question as **D** -- "upload a whole folder into an
 in-world selected object" -- where the folder is one the owner assembled and
-the texture in it is a PNG they made, not something exported from world.
-Uploading that is a different operation from updating an existing item:
-`NewFileAgentInventory`, a J2K encode, then a task-inventory row. So a folder
-containing a script and a texture currently uploads the script and reports the
-texture skipped, which is honest but is not all of D.
+the texture in it is a PNG they made. Uploading that is a different
+operation from updating an existing item, and it now works: `encode_j2k`
+turns the owner's file into a raw codestream, `NewFileAgentInventory` creates
+the agent-inventory item and its asset, and `copy_item_into_object` -- which
+was already general over asset type -- puts it in the prim.
 
-Whether to build that is the owner's call, because it decides what D means.
-It is the largest remaining piece of C/D/E and nothing else in the track is
-blocked behind it.
+**Verified live**, not inferred: `tools/verify_texture_upload.py` uploads a
+96x96 PNG in a colour nothing else produces, watches OpenSim type the row
+`'texture'`, fetches the asset back through the same GetTexture path the
+viewer draws from, and decodes 64x64 RGB in the colour that went in. Then it
+does the same through `push_folder_to_object` and checks the *second* push
+reports the file skipped rather than creating `sunset 1` beside it. Both rows
+are removed afterwards.
+
+The live check matters more here than usual because the unit tests mock the
+thing in question. `NewFileAgentInventory` types a texture correctly by
+taking **none** of its branches -- `UploadCompleteHandler` opens with
+`sbyte assType = 0; sbyte inType = 0;` and `AssetType.Texture` and
+`InventoryType.Texture` are both 0 -- so the claim is "no branch matches",
+which rots without anything failing. `TextureUploadFallsThroughToTypeZeroTests`
+reads the branch list out of the committed source and fails if `texture` ever
+appears in it.
+
+**What is still out of scope, and why each is a different problem:**
+
+* **Replacing a texture that is already there.** A create would land as
+  `sunset 1`, so an image whose name is already in the object is reported
+  skipped. Replacing needs an asset-update capability per type and this
+  client has two, both for text. A push is therefore only *partly*
+  idempotent for textures -- the second run says skipped, not unchanged, and
+  skipped is the honest word: nothing was compared.
+* **Sounds, animations, meshes.** Each needs its own encoder or validator.
+  A suffix map that claimed them would create correctly typed items holding
+  the owner's raw file, which no consumer can read, and report success. Not
+  supporting them is the better answer until one of them is built.
 
 ## Update 2026-08-14: Self-Checking Ledgers, IM, Teleport
 
