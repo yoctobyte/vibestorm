@@ -1436,3 +1436,321 @@ class UnchangedObjectReuseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepeatedFrameTests(unittest.TestCase):
+    """A frame in which nothing moved does no work at all.
+
+    The reuse above already means an unchanged prim is handed back the entity
+    it had, but the frame still walked every prim to find that out and still
+    built four fresh dictionaries to hold the same four answers: 69,000
+    dictionary lookups and 60,000 inserts on a 15,000-prim region, 30 ms a
+    frame, to arrive back where it started. `_nothing_moved` says so in 2.4 ms
+    and the whole build is skipped.
+
+    Which makes the failure to watch for the opposite of the one above: not a
+    stale entity for a prim that moved, but a stale *world* -- a prim that
+    arrived, or left, and never showed up because the frame was called a
+    repeat.
+    """
+
+    def _view(self):
+        from vibestorm.world.models import WorldObject, WorldView
+
+        def prim(index: int, local_id: int, parent_id: int, position, pcode=PCODE_PRIM):
+            return WorldObject(
+                full_id=UUID(int=index), local_id=local_id, parent_id=parent_id,
+                pcode=pcode, material=0, click_action=0, scale=(1.0, 1.0, 1.0),
+                state=0, crc=0, update_flags=0, region_handle=0, time_dilation=0,
+                object_data_size=0, position=position, rotation=(0.0, 0.0, 0.0, 1.0),
+                variant="prim_basic", name_values={}, texture_entry_size=0,
+                texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+                ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+                default_texture_id=None,
+            )
+
+        view = WorldView()
+        view.objects[UUID(int=1)] = prim(1, 10, 0, (130.0, 128.0, 27.0))
+        view.objects[UUID(int=2)] = prim(2, 11, 10, (4.0, 0.0, 0.0))
+        view.objects[UUID(int=3)] = prim(3, 12, 0, (100.0, 100.0, 25.0))
+        return view, prim
+
+    def _terse(self, local_id: int, position, *, is_avatar: bool = False):
+        from vibestorm.world.models import TerseWorldObject
+
+        return TerseWorldObject(
+            local_id=local_id,
+            state=0,
+            region_handle=0,
+            time_dilation=0,
+            position=position,
+            velocity=(0.0, 0.0, 0.0),
+            acceleration=(0.0, 0.0, 0.0),
+            rotation=(0.0, 0.0, 0.0, 1.0),
+            angular_velocity=(0.0, 0.0, 0.0),
+            is_avatar=is_avatar,
+        )
+
+    def test_a_repeat_frame_hands_the_same_dictionary_back(self):
+        """The observable that says the fast path fired at all."""
+        view, _prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        objects, avatars = scene.object_entities, scene.avatar_entities
+
+        scene.refresh_from_world_view(view)
+
+        self.assertIs(scene.object_entities, objects)
+        self.assertIs(scene.avatar_entities, avatars)
+
+    def test_a_moved_prim_is_not_a_repeat(self):
+        view, prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        objects = scene.object_entities
+
+        view.objects[UUID(int=3)] = prim(3, 12, 0, (111.0, 100.0, 25.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertIsNot(scene.object_entities, objects)
+        self.assertEqual(scene.object_entities[12].position, (111.0, 100.0, 25.0))
+
+    def test_a_prim_that_arrives_appears(self):
+        view, prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        view.objects[UUID(int=4)] = prim(4, 13, 0, (50.0, 50.0, 22.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertIn(13, scene.object_entities)
+
+    def test_a_prim_that_leaves_disappears(self):
+        """The counts are what catch this: nothing that remains has changed."""
+        view, _prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        del view.objects[UUID(int=3)]
+        scene.refresh_from_world_view(view)
+
+        self.assertNotIn(12, scene.object_entities)
+
+    def test_one_leaving_as_another_arrives_is_not_a_repeat(self):
+        """The count is the same both frames, so the count alone is not enough."""
+        view, prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        del view.objects[UUID(int=3)]
+        view.objects[UUID(int=4)] = prim(4, 13, 0, (50.0, 50.0, 22.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertNotIn(12, scene.object_entities)
+        self.assertIn(13, scene.object_entities)
+
+    def test_a_terse_object_that_arrives_appears(self):
+        view, _prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        view.terse_objects[99] = self._terse(99, (10.0, 20.0, 30.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertIn(99, scene.object_entities)
+
+    def test_a_terse_object_that_moves_moves(self):
+        view, _prim = self._view()
+        scene = Scene()
+        view.terse_objects[99] = self._terse(99, (10.0, 20.0, 30.0))
+        scene.refresh_from_world_view(view)
+
+        view.terse_objects[99] = self._terse(99, (11.0, 20.0, 30.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.object_entities[99].position, (11.0, 20.0, 30.0))
+
+    def test_a_terse_object_that_leaves_disappears(self):
+        view, _prim = self._view()
+        scene = Scene()
+        view.terse_objects[99] = self._terse(99, (10.0, 20.0, 30.0))
+        scene.refresh_from_world_view(view)
+
+        del view.terse_objects[99]
+        scene.refresh_from_world_view(view)
+
+        self.assertNotIn(99, scene.object_entities)
+
+    def test_a_still_terse_object_is_still_a_repeat(self):
+        view, _prim = self._view()
+        scene = Scene()
+        view.terse_objects[99] = self._terse(99, (10.0, 20.0, 30.0))
+        scene.refresh_from_world_view(view)
+        objects = scene.object_entities
+
+        scene.refresh_from_world_view(view)
+
+        self.assertIs(scene.object_entities, objects)
+
+    def test_a_view_that_goes_away_forgets_the_frame(self):
+        """Otherwise the world it comes back to is compared with a dead one."""
+        view, _prim = self._view()
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        scene.refresh_from_world_view(None)
+        self.assertEqual(scene.object_entities, {})
+
+        scene.refresh_from_world_view(view)
+
+        self.assertIn(10, scene.object_entities)
+        self.assertIn(12, scene.object_entities)
+
+
+class RepeatFrameMatchesAFullRebuildTests(unittest.TestCase):
+    """The net under the whole idea: run both and compare, after every change.
+
+    A memoised refresh is only ever wrong by *omission*, and an omission is
+    invisible in the frame it happens -- the screen simply keeps showing what
+    it showed. So rather than guess which omissions are possible, every step
+    below is applied to two scenes: one carried across every frame, and one
+    built from nothing. They must agree.
+    """
+
+    def _steps(self):
+        from vibestorm.world.models import TerseWorldObject, WorldObject
+
+        def prim(index, local_id, parent_id, position, pcode=PCODE_PRIM):
+            return WorldObject(
+                full_id=UUID(int=index), local_id=local_id, parent_id=parent_id,
+                pcode=pcode, material=0, click_action=0, scale=(1.0, 1.0, 1.0),
+                state=0, crc=0, update_flags=0, region_handle=0, time_dilation=0,
+                object_data_size=0, position=position, rotation=(0.0, 0.0, 0.0, 1.0),
+                variant="prim_basic", name_values={}, texture_entry_size=0,
+                texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+                ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+                default_texture_id=None,
+            )
+
+        def terse(local_id, position, is_avatar=False):
+            return TerseWorldObject(
+                local_id=local_id, state=0, region_handle=0, time_dilation=0,
+                position=position, velocity=(0.0, 0.0, 0.0),
+                acceleration=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+                angular_velocity=(0.0, 0.0, 0.0), is_avatar=is_avatar,
+            )
+
+        return [
+            ("a root arrives",
+             lambda v: v.objects.__setitem__(UUID(int=1), prim(1, 10, 0, (130.0, 128.0, 27.0)))),
+            ("nothing happens", lambda v: None),
+            ("a child arrives",
+             lambda v: v.objects.__setitem__(UUID(int=2), prim(2, 11, 10, (4.0, 0.0, 0.0)))),
+            ("nothing happens again", lambda v: None),
+            ("the root moves, carrying the child",
+             lambda v: v.objects.__setitem__(UUID(int=1), prim(1, 10, 0, (200.0, 128.0, 27.0)))),
+            ("an avatar arrives",
+             lambda v: v.objects.__setitem__(
+                 UUID(int=3), prim(3, 12, 0, (100.0, 100.0, 25.0), PCODE_AVATAR))),
+            ("a terse-only prim arrives",
+             lambda v: v.terse_objects.__setitem__(99, terse(99, (10.0, 20.0, 30.0)))),
+            ("the terse prim moves",
+             lambda v: v.terse_objects.__setitem__(99, terse(99, (11.0, 20.0, 30.0)))),
+            ("an orphan arrives before its parent",
+             lambda v: v.objects.__setitem__(UUID(int=5), prim(5, 14, 13, (1.0, 0.0, 0.0)))),
+            ("the orphan's parent arrives",
+             lambda v: v.objects.__setitem__(UUID(int=4), prim(4, 13, 0, (60.0, 60.0, 21.0)))),
+            ("the child leaves", lambda v: v.objects.pop(UUID(int=2))),
+            ("one leaves as another arrives",
+             lambda v: (v.objects.pop(UUID(int=3)),
+                        v.objects.__setitem__(UUID(int=6), prim(6, 15, 0, (5.0, 5.0, 5.0))))),
+            ("the terse prim leaves", lambda v: v.terse_objects.pop(99)),
+            ("everything leaves", lambda v: v.objects.clear()),
+        ]
+
+    def _shape(self, scene):
+        """Entities as plain values, so two scenes can be compared at all."""
+        def values(entities):
+            return {
+                key: (e.position, e.rotation, e.pcode, e.parent_id)
+                for key, e in entities.items()
+            }
+
+        return values(scene.object_entities), values(scene.avatar_entities)
+
+    def test_they_agree_after_every_step(self):
+        from vibestorm.world.models import WorldView
+
+        view = WorldView()
+        carried = Scene()
+        for label, step in self._steps():
+            step(view)
+            carried.refresh_from_world_view(view)
+            fresh = Scene()
+            fresh.refresh_from_world_view(view)
+            with self.subTest(step=label):
+                self.assertEqual(self._shape(carried), self._shape(fresh))
+
+
+class _RefusesToBeComparedByValue:
+    """A prim that raises if anything asks whether it *equals* another one.
+
+    The repeat check is only worth having because `is` is O(1). `WorldObject`
+    is a frozen dataclass, so `==` walks two dozen fields -- including a
+    texture entry and a tuple of extra-param blobs -- for every prim in the
+    region, every frame, to reach an answer identity already gave. That is a
+    difference no behavioural test can see and no timing test should be asked
+    to: swapping `is` for `==` passes the whole suite and quietly puts the
+    cost back.
+
+    So make the wrong answer impossible to obtain instead.
+    """
+
+    __hash__ = object.__hash__
+
+    def __init__(self, local_id: int, position) -> None:
+        self.local_id = local_id
+        self.parent_id = 0
+        self.pcode = PCODE_PRIM
+        self.position = position
+        self.rotation = (0.0, 0.0, 0.0, 1.0)
+        self.scale = (1.0, 1.0, 1.0)
+        self.properties_family = None
+        self.name_values = None
+        self.shape = None
+        self.extra_params_entries = ()
+        self.default_texture_id = None
+        self.texture_entry = None
+        self.hover_text = None
+        self.hover_text_color = None
+
+    def __eq__(self, other):
+        raise AssertionError("the refresh compared prims by value")
+
+
+class RepeatCheckUsesIdentityTests(unittest.TestCase):
+    def test_a_repeat_frame_never_compares_by_value(self):
+        from vibestorm.world.models import WorldView
+
+        view = WorldView()
+        view.objects[UUID(int=1)] = _RefusesToBeComparedByValue(10, (1.0, 2.0, 3.0))
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+        objects = scene.object_entities
+
+        scene.refresh_from_world_view(view)
+
+        self.assertIs(scene.object_entities, objects)
+
+    def test_nor_does_a_frame_in_which_something_moved(self):
+        """The other half: the check bails out of a repeat by identity too."""
+        from vibestorm.world.models import WorldView
+
+        view = WorldView()
+        view.objects[UUID(int=1)] = _RefusesToBeComparedByValue(10, (1.0, 2.0, 3.0))
+        scene = Scene()
+        scene.refresh_from_world_view(view)
+
+        view.objects[UUID(int=1)] = _RefusesToBeComparedByValue(10, (9.0, 2.0, 3.0))
+        scene.refresh_from_world_view(view)
+
+        self.assertEqual(scene.object_entities[10].position, (9.0, 2.0, 3.0))

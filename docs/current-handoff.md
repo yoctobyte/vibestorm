@@ -171,6 +171,53 @@ gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
 
+**A -- the frame that arrives back where it started (2026-09-07).** The
+refresh already skipped *rebuilding* an entity for a prim that had not moved.
+It did not skip finding out. A still 15,000-prim region spent 30 ms a frame on
+69,000 dictionary lookups and 60,000 inserts, producing four dictionaries
+equal to the four it produced last frame -- 31.21 ms measured, a 32 fps
+ceiling before a triangle is drawn.
+
+The handoff called the fix incremental -- "the world saying which prims
+changed rather than the scene asking each one" -- and that is a real design
+with new state in `WorldView` to keep correct. It is also not what this
+needed. Asking every prim is cheap; it is the four dictionaries that are
+expensive. `_nothing_moved` asks, in one pass that bails on the first prim
+that moved, whether the frame is a *repeat*: the object count is what it was
+and every prim is the same instance the cache holds. If it is, `_build_entities`
+returns the previous result whole.
+
+    3000 linksets of 5   15000 objects   0% moving   31.21 ms  ->   3.07 ms
+    1000 linksets of 5    5000 objects   0% moving    9.59 ms  ->   0.76 ms
+    1000 single prims     1000 objects   0% moving    1.09 ms  ->   0.16 ms
+
+The moving rows are unchanged, which is the point of bailing early: 1% of
+15,000 prims in motion means the scan finds one after about a hundred
+comparisons and then does the work it was going to do anyway.
+
+**What can go wrong with a memo is omission**, and an omission is invisible in
+the frame it happens -- the screen keeps showing what it was showing. So the
+test that matters is not a list of cases somebody thought of:
+`RepeatFrameMatchesAFullRebuildTests` runs two scenes through fourteen steps,
+one carried across every frame and one built from nothing, and they must agree
+after each. The steps include the two that a count alone would miss -- one
+prim leaving as another arrives, and a terse-only prim moving -- and the one
+that must *not* take the fast path, a child whose parent has not arrived.
+
+The check rests on `is`, and that is worth a test of its own that is not a
+clock. `WorldObject` is a frozen dataclass, so swapping `is` for `==` passes
+every behavioural test and quietly walks two dozen fields per prim per frame.
+`_RefusesToBeComparedByValue` raises if anything asks -- the wrong answer is
+made impossible to obtain rather than merely slow.
+
+**Mutation, 12 mutants: 10 killed, 2 equivalent.** Both equivalents are the
+`self._built = None` lines in the region reset and the no-view path. Neither is
+observable: both aliases the reset already clears, and a new region's prims are
+never the same instances anyway. They are kept, and the comments now say
+plainly that they are not load-bearing -- the invalidation belongs where the
+invalidation happens rather than resting on a second mechanism noticing in
+time.
+
 **A -- 168 ms of every terrain rebuild, and the two hours of soak that
 blamed the wrong thing (2026-09-07).** The soak said 6.2 frames a second over
 two hours on a region holding three prims. `bench_scene_refresh.py` says three
