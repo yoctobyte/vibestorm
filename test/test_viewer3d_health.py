@@ -1164,6 +1164,65 @@ class CutShortTests(unittest.TestCase):
         self.assertIsNone(pace.run_seconds)
         self.assertFalse(pace.cut_short)
 
+    def test_a_run_the_machine_stopped_scheduling_says_so(self) -> None:
+        """Run 5, on 2026-09-08: forty-five minutes at exactly 30.0 s, then a
+        single gap of 9,548 s while the machine's load went from 9 to 356.
+        Every gauge kept its shape, so every verdict read as normal."""
+        samples = self._samples(span_s=2700.0, run_seconds=7200.0)
+        last = samples[-1]
+        samples.append(
+            {**last, "elapsed_s": last["elapsed_s"] + 9548.3, "frame": last["frame"] + 518}
+        )
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertTrue(pace.starved)
+
+    def test_a_run_that_kept_its_interval_is_not_starved(self) -> None:
+        """The control. Without it the check could be reading the *length* of
+        the run, which every long soak would trip."""
+        pace = pace_report(self._samples(span_s=7200.0, run_seconds=7200.0))
+        assert pace is not None
+        self.assertFalse(pace.starved)
+
+    def test_ordinary_jitter_is_not_starvation(self) -> None:
+        """A hitch of three intervals is a hitch. Calling it starvation would
+        make the banner appear on runs worth reading, which is the failure
+        mode of every warning that fires too easily."""
+        samples = self._samples(span_s=2700.0, run_seconds=7200.0)
+        last = samples[-1]
+        samples.append(
+            {**last, "elapsed_s": last["elapsed_s"] + 90.0, "frame": last["frame"] + 900}
+        )
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertFalse(pace.starved)
+
+    def test_exactly_the_factor_is_not_yet_starvation(self) -> None:
+        """The boundary, pinned because the factor is a judgement call and a
+        judgement call with a fuzzy edge gets re-litigated. Four times the
+        interval is the largest gap a run may have and still be read."""
+        samples = self._samples(span_s=2700.0, run_seconds=7200.0)
+        last = samples[-1]
+        samples.append(
+            {**last, "elapsed_s": last["elapsed_s"] + 120.0, "frame": last["frame"] + 1200}
+        )
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertEqual(pace.longest_gap_s, 120.0)
+        self.assertFalse(pace.starved)
+
+    def test_a_log_that_never_said_its_interval_claims_nothing(self) -> None:
+        """The gap alone means nothing without the interval it is measured
+        against: a run sampling every ten minutes is not starved."""
+        samples = [
+            {"elapsed_s": e, "frame": f}
+            for e, f in ((0.0, 0), (600.0, 1000), (1200.0, 2000), (12000.0, 2100))
+        ]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertIsNone(pace.interval_s)
+        self.assertFalse(pace.starved)
+
     def test_the_probe_records_the_length_it_was_asked_for(self) -> None:
         probe = HealthProbe(interval_s=30.0, run_seconds=7200.0)
         self.assertEqual(probe.sample(elapsed_s=0.0, frame=1)["soak_run_seconds"], 7200.0)

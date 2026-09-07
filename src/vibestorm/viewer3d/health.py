@@ -492,6 +492,14 @@ def read_soak_log(path: Path) -> list[dict[str, Any]]:
     return samples
 
 
+#: How many times its own sampling interval a gap has to be before the run
+#: is called starved. Healthy runs on this machine hold 30.0 s to a tenth of
+#: a second across two hours, so this is far outside jitter; four was chosen
+#: as the point where the loop has demonstrably missed more wall clock than
+#: it got, rather than from any measurement of what a hitch looks like.
+STARVED_GAP_FACTOR = 4.0
+
+
 @dataclass(frozen=True)
 class Pace:
     """How the run's own frame rate held up, and whether it ever stopped.
@@ -552,6 +560,29 @@ class Pace:
             return False
         slack = self.interval_s if self.interval_s is not None else 0.0
         return self.span_s < self.run_seconds - slack
+
+    @property
+    def starved(self) -> bool:
+        """Did the process stop getting the machine for long stretches?
+
+        Samples come from inside the frame loop, so the interval the run asked
+        for is also a claim about how often the loop runs. A gap several times
+        that interval is not jitter -- it is the loop not being scheduled.
+
+        Measured on 2026-09-08: run 5 sampled every 30.0 s for forty-five
+        minutes, then produced a **single gap of 9,548 s** while the machine's
+        load average went from 9 to 356 and this client drew 518 frames in
+        two and a half hours -- 0.05 fps. Every gauge in that log kept its
+        shape, so every verdict below it read as normal, and all fifty of them
+        described a process that was barely running.
+
+        Reported rather than corrected. There is no repairing a starved run:
+        the only honest thing is to say the numbers are not about this client
+        and to run it again on a quiet machine.
+        """
+        if self.interval_s is None or self.interval_s <= 0.0:
+            return False
+        return self.longest_gap_s > self.interval_s * STARVED_GAP_FACTOR
 
     @property
     def slowed_by(self) -> float:

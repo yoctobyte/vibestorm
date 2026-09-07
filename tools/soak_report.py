@@ -95,6 +95,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"got {pace.span_s / 60.0:.1f}. Treat everything below as a "
                 f"partial run. **"
             )
+        if pace.starved:
+            longest = pace.longest_gap_s
+            print(
+                f"  ** STARVED: one gap of {longest / 60.0:.0f} min between samples "
+                f"that were asked for every {pace.interval_s:.0f} s. The loop was "
+                f"not being scheduled, so the verdicts below describe a process "
+                f"that was barely running. Run it again on a quiet machine. **"
+            )
         print(
             f"  frame rate   {pace.fps_first_half:.1f} fps in the first half, "
             f"{pace.fps_second_half:.1f} in the second "

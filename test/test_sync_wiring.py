@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_sync_engine import _EngineCase, _item  # noqa: E402
 
 from vibestorm.sync import engine  # noqa: E402
+from vibestorm.sync.state import SyncState  # noqa: E402
 from vibestorm.sync.engine import (  # noqa: E402
     NEW_FILE_CAP_NAME,
     NOTECARD_AGENT_CAP_NAME,
@@ -193,6 +194,52 @@ class ExistingTextureTests(_WiringCase):
         outcome = await self.push_creating()
         self.assertEqual(self.creates, [])
         self.assertEqual(len(outcome.skipped), 1)
+
+
+class PullDispatchTests(_WiringCase):
+    """The pull loop's half of the same question: which decoder runs.
+
+    Its battery found two survivors where the push loop's found eight, and
+    both were narrow -- but narrow is what a dispatch bug looks like until the
+    input that shows it turns up.
+    """
+
+    async def test_a_gesture_is_written_as_the_object_holds_it(self) -> None:
+        """Byte for byte, including bytes that are not valid UTF-8.
+
+        Routing a gesture through `decode_notecard` looks harmless -- that
+        function returns unrecognised bytes as text, so a plain gesture comes
+        back identical -- and it is not: the fallback decodes with
+        ``errors="replace"`` and re-encodes, so any byte that is not valid
+        UTF-8 comes out of the pull as U+FFFD and can never be pushed back.
+
+        A trigger word typed in a viewer that was not speaking UTF-8 is all
+        this takes.
+        """
+        raw = b"2\n255\n0\n/caf\xe9\n\n1\n0\nanim\nb906c4ba-703b-1940-32a3-0c7f7d791510\n0\n"
+        self.assertNotEqual(raw.decode("utf-8", errors="replace").encode("utf-8"), raw)
+        self.add_asset("Cafe", raw, asset_type="gesture")
+
+        await self.pull()
+
+        written = self.folder / "Cafe.gesture"
+        self.assertEqual(written.read_bytes(), raw)
+        record = SyncState.load(self.folder, task_id=self.task_id).by_file_name("Cafe.gesture")
+        self.assertFalse(record.readonly, "a gesture pulled intact is pushable")
+
+    async def test_an_exported_binary_is_marked_unpushable_and_says_why(self) -> None:
+        """`include_binary` exports what sync cannot author. A file written
+        without that mark reads as editable, and the next push sends whatever
+        an image editor happened to save -- to a capability that does not
+        exist for its type."""
+        self.add_asset("Cloud", b"\xff\x4f\xff\x51 not really a codestream", asset_type="texture")
+
+        outcome = await self.pull(include_binary=True)
+
+        record = SyncState.load(self.folder, task_id=self.task_id).by_file_name("Cloud.j2k")
+        self.assertIsNotNone(record, f"nothing pulled; skipped={outcome.skipped}")
+        self.assertTrue(record.readonly)
+        self.assertIn("texture", record.readonly_reason)
 
 
 class CapabilityResolutionTests(unittest.TestCase):
