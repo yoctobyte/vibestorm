@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from vibestorm.caps.llsd import format_xml_map, parse_xml_value
+from vibestorm.caps.llsd import LlsdError, format_xml_map, parse_xml_value
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
 
 
@@ -85,4 +85,12 @@ class EventQueueClient:
         except urllib.error.URLError as exc:
             raise EventQueueError(f"event queue poll failed: {exc.reason}") from exc
 
-        return EventQueuePollResult(status="ok", payload=parse_xml_value(payload))
+        try:
+            return EventQueuePollResult(status="ok", payload=parse_xml_value(payload))
+        except LlsdError as exc:
+            # Outside the request block on purpose -- the body arrived, and
+            # what failed is reading it. The poll loop upstream catches
+            # `EventQueueError` and backs off; it would catch a bare
+            # `LlsdError` only through its blanket handler, which exists for
+            # the cases nobody predicted rather than for this one.
+            raise EventQueueError(f"event queue poll returned invalid LLSD: {exc}") from exc

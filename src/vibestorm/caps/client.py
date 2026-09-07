@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from vibestorm.caps.llsd import (
+    LlsdError,
     format_xml_map,
     format_xml_string_array,
     parse_xml_string_map,
@@ -102,6 +103,13 @@ class CapabilityClient:
             raise CapabilityError(f"seed capability resolution timed out after {self.timeout_seconds:.1f}s") from exc
         except urllib.error.URLError as exc:
             raise CapabilityError(f"seed capability resolution failed: {exc.reason}") from exc
+        except LlsdError as exc:
+            # The body arrived and was not LLSD -- a proxy's error page, a
+            # truncated response. Converted here rather than left to the
+            # caller: `LlsdError` is caught nowhere in this client, so
+            # letting it through would only rename the exception that
+            # escapes.
+            raise CapabilityError(f"seed capability resolution was not valid LLSD: {exc}") from exc
 
     def _fetch_capability_value_sync(
         self,
@@ -133,6 +141,13 @@ class CapabilityClient:
             raise CapabilityError(f"capability fetch timed out after {self.timeout_seconds:.1f}s") from exc
         except urllib.error.URLError as exc:
             raise CapabilityError(f"capability fetch failed: {exc.reason}") from exc
+        except LlsdError as exc:
+            # The body arrived and was not LLSD -- a proxy's error page, a
+            # truncated response. Converted here rather than left to the
+            # caller: `LlsdError` is caught nowhere in this client, so
+            # letting it through would only rename the exception that
+            # escapes.
+            raise CapabilityError(f"capability fetch was not valid LLSD: {exc}") from exc
 
     def _post_capability_value_sync(
         self,
@@ -168,6 +183,13 @@ class CapabilityClient:
             raise CapabilityError(f"capability post timed out after {self.timeout_seconds:.1f}s") from exc
         except urllib.error.URLError as exc:
             raise CapabilityError(f"capability post failed: {exc.reason}") from exc
+        except LlsdError as exc:
+            # The body arrived and was not LLSD -- a proxy's error page, a
+            # truncated response. Converted here rather than left to the
+            # caller: `LlsdError` is caught nowhere in this client, so
+            # letting it through would only rename the exception that
+            # escapes.
+            raise CapabilityError(f"capability post was not valid LLSD: {exc}") from exc
 
     @staticmethod
     def _request_headers(

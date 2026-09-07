@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from vibestorm.caps.client import CapabilityClient, CapabilityError
-from vibestorm.caps.llsd import parse_xml_value
+from vibestorm.caps.llsd import LlsdError, parse_xml_value
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
 
 
@@ -268,6 +268,15 @@ class TaskInventoryUploadClient:
             ) from exc
         except urllib.error.URLError as exc:
             raise TaskInventoryUploadError(f"script task upload failed: {exc.reason}") from exc
+        except LlsdError as exc:
+            # The body arrived and was not LLSD -- a proxy's error page, a
+            # truncated response. Converted here rather than left to the
+            # caller: `LlsdError` is caught nowhere in this client, so
+            # letting it through would only rename the exception that
+            # escapes.
+            raise TaskInventoryUploadError(
+                f"script task upload response was not valid LLSD: {exc}"
+            ) from exc
 
         if not isinstance(payload, dict):
             raise TaskInventoryUploadError("script task upload completion did not return an LLSD map")
@@ -331,6 +340,15 @@ class TaskInventoryUploadClient:
             ) from exc
         except urllib.error.URLError as exc:
             raise TaskInventoryUploadError(f"notecard task upload failed: {exc.reason}") from exc
+        except LlsdError as exc:
+            # The body arrived and was not LLSD -- a proxy's error page, a
+            # truncated response. Converted here rather than left to the
+            # caller: `LlsdError` is caught nowhere in this client, so
+            # letting it through would only rename the exception that
+            # escapes.
+            raise TaskInventoryUploadError(
+                f"notecard task upload response was not valid LLSD: {exc}"
+            ) from exc
 
         if not isinstance(payload, dict):
             raise TaskInventoryUploadError("notecard task upload completion did not return an LLSD map")

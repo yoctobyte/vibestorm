@@ -31,15 +31,33 @@ def format_xml_map(values: dict[str, object]) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
+def _root(data: bytes) -> ET.Element:
+    """Parse `data`, turning the parser's own failure into this module's.
+
+    `ET.fromstring` raises `ParseError`, which subclasses `SyntaxError` and
+    is nothing this module's callers are told to expect -- so a proxy's HTML
+    error page, or an empty body, left every function here as a class no
+    handler upstream names. That is the fourth time this exact shape has
+    been found in this client, after `DecompressionBombError` past
+    `decode_j2k`, `ExpatError` past `_login_sync`, and a wire field name read
+    off a renamed object. The rule it keeps proving: the exception that
+    escapes is the one raised by a layer you did not write.
+    """
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError as exc:
+        raise LlsdError(f"LLSD body is not well-formed XML: {exc}") from exc
+
+
 def parse_xml_string_map(data: bytes) -> dict[str, str]:
-    root = ET.fromstring(data)
+    root = _root(data)
     if root.tag != "llsd" or len(root) != 1 or root[0].tag != "map":
         raise LlsdError("expected LLSD XML map root")
     return _parse_map(root[0])
 
 
 def parse_xml_value(data: bytes) -> object:
-    root = ET.fromstring(data)
+    root = _root(data)
     if root.tag != "llsd" or len(root) != 1:
         raise LlsdError("expected LLSD XML root with a single child")
     return _parse_value(root[0])

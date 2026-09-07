@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from vibestorm.caps.client import CapabilityClient
-from vibestorm.caps.llsd import parse_xml_value
+from vibestorm.caps.llsd import LlsdError, parse_xml_value
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
 
 
@@ -208,6 +208,13 @@ class AssetUploadClient:
             ) from exc
         except urllib.error.URLError as exc:
             raise AssetUploadError(f"asset upload failed: {exc.reason}") from exc
+        except LlsdError as exc:
+            # The body arrived and was not LLSD -- a proxy's error page, a
+            # truncated response. Converted here rather than left to the
+            # caller: `LlsdError` is caught nowhere in this client, so
+            # letting it through would only rename the exception that
+            # escapes.
+            raise AssetUploadError(f"asset upload response was not valid LLSD: {exc}") from exc
         if not isinstance(payload, dict):
             raise AssetUploadError("asset upload completion did not return an LLSD map")
         state = _parse_str(payload.get("state"))
