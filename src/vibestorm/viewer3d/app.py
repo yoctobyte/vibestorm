@@ -489,10 +489,15 @@ def build_health_probe(
         "world.pending_meshes": _len_of(view, "objects_pending_meshes"),
         "world.object_properties": _len_of(view, "object_properties"),
         "world.agent_presences": _len_of(view, "agent_presences"),
-        # --- the circuit. `seen_reliable_sequences` is the one with no
-        # ceiling at all by construction: one int per reliable packet ever
-        # received, and a busy region sends tens a second for as long as the
-        # session lasts.
+        # --- the circuit. `seen_reliable_sequences` was the one with no
+        # ceiling at all -- one int per reliable packet ever received, and a
+        # busy region sends tens a second for as long as the session lasts.
+        # It is a `RecentSequences` now and stops at twice `SEQUENCE_MEMORY`,
+        # so a report that says it is climbing is reading a bound still
+        # filling: measured at 265 an hour on a quiet region, which reaches
+        # 8,192 in about thirty hours and no soak here has run that long.
+        # The row is worth reading anyway, because the *rate* is what a
+        # region's traffic looks like and a jump in it is a jump in that.
         "udp.seen_sequences": _len_of(session, "seen_reliable_sequences"),
         "udp.pending_reliable": _len_of(session, "pending_reliable"),
         "udp.queued_acks": _len_of(session, "queued_acks"),

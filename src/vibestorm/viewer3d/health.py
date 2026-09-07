@@ -44,10 +44,19 @@ Census = Callable[[], Mapping[str, float]]
 #: two apiece.
 MIN_SAMPLES_FOR_VERDICT = 4
 
-#: Below this, `settling` is not offered at all -- see `_rate_is_still_falling`.
+#: Below this, `settling` is not offered at all -- see `_rate_is_converging`.
 #: Six is the fewest that gives two comparable stretches after the first third
 #: is discarded, which at the default cadence is three minutes of a soak.
 MIN_SAMPLES_FOR_TREND = 6
+
+#: How many standard errors a fitted slope must clear before the report calls
+#: it a climb rather than the shape of the noise. Not a knob: the two soak
+#: runs this was measured against sit twenty-fold either side of it. A heap
+#: that was flat to the byte for twenty minutes fits at 0.5 and 0.9 sigma; the
+#: leak that prompted all of this fits at 37 to 41 on every row. Anything
+#: between 1.5 and 10 separates them identically, and 2 is the conventional
+#: place to put it.
+TREND_SIGMA = 2.0
 
 
 def process_rss_bytes() -> float:
@@ -626,10 +635,15 @@ class Growth:
     last: float
     low: float
     peak: float
-    #: Rate over the *second half* of the run, per hour. The first half of any
-    #: viewer run is caches filling, which is not a leak; what separates the
-    #: two is whether it is still going at the end.
+    #: Least-squares rate over the *second half* of the run, per hour. The
+    #: first half of any viewer run is caches filling, which is not a leak;
+    #: what separates the two is whether it is still going at the end.
     late_rate_per_hour: float
+    #: That rate's standard error, same units. Read the two together or
+    #: neither: a rate of 1,737 an hour means one thing beside an error of 40
+    #: and the opposite beside an error of 2,041, and the report has printed
+    #: both. See `_fit`.
+    late_rate_stderr_per_hour: float
     verdict: str
 
     @property
@@ -670,6 +684,7 @@ def growth_report(
             continue
         values = [v for _, v in points]
         kind = "counter" if name in counter_names else "gauge"
+        late_rate, late_stderr = _late_fit(points)
         report.append(
             Growth(
                 name=name,
@@ -679,7 +694,8 @@ def growth_report(
                 last=values[-1],
                 low=min(values),
                 peak=max(values),
-                late_rate_per_hour=_late_rate_per_hour(points),
+                late_rate_per_hour=late_rate,
+                late_rate_stderr_per_hour=late_stderr,
                 verdict=_verdict(points, kind),
             )
         )
@@ -687,23 +703,60 @@ def growth_report(
     return report
 
 
-def _late_rate_per_hour(points: Sequence[tuple[float, float]]) -> float:
+def _fit(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
+    """Least-squares slope through `points`, and that slope's standard error.
+
+    Both per second. The pair is the whole point: a slope on its own cannot
+    be told apart from the phase of whatever the series was doing when the
+    run ended, and a soak's series oscillate.
+
+    This replaced a subtraction of the two end samples, which is a line
+    through two points chosen for when they happened rather than for what
+    they say. Measured on the run that prompted it, where the heap was flat
+    to the byte for the last twenty minutes: the endpoint rule reported
+    `proc.py_blocks` climbing 8,183 an hour and `obj._total` 3,355. The fits
+    are 1,737 +/- 2,041 and 416 +/- 884 -- both inside their own error, both
+    reported as trends five to eight times larger than the fit by a rule that
+    was reading which end of a sawtooth the last sample landed on.
+
+    The error is the textbook one, ``resid_sd / sqrt(sum((t - mean_t)^2))``,
+    and it assumes the residuals are independent. A sawtooth's are not, so on
+    an oscillating series it understates -- it will call a wobble real before
+    it calls a trend noise. That is the safe direction for a report whose job
+    is to find leaks, and it is why a plain two-sigma cut is enough here
+    rather than something with a name.
+    """
+    count = len(points)
+    if count < 2:
+        return 0.0, 0.0
+    mean_t = sum(t for t, _ in points) / count
+    mean_v = sum(v for _, v in points) / count
+    spread = sum((t - mean_t) ** 2 for t, _ in points)
+    if spread <= 0.0:
+        return 0.0, 0.0
+    slope = sum((t - mean_t) * (v - mean_v) for t, v in points) / spread
+    if count < 3:
+        # Two points are a line through anything, and it has no residual to
+        # measure. Zero error means "believe the slope", which for two points
+        # is the only honest answer available -- there is nothing to disagree
+        # with it.
+        return slope, 0.0
+    residuals = sum((v - (mean_v + slope * (t - mean_t))) ** 2 for t, v in points)
+    stderr = ((residuals / (count - 2)) / spread) ** 0.5
+    return slope, stderr
+
+
+def _late_fit(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
+    """The fit over the second half, per hour. See `Growth.late_rate_per_hour`."""
     if len(points) < 2:
-        return 0.0
-    mid = len(points) // 2
-    start_t, start_v = points[mid]
-    end_t, end_v = points[-1]
-    span = end_t - start_t
-    if span <= 0.0:
-        return 0.0
-    return (end_v - start_v) * 3600.0 / span
+        return 0.0, 0.0
+    slope, stderr = _fit(points[len(points) // 2 :])
+    return slope * 3600.0, stderr * 3600.0
 
 
-def _rate(first: tuple[float, float], last: tuple[float, float]) -> float:
-    span = last[0] - first[0]
-    if span <= 0.0:
-        return 0.0
-    return (last[1] - first[1]) / span
+def _rate(points: Sequence[tuple[float, float]]) -> float:
+    """The fitted slope through a stretch, per second."""
+    return _fit(points)[0]
 
 
 def _rate_is_converging(points: Sequence[tuple[float, float]]) -> bool:
@@ -727,8 +780,8 @@ def _rate_is_converging(points: Sequence[tuple[float, float]]) -> bool:
     """
     count = len(points)
     first, second = count // 3, 2 * count // 3
-    middle = _rate(points[first], points[second])
-    last = _rate(points[second], points[-1])
+    middle = _rate(points[first : second + 1])
+    last = _rate(points[second:])
     return last < middle / 2.0
 
 
@@ -739,13 +792,21 @@ def _verdict(points: Sequence[tuple[float, float]], kind: str) -> str:
     if max(values) == min(values):
         return "flat"
     mid = len(points) // 2
-    late = values[-1] - values[mid]
     if kind == "counter":
         # A counter is supposed to climb. The failure is the opposite one: a
         # session that stopped receiving, or a loop that stopped drawing,
-        # neither of which raises anything.
-        return "stalled" if late <= 0.0 else "rising"
-    if late <= 0.0:
+        # neither of which raises anything. Two points are enough here in a
+        # way they are not for a gauge: a counter only ever goes up, so it has
+        # no phase to be caught on the wrong side of.
+        return "stalled" if values[-1] - values[mid] <= 0.0 else "rising"
+    late, stderr = _late_fit(points)
+    if late <= 0.0 or (stderr > 0.0 and late < TREND_SIGMA * stderr):
+        # Either it did not climb, or it climbed by less than the scatter it
+        # was measured through -- which are the same answer to the only
+        # question this column is asked, and giving them separate words would
+        # have put a healthy sawtooth in one or the other depending on where
+        # the run happened to stop. A reader who wants to know which it was
+        # reads the rate and its error, which is what they are printed for.
         return "settled"
     if len(points) < MIN_SAMPLES_FOR_TREND:
         # Not enough to see a trend in, so do not claim one. Of the two words
@@ -763,12 +824,13 @@ def format_growth_report(report: Sequence[Growth], *, limit: int = 0) -> str:
     width = max((len(g.name) for g in rows), default=4)
     lines = [
         f"{'name':{width}s} {'kind':8s} {'first':>14s} {'last':>14s} "
-        f"{'peak':>14s} {'per hour':>14s}  verdict"
+        f"{'peak':>14s} {'per hour':>14s} {'+/-':>12s}  verdict"
     ]
     for g in rows:
         lines.append(
             f"{g.name:{width}s} {g.kind:8s} {_num(g.first):>14s} {_num(g.last):>14s} "
-            f"{_num(g.peak):>14s} {_num(g.late_rate_per_hour):>14s}  {g.verdict}"
+            f"{_num(g.peak):>14s} {_num(g.late_rate_per_hour):>14s} "
+            f"{_num(g.late_rate_stderr_per_hour):>12s}  {g.verdict}"
         )
     return "\n".join(lines)
 
@@ -788,6 +850,7 @@ __all__ = [
     "HealthProbe",
     "MIN_SAMPLES_FOR_TREND",
     "MIN_SAMPLES_FOR_VERDICT",
+    "TREND_SIGMA",
     "OBJECT_CENSUS_LIMIT",
     "OBJECT_CENSUS_PREFIX",
     "OBJECT_CENSUS_TOP",

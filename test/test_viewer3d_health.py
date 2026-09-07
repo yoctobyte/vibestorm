@@ -32,10 +32,12 @@ from vibestorm.viewer3d.health import (
     MIN_SAMPLES_FOR_VERDICT,
     OBJECT_CENSUS_PREFIX,
     PROCESS_GAUGES,
+    TREND_SIGMA,
     Growth,
     HealthProbe,
     SoakLog,
     TypeCensus,
+    _fit,
     format_growth_report,
     freeze_static_heap,
     growth_report,
@@ -285,6 +287,176 @@ class GrowthVerdictTests(unittest.TestCase):
         assert report[0].low == 0.0
 
 
+class FitTests(unittest.TestCase):
+    """The arithmetic itself, against a fit worked by hand.
+
+    Everything else in this file reads a verdict, which is the slope and its
+    error passed through a threshold -- so a five per cent error in the error
+    changes no verdict in any fixture and no test notices. A mutation battery
+    found exactly that: dividing the residuals by `n` instead of `n - 2`
+    survived the whole file. This is the level the mistake lives at, so this
+    is where it gets pinned.
+    """
+
+    #: t = 0..4, v = 1, 3, 2, 5, 4. Sxx = 10, Sxy = 8, so the slope is 0.8;
+    #: the residuals are -0.4, 0.8, -1.0, 1.2, -0.6, summing squared to 3.6,
+    #: so s^2 = 3.6 / 3 and the error is sqrt(0.12).
+    POINTS = [(0.0, 1.0), (1.0, 3.0), (2.0, 2.0), (3.0, 5.0), (4.0, 4.0)]
+
+    def test_the_slope_is_the_least_squares_one(self) -> None:
+        self.assertAlmostEqual(_fit(self.POINTS)[0], 0.8, places=12)
+
+    def test_the_error_carries_the_right_degrees_of_freedom(self) -> None:
+        """Two parameters were fitted, so three of the five points are free."""
+        self.assertAlmostEqual(_fit(self.POINTS)[1], (1.2 / 10.0) ** 0.5, places=12)
+        # And not the biased form, which is what survived the battery.
+        self.assertNotAlmostEqual(_fit(self.POINTS)[1], ((3.6 / 5.0) / 10.0) ** 0.5, places=3)
+
+    def test_a_straight_line_has_no_error_at_all(self) -> None:
+        slope, stderr = _fit([(float(i), 2.0 * i + 5.0) for i in range(6)])
+        self.assertAlmostEqual(slope, 2.0, places=12)
+        self.assertAlmostEqual(stderr, 0.0, places=12)
+
+    def test_two_points_get_a_slope_and_no_opinion_about_it(self) -> None:
+        """There is nothing left over to disagree with a line through two points."""
+        assert _fit([(0.0, 0.0), (10.0, 5.0)]) == (0.5, 0.0)
+
+    def test_one_point_is_no_slope_rather_than_a_division_by_zero(self) -> None:
+        assert _fit([(3.0, 9.0)]) == (0.0, 0.0)
+
+    def test_samples_that_all_landed_at_the_same_moment_do_not_divide_by_zero(self) -> None:
+        assert _fit([(5.0, 1.0), (5.0, 2.0), (5.0, 3.0)]) == (0.0, 0.0)
+
+
+class SawtoothTests(unittest.TestCase):
+    """A rate is a number the reader acts on, so it may not be the noise.
+
+    Every shape here is drawn from a real soak, because the failure this class
+    pins was found in one and not in a fixture: run 4 held a heap that did not
+    gain a byte over its last twenty minutes -- `proc.rss_bytes` reading
+    630,185,984 on sample after sample -- while the report called
+    `proc.py_blocks` and `obj._total` leaks at 8,183 and 3,355 an hour. The
+    rate was the last sample minus the middle one, so on a series that
+    oscillates it reported which end of the swing the run happened to stop on.
+    """
+
+    @staticmethod
+    def _sawtooth(count: int, *, low: float, high: float, period: int, phase: int = 0):
+        """A cache filling and being evicted, over and over, going nowhere.
+
+        This is what a healthy viewer heap looks like sample to sample. The
+        run it is drawn from swung `obj._total` between 11,597 and 16,722 for
+        twenty minutes with the total unchanged either side.
+        """
+        step = (high - low) / period
+        return [low + step * ((i + phase) % period) for i in range(count)]
+
+    def test_a_sawtooth_going_nowhere_is_not_called_a_leak(self) -> None:
+        values = self._sawtooth(40, low=11_597.0, high=16_722.0, period=7)
+        report = growth_report(_samples("a", values))
+        assert report[0].verdict == "settled"
+
+    def test_and_where_the_run_stopped_does_not_change_the_answer(self) -> None:
+        """The sharpest statement of the bug that prompted this.
+
+        The same heap, sampled from seven different starting points in its
+        swing: seven runs of a viewer that is doing nothing wrong. A verdict
+        that depends on which of them you happened to record is not measuring
+        the heap.
+        """
+        verdicts = {
+            phase: growth_report(
+                _samples(
+                    "a",
+                    self._sawtooth(40, low=11_597.0, high=16_722.0, period=7, phase=phase),
+                )
+            )[0].verdict
+            for phase in range(7)
+        }
+        assert set(verdicts.values()) == {"settled"}, verdicts
+
+    def test_the_rule_this_replaced_did_depend_on_it(self) -> None:
+        """The control: the fixture has to be one the fix was needed for.
+
+        Two points chosen by where the run stopped, which is what the rate
+        used to be. Across the same seven phases it swings from a fall of
+        nine thousand an hour to a climb of twenty-six thousand, through a
+        heap that gained nothing in any of them.
+        """
+        rates = []
+        for phase in range(7):
+            values = self._sawtooth(40, low=11_597.0, high=16_722.0, period=7, phase=phase)
+            points = [(i * 30.0, v) for i, v in enumerate(values)]
+            mid = len(points) // 2
+            rates.append(
+                (points[-1][1] - points[mid][1]) * 3600.0 / (points[-1][0] - points[mid][0])
+            )
+        self.assertLess(min(rates), -5_000.0)
+        self.assertGreater(max(rates), 5_000.0)
+
+    def test_a_real_leak_under_the_same_noise_is_still_growing(self) -> None:
+        """The other control, and the one that matters.
+
+        Suppressing noise is easy; suppressing noise without suppressing the
+        signal is the job. This is the same sawtooth with the leak that
+        prompted all of this laid under it -- run 3 gained 64,263 `obj._total`
+        an hour for two hours -- and the swing is larger than an hour's worth
+        of the leak, so nothing about it is visible sample to sample.
+        """
+        wobble = self._sawtooth(40, low=0.0, high=5_125.0, period=7)
+        values = [v + 64_263.0 * (i * 30.0) / 3600.0 for i, v in enumerate(wobble)]
+        row = growth_report(_samples("a", values))[0]
+        assert row.verdict == "growing"
+        self.assertGreater(row.late_rate_per_hour, TREND_SIGMA * row.late_rate_stderr_per_hour)
+        # And the rate it reports is the leak, not the leak plus the swing.
+        self.assertAlmostEqual(row.late_rate_per_hour, 64_263.0, delta=8_000.0)
+
+    def test_and_that_one_is_found_from_every_phase_too(self) -> None:
+        for phase in range(7):
+            wobble = self._sawtooth(40, low=0.0, high=5_125.0, period=7, phase=phase)
+            values = [v + 64_263.0 * (i * 30.0) / 3600.0 for i, v in enumerate(wobble)]
+            row = growth_report(_samples("a", values))[0]
+            assert row.verdict == "growing", (phase, row.late_rate_per_hour)
+
+    def test_a_full_run_finds_a_leak_a_fifth_the_size_of_the_swing(self) -> None:
+        """Where the sensitivity actually is, measured rather than hoped for.
+
+        Two hours at the default cadence -- 240 samples, which is what run 3
+        was -- against a swing of 5,125. A climb of 1,000 an hour is a fifth
+        of one swing and invisible sample to sample, and the fit finds it.
+        """
+        wobble = self._sawtooth(240, low=0.0, high=5_125.0, period=7)
+        values = [v + 1_000.0 * (i * 30.0) / 3600.0 for i, v in enumerate(wobble)]
+        row = growth_report(_samples("a", values))[0]
+        assert row.verdict == "growing"
+        self.assertAlmostEqual(row.late_rate_per_hour, 1_000.0, delta=200.0)
+
+    def test_and_a_short_run_says_settled_rather_than_guessing(self) -> None:
+        """The same leak in a twenty-minute run, which cannot see it.
+
+        This is not a shortfall to be tuned away. Through that much swing a
+        thousand an hour is a fifth of a standard error, and a rule that
+        called it a leak would be calling every phase of every healthy heap
+        one too -- the seven-phase test above is the same numbers with the
+        leak set to zero. The honest reading is `settled` with an error of
+        7,174 printed beside it, which tells a reader the run was too short
+        to answer rather than answering wrongly.
+        """
+        wobble = self._sawtooth(40, low=0.0, high=5_125.0, period=7)
+        values = [v + 1_000.0 * (i * 30.0) / 3600.0 for i, v in enumerate(wobble)]
+        row = growth_report(_samples("a", values))[0]
+        assert row.verdict == "settled"
+        self.assertGreater(row.late_rate_stderr_per_hour, 1_000.0)
+
+    def test_a_series_that_is_only_noise_gets_no_trend_claimed(self) -> None:
+        """No periodicity to be caught by, and still nothing to report."""
+        import random
+
+        rng = random.Random(20260907)
+        values = [400_000.0 + rng.uniform(-4_000.0, 4_000.0) for _ in range(60)]
+        assert growth_report(_samples("a", values))[0].verdict == "settled"
+
+
 class CounterVerdictTests(unittest.TestCase):
     """A counter that stops is its own failure, and nothing else would notice."""
 
@@ -310,6 +482,35 @@ class CounterVerdictTests(unittest.TestCase):
         # is the first row: sorting on magnitude alone buries every finding
         # under the packet count.
         assert [g.name for g in report] == ["cache", "udp.rx"]
+
+    def test_two_points_are_enough_because_a_counter_cannot_come_back_down(self) -> None:
+        """Why the counter branch keeps the rule the gauge branch lost.
+
+        A gauge's verdict now comes off a least-squares fit, because a gauge
+        oscillates and two points read the phase of the swing. A counter does
+        not oscillate: it is non-decreasing, so "higher at the end than in the
+        middle" and "the fitted slope is positive" are the same statement, and
+        the cheap one is kept.
+
+        That is an argument, so it is checked rather than believed. Five
+        hundred counter shapes -- bursts, long stalls, single late jumps, dead
+        flat -- and the two rules have never disagreed. When they stop
+        agreeing, something is emitting a counter that falls, and *that* is
+        the finding rather than this line.
+        """
+        import random
+
+        rng = random.Random(20260907)
+        for _ in range(500):
+            values = [0.0]
+            for _ in range(rng.randint(3, 39)):
+                values.append(values[-1] + rng.choice((0.0, 0.0, 1.0, 5.0, 100.0)))
+            points = [(i * 30.0, v) for i, v in enumerate(values)]
+            mid = len(values) // 2
+            two_point = values[-1] - values[mid] <= 0.0
+            fitted = _fit(points[len(points) // 2 :])[0] <= 0.0
+            assert two_point == fitted, values
+
 
 
 class ReportShapeTests(unittest.TestCase):
@@ -523,11 +724,33 @@ class FormatTests(unittest.TestCase):
             low=0.0,
             peak=1_234_567_890.0,
             late_rate_per_hour=1.5,
+            late_rate_stderr_per_hour=0.25,
             verdict="growing",
         )
         text = format_growth_report([row])
         assert "1,234,567,890" in text
         assert "1.50" in text
+
+    def test_a_rate_is_printed_beside_its_error(self) -> None:
+        """Neither number means anything without the other. See `_fit`."""
+        row = Growth(
+            name="blocks",
+            kind="gauge",
+            samples=40,
+            first=0.0,
+            last=100.0,
+            low=0.0,
+            peak=100.0,
+            late_rate_per_hour=1_737.0,
+            late_rate_stderr_per_hour=2_041.0,
+            verdict="steady",
+        )
+        header, line = format_growth_report([row]).splitlines()
+        assert "+/-" in header
+        assert "1,737" in line and "2,041" in line
+        # And in that order, so the error reads as the error and not as a
+        # second rate.
+        assert line.index("1,737") < line.index("2,041")
 
 
 class GaugeWiringTests(unittest.TestCase):

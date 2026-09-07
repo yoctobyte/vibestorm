@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-07 (seventeenth pass)
+Last updated: 2026-09-07 (eighteenth pass)
 
 ## The Owner's Priorities
 
@@ -378,6 +378,99 @@ startup heap buys headroom, it does not repeal the arithmetic. The follow-up
 is a periodic explicit `gc.collect()` on a measured budget, and it is left out
 on purpose so that run 4 measures **one** change. Two fixes in one soak is a
 soak that cannot say which one worked.
+
+**A -- the instrument was reading the sawtooth's phase (2026-09-07).** Run 4
+answered the question it was launched for and then exposed a worse one in the
+tool used to read it. The heap was flat: `proc.rss_bytes` reported
+**630,185,984 on sample after sample** for the last twenty minutes of a
+forty-three-minute run, the same number to the byte. The report called three
+of its rows leaks anyway -- `proc.py_blocks` at 8,183 an hour, `obj._total` at
+3,355, `obj.list` at 1,853.
+
+The rate was the last sample minus the middle one, divided by the time between
+them. That is a line through two points chosen by *when they happened* rather
+than by what they say, and a healthy viewer heap does not sit still between
+samples: it fills and is evicted, over and over, going nowhere. Run 4's
+`obj._total` swung between **11,597 and 16,722** all through the flat stretch.
+Subtracting two points off a swing that size reports which end of it the run
+happened to stop on, and calls it an hourly rate.
+
+The fix is a least-squares fit over the second half, reported **with its own
+standard error**:
+
+    name             per hour        +/-   verdict
+    proc.py_blocks      1,461      1,780   settled     (was 8,183, growing)
+    obj._total            365        770   settled     (was 3,355, growing)
+    obj.list              137        447   settled     (was 1,853, growing)
+
+Neither number means anything without the other, which is why the column was
+added rather than the rate quietly corrected: 1,737 an hour beside an error of
+40 is a leak and beside an error of 2,041 is nothing, and the old report
+printed the first of those either way.
+
+**What stops this from being a way to explain leaks away.** The threshold is
+two standard errors, and it is not a knob -- the two runs on record sit
+twenty-fold either side of it. Run 4's flat rows fit at **0.5 and 0.9 sigma**;
+run 3's real leak fits at **37 to 41 sigma on every row**, and comes through
+the new rule reading `growing` exactly as before, at 464 MB an hour with an
+error of 12 MB. Anything from 1.5 to 10 separates the two identically. The
+tests carry both directions: a seven-phase sweep of the same healthy sawtooth
+(a verdict that depends on which phase you recorded is not measuring the
+heap), and the same sweep with run 3's measured leak of 64,263 an hour laid
+under a swing larger than an hour of it, which must still read `growing` from
+every phase.
+
+**And what it costs.** The sensitivity is now a measured number rather than a
+hope. Through a swing of 5,125, a two-hour run finds a climb of 1,000 an hour
+-- a fifth of one swing, invisible sample to sample. A twenty-minute run does
+not, and says `settled` with an error of 7,174 printed beside it. That is the
+honest answer to a run too short to tell, and a test pins it so that nobody
+recovers the missing sensitivity by lowering the threshold.
+
+`steady` was in this for an hour, as a third word for "climbed, but inside the
+noise", and it was wrong for the reason the whole change exists: the same
+healthy sawtooth landed in `steady` or in `settled` depending on its phase.
+Both answer the only question the column is asked. One word.
+
+**Two survivors, and only one of them was a gap.** Twelve mutants of the new
+arithmetic. Ten died. Dividing the residuals by `n` instead of `n - 2` lived
+through the whole file, which is the shape of the problem: every other test
+reads a *verdict*, and a five per cent error in the error crosses no
+threshold in any fixture. Killing it by tuning a fixture to sit within five
+per cent of two sigma would be a test that fails for the wrong reasons, so
+`FitTests` pins the arithmetic directly against a fit worked by hand -- five
+points, slope 0.8, error sqrt(0.12) -- which is the level the mistake lives
+at.
+
+The other survivor is an equivalent mutant: making the *counter* branch use
+the fit too changes no answer, because a counter is non-decreasing and
+"higher at the end than in the middle" and "the fitted slope is positive" are
+then the same statement. Checked rather than argued -- 20,000 random monotonic
+counters, zero disagreements -- and the argument is now a test, so if
+something ever emits a counter that falls, that becomes the finding instead of
+this line quietly changing meaning.
+
+**The rows that stand alone now, and the answer they give.** With the noise
+quiet, `--only growing` on run 4 returns **two** rows rather than five, and
+both of them are bounded containers still filling:
+
+* `udp.seen_sequences`, 265 an hour on a 630-sigma fit -- the tightest in the
+  run. `seen_reliable_sequences` is a `RecentSequences` and stops at twice
+  `SEQUENCE_MEMORY`, so it reaches 8,192 in about thirty hours and no soak
+  here has run that long.
+* `hud.wrap_cache`, 13.3 an hour -- `wrap_lines` empties it at
+  `WRAP_CACHE_LIMIT` (512), and it stood at 112 after fifty minutes.
+
+Which makes run 4 the first soak on record with **nothing growing that is not
+supposed to**, and it took both fixes to see: `gc.freeze()` to stop the leak,
+and the fit to stop the instrument from inventing three more.
+
+The comment beside the `udp.seen_sequences` gauge in `app.py` still described
+the `set` that `RecentSequences` replaced -- "the one with no ceiling at all
+by construction" -- which is the same defect as the coarse height byte below,
+one layer up: a reader consults the comment to interpret the row and concludes
+leak. Corrected, and the bound it now claims was already pinned by two tests
+in `test_udp_recent_sequences.py`.
 
 **A -- the viewer knew where it was and said otherwise (2026-09-07).** Found
 in a screenshot taken to check something else. The HUD read
