@@ -48,6 +48,11 @@ NOTECARD_TASK_CAP_NAME = "UpdateNotecardTaskInventory"
 #: Filling in a notecard that lives in *agent* inventory. Needed to create one
 #: inside an object, because that route goes through agent inventory first.
 NOTECARD_AGENT_CAP_NAME = "UpdateNotecardAgentInventory"
+#: Creating an agent inventory item and its asset in one exchange. Not a
+#: *task* capability: it writes into the agent's own inventory and the object
+#: sees the result only once the item is copied across. It is how a texture
+#: gets in, because unlike a notecard there is nothing to fill in afterwards.
+NEW_FILE_CAP_NAME = "NewFileAgentInventory"
 
 NOTECARD_ASSET_TYPE = 7
 SCRIPT_ASSET_TYPE = 10
@@ -60,10 +65,21 @@ class SyncCaps:
     script: str | None = None
     notecard: str | None = None
     notecard_agent: str | None = None
+    new_file: str | None = None
 
     @property
     def can_create_notecards(self) -> bool:
         return bool(self.notecard_agent)
+
+    @property
+    def can_upload_textures(self) -> bool:
+        """A texture needs the upload capability *and* somewhere to put it.
+
+        The folder id comes from the login bootstrap rather than from here,
+        so this answers half the question; a caller without an agent folder
+        has to report the file skipped even on a sim that offers the cap.
+        """
+        return bool(self.new_file)
 
 
 @dataclass(slots=True, frozen=True)
@@ -183,7 +199,12 @@ async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCa
     """The capabilities a sync can use against this session."""
     caps = await CapabilityClient(timeout_seconds=timeout).resolve_seed_caps(
         session.bootstrap.seed_capability,  # type: ignore[attr-defined]
-        [*SCRIPT_TASK_CAP_NAMES, NOTECARD_TASK_CAP_NAME, NOTECARD_AGENT_CAP_NAME],
+        [
+            *SCRIPT_TASK_CAP_NAMES,
+            NOTECARD_TASK_CAP_NAME,
+            NOTECARD_AGENT_CAP_NAME,
+            NEW_FILE_CAP_NAME,
+        ],
         udp_listen_port=session.caps_udp_listen_port,  # type: ignore[attr-defined]
         user_agent="Vibestorm",
     )
@@ -191,6 +212,7 @@ async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCa
         script=first_resolved(caps, SCRIPT_TASK_CAP_NAMES),
         notecard=first_resolved(caps, [NOTECARD_TASK_CAP_NAME]),
         notecard_agent=first_resolved(caps, [NOTECARD_AGENT_CAP_NAME]),
+        new_file=first_resolved(caps, [NEW_FILE_CAP_NAME]),
     )
 
 
