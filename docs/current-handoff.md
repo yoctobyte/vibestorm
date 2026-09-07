@@ -171,6 +171,37 @@ gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
 
+**A -- the leak did not turn up in run 3, and that is a finding with an
+experiment attached (2026-09-07).** Run 3 is the first soak with the type
+census. Forty-six minutes in, `proc.rss_bytes` has been flat at 634.8 MB since
+minute sixteen, `proc.py_blocks` oscillates around 430,000 with no trend, and
+`obj._total` around 74,000 with none either. Run 1, at the same point, was
+already climbing -- 424,876 blocks at minute 35 and 450,928 by minute 70, a
+straight line the rest of the way.
+
+Three things differ between the two runs, and only one of them is testable
+here:
+
+* **Machine load.** Run 1 ran at 6.2 fps because two orphaned `pytest`
+  processes were eating two cores. Run 3 runs at 30, against a 30 fps cap.
+* **`--hidden`.** Run 3 opens no window. Run 1 did.
+* The census itself, which walks the heap every thirty seconds.
+
+The window cannot be isolated: reproducing "visible window on the real GPU"
+means putting a window on the owner's display, which is off limits, and Xvfb
+has no GPU so it answers a different question. The *frame rate* can be, and it
+is the better suspect anyway: a viewer drawing at six frames a second is not a
+viewer doing less work, it is a viewer draining its queues five times less
+often per unit of arriving traffic. A container that fills with the clock and
+empties with the frame grows only when frames are slow -- and would read as a
+leak that starts around minute forty and never stops.
+
+So run 4 is run 3 with `--max-fps 6` and nothing else changed. If the leak
+comes back, it is a per-frame drain against a per-second fill, and the census
+will name the container. If it does not, the difference was the window or the
+load, and the record should say the two-hour figures from before 2026-09-07
+03:20 measured a machine under load 14 rather than this client.
+
 **A -- the frame that arrives back where it started (2026-09-07).** The
 refresh already skipped *rebuilding* an entity for a prim that had not moved.
 It did not skip finding out. A still 15,000-prim region spent 30 ms a frame on
@@ -235,7 +266,22 @@ them already held. Profiled, `_region_frame_transforms` and
 `resolve_world_transforms` are 61% of that, and both already carry unchanged
 answers across -- they simply rebuild the dictionary they carry them into.
 
-So the next pass is the one this one turned out not to need: keep `transforms`
+**And one refactor that looked obvious and measured worse, recorded so it is
+not tried twice.** The frame walks every prim twice -- once for the repeat
+check, once inside `_region_frame_transforms` to find which prims are
+unchanged -- the same predicate over the same dictionary. Folding them into
+one walk that materialises the `unchanged` set and passes it down made the
+still row go from **3.07 ms to 5.97 ms** and the 1% row from 41.4 to 44.8. The
+second walk was never the cost: it is that the repeat check bails on the first
+prim that moved and allocates nothing at all, while a materialised set of
+15,000 ids costs 15,000 `set.add` calls on every frame including the ones the
+check was about to answer in a hundred comparisons.
+
+Which is the constraint the next pass has to respect: **track the small set,
+never materialise the big one.** `changed` is 150 of 15,000 and collecting it
+is cheap; `unchanged` is 14,850 and collecting it is not.
+
+So the next pass is: keep `transforms`
 and the resolved placement across frames and patch the entries that changed,
 rather than rebuild them. The scan is not the cost -- that is the lesson of
 `_nothing_moved`, and it is measured -- so the design does not need `WorldView`
