@@ -86,23 +86,38 @@ def _placeable_prims(world_view) -> int:
     Deliberately not the scene's own arithmetic: roots are counted directly,
     and a child is counted only if every parent above it arrived, which is the
     same rule `resolve_world_transforms` applies by a different route.
+
+    The two maps are the point, and the first version of this had one. An
+    avatar is not a prim and must not be *counted* -- it has its own row -- but
+    it is very much a thing that can be a *parent*, because an attachment is a
+    prim whose `parent_id` is the avatar wearing it. The scene's own transform
+    pass has no pcode filter at all: every object with a position goes in, so
+    attachments resolve and get drawn. Excluding avatars from the parent
+    lookup as well as from the count would have made every attachment in the
+    region read as unplaceable, and this tool would have reported the viewer
+    drawing prims that "could not be placed" -- a failure in the checker
+    printed as a failure in the thing being checked, which is the one bug a
+    verifier must not have.
     """
-    by_local: dict[int, object] = {}
+    parents: dict[int, object] = {}
+    countable: set[int] = set()
     for obj in world_view.objects.values():
-        if obj.pcode == 47 or obj.position is None:
+        if obj.position is None:
             continue
-        by_local[obj.local_id] = obj
+        parents[obj.local_id] = obj
+        if obj.pcode != 47:
+            countable.add(obj.local_id)
 
     def placed(local_id: int, depth: int = 0) -> bool:
         if depth > 64:
             return False
-        obj = by_local.get(local_id)
+        obj = parents.get(local_id)
         if obj is None:
             return False
         parent = getattr(obj, "parent_id", 0)
         return True if not parent else placed(parent, depth + 1)
 
-    return sum(1 for local_id in by_local if placed(local_id))
+    return sum(1 for local_id in countable if placed(local_id))
 
 
 async def main() -> int:
