@@ -1262,6 +1262,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
     # long as the process, and everything after this line is the world, which
     # does not. See `freeze_static_heap` -- a prim frozen here would be a real
     # leak the moment its region went away.
+    #
+    # What makes that true is that nothing between `create_task` above and this
+    # line awaits: the session coroutine has not run a single step yet, so no
+    # packet has been decoded and there is nothing of the world on the heap to
+    # freeze. An `await` slipped in between would quietly break it, which is
+    # why a test pins it.
     frozen = freeze_static_heap()
     print(f"[viewer3d] gc.freeze objects={frozen}", flush=True)
     frame_number = 0

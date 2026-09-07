@@ -300,6 +300,15 @@ went away, so the call has to happen while the heap is the viewer and nothing
 else. It prints what it froze (`gc.freeze objects=12689`) so a later run can
 see whether that number has quietly started tracking the world.
 
+What makes the placement *safe* rather than merely sensible is one line
+above it: nothing between `asyncio.create_task(run_live_session(...))` and the
+freeze awaits, so the session coroutine has not run a single step and no packet
+has been decoded. A single `await` slipped in between would start freezing
+prims, and nothing else in the file would notice, so
+`test_nothing_awaits_between_starting_the_session_and_freezing` reads the
+source between those two lines and fails if one appears. Checked against a
+mutant: inserting `await asyncio.sleep(0)` there turns it red.
+
 Three counters go on the sample -- `gc.gen0`, `gc.gen1`, `gc.gen2`, straight
 off `gc.get_stats()` -- and all three are declared **counters** in
 `tools/soak_report.py`, with a test that says so. Left as gauges they would be

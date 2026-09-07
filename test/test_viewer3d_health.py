@@ -1204,6 +1204,29 @@ class CyclicGarbageTests(unittest.TestCase):
         for name in GC_COUNTERS:
             self.assertIn(name, DEFAULT_COUNTERS)
 
+    def test_nothing_awaits_between_starting_the_session_and_freezing(self) -> None:
+        """The freeze is safe only because the world cannot have arrived yet.
+
+        `run_viewer` creates the session task and then freezes, and an
+        `asyncio` task does not run a single step until its creator awaits.
+        So at the moment of the freeze no packet has been decoded and there is
+        nothing of the world on the heap. One `await` slipped between those
+        two lines and prims start getting frozen -- which is a genuine leak,
+        because frozen objects are never collected again and a region can go
+        away. Nothing else in the file enforces the ordering, so this does.
+        """
+        import re
+        from pathlib import Path as _Path
+
+        source = (
+            _Path(__file__).resolve().parents[1] / "src/vibestorm/viewer3d/app.py"
+        ).read_text()
+        start = source.index("session_task = asyncio.create_task(")
+        end = source.index("freeze_static_heap()", start)
+        # Comments stripped, or the paragraph explaining this rule trips it.
+        span = "\n".join(line.split("#", 1)[0] for line in source[start:end].splitlines())
+        self.assertIsNone(re.search(r"\bawait\b", span))
+
     def test_the_viewer_declares_them(self) -> None:
         from vibestorm.viewer3d.app import build_health_probe
 
