@@ -490,6 +490,50 @@ one layer up: a reader consults the comment to interpret the row and concludes
 leak. Corrected, and the bound it now claims was already pinned by two tests
 in `test_udp_recent_sequences.py`.
 
+**A -- run 4's full two hours, and the one row that was not a leak
+(2026-09-07).** The section above reads run 4 at fifty minutes. It ran the
+full two hours, and the answer holds: `obj._total` went from **+64,263 an hour
+at 41 sigma** in run 3 to **+372 +/- 300 an hour, `settled`** in run 4. That
+is the `gc.freeze()` fix, stated as a number. Every census row settled.
+
+One row did not. `proc.rss_bytes` came back `growing` at **31 MB an hour on a
+t=19 fit** -- as tight as anything in the run, and completely uninteresting.
+The series is flat at 630,185,984 for eighty minutes, steps 21 MB once at
+minute 100, and is flat at 651,558,912 to the end. Nothing climbed. The
+process got bigger, once, and stayed.
+
+The fit is not wrong about that row -- the gauge really is higher than it was,
+and a line through two plateaus really does have a slope. A fit separates a
+trend from noise, which is what it was added for, and it cannot separate a
+trend from a step, which is a different question that needs a different
+statistic. **Shape** is the one that answers it: a leak rises everywhere, so
+half of its rise takes about half its samples; a step's half arrives in one or
+two. Sorting the sample-to-sample rises largest first and counting how many
+reach half the total puts run 4's RSS at **1.7%** and every real leak found so
+far at **19-26%**, so the cut is at 5% and the verdict is `stepped`. Run 4's
+`--only growing` now returns a single row, the bounded sequence container.
+
+The order matters and is tested. The shape check runs *after* the
+significance cut, because a gauge wobbling around a level gains a little,
+concentrated wherever the wobble happened to peak -- and a spike that comes
+straight back is the most concentrated rise a series can have while going
+precisely nowhere. Asking the shape first labels those `stepped` and puts a
+row in front of somebody with nothing to look at, which is the crying-wolf
+failure the whole column exists to prevent. The concentration also reads only
+the second half, like every other statistic in the report: measured end to
+end, a client's one-time cache fill at startup is larger than anything after
+it, so it is half the rise on its own -- and a run that allocates early *and*
+leaks steadily afterwards would read `stepped`, with the leak filed as
+explained. It is not explained.
+
+**And the step was me.** Minute 100 lands exactly on a load average of 18.5,
+caused by my own 10.3 GB test-suite runs on the same machine. This is the
+lesson two sections up arriving a second time and closer to home: a soak on a
+developer's own workstation measures the workstation, and the developer is the
+noisiest thing on it. The condition gauges caught it, which is what they are
+for -- but only because somebody went and read them. The `stepped` verdict is
+what makes the row stop asking.
+
 **A -- a texture states its own size, and the decoder believed it
 (2026-09-07).** The hostile-input sweep again, on the last unbounded path
 from the wire into memory. This one comes back positive, and one half of it
