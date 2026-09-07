@@ -80,6 +80,23 @@ def _drawn_prims(scene) -> int:
     return len(scene.object_entities)
 
 
+def _total_prims(stats: object) -> float | None:
+    """The region's own prim count out of a `SimStats`, or None if absent.
+
+    A function, and not the inline `next(...)` it used to be, because inline
+    it sat behind a live simulator and could not be reached by a test. It
+    read `s.stat_value` -- the field name on the raw `SimStatEntry` off the
+    wire -- from a `NamedSimStat`, which calls it `value` because
+    `name_sim_stats` renames it as it attaches the name. Every local run
+    ended in an AttributeError here and nobody saw it, because the four
+    checks above print `ok` first.
+    """
+    for stat in getattr(stats, "stats", ()):
+        if stat.stat_id == STAT_TOTAL_PRIMS:
+            return float(stat.value)
+    return None
+
+
 def _placeable_prims(world_view) -> int:
     """Prims the client received and could place, counted without the scene.
 
@@ -210,9 +227,7 @@ async def main() -> int:
         if stats is None:
             checks.note("no SimStats yet; the simulator's own prim count is unavailable")
         else:
-            total = next(
-                (s.stat_value for s in stats.stats if s.stat_id == STAT_TOTAL_PRIMS), None
-            )
+            total = _total_prims(stats)
             if total is None:
                 checks.note("SimStats carried no total prim count")
             else:
