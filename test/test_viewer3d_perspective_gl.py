@@ -839,9 +839,11 @@ class TerrainMeshTests(unittest.TestCase):
         )
 
         self.assertEqual(len(vertices), 4 * 5)
-        self.assertEqual(vertices[:5], (0.0, 0.0, 1.0, 0.0, 1.0))
-        self.assertEqual(vertices[-5:], (10.0, 10.0, 4.0, 1.0, 0.0))
-        self.assertEqual(indices, (0, 1, 3, 0, 3, 2))
+        # `array`, not `tuple`: it goes straight into a GL buffer, and the
+        # repack it used to need was 12 ms of every terrain rebuild.
+        self.assertEqual(tuple(vertices[:5]), (0.0, 0.0, 1.0, 0.0, 1.0))
+        self.assertEqual(tuple(vertices[-5:]), (10.0, 10.0, 4.0, 1.0, 0.0))
+        self.assertEqual(tuple(indices), (0, 1, 3, 0, 3, 2))
 
     def test_terrain_mesh_applies_z_scale(self) -> None:
         from vibestorm.viewer3d.perspective import terrain_mesh_from_heightmap
@@ -865,7 +867,7 @@ class TerrainMeshTests(unittest.TestCase):
         indices = terrain_line_indices(3, 2)
 
         self.assertEqual(
-            indices,
+            tuple(indices),
             (
                 0, 1, 1, 2,
                 3, 4, 4, 5,
@@ -6811,3 +6813,212 @@ class CameraInsideTheGroundGLTests(_GLTestBase):
         self.assertGreater(
             bottom[2], bottom[1], f"expected sky under the ground: {bottom}"
         )
+
+
+def _reference_mesh(samples, *, width, height, size_m=256.0, z_scale=1.0, origin=(0.0, 0.0)):
+    """The terrain grid written the obvious way, a vertex at a time.
+
+    The shipped version lays a row out with five strided slice assignments
+    because the obvious way was 61 ms of a 168 ms rebuild. That is a change of
+    *how*, so the thing worth testing is that it is not a change of *what* --
+    and the only test that can say so is the obvious version itself, kept here
+    and compared against on grids big enough for a stride mistake to show.
+    """
+    origin_x, origin_y = origin
+    vertices = []
+    for row in range(height):
+        y = origin_y + (float(row) / float(height - 1)) * size_m
+        v = 1.0 - (float(row) / float(height - 1))
+        for col in range(width):
+            x = origin_x + (float(col) / float(width - 1)) * size_m
+            u = float(col) / float(width - 1)
+            vertices.extend((x, y, float(samples[row * width + col]) * z_scale, u, v))
+    indices = []
+    for row in range(height - 1):
+        for col in range(width - 1):
+            sw = row * width + col
+            indices.extend((sw, sw + 1, sw + width + 1, sw, sw + width + 1, sw + width))
+    return vertices, indices
+
+
+class TerrainMeshMatchesTheObviousVersionTests(unittest.TestCase):
+    """Grids wide enough, and not square, so a row stride cannot hide."""
+
+    GRIDS = ((2, 2), (3, 5), (5, 3), (17, 9), (33, 33))
+
+    def _check(self, width, height, **kwargs):
+        from vibestorm.viewer3d.perspective import terrain_mesh_from_heightmap
+
+        samples = [0.25 * i - 3.0 for i in range(width * height)]
+        vertices, indices = terrain_mesh_from_heightmap(
+            samples, width=width, height=height, **kwargs
+        )
+        want_v, want_i = _reference_mesh(samples, width=width, height=height, **kwargs)
+        self.assertEqual(len(vertices), len(want_v))
+        for got, want in zip(vertices, want_v, strict=True):
+            self.assertAlmostEqual(got, want, places=4)
+        self.assertEqual(tuple(indices), tuple(want_i))
+
+    def test_every_grid_shape(self):
+        for width, height in self.GRIDS:
+            with self.subTest(width=width, height=height):
+                self._check(width, height)
+
+    def test_with_a_z_scale(self):
+        """The one branch in the row: heights are copied when the scale is 1.
+
+        A `z_scale` of exactly 1.0 skips a multiply over 65,536 samples, so
+        the two sides of that `if` have to agree.
+        """
+        for width, height in self.GRIDS:
+            with self.subTest(width=width, height=height):
+                self._check(width, height, z_scale=3.5)
+
+    def test_a_scale_of_one_is_the_same_as_multiplying_by_one(self):
+        from vibestorm.viewer3d.perspective import terrain_mesh_from_heightmap
+
+        samples = [0.5 * i for i in range(16)]
+        skipped, _ = terrain_mesh_from_heightmap(samples, width=4, height=4, z_scale=1.0)
+        multiplied, _ = terrain_mesh_from_heightmap(
+            samples, width=4, height=4, z_scale=1.0000001
+        )
+        for got, want in zip(skipped, multiplied, strict=True):
+            self.assertAlmostEqual(got, want, places=4)
+
+    def test_with_an_origin(self):
+        for width, height in self.GRIDS:
+            with self.subTest(width=width, height=height):
+                self._check(width, height, origin=(-64.0, 512.0))
+
+    def test_the_arrays_are_the_types_gl_will_read(self):
+        """moderngl uploads the raw bytes; a wrong typecode is silent garbage."""
+        from vibestorm.viewer3d.perspective import terrain_mesh_from_heightmap
+
+        vertices, indices = terrain_mesh_from_heightmap(
+            (1.0, 2.0, 3.0, 4.0), width=2, height=2
+        )
+        self.assertEqual(vertices.typecode, "f")
+        self.assertEqual(indices.typecode, "I")
+        self.assertEqual(vertices.itemsize, 4)
+        self.assertEqual(indices.itemsize, 4)
+
+
+class GridIndicesAreCachedTests(unittest.TestCase):
+    """They depend on the grid's shape and on nothing else.
+
+    Which is why they can be shared, and why sharing is worth 30 ms of every
+    terrain rebuild. It is also why the cache has to be bounded and why the
+    thing handed out must not be mutated -- both stated here rather than left
+    to a comment.
+    """
+
+    def test_the_same_shape_gives_the_same_object(self):
+        from vibestorm.viewer3d.perspective import _grid_triangle_indices
+
+        self.assertIs(_grid_triangle_indices(9, 5), _grid_triangle_indices(9, 5))
+
+    def test_a_different_shape_does_not(self):
+        from vibestorm.viewer3d.perspective import _grid_triangle_indices
+
+        self.assertIsNot(_grid_triangle_indices(9, 5), _grid_triangle_indices(5, 9))
+        self.assertNotEqual(
+            tuple(_grid_triangle_indices(9, 5)), tuple(_grid_triangle_indices(5, 9))
+        )
+
+    def test_line_indices_are_shared_too(self):
+        from vibestorm.viewer3d.perspective import terrain_line_indices
+
+        self.assertIs(terrain_line_indices(9, 5), terrain_line_indices(9, 5))
+
+    def test_the_caches_are_bounded(self):
+        """An unbounded cache keyed by something the world supplies is the
+        leak this project has already had once."""
+        from vibestorm.viewer3d.perspective import (
+            _grid_triangle_indices,
+            terrain_line_indices,
+        )
+
+        for cached in (_grid_triangle_indices, terrain_line_indices):
+            with self.subTest(cached=cached.__name__):
+                self.assertIsNotNone(cached.cache_info().maxsize)
+                self.assertLessEqual(cached.cache_info().maxsize, 32)
+
+    def test_a_mesh_hands_back_the_shared_indices(self):
+        from vibestorm.viewer3d.perspective import (
+            _grid_triangle_indices,
+            terrain_mesh_from_heightmap,
+        )
+
+        _, indices = terrain_mesh_from_heightmap(
+            [0.0] * 12, width=4, height=3, z_scale=2.0
+        )
+        self.assertIs(indices, _grid_triangle_indices(4, 3))
+
+    def test_the_line_indices_still_refuse_a_degenerate_grid(self):
+        from vibestorm.viewer3d.perspective import terrain_line_indices
+
+        with self.assertRaises(ValueError):
+            terrain_line_indices(1, 4)
+
+
+class _FakeGLResource:
+    def __init__(self) -> None:
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class ReleasingTheTerrainClearsEveryHandleTests(unittest.TestCase):
+    """Released and cleared are two lists, and they have to be the same list.
+
+    They were not. `_terrain_texture_vao` was released with the rest and left
+    in the attribute, so after a release it held a dead `VertexArray` -- and
+    the draw path guards on `is not None`, which a released object passes just
+    as well as a live one.
+    """
+
+    HANDLES = (
+        "_terrain_vao",
+        "_terrain_ibo",
+        "_terrain_fill_vao",
+        "_terrain_texture_vao",
+        "_terrain_line_vao",
+        "_terrain_line_ibo",
+        "_terrain_vbo",
+    )
+
+    def _renderer(self):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        return PerspectiveRenderer(Camera3D(), ctx=None)
+
+    def test_every_handle_is_released_and_then_cleared(self):
+        renderer = self._renderer()
+        fakes = {name: _FakeGLResource() for name in self.HANDLES}
+        for name, fake in fakes.items():
+            setattr(renderer, name, fake)
+
+        renderer._release_terrain_mesh()
+
+        for name, fake in fakes.items():
+            with self.subTest(handle=name):
+                self.assertTrue(fake.released, f"{name} was never released")
+                self.assertIsNone(getattr(renderer, name), f"{name} was not cleared")
+
+    def test_it_survives_a_second_call(self):
+        """Releasing twice must not raise -- it is called from the rebuild
+        path and from `clear_caches`, and either can come first."""
+        renderer = self._renderer()
+        renderer._release_terrain_mesh()
+        renderer._release_terrain_mesh()
+        self.assertIsNone(renderer._terrain_texture_vao)
+
+    def test_the_cached_revision_is_forgotten_too(self):
+        """Otherwise the next upload sees a matching revision, returns early,
+        and the region is drawn with no ground at all."""
+        renderer = self._renderer()
+        renderer._terrain_revision = 12
+        renderer._release_terrain_mesh()
+        self.assertIsNone(renderer._terrain_revision)

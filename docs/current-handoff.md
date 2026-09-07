@@ -171,6 +171,76 @@ gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
 
+**A -- 168 ms of every terrain rebuild, and the two hours of soak that
+blamed the wrong thing (2026-09-07).** The soak said 6.2 frames a second over
+two hours on a region holding three prims. `bench_scene_refresh.py` says three
+prims cost nothing to derive and `bench_render_frame.py` says a thousand cost
+1.6 ms to draw, so neither of the two benches this project had could account
+for 160 ms a frame. What they had in common is that both were written to
+answer "what does a *big* region cost", and `bench_render_frame` switches the
+sky, the terrain and the water off to ask it.
+
+`tools/bench_frame_phases.py` asks the other question: hold the world at the
+size the soak actually ran against and turn the scenery on and off instead.
+
+    everything on                       0.62 ms  (1623 fps ceiling)
+    after a heightmap revision bump   168.22 ms  (   6 fps ceiling)
+
+`_upload_terrain_mesh` rebuilds the whole 256x256 sheet whenever
+`RegionHeightmap.revision` moves, and `revision` moves once per *patch* --
+`apply_patch` bumps it, and a region sends its ground a patch at a time. The
+168 ms was 61 ms building 327,680 vertices a component at a time, 30 ms
+building 390,150 triangle indices, 33 ms building 261,120 line indices, and
+34 ms in three `struct.pack(f"{n}f", *values)` calls, each of which unpacks a
+list into a third of a million positional arguments.
+
+Three changes, no new dependency:
+
+* A row of the grid agrees with every other row on two of its five components
+  and differs on three, so the two that agree are laid out once and the three
+  that differ go in as strided slice assignments on an `array("f")`. 61 ms to
+  6.
+* The indices depend on the *shape* of the grid and on nothing else -- not the
+  samples, not the origin, not the z scale -- so they are built once per shape
+  and shared. `functools.lru_cache(maxsize=8)`, bounded, because there are two
+  shapes in play: 256 for the region underfoot and 65 for a neighbour's.
+* An `array` goes into `moderngl.Context.buffer` as it stands. 34 ms to under
+  one.
+
+**168 ms to 14.4 ms**, a 6 fps ceiling to 70. The tests that hold it are the
+obvious implementation, kept in the test file and compared against on five
+grid shapes including two non-square ones, because this is a change of *how*
+and the only thing worth asserting is that it is not a change of *what*.
+
+Found on the way, in the same function's release path: `_terrain_texture_vao`
+was released with the rest of the terrain handles and then, alone among the
+seven, not set to `None`. The draw path guards on `is not None`, which a
+released `VertexArray` passes. Released-and-cleared are two lists in that
+function and they are now pinned as the same list.
+
+**Mutation, 24 mutants: 23 killed, one equivalent** -- multiplying by a
+`z_scale` of exactly 1.0 instead of skipping the multiply is the same answer
+by a slower road, and no test can or should tell them apart.
+
+One survivor was real and worth the battery on its own. Handing a *neighbour's*
+sheet the region's own index array -- 256x256 indices for a 65x65 grid --
+passed all 273 tests. What it does at the GPU is read four thousand vertices
+past the end of the buffer. Nothing had ever asserted that the indices a sheet
+is drawn with address vertices that sheet has, so nothing noticed; the
+invariant is now pinned in `NeighbourSheetIndexesItsOwnVerticesTests`, along
+with the index *count* recorded on the mesh, which the draw call passes to
+`render` and which no test had tied to the buffer either.
+
+**What this did not explain.** `region.layer_blobs` went 0 to 2 across run 1,
+so the terrain was not being rebuilt every frame for two hours and this is not
+where the 6.2 fps went. The honest answer to that turned up separately: two
+`pytest` processes orphaned by an earlier killed mutation battery had been
+spinning at 92% of a core each for nearly four hours, holding the machine at
+load 14. Run 3, started after they were killed, sits at **29.8 fps** against a
+30 fps cap. So the soak's frame-rate figures before 2026-09-07 03:20 measure
+the machine, not the viewer, and the terrain finding stands on the bench
+rather than on them.
+
 **A -- the leak that no gauge names, and the instrument for it
 (2026-09-07).** Two hours against the quiet local region: `proc.rss_bytes`
 climbed 45 MB an hour and `proc.py_blocks` 52,000 an hour, both still climbing

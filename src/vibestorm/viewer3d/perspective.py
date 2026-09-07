@@ -31,8 +31,10 @@ so swap-mechanism tests keep working without GL.
 
 from __future__ import annotations
 
+import functools
 import math
 import struct
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -2343,25 +2345,69 @@ def terrain_mesh_from_heightmap(
         )
 
     origin_x, origin_y = origin
-    vertices: list[float] = []
+    # A row of the grid differs from every other row in three of its five
+    # components and agrees on the other two, so the two that agree are laid
+    # out once and copied. Written as five strided slice assignments rather
+    # than a loop over 65,536 vertices because that loop was 61 ms of a
+    # 168 ms rebuild -- see `tools/bench_frame_phases.py`, which measured the
+    # whole thing as a 6 fps ceiling.
+    template = array("f", bytes(4 * width * 5))
+    template[0::5] = array(
+        "f", [origin_x + (col / (width - 1)) * size_m for col in range(width)]
+    )
+    template[3::5] = array("f", [col / (width - 1) for col in range(width)])
+
+    vertices = array("f")
     for row in range(height):
-        y = origin_y + (float(row) / float(height - 1)) * size_m
-        v = 1.0 - (float(row) / float(height - 1))
-        for col in range(width):
-            x = origin_x + (float(col) / float(width - 1)) * size_m
-            u = float(col) / float(width - 1)
-            vertices.extend((x, y, float(samples[row * width + col]) * z_scale, u, v))
+        y = origin_y + (row / (height - 1)) * size_m
+        v = 1.0 - (row / (height - 1))
+        line = template[:]
+        line[1::5] = array("f", [y]) * width
+        line[4::5] = array("f", [v]) * width
+        heights = samples[row * width : (row + 1) * width]
+        line[2::5] = array(
+            "f", heights if z_scale == 1.0 else [h * z_scale for h in heights]
+        )
+        vertices.extend(line)
 
-    indices: list[int] = []
+    return vertices, _grid_triangle_indices(width, height)
+
+
+@functools.lru_cache(maxsize=8)
+def _grid_triangle_indices(width: int, height: int) -> array:
+    """Triangle indices for a row-major grid, which depend on nothing else.
+
+    Not on the samples, not on the origin, not on the z scale -- only on the
+    shape of the grid. They were rebuilt from scratch on every heightmap
+    revision anyway, 390,150 of them, and a region sends its ground a patch at
+    a time with a revision bump apiece.
+
+    Cached, so the array handed back is *shared*: every caller of a given size
+    gets the same object, and a caller that mutated it would corrupt every
+    mesh built afterwards. Nothing does -- they go straight into
+    `moderngl.Context.buffer`, which reads -- and `maxsize` is small because
+    the sizes in play are two: 256 for the region underfoot and 65 for a
+    neighbour's.
+    """
+    indices = array("I")
     for row in range(height - 1):
-        for col in range(width - 1):
-            sw = row * width + col
-            se = sw + 1
-            nw = sw + width
-            ne = nw + 1
-            indices.extend((sw, se, ne, sw, ne, nw))
-
-    return tuple(vertices), tuple(indices)
+        base = row * width
+        north = base + width
+        indices.extend(
+            [
+                index
+                for col in range(width - 1)
+                for index in (
+                    base + col,
+                    base + col + 1,
+                    north + col + 1,
+                    base + col,
+                    north + col + 1,
+                    north + col,
+                )
+            ]
+        )
+    return indices
 
 
 #: How many samples a side a neighbouring region's ground is drawn with. The
@@ -2396,21 +2442,29 @@ def coarse_terrain_samples(
     )
 
 
-def terrain_line_indices(width: int, height: int) -> tuple[int, ...]:
-    """Build grid-line indices for a row-major terrain vertex grid."""
+@functools.lru_cache(maxsize=8)
+def terrain_line_indices(width: int, height: int) -> array:
+    """Build grid-line indices for a row-major terrain vertex grid.
+
+    Cached and shared on the same terms as `_grid_triangle_indices`: they
+    depend on the grid's shape and nothing else, and the caller must not
+    mutate what it is handed.
+    """
     if width < 2 or height < 2:
         raise ValueError("terrain lines need at least a 2x2 heightmap")
-    indices: list[int] = []
+    indices = array("I")
     for row in range(height):
         base = row * width
-        for col in range(width - 1):
-            indices.extend((base + col, base + col + 1))
+        indices.extend(
+            [index for col in range(width - 1) for index in (base + col, base + col + 1)]
+        )
     for row in range(height - 1):
         base = row * width
         next_base = (row + 1) * width
-        for col in range(width):
-            indices.extend((base + col, next_base + col))
-    return tuple(indices)
+        indices.extend(
+            [index for col in range(width) for index in (base + col, next_base + col)]
+        )
+    return indices
 
 
 class PerspectiveRenderer:
@@ -4161,8 +4215,8 @@ class PerspectiveRenderer:
         )
         line_indices = terrain_line_indices(heightmap.width, heightmap.height)
         self._release_terrain_mesh()
-        self._terrain_vbo = ctx.buffer(struct.pack(f"{len(vertices)}f", *vertices))
-        self._terrain_ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
+        self._terrain_vbo = ctx.buffer(vertices)
+        self._terrain_ibo = ctx.buffer(indices)
         self._terrain_vao = ctx.vertex_array(
             self._ground_program,
             [(self._terrain_vbo, "3f 2f", "in_pos", "in_uv")],
@@ -4184,9 +4238,7 @@ class PerspectiveRenderer:
                 index_element_size=4,
             )
         if self._terrain_line_program is not None:
-            self._terrain_line_ibo = ctx.buffer(
-                struct.pack(f"{len(line_indices)}I", *line_indices)
-            )
+            self._terrain_line_ibo = ctx.buffer(line_indices)
             self._terrain_line_vao = ctx.vertex_array(
                 self._terrain_line_program,
                 [(self._terrain_vbo, "3f 2x4", "in_pos")],
@@ -4238,8 +4290,8 @@ class PerspectiveRenderer:
                 z_scale=z_scale,
                 origin=entry.offset,
             )
-            vbo = ctx.buffer(struct.pack(f"{len(vertices)}f", *vertices))
-            ibo = ctx.buffer(struct.pack(f"{len(indices)}I", *indices))
+            vbo = ctx.buffer(vertices)
+            ibo = ctx.buffer(indices)
             vao = ctx.vertex_array(
                 self._terrain_fill_program,
                 [(vbo, "3f 2x4", "in_pos")],
@@ -4393,6 +4445,11 @@ class PerspectiveRenderer:
         self._terrain_vao = None
         self._terrain_ibo = None
         self._terrain_fill_vao = None
+        # Released above and, until 2026-09-07, not cleared here. Every other
+        # handle in the list was, so the one that was not left a released
+        # `VertexArray` sitting in the attribute -- and the draw path guards
+        # on `is not None`, which a released object passes.
+        self._terrain_texture_vao = None
         self._terrain_line_vao = None
         self._terrain_line_ibo = None
         self._terrain_line_index_count = 0

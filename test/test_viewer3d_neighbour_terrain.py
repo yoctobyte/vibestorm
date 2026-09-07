@@ -69,7 +69,7 @@ class MeshOriginTests(unittest.TestCase):
         vertices, _ = terrain_mesh_from_heightmap(
             (0.0, 0.0, 0.0, 0.0), width=2, height=2, size_m=256.0
         )
-        self.assertEqual(vertices[0:2], (0.0, 0.0))
+        self.assertEqual(tuple(vertices[0:2]), (0.0, 0.0))
 
     def test_an_origin_moves_the_whole_sheet(self) -> None:
         from vibestorm.viewer3d.perspective import terrain_mesh_from_heightmap
@@ -97,8 +97,8 @@ class MeshOriginTests(unittest.TestCase):
         )
         still, _ = terrain_mesh_from_heightmap((1.0, 2.0, 3.0, 4.0), width=2, height=2)
         self.assertEqual(
-            [moved[i * 5 + 3 : i * 5 + 5] for i in range(4)],
-            [still[i * 5 + 3 : i * 5 + 5] for i in range(4)],
+            [tuple(moved[i * 5 + 3 : i * 5 + 5]) for i in range(4)],
+            [tuple(still[i * 5 + 3 : i * 5 + 5]) for i in range(4)],
         )
 
     def test_the_heights_are_untouched_by_the_origin(self) -> None:
@@ -638,3 +638,110 @@ class NeighbourTerrainGLTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _RecordingBuffer:
+    def __init__(self, data) -> None:
+        self.data = data
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _RecordingVertexArray:
+    def __init__(self, index_buffer) -> None:
+        self.index_buffer = index_buffer
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+class _RecordingContext:
+    """Just enough moderngl to watch what goes into the buffers."""
+
+    def __init__(self) -> None:
+        self.buffers: list[_RecordingBuffer] = []
+
+    def buffer(self, data, **_kwargs):
+        made = _RecordingBuffer(data)
+        self.buffers.append(made)
+        return made
+
+    def vertex_array(self, _program, _content, *, index_buffer=None, **_kwargs):
+        return _RecordingVertexArray(index_buffer)
+
+
+class NeighbourSheetIndexesItsOwnVerticesTests(unittest.TestCase):
+    """A sheet drawn with somebody else's indices reads off the end of it.
+
+    A neighbour's ground is 65 samples a side; the region underfoot is 256.
+    Handing the neighbour's 65x65 vertex buffer the 256x256 index array is a
+    change no behavioural test noticed -- it survived a mutation battery --
+    and what it does at the GPU is read four thousand vertices past the end of
+    the buffer.
+
+    The invariant is the one worth asserting whatever the numbers become:
+    every index must address a vertex the sheet actually has.
+    """
+
+    def _renderer(self):
+        from vibestorm.viewer3d.camera import Camera3D
+        from vibestorm.viewer3d.perspective import PerspectiveRenderer
+
+        renderer = PerspectiveRenderer(Camera3D(), ctx=None)
+        # The upload returns early without one, and a real program needs a GL
+        # context; nothing in this path calls it.
+        renderer._terrain_fill_program = object()
+        renderer._terrain_texture_program = None
+        return renderer
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import NeighbourTerrain, Scene
+
+        scene = Scene()
+        scene.neighbour_terrain = (
+            NeighbourTerrain(
+                handle=(256000 << 32) | 256512,
+                offset=(0.0, 256.0),
+                heightmap=_ramp_heightmap(10.0, 40.0, revision=2),
+                region_name="North",
+            ),
+        )
+        return scene
+
+    def _upload(self):
+        renderer = self._renderer()
+        ctx = _RecordingContext()
+        renderer._upload_neighbour_terrain(ctx, self._scene())
+        return renderer, ctx
+
+    def test_every_index_addresses_a_vertex_the_sheet_has(self):
+        from vibestorm.viewer3d.perspective import NEIGHBOUR_TERRAIN_SAMPLES
+
+        _renderer, ctx = self._upload()
+        vertices, indices = (buffer.data for buffer in ctx.buffers[:2])
+        self.assertEqual(indices.typecode, "I")
+        vertex_count = len(vertices) // 5
+        self.assertEqual(vertex_count, NEIGHBOUR_TERRAIN_SAMPLES**2)
+        self.assertLess(max(indices), vertex_count)
+
+    def test_the_indices_are_the_ones_for_its_own_grid(self):
+        from vibestorm.viewer3d.perspective import (
+            NEIGHBOUR_TERRAIN_SAMPLES,
+            _grid_triangle_indices,
+        )
+
+        _renderer, ctx = self._upload()
+        self.assertIs(
+            ctx.buffers[1].data,
+            _grid_triangle_indices(NEIGHBOUR_TERRAIN_SAMPLES, NEIGHBOUR_TERRAIN_SAMPLES),
+        )
+
+    def test_the_recorded_index_count_matches_the_buffer(self):
+        """`index_count` is what the draw call passes to `render`, so a count
+        that disagrees with the buffer draws the wrong number of triangles."""
+        renderer, ctx = self._upload()
+        (mesh,) = renderer._neighbour_meshes.values()
+        self.assertEqual(mesh.index_count, len(ctx.buffers[1].data))
