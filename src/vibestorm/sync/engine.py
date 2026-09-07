@@ -17,21 +17,24 @@ from pathlib import Path
 from uuid import UUID
 
 from vibestorm.assets.notecard import decode_notecard, encode_notecard
+from vibestorm.caps.asset_upload_client import AssetUploadError
 from vibestorm.caps.client import CapabilityClient, CapabilityError
 from vibestorm.caps.task_inventory_upload_client import (
     TaskInventoryUploadClient,
     TaskInventoryUploadError,
 )
 from vibestorm.sync.naming import TEXT_ASSET_TYPES
+from vibestorm.sync.new_assets import NewAssetError
 from vibestorm.sync.notecards import NotecardCreateError, create_task_notecard
 from vibestorm.sync.plan import CONFLICT, SKIP, TRANSFER, plan_pull, plan_push
-from vibestorm.sync.state import SyncState, SyncedItem, content_digest
+from vibestorm.sync.state import SyncedItem, SyncState, content_digest
 from vibestorm.sync.task_inventory import (
     Progress,
     await_object_inventory,
     create_task_script_rows,
     fetch_task_asset,
 )
+from vibestorm.sync.textures import TextureUploadError, create_task_texture
 from vibestorm.udp.world_client import WorldClient
 from vibestorm.world.asset_types import ASSET_NAME_BY_TYPE, asset_type_to_int
 from vibestorm.world.object_inventory import ObjectInventorySnapshot
@@ -56,6 +59,7 @@ NEW_FILE_CAP_NAME = "NewFileAgentInventory"
 
 NOTECARD_ASSET_TYPE = 7
 SCRIPT_ASSET_TYPE = 10
+TEXTURE_ASSET_TYPE = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -322,6 +326,7 @@ async def push_folder_to_object(
     script_cap: str | None,
     notecard_cap: str | None = None,
     notecard_agent_cap: str | None = None,
+    new_file_cap: str | None = None,
     agent_folder_id: UUID | None = None,
     can_create: bool = True,
     on_progress: Progress | None = None,
@@ -331,6 +336,11 @@ async def push_folder_to_object(
     ``notecard_agent_cap`` and ``agent_folder_id`` together enable *creating* a
     notecard row: the only route in is to build one in agent inventory and copy
     it across, so without them an unmatched notecard can only be reported.
+
+    ``new_file_cap`` and ``agent_folder_id`` do the same for a texture, by the
+    same route and for the same reason. A texture is only ever *created*: the
+    asset behind an existing row is replaced through a capability per asset
+    type, and the two this client has are for script and notecard.
     """
     outcome = SyncOutcome()
     if not folder.is_dir():
@@ -342,16 +352,24 @@ async def push_folder_to_object(
     if snapshot is None:
         outcome.failed.append((str(task_id), "the object's inventory did not come back"))
         return outcome
-    rows = [row for row in rows_from_snapshot(snapshot) if row.asset_type in TEXT_ASSET_TYPES]
+    all_rows = rows_from_snapshot(snapshot)
+    rows = [row for row in all_rows if row.asset_type in TEXT_ASSET_TYPES]
+    # Texture rows are not planned against -- nothing here can update one --
+    # but their *names* decide whether an image in the folder is a new item or
+    # a second copy of one that is already there.
+    texture_names = [row.name for row in all_rows if row.asset_type == TEXTURE_ASSET_TYPE]
 
     files = [path for path in sorted(folder.iterdir()) if path.is_file() and path.name[0] != "."]
     can_create_notecards = bool(notecard_agent_cap and agent_folder_id)
+    can_create_textures = bool(new_file_cap and agent_folder_id)
     entries = plan_push(
         files,
         {row.name: row for row in rows},
         state=state,
         can_create=can_create and bool(script_cap),
         can_create_notecards=can_create and can_create_notecards,
+        can_create_textures=can_create and can_create_textures,
+        existing_texture_names=texture_names,
     )
 
     to_create = [entry for entry in entries if entry.action == TRANSFER and entry.create]
@@ -411,11 +429,49 @@ async def push_folder_to_object(
             )
         notecards_done.add(entry.file_name)
 
+    # Textures, like notecards, are finished by the copy: hop one creates the
+    # asset and the item, hop two puts it in the object, and there is nothing
+    # left to upload onto the row afterwards.
+    textures_to_create = [e for e in to_create if e.asset_type == TEXTURE_ASSET_TYPE]
+    touched_textures: list[tuple[str, str, int]] = []
+    textures_done: set[str] = set()
+    for entry in textures_to_create:
+        textures_done.add(entry.file_name)
+        try:
+            data = entry.path.read_bytes()
+        except OSError as exc:
+            outcome.failed.append((entry.file_name, f"could not read it: {exc}"))
+            continue
+        try:
+            made_texture = await create_task_texture(
+                client,
+                session,
+                handle=handle,
+                local_id=local_id,
+                folder_id=agent_folder_id,  # type: ignore[arg-type]
+                upload_url=new_file_cap,  # type: ignore[arg-type]
+                path=entry.path,
+                data=data,
+                name=entry.item_name,
+                on_progress=on_progress,
+            )
+        except (NewAssetError, TextureUploadError, AssetUploadError, OSError) as exc:
+            outcome.failed.append((entry.file_name, str(exc)))
+            continue
+        if made_texture is None:
+            outcome.failed.append(
+                (entry.file_name, "the texture did not appear in the object")
+            )
+            continue
+        _item_id, assigned_name = made_texture
+        outcome.created.append(entry.file_name)
+        touched_textures.append((entry.file_name, assigned_name, TEXTURE_ASSET_TYPE))
+
     uploader = TaskInventoryUploadClient(timeout_seconds=20.0)
-    touched: list[tuple[str, str, int]] = list(touched_notecards)
+    touched: list[tuple[str, str, int]] = [*touched_notecards, *touched_textures]
 
     for entry in entries:
-        if entry.file_name in notecards_done:
+        if entry.file_name in notecards_done or entry.file_name in textures_done:
             continue
         if entry.action == CONFLICT:
             outcome.conflicts.append((entry.file_name, entry.reason))

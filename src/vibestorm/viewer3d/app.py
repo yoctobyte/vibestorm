@@ -1110,7 +1110,10 @@ async def run_viewer(args: argparse.Namespace) -> int:
         except CapabilityError as exc:
             report(f"caps: {exc}")
             return
-        if not caps.script and not caps.notecard:
+        if not caps.script and not caps.notecard and not caps.new_file:
+            # `new_file` counts: a folder of nothing but textures needs none
+            # of the task capabilities, and refusing it because the *script*
+            # one is missing would be a refusal for the wrong reason.
             report("no task inventory capabilities are available.")
             return
 
@@ -1124,6 +1127,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             script_cap=caps.script,
             notecard_cap=caps.notecard,
             notecard_agent_cap=caps.notecard_agent,
+            new_file_cap=caps.new_file,
             agent_folder_id=session.bootstrap.inventory_root_folder_id,
             on_progress=report,
         )

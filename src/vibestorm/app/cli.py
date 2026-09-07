@@ -1600,7 +1600,8 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                 print(
                     f"caps script={'yes' if caps.script else 'no'} "
                     f"notecard={'yes' if caps.notecard else 'no'} "
-                    f"notecard-create={'yes' if caps.can_create_notecards else 'no'}",
+                    f"notecard-create={'yes' if caps.can_create_notecards else 'no'} "
+                    f"texture-upload={'yes' if caps.can_upload_textures else 'no'}",
                     flush=True,
                 )
 
@@ -1615,6 +1616,7 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                     script_cap=caps.script,
                     notecard_cap=caps.notecard,
                     notecard_agent_cap=caps.notecard_agent,
+                    new_file_cap=caps.new_file,
                     agent_folder_id=bootstrap.inventory_root_folder_id,
                     on_progress=progress,
                 )
@@ -1638,6 +1640,7 @@ def _run_sync_object(args: argparse.Namespace) -> int:
                     script_cap=caps.script,
                     notecard_cap=caps.notecard,
                     notecard_agent_cap=caps.notecard_agent,
+                    new_file_cap=caps.new_file,
                     agent_folder_id=bootstrap.inventory_root_folder_id,
                     poll_seconds=args.poll_seconds,
                     stop_event=stop_event,

@@ -21,7 +21,7 @@ from vibestorm.sync.plan import (
     plan_pull,
     plan_push,
 )
-from vibestorm.sync.state import SyncState, SyncedItem, content_digest
+from vibestorm.sync.state import SyncedItem, SyncState, content_digest
 
 
 @dataclass
@@ -383,14 +383,21 @@ class BinaryExportTests(_FolderCase):
             ["Cloud.j2k", "Wave.animation", "Shirt.wearable", "Chime.sound"],
         )
 
-    def test_an_exported_suffix_is_not_uploadable(self) -> None:
+    def test_an_exported_texture_is_not_pushed_without_the_capability(self) -> None:
+        """This used to read "not an uploadable type", which stopped being
+        true when `encode_j2k` arrived: a `.j2k` is now something this client
+        can upload, and what stops it is whether the simulator offered
+        `NewFileAgentInventory`. The action is the same and the reason is
+        not, and the reason is what the owner reads.
+        """
         row = _row(name="Cloud", asset_type=0)
         path = self.write("Cloud.j2k", "not really a texture")
 
         [entry] = plan_push([path], {row.name: row}, state=self.state)
 
         self.assertEqual(entry.action, SKIP)
-        self.assertIn("uploadable", entry.reason)
+        self.assertIn("capability", entry.reason)
+
 
     def test_a_script_file_does_not_match_a_texture_of_the_same_name(self) -> None:
         # Two of the three matching passes compare *stems*, which drops the
@@ -436,3 +443,88 @@ class BinaryExportTests(_FolderCase):
             rows, folder=self.folder, state=self.state, include_binary=True
         )
         self.assertEqual([e.action for e in entries], [CONFLICT, CONFLICT])
+
+
+class TexturePushTests(unittest.TestCase):
+    """Textures are created, never replaced.
+
+    The asset behind a task-inventory row is updated through a capability per
+    asset type, and this client has two: script and notecard. So a texture
+    that is already in the object is reported rather than uploaded beside
+    itself -- a create would land as `sunset 1` and the owner would have two.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        self.state = SyncState.load(self.folder, task_id=uuid4())
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def write(self, name: str, text: str) -> Path:
+        path = self.folder / name
+        path.write_text(text)
+        return path
+
+    def _plan(self, path: Path, **kwargs):
+        [entry] = plan_push([path], {}, state=self.state, **kwargs)
+        return entry
+
+    def test_a_png_with_no_row_is_uploaded(self) -> None:
+        entry = self._plan(self.write("Sunset.png", "x"), can_create_textures=True)
+        self.assertEqual(entry.action, TRANSFER)
+        self.assertTrue(entry.create)
+        self.assertEqual(entry.asset_type, 0)
+        self.assertEqual(entry.item_name, "Sunset")
+
+    def test_a_png_whose_name_is_already_in_the_object_is_skipped(self) -> None:
+        entry = self._plan(
+            self.write("Sunset.png", "x"),
+            can_create_textures=True,
+            existing_texture_names=["Sunset"],
+        )
+        self.assertEqual(entry.action, SKIP)
+        self.assertIn("cannot replace", entry.reason)
+
+    def test_the_name_match_ignores_case(self) -> None:
+        """In-world names are free text and the owner's file names are not
+        typed to match them. Uploading a second `sunset` beside `Sunset` is
+        the failure this is here to avoid."""
+        entry = self._plan(
+            self.write("SUNSET.png", "x"),
+            can_create_textures=True,
+            existing_texture_names=["sunset"],
+        )
+        self.assertEqual(entry.action, SKIP)
+
+    def test_without_the_capability_it_says_so_rather_than_saying_nothing(self) -> None:
+        entry = self._plan(self.write("Sunset.png", "x"))
+        self.assertEqual(entry.action, SKIP)
+        self.assertIn("capability", entry.reason)
+
+    def test_the_item_name_drops_the_suffix_and_is_made_safe(self) -> None:
+        entry = self._plan(self.write("holiday/2024: sunset.png".replace("/", "_"), "x"),
+                           can_create_textures=True)
+        self.assertNotIn(".png", entry.item_name)
+        self.assertNotIn(":", entry.item_name)
+
+    def test_every_image_suffix_takes_this_path(self) -> None:
+        for suffix in (".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".j2k", ".j2c"):
+            with self.subTest(suffix):
+                entry = self._plan(self.write(f"Pic{suffix}", "x"), can_create_textures=True)
+                self.assertEqual(entry.action, TRANSFER, suffix)
+                self.assertEqual(entry.asset_type, 0)
+
+    def test_a_script_beside_a_texture_is_still_planned_as_a_script(self) -> None:
+        """The two paths run over the same file list, and an image splitting
+        off must not take anything else with it."""
+        script = self.write("Greeter.lsl", "default { }")
+        image = self.write("Sunset.png", "x")
+        entries = {
+            entry.file_name: entry
+            for entry in plan_push([script, image], {}, state=self.state,
+                                   can_create_textures=True)
+        }
+        self.assertEqual(entries["Greeter.lsl"].asset_type, 10)
+        self.assertEqual(entries["Sunset.png"].asset_type, 0)

@@ -13,6 +13,7 @@ overwrites an edit is worse than one that stops and says which file it was.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,7 +24,11 @@ from vibestorm.sync.naming import (
     safe_filename,
     upload_kind_for_path,
 )
+from vibestorm.sync.new_assets import new_asset_kind_for_path
 from vibestorm.sync.state import SyncState, content_digest
+
+#: `AssetType.Texture`. The only non-text type this client can author.
+TEXTURE_ASSET_TYPE = 0
 
 # ---- what a plan entry can say -------------------------------------------
 
@@ -190,16 +195,22 @@ def plan_push(
     state: SyncState,
     can_create: bool = True,
     can_create_notecards: bool = False,
+    can_create_textures: bool = False,
+    existing_texture_names: Collection[str] = (),
 ) -> list[PushEntry]:
     """What to send from the folder into the object.
 
     ``rows_by_name`` maps an in-world item name to a row carrying ``item_id``,
-    ``asset_id`` and a numeric ``asset_type``.
+    ``asset_id`` and a numeric ``asset_type``. It holds the *text* rows only;
+    ``existing_texture_names`` carries the names of the texture rows, which
+    take a different path below and need only to be recognised.
     """
     from vibestorm.sync.naming import match_files_to_rows
 
-    uploadable = [path for path in files if upload_kind_for_path(path) is not None]
-    ignored = [path for path in files if upload_kind_for_path(path) is None]
+    images = [path for path in files if new_asset_kind_for_path(path) is not None]
+    rest = [path for path in files if new_asset_kind_for_path(path) is None]
+    uploadable = [path for path in rest if upload_kind_for_path(path) is not None]
+    ignored = [path for path in rest if upload_kind_for_path(path) is None]
     rows = list(rows_by_name.values())
     rows_by_item_id = {
         str(getattr(row, "item_id", None)): row
@@ -230,6 +241,13 @@ def plan_push(
     matched.extend(by_name_matched)
 
     entries: list[PushEntry] = []
+    entries.extend(
+        _plan_textures(
+            images,
+            can_create_textures=can_create_textures,
+            existing=frozenset(name.lower() for name in existing_texture_names),
+        )
+    )
     for path in sorted(ignored):
         entries.append(
             PushEntry(
@@ -341,6 +359,67 @@ def plan_push(
                 item_name=safe_filename(path.stem),
                 action=SKIP,
                 reason=reason,
+            )
+        )
+    return entries
+
+
+def _plan_textures(
+    images: list[Path],
+    *,
+    can_create_textures: bool,
+    existing: frozenset[str],
+) -> list[PushEntry]:
+    """Textures are created, never replaced.
+
+    This client can build a new texture asset and put it in an object. It
+    cannot update one that is already there: the asset behind a task
+    inventory row is replaced through a capability per asset type, and the
+    only two this client has are for script and notecard. So a texture whose
+    name is already in the object is reported rather than silently uploaded
+    beside itself as `sunset 1`, which is what a create would do.
+
+    That asymmetry is worth stating plainly because it makes a folder push
+    only partly idempotent for textures: the *second* run reports them
+    skipped rather than unchanged. Skipped is the honest word -- nothing was
+    compared, and the file on disk may well differ from what is in world.
+    """
+    entries: list[PushEntry] = []
+    for path in sorted(images):
+        item_name = safe_filename(path.stem)
+        if item_name.lower() in existing:
+            entries.append(
+                PushEntry(
+                    path=path,
+                    file_name=path.name,
+                    item_name=item_name,
+                    action=SKIP,
+                    reason="already in the object; this client cannot replace a texture",
+                    asset_type=TEXTURE_ASSET_TYPE,
+                )
+            )
+            continue
+        if not can_create_textures:
+            entries.append(
+                PushEntry(
+                    path=path,
+                    file_name=path.name,
+                    item_name=item_name,
+                    action=SKIP,
+                    reason="no capability to upload a texture",
+                    asset_type=TEXTURE_ASSET_TYPE,
+                )
+            )
+            continue
+        entries.append(
+            PushEntry(
+                path=path,
+                file_name=path.name,
+                item_name=item_name,
+                action=TRANSFER,
+                reason="no row yet; uploading it",
+                create=True,
+                asset_type=TEXTURE_ASSET_TYPE,
             )
         )
     return entries

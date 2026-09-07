@@ -21,7 +21,11 @@ What it does, in order:
    that distinguishes "the upload reported success" from "the texture is
    there", and they are not the same thing: an item can exist, correctly
    typed, holding bytes nothing can read.
-5. Removes the row it made, so the prim is left as it was found.
+5. Does it again through `push_folder_to_object` -- a folder with a PNG in
+   it, which is D as the owner would actually use it -- and checks that a
+   second push reports the texture *skipped* rather than uploading a second
+   copy beside it as `sunset 1`.
+6. Removes the rows it made, so the prim is left as it was found.
 
     set -a; . local/vibestorm-login.env; set +a
     .venv/bin/python tools/verify_texture_upload.py
@@ -43,7 +47,7 @@ from vibestorm.assets.j2k import decode_j2k  # noqa: E402
 from vibestorm.caps.get_texture_client import GetTextureClient  # noqa: E402
 from vibestorm.login.client import LoginClient  # noqa: E402
 from vibestorm.login.models import LoginCredentials, LoginRequest  # noqa: E402
-from vibestorm.sync.engine import resolve_sync_caps  # noqa: E402
+from vibestorm.sync.engine import push_folder_to_object, resolve_sync_caps  # noqa: E402
 from vibestorm.sync.task_inventory import await_object_inventory  # noqa: E402
 from vibestorm.sync.textures import create_task_texture  # noqa: E402
 from vibestorm.udp.dispatch import MessageDispatcher  # noqa: E402
@@ -114,6 +118,9 @@ async def main() -> int:
 
     failures: list[str] = []
     made: tuple[UUID, str] | None = None
+    #: Every row this run put in the prim, so the cleanup can take them all
+    #: out again whatever went wrong in between.
+    created_ids: list[UUID] = []
     local_id: int | None = None
     try:
         local_id = await _wait_for_object(client, TASK_ID)
@@ -145,6 +152,7 @@ async def main() -> int:
             print("FAIL: the texture never appeared in the object")
             return 1
         item_id, assigned = made
+        created_ids.append(item_id)
         print(f"    row {assigned!r} item={item_id}")
 
         print("--- 2. the row the simulator wrote ---")
@@ -187,9 +195,14 @@ async def main() -> int:
                 ):
                     if abs(got - want) > 6:
                         failures.append(f"{channel} came back {got}, expected about {want}")
+        print("--- 4. the same thing through a folder push ---")
+        failures.extend(
+            await _check_folder_push(client, bootstrap, caps, local_id, created_ids)
+        )
     finally:
-        if made is not None and local_id is not None:
-            await _remove_row(client, local_id, made[0])
+        if local_id is not None:
+            for made_id in created_ids:
+                await _remove_row(client, local_id, made_id)
         stop.set()
         await asyncio.wait_for(task, timeout=30.0)
 
@@ -200,6 +213,74 @@ async def main() -> int:
         return 1
     print("\nPASS: the texture went up, was typed as one, and came back readable")
     return 0
+
+
+async def _check_folder_push(client, bootstrap, caps, local_id: int, created_ids) -> list[str]:
+    """D as the owner would use it: a folder with a picture in it.
+
+    The direct call above proves the two hops work. This proves the *planner*
+    routes an image to them -- and, on the second run, that it does not route
+    it there again. A push that re-uploaded every texture on every tick would
+    make the watch loop unusable and would fill the object with `sunset 1`,
+    `sunset 2`, and so on, one per save.
+    """
+    import tempfile
+
+    from vibestorm.sync.task_inventory import await_object_inventory
+
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as raw:
+        folder = Path(raw)
+        name = f"folder-texture-{os.getpid()}"
+        (folder / f"{name}.png").write_bytes(_marker_png())
+
+        first = await push_folder_to_object(
+            client,
+            client.current,
+            handle=client.current_handle or 0,
+            task_id=TASK_ID,
+            local_id=local_id,
+            folder=folder,
+            script_cap=caps.script,
+            notecard_cap=caps.notecard,
+            notecard_agent_cap=caps.notecard_agent,
+            new_file_cap=caps.new_file,
+            agent_folder_id=bootstrap.inventory_root_folder_id,
+            on_progress=lambda message: print(f"    {message}"),
+        )
+        print(f"    first push: {first.summary()}")
+        for name_, reason in [*first.skipped, *first.failed]:
+            print(f"      {name_}: {reason}")
+        if f"{name}.png" not in first.created:
+            failures.append(f"the folder push did not create {name}.png")
+
+        snapshot = await await_object_inventory(client, local_id)
+        rows = [item for item in (snapshot.items if snapshot else ()) if item.name == name]
+        for row in rows:
+            if row.item_id is not None:
+                created_ids.append(row.item_id)
+        if len(rows) != 1:
+            failures.append(f"expected one row called {name!r}, found {len(rows)}")
+
+        second = await push_folder_to_object(
+            client,
+            client.current,
+            handle=client.current_handle or 0,
+            task_id=TASK_ID,
+            local_id=local_id,
+            folder=folder,
+            script_cap=caps.script,
+            notecard_cap=caps.notecard,
+            notecard_agent_cap=caps.notecard_agent,
+            new_file_cap=caps.new_file,
+            agent_folder_id=bootstrap.inventory_root_folder_id,
+        )
+        print(f"    second push: {second.summary()}")
+        if second.created:
+            failures.append(f"the second push created {second.created} all over again")
+        if not any(file_name == f"{name}.png" for file_name, _ in second.skipped):
+            failures.append("the second push did not report the texture as skipped")
+    return failures
 
 
 async def _texture_cap(client) -> str | None:
