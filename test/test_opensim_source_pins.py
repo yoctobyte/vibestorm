@@ -447,3 +447,35 @@ class TimeDilationTests(unittest.TestCase):
             self.client,
             "no sender states TimeDilation's 0..1 range explicitly any more",
         )
+
+
+class FloatingTextLengthTests(unittest.TestCase):
+    """Why 254 characters is the whole of a prim's floating text.
+
+    The client truncates labels there before rasterising them, and the reason
+    is not a rendering budget picked out of the air: it is the length prefix
+    the simulator writes. One byte.
+    """
+
+    def setUp(self) -> None:
+        self.client = _source("UDP", "LLClientView.cs")
+        self.encoder = _source("UDP", "LLUDPZeroEncoder.cs")
+
+    def test_floating_text_goes_out_through_the_short_limited_writer(self) -> None:
+        if self.client is None:
+            self.skipTest("referencedocs/UDP/LLClientView.cs not present")
+        self.assertIn(
+            "zc.AddShortLimitedUTF8(osUTF8PartText);",
+            self.client,
+            "a prim's floating text is no longer written by AddShortLimitedUTF8",
+        )
+
+    def test_and_that_writer_prefixes_it_with_a_single_byte(self) -> None:
+        if self.encoder is None:
+            self.skipTest("referencedocs/UDP/LLUDPZeroEncoder.cs not present")
+        self.assertRegex(
+            self.encoder,
+            r"public unsafe void AddShortLimitedUTF8\(osUTF8 str\)[\s\S]*?"
+            r"AddByte\(\(byte\)\(len \+ 1\)\); // add null",
+            "AddShortLimitedUTF8 no longer writes a one-byte length prefix",
+        )

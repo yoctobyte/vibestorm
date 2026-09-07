@@ -680,6 +680,27 @@ HOVER_TEXT_SCREEN_HEIGHT: float = 0.045
 HOVER_TEXT_OFFSET_M: float = 0.25
 HOVER_TEXT_FONT_SIZE: int = 28
 HOVER_TEXT_MAX_LINES: int = 8
+
+#: How much of a label is rasterised, in characters.
+#:
+#: The wire cannot carry more than this: OpenSim writes a prim's floating text
+#: with `AddShortLimitedUTF8`, whose length prefix is a **single byte**
+#: (`AddByte((byte)(len + 1))`, pinned in `test_opensim_source_pins.py`), so
+#: 254 bytes is the whole field and a UTF-8 string is never fewer bytes than
+#: characters. Anything longer than this arrived from a malformed packet.
+#:
+#: It is capped because a label is rasterised to a GL texture one pixel per
+#: pixel, with no wrapping. Measured: `font.render` on 200,000 characters
+#: returns a surface **2,581,248 x 21** -- 217 MB and 321 ms -- and the
+#: `ctx.texture` call after it asks the driver for a texture wider than any
+#: GPU will make. One prim, in the draw loop.
+#:
+#: At this cap the worst case is 254 capital Ws, measured at **4,572 px**
+#: across and one line tall -- 384 kB, against the 512x512 object textures
+#: this renderer already uploads by the hundred. Not chosen to fit a
+#: particular `GL_MAX_TEXTURE_SIZE`: the cap is the wire's, and the width
+#: that follows from it is merely small enough not to matter.
+HOVER_TEXT_MAX_CHARS: int = 254
 # Avatar name tags share the hover-text billboard but carry no colour of
 # their own; SL draws them in plain white.
 AVATAR_NAME_COLOR: tuple[int, int, int, int] = (255, 255, 255, 235)
@@ -3481,6 +3502,11 @@ class PerspectiveRenderer:
         The regions next door are left out. Their nearest prim is 256 m away
         and their far one over 700 m; text that reads as a label up close is
         a smear of pixels at that range, and every one of them is drawn.
+
+        Both are truncated here rather than at the texture, because the cache
+        of rasterised labels is keyed by the string and pruned against the set
+        this returns: truncating later would leave those two disagreeing, and
+        every long label would be released and rebuilt on every frame.
         """
         labels: list[tuple[SceneEntity, str, tuple[int, int, int, int]]] = []
         if getattr(scene, "render_hover_text", True):
@@ -3488,12 +3514,14 @@ class PerspectiveRenderer:
                 text = getattr(entity, "hover_text", None)
                 if text:
                     color = getattr(entity, "hover_text_color", None)
-                    labels.append((entity, text, color or (255, 255, 255, 255)))
+                    labels.append(
+                        (entity, text[:HOVER_TEXT_MAX_CHARS], color or (255, 255, 255, 255))
+                    )
         if getattr(scene, "render_avatar_names", True):
             for entity in scene.avatar_entities.values():
                 name = getattr(entity, "name", None)
                 if name:
-                    labels.append((entity, name, AVATAR_NAME_COLOR))
+                    labels.append((entity, name[:HOVER_TEXT_MAX_CHARS], AVATAR_NAME_COLOR))
         return labels
 
     def _render_labels(

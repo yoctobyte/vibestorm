@@ -507,6 +507,27 @@ Twelve mutants, twelve killed, first time -- including the four that matter
 most: dropping either gate, dropping either half of the transform check, and
 not reporting a lost place as a move.
 
+**And the same question of the text a prim can put on the screen.** A label
+is rasterised one pixel per pixel into a GL texture, with no wrapping.
+Measured with the viewer's own font: 200,000 characters render to a surface
+**2,581,248 x 21** -- 217 MB and 321 ms -- and the `ctx.texture` call after it
+asks the driver for something no GPU will make. One prim, in the draw loop.
+
+The cap is not a rendering budget picked out of the air. OpenSim writes a
+prim's floating text with `AddShortLimitedUTF8`, whose length prefix is
+`AddByte((byte)(len + 1))` -- **one byte** -- so 254 bytes is the whole field
+and anything longer arrived from a malformed packet. Both pins are in
+`test_opensim_source_pins.py`. At that cap the worst case is 254 capital Ws,
+measured at 4,572 px across: 384 kB, against the 512x512 object textures this
+renderer already uploads by the hundred.
+
+The truncation goes in `_collect_labels` and not at the texture, and that
+placement is load-bearing: the label cache is keyed by the string and pruned
+against the set `_collect_labels` returns, so truncating later would leave the
+two disagreeing and every long label would be released and rebuilt *every
+frame* -- a 4,572-pixel upload per frame per prim, which is worse than the bug
+it was meant to fix. Avatar name tags share the pass and the cap.
+
 **Terrain was checked and left alone, on purpose.** A NaN height smears the
 ground mesh the same way, but it cannot crash: the terrain path builds its
 vertices with `array("f", ...)`, which turns 1e300 into an infinity silently

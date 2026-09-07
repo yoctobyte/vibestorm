@@ -29,7 +29,12 @@ from vibestorm.viewer3d.linkset import (
     is_a_place,
     resolve_world_transforms,
 )
-from vibestorm.viewer3d.perspective import model_matrix
+from vibestorm.viewer3d.perspective import (
+    HOVER_TEXT_MAX_CHARS,
+    HOVER_TEXT_MAX_LINES,
+    PerspectiveRenderer,
+    model_matrix,
+)
 from vibestorm.viewer3d.scene import Scene
 
 NAN = float("nan")
@@ -288,3 +293,80 @@ class HostileSceneTests(unittest.TestCase):
                 0.0,
                 0.0,
             )
+
+
+class HostileLabelTests(unittest.TestCase):
+    """Text a prim can put on the screen, and how much of it gets rasterised.
+
+    A label is drawn one pixel per pixel into a GL texture, with no wrapping.
+    Measured with the viewer's own font: 200,000 characters render to a
+    surface **2,581,248 x 21** -- 217 MB and 321 ms -- and the `ctx.texture`
+    call after it asks the driver for something no GPU will make. One prim, in
+    the draw loop, from content nobody here wrote.
+
+    The wire cannot carry that: OpenSim length-prefixes floating text with a
+    single byte. So the cap is the protocol's own, and anything longer arrived
+    from a malformed packet.
+    """
+
+    def test_hover_text_is_cut_to_what_the_wire_can_carry(self) -> None:
+        scene = Scene()
+        scene.refresh_from_world_view(_world(_prim(1)))
+        entity = next(iter(scene.object_entities.values()))
+        object.__setattr__(entity, "hover_text", "W" * 200_000)
+        labels = PerspectiveRenderer._collect_labels(scene)
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(len(labels[0][1]), HOVER_TEXT_MAX_CHARS)
+
+    def test_an_avatar_name_is_cut_the_same_way(self) -> None:
+        scene = Scene()
+        scene.refresh_from_world_view(_world(_prim(1, pcode=47)))
+        entity = next(iter(scene.avatar_entities.values()))
+        object.__setattr__(entity, "name", "W" * 5000)
+        labels = PerspectiveRenderer._collect_labels(scene)
+        self.assertEqual(len(labels[0][1]), HOVER_TEXT_MAX_CHARS)
+
+    def test_ordinary_text_is_untouched(self) -> None:
+        scene = Scene()
+        scene.refresh_from_world_view(_world(_prim(1)))
+        entity = next(iter(scene.object_entities.values()))
+        object.__setattr__(entity, "hover_text", "Vendor: 250L\nTouch to buy")
+        labels = PerspectiveRenderer._collect_labels(scene)
+        self.assertEqual(labels[0][1], "Vendor: 250L\nTouch to buy")
+
+    def test_the_cut_happens_where_the_cache_can_see_it(self) -> None:
+        """The label cache is keyed by the string and pruned against this set.
+
+        Truncating at the texture instead would leave the two disagreeing, and
+        every long label would be released and rebuilt on every frame -- a
+        4,572-pixel upload per frame per prim, which is worse than the bug.
+        """
+        scene = Scene()
+        scene.refresh_from_world_view(_world(_prim(1)))
+        entity = next(iter(scene.object_entities.values()))
+        object.__setattr__(entity, "hover_text", "W" * 1000)
+        first = {text for _entity, text, _color in PerspectiveRenderer._collect_labels(scene)}
+        second = {text for _entity, text, _color in PerspectiveRenderer._collect_labels(scene)}
+        self.assertEqual(first, second)
+        self.assertEqual(next(iter(first)), "W" * HOVER_TEXT_MAX_CHARS)
+
+    def test_the_worst_case_rasterises_to_something_a_gpu_will_take(self) -> None:
+        """The cap's whole point, measured rather than asserted.
+
+        254 capital Ws is the widest a label can be. Compared against 8,192,
+        which is what integrated graphics of the last fifteen years provide;
+        the uncapped 2,581,248 fails on everything.
+        """
+        import os
+
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        import pygame
+
+        from vibestorm.viewer3d.perspective import HOVER_TEXT_FONT_SIZE
+
+        if not pygame.font.get_init():
+            pygame.font.init()
+        font = pygame.font.Font(None, HOVER_TEXT_FONT_SIZE)
+        width, height = font.size("W" * HOVER_TEXT_MAX_CHARS)
+        self.assertLess(width, 8192)
+        self.assertLess(height * HOVER_TEXT_MAX_LINES, 8192)
