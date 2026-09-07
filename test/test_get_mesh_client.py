@@ -3,6 +3,8 @@ import unittest
 from urllib.error import URLError
 from uuid import UUID
 
+from http_fakes import FakeHeaders, serve_body
+
 from vibestorm.caps.get_mesh_client import GetMeshClient, GetMeshError
 
 
@@ -12,10 +14,13 @@ class _FakeResponse:
         body: bytes,
         content_type: str = "application/vnd.ll.mesh",
         status: int = 200,
+        **declared: str,
     ):
         self._body = body
         self._content_type = content_type
         self.status = status
+        #: Header fields the response declares, e.g. `Content_Length="9"`.
+        self._declared = declared
 
     def __enter__(self):
         return self
@@ -23,18 +28,12 @@ class _FakeResponse:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, amt: int = -1) -> bytes:
+        return serve_body(self, self._body, amt)
 
     @property
-    def headers(self):
-        outer = self
-
-        class _Headers:
-            def get_content_type(self) -> str:
-                return outer._content_type
-
-        return _Headers()
+    def headers(self) -> FakeHeaders:
+        return FakeHeaders(self._content_type, **self._declared)
 
 
 class GetMeshClientTests(unittest.TestCase):
@@ -171,6 +170,40 @@ class GetMeshClientTests(unittest.TestCase):
             urllib.request.urlopen = original
 
         self.assertIn("empty body", str(ctx.exception))
+
+
+class BodyCeilingTests(unittest.TestCase):
+    """The mesh fetch, bounded before `MAX_MESH_BLOCK_BYTES` gets a look in.
+
+    That constant bounds one inflated block. This bounds the file the blocks
+    come in, which is the allocation that happens first.
+    """
+
+    def _fetch(self, body: bytes, limit: int) -> None:
+        import urllib.request
+
+        import vibestorm.caps.get_mesh_client as module
+
+        original, original_limit = urllib.request.urlopen, module.MAX_ASSET_BODY_BYTES
+        urllib.request.urlopen = lambda request, timeout: _FakeResponse(body)
+        module.MAX_ASSET_BODY_BYTES = limit
+        try:
+            module.GetMeshClient()._fetch_sync(
+                "http://example.invalid/caps/get-mesh",
+                UUID("11111111-2222-3333-4444-555555555555"),
+                "Vibestorm",
+            )
+        finally:
+            urllib.request.urlopen = original
+            module.MAX_ASSET_BODY_BYTES = original_limit
+
+    def test_an_oversized_body_is_a_get_mesh_error(self) -> None:
+        with self.assertRaisesRegex(GetMeshError, "exceeds the 64 byte limit"):
+            self._fetch(b"x" * 65, 64)
+
+    def test_a_body_within_the_limit_is_untouched(self) -> None:
+        self._fetch(b"x" * 64, 64)
+
 
 
 if __name__ == "__main__":

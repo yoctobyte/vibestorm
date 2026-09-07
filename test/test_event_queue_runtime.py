@@ -2,6 +2,8 @@ import socket
 import unittest
 import urllib.error
 
+from http_fakes import serve_body
+
 from vibestorm.event_queue.client import EventQueueClient, EventQueueError
 
 
@@ -18,8 +20,8 @@ class EventQueueClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return b'<?xml version="1.0"?><llsd><map><key>id</key><integer>1</integer></map></llsd>'
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, b'<?xml version="1.0"?><llsd><map><key>id</key><integer>1</integer></map></llsd>', amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen

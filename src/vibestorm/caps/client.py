@@ -8,7 +8,13 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from vibestorm.caps.llsd import format_xml_map, format_xml_string_array, parse_xml_string_map, parse_xml_value
+from vibestorm.caps.llsd import (
+    format_xml_map,
+    format_xml_string_array,
+    parse_xml_string_map,
+    parse_xml_value,
+)
+from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
 
 
 class CapabilityError(RuntimeError):
@@ -82,7 +88,14 @@ class CapabilityClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return parse_xml_string_map(response.read())
+                return parse_xml_string_map(
+                    read_bounded(
+                        response,
+                        max_bytes=MAX_LLSD_BODY_BYTES,
+                        what="seed capability response",
+                        error=CapabilityError,
+                    )
+                )
         except TimeoutError as exc:
             raise CapabilityError(f"seed capability resolution timed out after {self.timeout_seconds:.1f}s") from exc
         except socket.timeout as exc:
@@ -106,7 +119,14 @@ class CapabilityClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return parse_xml_value(response.read())
+                return parse_xml_value(
+                    read_bounded(
+                        response,
+                        max_bytes=MAX_LLSD_BODY_BYTES,
+                        what="capability response",
+                        error=CapabilityError,
+                    )
+                )
         except TimeoutError as exc:
             raise CapabilityError(f"capability fetch timed out after {self.timeout_seconds:.1f}s") from exc
         except socket.timeout as exc:
@@ -134,7 +154,14 @@ class CapabilityClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                return parse_xml_value(response.read())
+                return parse_xml_value(
+                    read_bounded(
+                        response,
+                        max_bytes=MAX_LLSD_BODY_BYTES,
+                        what="capability response",
+                        error=CapabilityError,
+                    )
+                )
         except TimeoutError as exc:
             raise CapabilityError(f"capability post timed out after {self.timeout_seconds:.1f}s") from exc
         except socket.timeout as exc:

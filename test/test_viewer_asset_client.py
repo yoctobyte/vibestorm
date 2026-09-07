@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from uuid import UUID
 
+from http_fakes import FakeHeaders, serve_body
+
 from vibestorm.caps.inventory_types import ASSET_TYPE_NAMES
 from vibestorm.caps.viewer_asset_client import (
     ASSET_TYPE_QUERY_KEYS,
@@ -240,17 +242,23 @@ class QueryKeyTests(unittest.TestCase):
 
 
 class _FakeResponse:
-    def __init__(self, data: bytes, status: int = 200, content_type: str = "text/plain"):
+    def __init__(
+        self,
+        data: bytes,
+        status: int = 200,
+        content_type: str = "text/plain",
+        **declared: str,
+    ):
         self._data = data
         self.status = status
-        self.headers = self
-        self._content_type = content_type
+        #: A real response's headers are a mapping, not the response. This
+        #: used to be `self`, which answered `get_content_type` and nothing
+        #: else -- enough while nothing read a header field, and an
+        #: AttributeError the moment something did.
+        self.headers = FakeHeaders(content_type, **declared)
 
-    def get_content_type(self) -> str:
-        return self._content_type
-
-    def read(self) -> bytes:
-        return self._data
+    def read(self, amt: int = -1) -> bytes:
+        return serve_body(self, self._data, amt)
 
     def __enter__(self):
         return self

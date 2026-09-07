@@ -2,6 +2,8 @@ import socket
 import unittest
 import urllib.error
 
+from http_fakes import serve_body
+
 from vibestorm.caps.upload_baked_texture_client import (
     UploadBakedTextureClient,
     UploadBakedTextureError,
@@ -21,13 +23,13 @@ class UploadBakedTextureClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>uploader</key><string>http://example.invalid/upload</string>"
                     b"<key>state</key><string>upload</string>"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen
@@ -68,14 +70,14 @@ class UploadBakedTextureClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>state</key><string>complete</string>"
                     b"<key>new_asset</key><string>12345678-1111-2222-3333-444444444444</string>"
                     b"<key>new_inventory_item</key><uuid />"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen

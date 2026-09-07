@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from vibestorm.caps.llsd import format_xml_map, parse_xml_value
+from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
 
 
 @dataclass(slots=True, frozen=True)
@@ -67,7 +68,12 @@ class EventQueueClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = response.read()
+                payload = read_bounded(
+                    response,
+                    max_bytes=MAX_LLSD_BODY_BYTES,
+                    what="event queue poll",
+                    error=EventQueueError,
+                )
         except urllib.error.HTTPError as exc:
             if exc.code == 502:
                 return EventQueuePollResult(status="empty", payload=None)

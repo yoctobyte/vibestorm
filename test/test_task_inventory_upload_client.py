@@ -4,6 +4,8 @@ from pathlib import Path
 from urllib.error import URLError
 from uuid import UUID
 
+from http_fakes import serve_body
+
 from vibestorm.caps.task_inventory_upload_client import (
     TaskInventoryUploadClient,
     TaskInventoryUploadError,
@@ -25,13 +27,13 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>uploader</key><string>http://example.invalid/upload-script</string>"
                     b"<key>state</key><string>upload</string>"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen
@@ -86,15 +88,15 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>state</key><string>complete</string>"
                     b"<key>new_asset</key><string>12345678-1111-2222-3333-444444444444</string>"
                     b"<key>compiled</key><boolean>true</boolean>"
                     b"<key>errors</key><array></array>"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen
@@ -135,8 +137,8 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>state</key><string>complete</string>"
                     b"<key>new_asset</key><string>12345678-1111-2222-3333-444444444444</string>"
@@ -145,7 +147,7 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                     b"<string>(10, 15): Name not defined within scope</string>"
                     b"</array>"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen
@@ -179,14 +181,14 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>state</key><string>complete</string>"
                     b"<key>new_asset</key><string>12345678-1111-2222-3333-444444444444</string>"
                     b"<key>new_inventory_item</key><uuid>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</uuid>"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen
@@ -219,14 +221,14 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>state</key><string>error</string>"
                     b"<key>error</key><map>"
                     b"<key>message</key><string>Failed to resolve prim</string>"
                     b"</map></map></llsd>"
-                )
+                ), amt)
 
         original = urllib.request.urlopen
         urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()  # type: ignore[assignment]

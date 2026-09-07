@@ -3,6 +3,8 @@ import unittest
 import urllib.error
 from uuid import UUID
 
+from http_fakes import serve_body
+
 from vibestorm.caps.client import CapabilityClient, CapabilityError
 
 
@@ -19,12 +21,12 @@ class CapabilityClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>EventQueueGet</key><string>http://example.invalid/eq</string>"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen
@@ -66,12 +68,12 @@ class CapabilityClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return (
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, (
                     b'<?xml version="1.0"?><llsd><map>'
                     b"<key>MeshUploadEnabled</key><boolean>1</boolean>"
                     b"</map></llsd>"
-                )
+                ), amt)
 
         original = urllib.request.urlopen
 
@@ -98,8 +100,8 @@ class CapabilityClientTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):  # type: ignore[no-untyped-def]
                 return False
 
-            def read(self) -> bytes:
-                return b'<?xml version="1.0"?><llsd><map><key>ok</key><boolean>1</boolean></map></llsd>'
+            def read(self, amt: int = -1) -> bytes:
+                return serve_body(self, b'<?xml version="1.0"?><llsd><map><key>ok</key><boolean>1</boolean></map></llsd>', amt)
 
         captured: dict[str, object] = {}
         original = urllib.request.urlopen

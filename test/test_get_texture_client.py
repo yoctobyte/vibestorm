@@ -3,14 +3,24 @@ import unittest
 import urllib.error
 from uuid import UUID
 
+from http_fakes import FakeHeaders, serve_body
+
 from vibestorm.caps.get_texture_client import GetTextureClient, GetTextureError
 
 
 class _FakeResponse:
-    def __init__(self, body: bytes, content_type: str = "image/x-j2c", status: int = 200):
+    def __init__(
+        self,
+        body: bytes,
+        content_type: str = "image/x-j2c",
+        status: int = 200,
+        **declared: str,
+    ):
         self._body = body
         self._content_type = content_type
         self.status = status
+        #: Header fields the response declares, e.g. `Content_Length="9"`.
+        self._declared = declared
 
     def __enter__(self):
         return self
@@ -18,18 +28,12 @@ class _FakeResponse:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, amt: int = -1) -> bytes:
+        return serve_body(self, self._body, amt)
 
     @property
-    def headers(self):
-        outer = self
-
-        class _Headers:
-            def get_content_type(self) -> str:
-                return outer._content_type
-
-        return _Headers()
+    def headers(self) -> FakeHeaders:
+        return FakeHeaders(self._content_type, **self._declared)
 
 
 class GetTextureClientTests(unittest.TestCase):
@@ -166,6 +170,43 @@ class GetTextureClientTests(unittest.TestCase):
             urllib.request.urlopen = original
 
         self.assertIn("empty body", str(ctx.exception))
+
+
+class BodyCeilingTests(unittest.TestCase):
+    """A texture the size of the far end's imagination.
+
+    `MAX_OBJECT_TEXTURE_EDGE` shrinks what gets drawn and `MAX_TEXTURE_PIXELS`
+    refuses an oversized raster, but both of those happen once the bytes are
+    in memory. This is the ceiling on getting them there.
+    """
+
+    def _fetch(self, body: bytes, limit: int) -> None:
+        import urllib.request
+
+        import vibestorm.caps.get_texture_client as module
+
+        original, original_limit = urllib.request.urlopen, module.MAX_ASSET_BODY_BYTES
+        urllib.request.urlopen = lambda request, timeout: _FakeResponse(body)
+        module.MAX_ASSET_BODY_BYTES = limit
+        try:
+            module.GetTextureClient()._fetch_sync(
+                "http://example.invalid/caps/get-texture",
+                UUID("11111111-2222-3333-4444-555555555555"),
+                "Vibestorm",
+            )
+        finally:
+            urllib.request.urlopen = original
+            module.MAX_ASSET_BODY_BYTES = original_limit
+
+    def test_an_oversized_body_is_a_get_texture_error(self) -> None:
+        """The client's own type -- a foreign exception here escapes every
+        handler in the texture pipeline and reaches the frame loop."""
+        with self.assertRaisesRegex(GetTextureError, "exceeds the 64 byte limit"):
+            self._fetch(b"x" * 65, 64)
+
+    def test_a_body_within_the_limit_is_untouched(self) -> None:
+        self._fetch(b"x" * 64, 64)
+
 
 
 if __name__ == "__main__":

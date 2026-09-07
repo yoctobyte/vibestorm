@@ -10,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass
 from uuid import UUID
 
+from vibestorm.util.http_body import MAX_ASSET_BODY_BYTES, read_bounded
+
 
 class GetTextureError(RuntimeError):
     """Raised when a GetTexture fetch fails."""
@@ -68,7 +70,12 @@ class GetTextureClient:
                         f"GetTexture {texture_id} returned HTTP {status}"
                     )
                 content_type = response.headers.get_content_type()
-                data = response.read()
+                data = read_bounded(
+                    response,
+                    max_bytes=MAX_ASSET_BODY_BYTES,
+                    what=f"GetTexture {texture_id}",
+                    error=GetTextureError,
+                )
         except TimeoutError as exc:
             raise GetTextureError(
                 f"GetTexture {texture_id} timed out after {self.timeout_seconds:.1f}s"

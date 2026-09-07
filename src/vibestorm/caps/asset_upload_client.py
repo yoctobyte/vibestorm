@@ -10,6 +10,7 @@ from uuid import UUID
 
 from vibestorm.caps.client import CapabilityClient
 from vibestorm.caps.llsd import parse_xml_value
+from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
 
 
 class AssetUploadError(RuntimeError):
@@ -193,7 +194,14 @@ class AssetUploadClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = parse_xml_value(response.read())
+                payload = parse_xml_value(
+                    read_bounded(
+                        response,
+                        max_bytes=MAX_LLSD_BODY_BYTES,
+                        what="asset upload response",
+                        error=AssetUploadError,
+                    )
+                )
         except TimeoutError as exc:
             raise AssetUploadError(
                 f"asset upload timed out after {self.timeout_seconds:.1f}s"

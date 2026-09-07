@@ -11,6 +11,7 @@ from uuid import UUID
 
 from vibestorm.caps.client import CapabilityClient, CapabilityError
 from vibestorm.caps.llsd import parse_xml_value
+from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
 
 
 class TaskInventoryUploadError(RuntimeError):
@@ -249,7 +250,14 @@ class TaskInventoryUploadClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = parse_xml_value(response.read())
+                payload = parse_xml_value(
+                    read_bounded(
+                        response,
+                        max_bytes=MAX_LLSD_BODY_BYTES,
+                        what="task inventory upload response",
+                        error=TaskInventoryUploadError,
+                    )
+                )
         except TimeoutError as exc:
             raise TaskInventoryUploadError(
                 f"script task upload timed out after {self.timeout_seconds:.1f}s"
@@ -305,7 +313,14 @@ class TaskInventoryUploadClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = parse_xml_value(response.read())
+                payload = parse_xml_value(
+                    read_bounded(
+                        response,
+                        max_bytes=MAX_LLSD_BODY_BYTES,
+                        what="task inventory upload response",
+                        error=TaskInventoryUploadError,
+                    )
+                )
         except TimeoutError as exc:
             raise TaskInventoryUploadError(
                 f"notecard task upload timed out after {self.timeout_seconds:.1f}s"
