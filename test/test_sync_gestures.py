@@ -28,18 +28,12 @@ from test_assets_gesture import _gesture  # noqa: E402
 from test_sync_engine import _EngineCase, _item  # noqa: E402
 
 from vibestorm.assets.gesture import GestureDecodeError  # noqa: E402
+from vibestorm.caps.inventory_types import INV_TYPE_BY_ASSET_TYPE  # noqa: E402
 from vibestorm.caps.task_inventory_upload_client import (  # noqa: E402
     TaskInventoryUploadClient,
     TaskInventoryUploadError,
 )
 from vibestorm.sync import engine  # noqa: E402
-from vibestorm.sync.gestures import (  # noqa: E402
-    ASSET_TYPE_GESTURE,
-    GESTURE_AGENT_CAP_NAME,
-    INV_TYPE_GESTURE,
-    GestureCreateError,
-    create_task_gesture,
-)
 from vibestorm.sync.engine import (  # noqa: E402
     GESTURE_ASSET_TYPE,
     GESTURE_TASK_CAP_NAME,
@@ -47,6 +41,13 @@ from vibestorm.sync.engine import (  # noqa: E402
     _decode_for_disk,
     _encode_for_upload,
     resolve_sync_caps,
+)
+from vibestorm.sync.gestures import (  # noqa: E402
+    ASSET_TYPE_GESTURE,
+    GESTURE_AGENT_CAP_NAME,
+    INV_TYPE_GESTURE,
+    GestureCreateError,
+    create_task_gesture,
 )
 from vibestorm.sync.naming import (  # noqa: E402
     TEXT_ASSET_TYPES,
@@ -415,6 +416,45 @@ class CreatePlanTests(unittest.TestCase):
         self.assertEqual(entries["Wave.gesture"].action, TRANSFER)
         self.assertEqual(entries["Greeter.lsl"].action, TRANSFER)  # can_create defaults on
         self.assertEqual(entries["Notes.txt"].action, SKIP)
+
+
+class InventoryTypeTableTests(unittest.TestCase):
+    """The one number in this feature that no source test can pin.
+
+    libomv's ``InventoryType`` enumeration is not in the committed OpenSim
+    source, so there is nothing here to read it out of. It was measured
+    instead, on 2026-09-08, off the OpenSim grid library -- 123 items every
+    default install ships, none of them made by this client -- and
+    `tools/verify_gesture_sync.py` re-reads the whole table from the library
+    on every run.
+
+    These tests can only check that the code agrees with what was measured.
+    That is the honest limit, and it is why the live tool exists.
+    """
+
+    def test_a_gesture_is_twenty_one_over_twenty(self) -> None:
+        self.assertEqual(INV_TYPE_BY_ASSET_TYPE[ASSET_TYPE_GESTURE], 20)
+        self.assertEqual(INV_TYPE_GESTURE, 20)
+
+    def test_the_module_reads_the_table_rather_than_repeating_it(self) -> None:
+        """A second copy of a measured number is a second thing to update."""
+        self.assertIs(INV_TYPE_GESTURE, INV_TYPE_BY_ASSET_TYPE[ASSET_TYPE_GESTURE])
+
+    def test_the_types_that_diverge_are_the_ones_that_were_measured(self) -> None:
+        """The trap this table exists for: the numbers are adjacent, so
+        passing the asset type for both makes a gesture arrive as an
+        animation and an animation as a wearable."""
+        self.assertEqual(INV_TYPE_BY_ASSET_TYPE[20], 19, "animation")
+        self.assertEqual(INV_TYPE_BY_ASSET_TYPE[21], 20, "gesture")
+        self.assertEqual(INV_TYPE_BY_ASSET_TYPE[5], 18, "clothing")
+        self.assertEqual(INV_TYPE_BY_ASSET_TYPE[13], 18, "body part")
+        self.assertEqual(INV_TYPE_BY_ASSET_TYPE[56], 25, "setting")
+
+    def test_the_types_that_agree_still_appear(self) -> None:
+        """Leaving them out would make the table a list of exceptions, and a
+        caller would have to know which kind of table it was holding."""
+        for asset_type in (0, 7, 10):
+            self.assertEqual(INV_TYPE_BY_ASSET_TYPE[asset_type], asset_type)
 
 
 class CreateGestureTests(unittest.IsolatedAsyncioTestCase):

@@ -33,6 +33,33 @@ INVENTORY_GESTURE = 21
 INVENTORY_SETTING = 56
 INVENTORY_MATERIAL = 57
 
+#: Inventory type for each asset type, **measured** on 2026-09-08 against the
+#: OpenSim grid library -- 123 items the default install ships, none of them
+#: made by this client. The module docstring above says libomv's
+#: ``InventoryType`` table is not in the committed OpenSim source and is
+#: deliberately left unguessed; this is the same table read off a running grid
+#: instead, which is the only source available and a better one than a guess.
+#:
+#: The divergences are the point. Clothing and body parts are both inventory
+#: type 18 -- "wearable" -- so the asset type is what distinguishes them and
+#: the inventory type does not. An animation is 20/19 and a gesture 21/20,
+#: which is the trap: the numbers are adjacent, so passing the asset type for
+#: both makes a gesture arrive as an animation and an animation as a body part.
+#:
+#: `tools/verify_gesture_sync.py` re-reads it from the library on every run.
+#: A grid whose library differs would be worth knowing about; a grid with no
+#: library leaves this unchecked, and the tool says so rather than passing.
+INV_TYPE_BY_ASSET_TYPE: dict[int, int] = {
+    INVENTORY_TEXTURE: 0,
+    INVENTORY_CLOTHING: 18,
+    INVENTORY_NOTECARD: 7,
+    INVENTORY_SCRIPT: 10,
+    INVENTORY_BODYPART: 18,
+    INVENTORY_ANIMATION: 19,
+    INVENTORY_GESTURE: 20,
+    INVENTORY_SETTING: 25,
+}
+
 ASSET_TYPE_NAMES: dict[int, str] = {
     INVENTORY_TEXTURE: "texture",
     INVENTORY_SOUND: "sound",
@@ -94,6 +121,7 @@ def missing_gap_closing_types(items: object) -> tuple[str, ...]:
 
 __all__ = [
     "ASSET_TYPE_NAMES",
+    "INV_TYPE_BY_ASSET_TYPE",
     "GAP_CLOSING_TYPES",
     "INVENTORY_ANIMATION",
     "INVENTORY_BODYPART",

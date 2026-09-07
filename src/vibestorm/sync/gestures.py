@@ -7,13 +7,20 @@ inventory and copied in. What differs is one number and one check.
 **The number.** A gesture is asset type 21 and inventory type 20, and this is
 the first type this client creates where the two enumerations disagree --
 notecards are 7/7, textures 0/0. The divergence is recorded in
-`caps/inventory_types`, whose own docstring says libomv's ``InventoryType``
-table is not in the committed OpenSim source and is deliberately left
-unguessed. So `INV_TYPE_GESTURE` below is **not** pinned by a source test the
-way the asset type is; it is checked against a live grid by
-`tools/verify_gesture_sync.py`, which reads the inventory type back off the
-row it created and off the account's existing gestures, and fails loudly
-rather than quietly making a mistyped item.
+`caps/inventory_types`, whose docstring says libomv's ``InventoryType`` table
+is not in the committed OpenSim source and was deliberately left unguessed.
+
+It is no longer guessed: on 2026-09-08 the whole table was **measured** off the
+OpenSim grid library -- 123 items the default install ships, none made by this
+client -- and 16 gestures came back asset type 21, inventory type 20.
+`INV_TYPE_BY_ASSET_TYPE` holds the result and `tools/verify_gesture_sync.py`
+re-reads it from the library on every run.
+
+The first version of that check read the *account's* gestures instead, and the
+account had none until the tool's own crashed run left one behind. It then
+found "1 gesture, inv_type [20]" and reported ok, which is a check reading its
+own homework: worse than no check, because it says the one number nothing pins
+has been confirmed.
 
 **The check.** `decode_gesture` runs before the create, not only before the
 update. Nothing on the far side looks at a gesture's contents, so an item
@@ -27,6 +34,7 @@ from pathlib import Path
 from uuid import UUID
 
 from vibestorm.assets.gesture import GestureDecodeError, decode_gesture
+from vibestorm.caps.inventory_types import INV_TYPE_BY_ASSET_TYPE
 from vibestorm.sync.notecards import (
     NotecardCreateError,
     copy_item_into_object,
@@ -40,8 +48,9 @@ from vibestorm.udp.world_client import WorldClient
 ASSET_TYPE_GESTURE = 21
 
 #: Inventory type, which is what `CreateInventoryItem` and
-#: `UpdateTaskInventory` carry. See the module docstring: measured, not pinned.
-INV_TYPE_GESTURE = 20
+#: `UpdateTaskInventory` carry. Read from the measured table rather than
+#: written out again here, so that a second copy cannot drift from it.
+INV_TYPE_GESTURE = INV_TYPE_BY_ASSET_TYPE[ASSET_TYPE_GESTURE]
 
 #: The agent-side half of the pair whose task-side half `sync/engine` uses.
 #: One handler serves both -- `UpdateGestureItemAsset` -- and which inventory

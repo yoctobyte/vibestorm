@@ -4,12 +4,17 @@ Two things here cannot be settled by a unit test, and one of them is why this
 tool exists at all.
 
 **The inventory type.** A gesture is asset type 21 and inventory type 20, and
-the second number comes from no source this project has: `caps/inventory_types`
-says libomv's ``InventoryType`` table is not in the committed OpenSim source
-and is deliberately left unguessed. So `INV_TYPE_GESTURE` is checked here
-against the account's *own* gestures -- items a real viewer created -- rather
-than against the constant it would otherwise be compared to. Step 2 fails the
-run if they disagree, and prints what the grid actually says.
+the second number comes from no source in this tree: `caps/inventory_types`
+says libomv's ``InventoryType`` table is not in the committed OpenSim source.
+So step 2 reads the whole table off the **grid library** -- the default
+inventory every OpenSim install ships, which this client cannot write to --
+and fails the run if it disagrees with `INV_TYPE_BY_ASSET_TYPE`.
+
+The library, specifically, and not the account. The first version of this
+check read the account's own gestures; the account had none until this tool's
+crashed run left one behind, and the run after that found "1 gesture, inv_type
+[20]" and reported ok. A check that can pass by reading its own homework is
+worse than no check, because it says the unpinned number has been confirmed.
 
 **The update.** Nothing on the far side looks at a gesture's contents:
 `UpdateGestureItemAsset` stores what it is sent. A push that reports success
@@ -19,7 +24,7 @@ one, and only fetching the asset back separates them.
 What it does, in order:
 
 1. Finds the object and resolves the gesture pair of capabilities.
-2. Walks agent inventory and reads the inventory type off existing gestures.
+2. Walks the grid library and checks our asset-type/inventory-type table.
 3. Pushes a folder holding one `.gesture` file, which creates the row.
 4. Reads the object's inventory back and checks the row is typed `gesture`.
 5. Pulls the object into a fresh folder and checks the file came back with
@@ -49,6 +54,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 from vibestorm.assets.gesture import decode_gesture  # noqa: E402
 from vibestorm.caps.client import CapabilityClient  # noqa: E402
 from vibestorm.caps.inventory_client import InventoryCapabilityClient  # noqa: E402
+from vibestorm.caps.inventory_types import INV_TYPE_BY_ASSET_TYPE  # noqa: E402
 from vibestorm.caps.inventory_walk import walk_inventory  # noqa: E402
 from vibestorm.login.client import LoginClient  # noqa: E402
 from vibestorm.login.models import LoginCredentials, LoginRequest  # noqa: E402
@@ -104,30 +110,45 @@ async def _wait_for_object(client, task_id: UUID, *, timeout: float = 60.0) -> i
     return None
 
 
-async def _inv_type_of_existing_gestures(bootstrap) -> list[tuple[str, int | None]]:
-    """What the grid says a gesture's inventory type is.
+#: OpenSim's grid library, whose ids are fixed in its own source. The library
+#: is the right place to read a type off: every install ships it, this client
+#: cannot write to it, and its items were made by whoever built the default
+#: inventory rather than by us.
+LIBRARY_ROOT = UUID("00000112-000f-0000-0000-000100bba000")
+LIBRARY_OWNER = UUID("11111111-1111-0000-0000-000100bba000")
 
-    Reads it off items this client did not create, which is the whole value:
-    asking the grid to echo back a number we just sent it proves nothing.
+
+async def _library_inv_types(bootstrap) -> dict[int, set[int]]:
+    """Inventory types per asset type, read off the grid library.
+
+    This check used to read the *account's* inventory, which is worse than
+    useless. The account held no gestures until this tool's own crashed run
+    left one behind; the next run then found "1 gesture, inv_type [20]" and
+    reported ok. It was reading its own homework, about the one number in this
+    feature that no source test pins.
     """
     resolved = await CapabilityClient(timeout_seconds=10.0).resolve_seed_caps(
-        bootstrap.seed_capability, ["FetchInventoryDescendents2"], user_agent="Vibestorm"
+        bootstrap.seed_capability,
+        ["FetchLibDescendents2", "FetchInventoryDescendents2"],
+        user_agent="Vibestorm",
     )
-    url = resolved.get("FetchInventoryDescendents2")
-    if not url or bootstrap.inventory_root_folder_id is None:
-        return []
+    url = resolved.get("FetchLibDescendents2") or resolved.get("FetchInventoryDescendents2")
+    if not url:
+        return {}
     snapshot, _ = await walk_inventory(
         InventoryCapabilityClient(timeout_seconds=20.0),
         url,
-        root_folder_id=bootstrap.inventory_root_folder_id,
-        owner_id=bootstrap.agent_id,
+        root_folder_id=LIBRARY_ROOT,
+        owner_id=LIBRARY_OWNER,
     )
-    return [
-        (item.name, item.inv_type)
-        for folder in snapshot.folders
-        for item in folder.items
-        if item.type == ASSET_TYPE_GESTURE and not item.is_link
-    ]
+    found: dict[int, set[int]] = {}
+    for folder in snapshot.folders:
+        for item in folder.items:
+            if item.is_link or item.type is None or item.inv_type is None:
+                continue
+            found.setdefault(item.type, set()).add(item.inv_type)
+    return found
+
 
 
 async def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915 - a linear script
@@ -176,21 +197,36 @@ async def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915 - a linear script
             return 1
 
         print("--- 2. what the grid says a gesture's inventory type is ---")
-        existing = await _inv_type_of_existing_gestures(bootstrap)
-        observed = sorted({inv for _name, inv in existing if inv is not None})
-        print(f"{len(existing)} gestures in agent inventory, inv_type values {observed}")
-        if not observed:
-            print(
-                f"  NOTE: no existing gestures to read; INV_TYPE_GESTURE="
-                f"{INV_TYPE_GESTURE} stays unverified by this run"
-            )
-        elif observed != [INV_TYPE_GESTURE]:
+        library = await _library_inv_types(bootstrap)
+        gestures = library.get(ASSET_TYPE_GESTURE, set())
+        print(f"grid library: {len(library)} asset types with an inventory type")
+        if not gestures:
             failures.append(
-                f"INV_TYPE_GESTURE is {INV_TYPE_GESTURE}, the grid's own gestures say {observed}"
+                "the grid library holds no gestures, so INV_TYPE_GESTURE is unverified"
+            )
+            print(f"  FAIL: {failures[-1]}")
+        elif gestures != {INV_TYPE_GESTURE}:
+            failures.append(
+                f"INV_TYPE_GESTURE is {INV_TYPE_GESTURE}, the library's gestures "
+                f"say {sorted(gestures)}"
             )
             print(f"  FAIL: {failures[-1]}")
         else:
-            print(f"  ok: matches INV_TYPE_GESTURE={INV_TYPE_GESTURE}")
+            print(f"  ok: the library's gestures are {ASSET_TYPE_GESTURE}/{INV_TYPE_GESTURE}")
+
+        # The rest of the table at the same time, for the same reason: the
+        # next asset type this client creates reads its inventory type out of
+        # the same dict, and would inherit whatever is wrong in it.
+        for asset_type, seen in sorted(library.items()):
+            expected = INV_TYPE_BY_ASSET_TYPE.get(asset_type)
+            if expected is None:
+                print(f"  (asset type {asset_type}: library says {sorted(seen)}, not in our table)")
+            elif seen != {expected}:
+                failures.append(
+                    f"asset type {asset_type}: our table says {expected}, "
+                    f"the library says {sorted(seen)}"
+                )
+                print(f"  FAIL: {failures[-1]}")
 
         name = f"vibestorm-gesture-{os.getpid()}"
         first = _gesture(trigger="/vibestorm", flag=0)
@@ -222,7 +258,7 @@ async def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915 - a linear script
                 on_progress=lambda line: print(f"  {line}"),
             )
             print(
-                f"  created={outcome.created} uploaded={outcome.uploaded} "
+                f"  created={outcome.created} transferred={outcome.transferred} "
                 f"skipped={outcome.skipped} failed={outcome.failed}"
             )
             if not outcome.created:
@@ -234,6 +270,17 @@ async def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915 - a linear script
             if snapshot is None:
                 print("FAIL: the object's inventory did not come back")
                 return 1
+            # Any row from an earlier run that died before its own cleanup.
+            # Swept rather than left: the next run's create would collide with
+            # it and be renamed, which is a different code path from the one
+            # this tool means to check.
+            for stale in snapshot.items:
+                if stale.name.startswith("vibestorm-gesture-") and not stale.name.startswith(
+                    name
+                ):
+                    print(f"  sweeping a leftover row: {stale.name!r}")
+                    await _cleanup(client, local_id, stale.item_id)
+
             row = next((i for i in snapshot.items if i.name.startswith(name)), None)
             if row is None:
                 print(f"FAIL: no row named {name!r} in the object")
@@ -290,7 +337,7 @@ async def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915 - a linear script
                 on_progress=lambda line: print(f"  {line}"),
             )
             print(
-                f"  created={outcome.created} uploaded={outcome.uploaded} "
+                f"  created={outcome.created} transferred={outcome.transferred} "
                 f"skipped={outcome.skipped} failed={outcome.failed}"
             )
             if outcome.created:
@@ -346,7 +393,7 @@ async def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915 - a linear script
                 new_file_cap=caps.new_file,
                 agent_folder_id=bootstrap.inventory_root_folder_id,
             )
-            print(f"  failed={outcome.failed} uploaded={outcome.uploaded}")
+            print(f"  failed={outcome.failed} transferred={outcome.transferred}")
             if not any("not a readable gesture" in reason for _f, reason in outcome.failed):
                 failures.append("a malformed gesture was not refused")
                 print(f"  FAIL: {failures[-1]}")
