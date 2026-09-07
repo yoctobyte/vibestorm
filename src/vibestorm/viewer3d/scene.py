@@ -86,6 +86,7 @@ from vibestorm.world.chat_types import (
 from vibestorm.world.environment import RegionEnvironment
 from vibestorm.world.extra_params import DecodedExtraParams, decode_extra_params
 from vibestorm.world.land_flags import DecodedFlags, decode_parcel_flags
+from vibestorm.world.models import self_avatar_position
 from vibestorm.world.parcel_overlay import (
     ParcelOverlay,
     ParcelOverlayDecodeError,
@@ -1269,7 +1270,7 @@ class Scene:
             self._built = None
             return
 
-        self.avatar_position = _self_avatar_position(world_view)
+        self.avatar_position = self_avatar_position(world_view)
 
         region = getattr(world_view, "region", None)
         if region is not None:
@@ -1327,16 +1328,6 @@ class Scene:
             if water_height is not None:
                 self.water_height = float(water_height)
 
-
-
-def _self_avatar_position(world_view: object) -> tuple[float, float, float] | None:
-    for coarse in getattr(world_view, "coarse_agents", ()):
-        if getattr(coarse, "is_you", False):
-            return (float(coarse.x), float(coarse.y), float(coarse.z))
-    for terse in getattr(world_view, "terse_objects", {}).values():
-        if getattr(terse, "is_avatar", False):
-            return getattr(terse, "position", None)
-    return None
 
 
 def _asset_id(raw: str) -> UUID | None:

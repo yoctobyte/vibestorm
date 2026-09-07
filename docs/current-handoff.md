@@ -329,6 +329,73 @@ is a periodic explicit `gc.collect()` on a measured budget, and it is left out
 on purpose so that run 4 measures **one** change. Two fixes in one soak is a
 soak that cannot say which one worked.
 
+**A -- the viewer knew where it was and said otherwise (2026-09-07).** Found
+in a screenshot taken to check something else. The HUD read
+
+    Pos: 128.0, 128.0, 6.0
+    water: level=20.0 avatar_z=6.0 under
+
+while the picture showed the avatar standing on a hilltop in the sun, well
+clear of a sea whose surface is at 20 m. A probe against the same region
+settled which one was lying: the simulator had the avatar at **25.94 m**, the
+render drew it there, and the readout was wrong.
+
+`CoarseLocationUpdate` spends one byte per axis. On a 256 m region x and y are
+whole metres and fit exactly. Height does not fit at all, so the byte counts
+*fours* -- OpenSim writes `(byte)(CoarseLocations[i].Z * 0.25f)`. The client
+read it as metres, so 25.94 became 6, and 6 is under a sea at 20.
+
+Two things came out of the same line and are worth keeping apart:
+
+* **The height is quantised, not merely scaled.** Four metres a step is a
+  radar blip, not a position. So `self_avatar_position` now prefers the
+  agent's *own* `ObjectUpdate`, which is metres and which terse updates keep
+  current, and falls back to the coarse entry only until that arrives. The
+  coarse entry names which index is us and carries the agent id, and the
+  object dictionary is keyed by it, so the better source costs one lookup.
+* **A zero height byte is two different facts.** The encoder is
+  `Z > 1024 ? (byte)0 : ...`, so an avatar on a beach and an avatar at 1500 m
+  send the same byte and nothing in the message separates them.
+  `height_is_certain` says which of those a caller is holding. Nothing in the
+  viewer branches on it yet; the forensics dump prints it, and a minimap that
+  draws other people's heights will need it.
+
+One case the precise source cannot serve, caught before it shipped: a
+**seated** avatar is a child of its seat and reports its position in the
+seat's frame -- half a metre, not a region coordinate, measured by
+`tools/verify_seated_avatar.py` when the child-prim work was done. Preferring
+the object update unconditionally would have read `Pos: 0.4, 0.0, 0.6` the
+moment the owner sat down. So the precise source is used only for an
+unparented avatar, and the coarse entry -- which stays a region position while
+seated -- takes over otherwise.
+
+The reading lives in `vibestorm/world/models.py` now -- `position_m`,
+`height_is_certain`, and one `self_avatar_position` -- because it had been
+copied into both viewers, which is how the same misreading was wrong in two
+places at once. The 3D viewer's orbit camera had a third copy of it: "centre
+on avatar" aimed at ground level while the avatar stood on a hill.
+
+The forensics line used to print `pos=(128,128,6)`, which is the bytes, in a
+shape that reads as a position. It prints `bytes=` and `pos_m=` now, both
+labelled.
+
+Pinned to OpenSim's source rather than to the one measurement: the encoder
+line and the un-scaled x and y beside it are both in
+`test_opensim_source_pins.py`, because the asymmetry -- two plain bytes and
+one that is not -- is exactly the part a re-reader would get wrong again.
+
+Twelve mutants, twelve killed, at the second attempt: the first battery left
+"any terse object is an avatar" alive, which would have put the viewer inside
+whichever crate the region happened to send first once the last-resort branch
+was reached. A test with a prim ahead of the avatar in the dictionary closes
+it.
+
+What this says about the test suite is worth more than the fix. Every test
+that touched a position readout set `scene.avatar_position` directly, so the
+one line that computes it from a message had no test at all, and a live
+screenshot found in one glance what 2,430 tests could not. The new tests feed
+the view instead of the scene.
+
 **A -- a region that is not still is still mostly still (2026-09-07).** The
 repeat frame above catches the case where *nothing* moved. On a live mainland
 region something always has: "not a repeat" means a few dozen prims out of

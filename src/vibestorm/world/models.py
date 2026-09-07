@@ -86,14 +86,54 @@ class SimulatorTimeSnapshot:
     sun_direction: tuple[float, float, float] | None = None
 
 
+#: What one unit of a coarse location's height byte is worth, in metres.
+#:
+#: `CoarseLocationUpdate` spends one byte per axis on a 256 m region, so x and
+#: y are whole metres and z is *four* of them -- OpenSim writes
+#: `(byte)(CoarseLocations[i].Z * 0.25f)`, pinned in
+#: `test_opensim_source_pins.py`. Reading the byte as metres puts an avatar
+#: standing at 25.9 m at 6.0 m, which is exactly what the viewer's position
+#: readout said while drawing it correctly on a hilltop.
+COARSE_HEIGHT_STEP_M = 4.0
+
+#: The height byte a simulator sends for anything above 1024 m. Zero: the same
+#: byte it sends for an avatar standing on a beach, because the encoder is
+#: `Z > 1024 ? (byte)0 : ...`. So a zero height is not a height, it is two
+#: possibilities, and nothing in the message separates them.
+COARSE_HEIGHT_UNKNOWN = 0
+
+
 @dataclass(slots=True, frozen=True)
 class CoarseAgentLocation:
+    """One avatar's whereabouts, to the nearest metre and the nearest four.
+
+    The fields are the bytes off the wire, unconverted, because that is what
+    was received and a decode that quietly rescales is a decode nobody can
+    check against a capture. `position_m` is the reading of them.
+    """
+
     agent_id: UUID | None
     x: int
     y: int
     z: int
     is_you: bool
     is_prey: bool
+
+    @property
+    def position_m(self) -> tuple[float, float, float]:
+        """Region metres. Quantised, and the height doubly so.
+
+        Good to a metre horizontally and four vertically -- it is a radar
+        blip, not a position, and anything that has the avatar's own
+        `ObjectUpdate` should use that instead. See `height_is_certain` for
+        the case this cannot express.
+        """
+        return (float(self.x), float(self.y), float(self.z) * COARSE_HEIGHT_STEP_M)
+
+    @property
+    def height_is_certain(self) -> bool:
+        """False for a zero byte, which means "on the ground" *or* "above 1024 m"."""
+        return self.z != COARSE_HEIGHT_UNKNOWN
 
 
 @dataclass(slots=True, frozen=True)
@@ -545,3 +585,52 @@ def _parse_texture_entry_or_none(data: bytes | None) -> TextureEntry | None:
         return parse_texture_entry(data)
     except ValueError:
         return None
+
+
+def self_avatar_position(world_view: object) -> tuple[float, float, float] | None:
+    """Where we are, from the most precise source that has it.
+
+    Three sources, and the order is the whole of it:
+
+    1. **Our own object.** `CoarseLocationUpdate` names which entry is us, and
+       that entry carries an agent id; the object dictionary is keyed by it.
+       This is metres, from `ObjectUpdate`, and terse updates keep it current.
+    2. **The coarse entry itself**, converted -- see `position_m`. Right until
+       the first `ObjectUpdate` for our own avatar arrives, and quantised to
+       a metre horizontally and four vertically after that, which is why it is
+       second and not first.
+    3. **Any avatar at all**, from the terse dictionary. A guess, and only
+       reached before a single coarse update has landed, when nothing in the
+       view says which avatar is ours. In a region holding one avatar it is
+       right; in a crowd it is somebody else, so it is last.
+
+    Written once and shared by both viewers. It used to be copied into each of
+    them, which is how reading the height byte as metres was wrong twice.
+
+    ``world_view`` is read with `getattr` rather than typed, because the
+    viewers hand this stand-ins as often as they hand it the real thing.
+    """
+    coarse_self = None
+    for coarse in getattr(world_view, "coarse_agents", ()):
+        if getattr(coarse, "is_you", False):
+            coarse_self = coarse
+            break
+
+    if coarse_self is not None:
+        agent_id = getattr(coarse_self, "agent_id", None)
+        if agent_id is not None:
+            me = getattr(world_view, "objects", {}).get(agent_id)
+            position = getattr(me, "position", None)
+            # Unless we are sitting on something. A seated avatar is a child
+            # of its seat and reports its position in the seat's frame -- half
+            # a metre, not a region coordinate -- which composing would undo
+            # and this module has no business doing. The coarse entry is still
+            # a region position while seated, so it takes over.
+            if position is not None and not getattr(me, "parent_id", 0):
+                return position
+        return coarse_self.position_m
+
+    for terse in getattr(world_view, "terse_objects", {}).values():
+        if getattr(terse, "is_avatar", False):
+            return getattr(terse, "position", None)
+    return None

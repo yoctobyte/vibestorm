@@ -453,9 +453,16 @@ def format_world_status(world_view: WorldView) -> list[str]:
             f"count:{len(world_view.coarse_agents)}",
         )
         for agent in world_view.coarse_agents:
+            # Both, and labelled: the bytes are what arrived, and the metres
+            # are what they mean. A reader who sees `pos=(128,128,6)` and
+            # takes it for a position is off by nineteen metres, because the
+            # height byte counts fours.
+            x_m, y_m, z_m = agent.position_m
             lines.append(
                 f"world[coarse_agent]={agent.agent_id} "
-                f"pos=({agent.x},{agent.y},{agent.z}) "
+                f"bytes=({agent.x},{agent.y},{agent.z}) "
+                f"pos_m=({x_m:.0f},{y_m:.0f},{z_m:.0f}) "
+                f"height_certain={agent.height_is_certain} "
                 f"you={agent.is_you} prey={agent.is_prey}",
             )
     if world_view.latest_object_update is not None:

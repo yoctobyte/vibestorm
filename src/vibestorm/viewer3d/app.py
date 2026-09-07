@@ -98,6 +98,7 @@ from vibestorm.viewer3d.perspective import PerspectiveRenderer
 from vibestorm.viewer3d.render import clear_tile_cache
 from vibestorm.viewer3d.renderer import TopDownRenderer, ViewerRenderer
 from vibestorm.viewer3d.scene import Scene
+from vibestorm.world.models import self_avatar_position
 
 if TYPE_CHECKING:
     import moderngl
@@ -746,13 +747,16 @@ async def run_viewer(args: argparse.Namespace) -> int:
     def center_on_avatar() -> None:
         world = client.world_view()
         if world is not None:
-            for coarse in world.coarse_agents:
-                if coarse.is_you:
-                    if camera.mode == "orbit":
-                        camera.target = (float(coarse.x), float(coarse.y), float(coarse.z))
-                        return
-                    camera.center_on(float(coarse.x), float(coarse.y))
+            # Not the coarse entry's own bytes: its height is in units of four
+            # metres, and reading them as metres aimed the orbit camera at
+            # ground level while the avatar stood on a hill.
+            here = self_avatar_position(world)
+            if here is not None:
+                if camera.mode == "orbit":
+                    camera.target = here
                     return
+                camera.center_on(here[0], here[1])
+                return
         entity = next(iter(scene.avatar_entities.values()), None)
         if entity is not None:
             if camera.mode == "orbit":

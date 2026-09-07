@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibestorm.world.models import self_avatar_position
+
 if TYPE_CHECKING:
     from vibestorm.bus.events import (
         ChatAlert,
@@ -129,7 +131,7 @@ class Scene:
         if world_view is None:
             return
 
-        self.avatar_position = _self_avatar_position(world_view)
+        self.avatar_position = self_avatar_position(world_view)
 
         # Full ObjectUpdate-derived objects (have rich data).
         for obj in getattr(world_view, "objects", {}).values():
@@ -176,16 +178,6 @@ class Scene:
 
         if world_view.region is not None and self.region_name is None:
             self.region_name = world_view.region.name
-
-
-def _self_avatar_position(world_view: object) -> tuple[float, float, float] | None:
-    for coarse in getattr(world_view, "coarse_agents", ()):
-        if getattr(coarse, "is_you", False):
-            return (float(coarse.x), float(coarse.y), float(coarse.z))
-    for terse in getattr(world_view, "terse_objects", {}).values():
-        if getattr(terse, "is_avatar", False):
-            return getattr(terse, "position", None)
-    return None
 
 
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:

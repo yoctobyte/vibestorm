@@ -369,3 +369,44 @@ class ThreeThingsSendAHandshakeTests(unittest.TestCase):
             r"\s*\}",
             "HandleUseCircuitCode is no longer an empty handler around a comment",
         )
+
+
+class CoarseLocationHeightTests(unittest.TestCase):
+    """One byte for a region's whole vertical range, and what it costs.
+
+    `CoarseLocationUpdate` spends three bytes on an avatar's whereabouts. X
+    and Y are whole metres, which a 256 m region fits exactly; Z has to cover
+    the height a region allows, and does not fit at all. The claim the client
+    reads the byte by -- four metres a step, and a zero that means two
+    different things -- is one line of the encoder, so it is pinned to that
+    line.
+
+    The bug it was found by: the viewer read the byte as metres and put an
+    avatar standing at 25.9 m at 6.0, then reported it underwater in a region
+    whose sea is at 20 m while drawing it correctly on a hilltop.
+    """
+
+    def setUp(self) -> None:
+        self.client = _source("UDP", "LLClientView.cs")
+
+    def test_the_height_byte_is_a_quarter_of_the_metres(self) -> None:
+        if self.client is None:
+            self.skipTest("referencedocs/UDP/LLClientView.cs not present")
+        self.assertRegex(
+            self.client,
+            r"data\[pos\+\+\] = CoarseLocations\[i\]\.Z > 1024 \? \(byte\)0 : "
+            r"\(byte\)\(CoarseLocations\[i\]\.Z \* 0\.25f\);",
+            "SendCoarseLocationUpdate no longer scales Z by 0.25",
+        )
+
+    def test_and_x_and_y_are_not_scaled_at_all(self) -> None:
+        # The asymmetry is the part that is easy to get wrong: two of the
+        # three bytes are plain metres and the third is not.
+        if self.client is None:
+            self.skipTest("referencedocs/UDP/LLClientView.cs not present")
+        self.assertRegex(
+            self.client,
+            r"data\[pos\+\+\] = \(byte\)CoarseLocations\[i\]\.X;\s*\n"
+            r"\s*data\[pos\+\+\] = \(byte\)CoarseLocations\[i\]\.Y;",
+            "SendCoarseLocationUpdate no longer sends X and Y as plain metres",
+        )

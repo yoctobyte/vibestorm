@@ -29,6 +29,7 @@ from vibestorm.viewer.hud import HUD
 from vibestorm.viewer.input import handle_event
 from vibestorm.viewer.render import clear_tile_cache, render_scene
 from vibestorm.viewer.scene import Scene
+from vibestorm.world.models import self_avatar_position
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -139,10 +140,12 @@ async def run_viewer(args: argparse.Namespace) -> int:
     def center_on_avatar() -> None:
         world = client.world_view()
         if world is not None:
-            for coarse in world.coarse_agents:
-                if coarse.is_you:
-                    camera.center_on(float(coarse.x), float(coarse.y))
-                    return
+            # The shared reading rather than the coarse bytes: those are
+            # truncated to the metre, and there is usually something exact.
+            here = self_avatar_position(world)
+            if here is not None:
+                camera.center_on(here[0], here[1])
+                return
         marker = next(iter(scene.avatar_markers.values()), None)
         if marker is not None:
             camera.center_on(marker.position[0], marker.position[1])
