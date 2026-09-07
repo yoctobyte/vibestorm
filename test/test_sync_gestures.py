@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from http_fakes import serve_body  # noqa: E402
 from test_assets_gesture import _gesture  # noqa: E402
-from test_sync_engine import _EngineCase  # noqa: E402
+from test_sync_engine import _EngineCase, _item  # noqa: E402
 
 from vibestorm.assets.gesture import GestureDecodeError  # noqa: E402
 from vibestorm.caps.task_inventory_upload_client import (  # noqa: E402
@@ -33,9 +33,17 @@ from vibestorm.caps.task_inventory_upload_client import (  # noqa: E402
     TaskInventoryUploadError,
 )
 from vibestorm.sync import engine  # noqa: E402
+from vibestorm.sync.gestures import (  # noqa: E402
+    ASSET_TYPE_GESTURE,
+    GESTURE_AGENT_CAP_NAME,
+    INV_TYPE_GESTURE,
+    GestureCreateError,
+    create_task_gesture,
+)
 from vibestorm.sync.engine import (  # noqa: E402
     GESTURE_ASSET_TYPE,
     GESTURE_TASK_CAP_NAME,
+    SyncCaps,
     _decode_for_disk,
     _encode_for_upload,
     resolve_sync_caps,
@@ -348,8 +356,184 @@ class CapabilityTests(unittest.TestCase):
             engine.CapabilityClient = original
 
         self.assertIn(GESTURE_TASK_CAP_NAME, asked[0])
+        self.assertIn(GESTURE_AGENT_CAP_NAME, asked[0])
         self.assertTrue(caps.gesture)
+        self.assertTrue(caps.gesture_agent)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CreatePlanTests(unittest.TestCase):
+    """A `.gesture` with no row in the object.
+
+    Before this, the planner reported it "no matching inventory item, and this
+    type cannot be created", which for D -- push a folder the owner assembled
+    -- is the operative half of the feature missing.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.tmp.name)
+        self.state = SyncState(task_id=str(uuid4()))
+        self.path = self.folder / "Wave.gesture"
+        self.path.write_bytes(_valid())
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_a_new_gesture_is_planned_as_a_create(self) -> None:
+        [entry] = plan_push(
+            [self.path], {}, state=self.state, can_create_gestures=True
+        )
+        self.assertEqual(entry.action, TRANSFER)
+        self.assertTrue(entry.create)
+        self.assertEqual(entry.asset_type, GESTURE_ASSET_TYPE)
+
+    def test_without_the_capability_it_says_which_one_is_missing(self) -> None:
+        """The old wording -- "this type cannot be created" -- was true of the
+        client and read as true of the protocol. It is a missing capability,
+        not a missing route."""
+        [entry] = plan_push([self.path], {}, state=self.state)
+        self.assertEqual(entry.action, SKIP)
+        self.assertIn("no capability to create a gesture", entry.reason)
+
+    def test_the_other_creatable_types_are_still_gated_separately(self) -> None:
+        """The flags went from two booleans to a table; a table indexed wrong
+        would let one capability unlock another type."""
+        script = self.folder / "Greeter.lsl"
+        script.write_bytes(b"default { }")
+        note = self.folder / "Notes.txt"
+        note.write_bytes(b"hello")
+        entries = {
+            entry.file_name: entry
+            for entry in plan_push(
+                [script, note, self.path], {}, state=self.state, can_create_gestures=True
+            )
+        }
+        self.assertEqual(entries["Wave.gesture"].action, TRANSFER)
+        self.assertEqual(entries["Greeter.lsl"].action, TRANSFER)  # can_create defaults on
+        self.assertEqual(entries["Notes.txt"].action, SKIP)
+
+
+class CreateGestureTests(unittest.IsolatedAsyncioTestCase):
+    """`create_task_gesture` itself: two hops and one refusal."""
+
+    async def test_a_malformed_gesture_never_reaches_the_first_hop(self) -> None:
+        """Creating it would leave an item in agent inventory *and* a row in
+        the object, both holding bytes nothing can play, for the owner to find
+        and delete by hand."""
+        from vibestorm.sync import gestures
+
+        called: list[str] = []
+
+        async def boom(*a, **k):
+            called.append("create")
+
+        original = gestures.create_agent_item
+        gestures.create_agent_item = boom
+        try:
+            with self.assertRaises(GestureCreateError) as caught:
+                await create_task_gesture(
+                    None, None, handle=1, local_id=1, folder_id=uuid4(),
+                    update_url="http://cap/agent", data=b"nonsense", name="Wave",
+                )
+        finally:
+            gestures.create_agent_item = original
+        self.assertEqual(called, [])
+        self.assertIn("not a readable gesture", str(caught.exception))
+
+    async def test_both_hops_carry_the_gesture_s_own_two_type_numbers(self) -> None:
+        """21 and 20. This is the first type this client creates where the
+        asset and inventory enumerations disagree, and passing the asset type
+        for both makes an item the grid types as an animation."""
+        from vibestorm.sync import gestures
+
+        seen: dict[str, dict] = {}
+
+        async def fake_create(client, session, **kwargs):
+            seen["create"] = kwargs
+            return type("C", (), {"item_id": uuid4()})()
+
+        async def fake_copy(client, session, **kwargs):
+            seen["copy"] = kwargs
+            return (uuid4(), "Wave")
+
+        originals = (gestures.create_agent_item, gestures.copy_item_into_object)
+        gestures.create_agent_item, gestures.copy_item_into_object = fake_create, fake_copy
+        try:
+            made = await create_task_gesture(
+                None, None, handle=1, local_id=1, folder_id=uuid4(),
+                update_url="http://cap/agent", data=_valid(), name="Wave",
+            )
+        finally:
+            gestures.create_agent_item, gestures.copy_item_into_object = originals
+
+        self.assertIsNotNone(made)
+        for hop in ("create", "copy"):
+            self.assertEqual(seen[hop]["asset_type"], ASSET_TYPE_GESTURE, hop)
+            self.assertEqual(seen[hop]["inv_type"], INV_TYPE_GESTURE, hop)
+        self.assertNotEqual(ASSET_TYPE_GESTURE, INV_TYPE_GESTURE)
+        self.assertEqual(seen["create"]["data"], _valid())
+
+
+class EngineCreateTests(_EngineCase):
+    """The create loop, which is where a type is wired up or silently is not."""
+
+    async def asyncSetUp(self) -> None:
+        self._install(lambda obj, name, value: self.patch(obj, name, value))
+        self.made: list[tuple[str, bytes]] = []
+        outer = self
+
+        async def fake_create_task_gesture(client, session, *, name, data, **kwargs):
+            outer.made.append((name, data))
+            item = _item(name, "gesture")
+            outer.items.append(item)
+            outer.assets[item.asset_id] = data
+            return item.item_id, name
+
+        self.patch(engine, "create_task_gesture", fake_create_task_gesture)
+
+    async def push_with_caps(self, **kwargs):
+        return await self.push(
+            gesture_agent_cap="http://cap/gesture-agent",
+            agent_folder_id=uuid4(),
+            **kwargs,
+        )
+
+    async def test_a_new_gesture_file_creates_a_row(self) -> None:
+        (self.folder / "Wave.gesture").write_bytes(_valid())
+        outcome = await self.push_with_caps()
+        self.assertEqual(outcome.created, ["Wave.gesture"])
+        self.assertEqual(self.made, [("Wave", _valid())])
+        # Created by the copy, not uploaded onto afterwards -- a second upload
+        # would replace the asset that hop one just made. And the file must
+        # leave the loop entirely: falling through reports it "no inventory
+        # row to upload onto", which is a created file reported as skipped.
+        self.assertEqual(self.calls, [])
+        self.assertEqual(outcome.skipped, [])
+        self.assertEqual(outcome.failed, [])
+
+    async def test_pushing_twice_creates_once(self) -> None:
+        (self.folder / "Wave.gesture").write_bytes(_valid())
+        await self.push_with_caps()
+        outcome = await self.push_with_caps()
+        self.assertEqual(len(self.made), 1)
+        self.assertEqual(outcome.created, [])
+
+    async def test_without_the_agent_capability_nothing_is_created(self) -> None:
+        (self.folder / "Wave.gesture").write_bytes(_valid())
+        outcome = await self.push()
+        self.assertEqual(self.made, [])
+        self.assertEqual(len(outcome.skipped), 1)
+
+
+class SyncCapsTests(unittest.TestCase):
+    def test_creating_needs_the_agent_capability_not_the_task_one(self) -> None:
+        self.assertFalse(SyncCaps(gesture="http://cap/task").can_create_gestures)
+        self.assertTrue(SyncCaps(gesture_agent="http://cap/agent").can_create_gestures)
+
+    def test_the_agent_capability_name_is_the_one_gestures_module_names(self) -> None:
+        """Two modules name this capability. They must name the same one."""
+        self.assertEqual(engine.GESTURE_AGENT_CAP_NAME, GESTURE_AGENT_CAP_NAME)

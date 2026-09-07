@@ -24,6 +24,7 @@ from vibestorm.caps.task_inventory_upload_client import (
     TaskInventoryUploadClient,
     TaskInventoryUploadError,
 )
+from vibestorm.sync.gestures import GestureCreateError, create_task_gesture
 from vibestorm.sync.naming import TEXT_ASSET_TYPES
 from vibestorm.sync.new_assets import NewAssetError
 from vibestorm.sync.notecards import NotecardCreateError, create_task_notecard
@@ -60,6 +61,10 @@ NEW_FILE_CAP_NAME = "NewFileAgentInventory"
 #: Replacing the asset behind a gesture row. Registered against the same
 #: handler as the notecard capability, so the exchange is identical.
 GESTURE_TASK_CAP_NAME = "UpdateGestureTaskInventory"
+#: The agent-side half of the same pair, which is what makes *creating* a
+#: gesture row possible: the route in is the notecard's, build it in agent
+#: inventory and copy it across.
+GESTURE_AGENT_CAP_NAME = "UpdateGestureAgentInventory"
 
 NOTECARD_ASSET_TYPE = 7
 SCRIPT_ASSET_TYPE = 10
@@ -75,11 +80,16 @@ class SyncCaps:
     notecard: str | None = None
     notecard_agent: str | None = None
     gesture: str | None = None
+    gesture_agent: str | None = None
     new_file: str | None = None
 
     @property
     def can_create_notecards(self) -> bool:
         return bool(self.notecard_agent)
+
+    @property
+    def can_create_gestures(self) -> bool:
+        return bool(self.gesture_agent)
 
     @property
     def can_upload_textures(self) -> bool:
@@ -228,6 +238,7 @@ async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCa
             NOTECARD_TASK_CAP_NAME,
             NOTECARD_AGENT_CAP_NAME,
             GESTURE_TASK_CAP_NAME,
+            GESTURE_AGENT_CAP_NAME,
             NEW_FILE_CAP_NAME,
         ],
         udp_listen_port=session.caps_udp_listen_port,  # type: ignore[attr-defined]
@@ -238,6 +249,7 @@ async def resolve_sync_caps(session: object, *, timeout: float = 10.0) -> SyncCa
         notecard=first_resolved(caps, [NOTECARD_TASK_CAP_NAME]),
         notecard_agent=first_resolved(caps, [NOTECARD_AGENT_CAP_NAME]),
         gesture=first_resolved(caps, [GESTURE_TASK_CAP_NAME]),
+        gesture_agent=first_resolved(caps, [GESTURE_AGENT_CAP_NAME]),
         new_file=first_resolved(caps, [NEW_FILE_CAP_NAME]),
     )
 
@@ -349,6 +361,7 @@ async def push_folder_to_object(
     notecard_cap: str | None = None,
     notecard_agent_cap: str | None = None,
     gesture_cap: str | None = None,
+    gesture_agent_cap: str | None = None,
     new_file_cap: str | None = None,
     agent_folder_id: UUID | None = None,
     can_create: bool = True,
@@ -359,6 +372,9 @@ async def push_folder_to_object(
     ``notecard_agent_cap`` and ``agent_folder_id`` together enable *creating* a
     notecard row: the only route in is to build one in agent inventory and copy
     it across, so without them an unmatched notecard can only be reported.
+
+    ``gesture_agent_cap`` does it for a gesture, by the same route again --
+    a gesture has no create-from-nothing message either.
 
     ``new_file_cap`` and ``agent_folder_id`` do the same for a texture, by the
     same route and for the same reason. A texture is only ever *created*:
@@ -384,6 +400,7 @@ async def push_folder_to_object(
 
     files = [path for path in sorted(folder.iterdir()) if path.is_file() and path.name[0] != "."]
     can_create_notecards = bool(notecard_agent_cap and agent_folder_id)
+    can_create_gestures = bool(gesture_agent_cap and agent_folder_id)
     can_create_textures = bool(new_file_cap and agent_folder_id)
     entries = plan_push(
         files,
@@ -391,6 +408,7 @@ async def push_folder_to_object(
         state=state,
         can_create=can_create and bool(script_cap),
         can_create_notecards=can_create and can_create_notecards,
+        can_create_gestures=can_create and can_create_gestures,
         can_create_textures=can_create and can_create_textures,
         existing_texture_names=texture_names,
     )
@@ -490,11 +508,57 @@ async def push_folder_to_object(
         outcome.created.append(entry.file_name)
         touched_textures.append((entry.file_name, assigned_name, TEXTURE_ASSET_TYPE))
 
+    # Gestures take the notecard's route, and are finished by the copy for the
+    # same reason: hop one fills the asset, hop two puts the item in the
+    # object, and there is nothing left to upload onto the row.
+    gestures_to_create = [e for e in to_create if e.asset_type == GESTURE_ASSET_TYPE]
+    touched_gestures: list[tuple[str, str, int]] = []
+    gestures_done: set[str] = set()
+    for entry in gestures_to_create:
+        gestures_done.add(entry.file_name)
+        try:
+            data = entry.path.read_bytes()
+        except OSError as exc:
+            outcome.failed.append((entry.file_name, f"could not read it: {exc}"))
+            continue
+        try:
+            made_gesture = await create_task_gesture(
+                client,
+                session,
+                handle=handle,
+                local_id=local_id,
+                folder_id=agent_folder_id,  # type: ignore[arg-type]
+                update_url=gesture_agent_cap,  # type: ignore[arg-type]
+                data=data,
+                name=entry.item_name,
+                path=entry.path,
+                on_progress=on_progress,
+            )
+        except (GestureCreateError, OSError) as exc:
+            outcome.failed.append((entry.file_name, str(exc)))
+            continue
+        if made_gesture is None:
+            outcome.failed.append(
+                (entry.file_name, "the gesture did not appear in the object")
+            )
+            continue
+        _item_id, assigned_name = made_gesture
+        outcome.created.append(entry.file_name)
+        touched_gestures.append((entry.file_name, assigned_name, GESTURE_ASSET_TYPE))
+
     uploader = TaskInventoryUploadClient(timeout_seconds=20.0)
-    touched: list[tuple[str, str, int]] = [*touched_notecards, *touched_textures]
+    touched: list[tuple[str, str, int]] = [
+        *touched_notecards,
+        *touched_gestures,
+        *touched_textures,
+    ]
 
     for entry in entries:
-        if entry.file_name in notecards_done or entry.file_name in textures_done:
+        if (
+            entry.file_name in notecards_done
+            or entry.file_name in gestures_done
+            or entry.file_name in textures_done
+        ):
             continue
         if entry.action == CONFLICT:
             outcome.conflicts.append((entry.file_name, entry.reason))

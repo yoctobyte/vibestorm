@@ -195,6 +195,7 @@ def plan_push(
     state: SyncState,
     can_create: bool = True,
     can_create_notecards: bool = False,
+    can_create_gestures: bool = False,
     can_create_textures: bool = False,
     existing_texture_names: Collection[str] = (),
 ) -> list[PushEntry]:
@@ -330,10 +331,15 @@ def plan_push(
         # A script row is made with RezScript; a notecard has no
         # create-from-nothing message and has to be built in agent inventory
         # and copied in, which needs a capability the caller may not have.
-        allowed = (asset_kind == "lsltext" and can_create) or (
-            asset_kind == "notecard" and can_create_notecards
-        )
-        if allowed:
+        # A gesture takes the notecard's route -- create in agent inventory,
+        # fill it, copy it in -- because it has no create-from-nothing message
+        # either, and it needs the same kind of capability.
+        creatable = {
+            "lsltext": (can_create, 10),
+            "notecard": (can_create_notecards, 7),
+            "gesture": (can_create_gestures, 21),
+        }.get(asset_kind or "")
+        if creatable is not None and creatable[0]:
             entries.append(
                 PushEntry(
                     path=path,
@@ -342,7 +348,7 @@ def plan_push(
                     action=TRANSFER,
                     reason="no row yet; creating one",
                     create=True,
-                    asset_type=10 if asset_kind == "lsltext" else 7,
+                    asset_type=creatable[1],
                 )
             )
             continue
@@ -350,6 +356,8 @@ def plan_push(
             reason = "no matching inventory item and creating script rows is disabled"
         elif asset_kind == "notecard":
             reason = "no matching inventory item and no capability to create a notecard"
+        elif asset_kind == "gesture":
+            reason = "no matching inventory item and no capability to create a gesture"
         else:
             reason = "no matching inventory item, and this type cannot be created"
         entries.append(

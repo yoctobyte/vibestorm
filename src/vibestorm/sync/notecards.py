@@ -73,6 +73,51 @@ async def create_agent_notecard(
     on_progress: Progress | None = None,
 ) -> CreatedNotecard:
     """Hop 1: an agent-inventory notecard holding ``text``."""
+    return await create_agent_item(
+        client,
+        session,
+        handle=handle,
+        folder_id=folder_id,
+        name=name,
+        data=encode_notecard(text),
+        asset_type=INVENTORY_NOTECARD,
+        inv_type=INVENTORY_NOTECARD,
+        update_url=update_url,
+        description=description,
+        timeout=timeout,
+        on_progress=on_progress,
+        what="notecard",
+    )
+
+
+async def create_agent_item(
+    client: WorldClient,
+    session: object,
+    *,
+    handle: int,
+    folder_id: UUID,
+    name: str,
+    data: bytes,
+    asset_type: int,
+    inv_type: int,
+    update_url: str,
+    description: str = "Created by Vibestorm folder sync.",
+    timeout: float = CREATE_TIMEOUT,
+    on_progress: Progress | None = None,
+    what: str = "item",
+) -> CreatedNotecard:
+    """Hop 1 for any type that has an ``Update*AgentInventory`` capability.
+
+    ``CreateInventoryItem`` makes an item pointing at the grid's shared empty
+    asset for that type; the capability then puts real bytes behind it. Both
+    halves are the same for a notecard and a gesture, and the only thing that
+    differs is which capability url the caller passes.
+
+    ``asset_type`` and ``inv_type`` are separate parameters because they are
+    separate enumerations that diverge exactly where it is least noticeable --
+    see `caps/inventory_types`. Defaulting one to the other would be right for
+    a notecard and wrong for a gesture.
+    """
     callback_id = next(_callback_ids)
     client.queue_outbound_packet(
         handle,
@@ -80,13 +125,13 @@ async def create_agent_notecard(
             folder_id,
             name=name,
             description=description,
-            asset_type=INVENTORY_NOTECARD,
-            inv_type=INVENTORY_NOTECARD,
+            asset_type=asset_type,
+            inv_type=inv_type,
             callback_id=callback_id,
         ),
     )
     if on_progress is not None:
-        on_progress(f"creating agent notecard {name}")
+        on_progress(f"creating agent {what} {name}")
 
     # The reply lands in the session's own table. Polling it is enough: this
     # runs on the same loop as the session, so the value appears between
@@ -107,7 +152,7 @@ async def create_agent_notecard(
 
     try:
         await TaskInventoryUploadClient(timeout_seconds=20.0).upload_agent_notecard(
-            update_url, created.item_id, encode_notecard(text)
+            update_url, created.item_id, data
         )
     except (TaskInventoryUploadError, OSError) as exc:
         raise NotecardCreateError(f"could not fill in {name!r}: {exc}") from exc
@@ -223,6 +268,7 @@ __all__ = [
     "CREATE_TIMEOUT",
     "INVENTORY_NOTECARD",
     "CreatedNotecard",
+    "create_agent_item",
     "NotecardCreateError",
     "copy_item_into_object",
     "create_agent_notecard",

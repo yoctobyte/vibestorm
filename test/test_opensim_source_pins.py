@@ -651,6 +651,21 @@ class TaskInventoryUpdateCapabilityTests(unittest.TestCase):
 
         self.assertIn(GESTURE_TASK_CAP_NAME, self.REGISTRATION.findall(self.source))
 
+    def test_the_agent_side_name_is_registered_too(self) -> None:
+        """Creating a gesture row uses the agent-inventory half of the pair,
+        which `REGISTRATION` does not match -- it looks for names ending in
+        `TaskInventory`. Registered on the line above its twin, with `true`
+        rather than `false` as the third argument."""
+        from vibestorm.sync.engine import GESTURE_AGENT_CAP_NAME
+
+        registered = re.compile(
+            r'^(?!\s*//)\s*m_HostCapsObj\.RegisterSimpleHandler\("'
+            + re.escape(GESTURE_AGENT_CAP_NAME)
+            + r'"',
+            re.MULTILINE,
+        )
+        self.assertTrue(registered.search(self.source))
+
     def test_nothing_registers_a_texture_update(self) -> None:
         """If a future OpenSim adds one, this is the test whose name says
         what just became possible."""

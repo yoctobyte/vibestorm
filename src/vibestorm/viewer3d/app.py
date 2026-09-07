@@ -1129,6 +1129,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
             notecard_agent_cap=caps.notecard_agent,
             new_file_cap=caps.new_file,
             gesture_cap=caps.gesture,
+            gesture_agent_cap=caps.gesture_agent,
             agent_folder_id=session.bootstrap.inventory_root_folder_id,
             on_progress=report,
         )
