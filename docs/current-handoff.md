@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-07 (sixteenth pass)
+Last updated: 2026-09-07 (seventeenth pass)
 
 ## The Owner's Priorities
 
@@ -196,11 +196,132 @@ often per unit of arriving traffic. A container that fills with the clock and
 empties with the frame grows only when frames are slow -- and would read as a
 leak that starts around minute forty and never stops.
 
-So run 4 is run 3 with `--max-fps 6` and nothing else changed. If the leak
-comes back, it is a per-frame drain against a per-second fill, and the census
-will name the container. If it does not, the difference was the window or the
-load, and the record should say the two-hour figures from before 2026-09-07
-03:20 measured a machine under load 14 rather than this client.
+So run 4 was to be run 3 with `--max-fps 6` and nothing else changed. That
+experiment is still worth running, but it is no longer the next one -- see
+below.
+
+**A -- the soak could not see the machine it was running on (2026-09-07).**
+Run 3 finished the thought the paragraph above started, and the answer was not
+about the client. Sampled every five minutes, `proc.rss_bytes` climbed to
+634.8 MB by minute fifteen, then sat within **4 kB** of that number for
+thirty-five minutes, and then climbed steadily for the rest of the run:
+640 MB, 656, 670, 685, 702. The pygame_gui text objects the census had named
+did the same thing -- oscillating between 130 and 370 for fifty-five minutes,
+which is generational GC and not a trend, and then monotonic.
+
+`ps` during the climb: a 100%-CPU build of somebody else's project, then
+another one fifteen minutes later. The owner works on this machine. The client
+itself was on a quarter of a core and holding exactly 30.0 fps against its
+30 fps cap, first half and second -- it was never starved. What changed at
+minute fifty-five was the machine, and **nothing in the report could say so**.
+
+That is a hole in the instrument, not in the client, and it is the same hole
+that made run 1 unreadable: run 1's 6.2 fps was two orphaned `pytest`
+processes, discovered by hand in `ps` hours later. A soak on a developer's own
+desktop shares the machine with a compiler, a browser and the test suite of
+the thing being soaked, and every figure it prints is measured against that.
+Without a record of it the report cannot tell "the client started growing at
+minute fifty-five" from "something else started at minute fifty-five" -- and
+the two look identical, which is how a soak comes to call a build a leak.
+
+So the probe now takes two more readings on every sample, and the report
+prints them **above** the growth table, because they are what decides whether
+to believe it:
+
+* `proc.load_1m` -- the machine's one-minute load average. The machine's, not
+  the client's.
+* `proc.cpu_seconds` -- this process's own CPU, printed as cores. Load says
+  the machine was busy; this says whether *we* were, which is the difference
+  between starved and idle.
+
+Both are kept **out** of the growth report, by name, in `CONDITION_NAMES`. A
+load average that rises because a build started passes every test for
+"growing" in `health.py`, and CPU seconds only ever rise by definition; either
+one in the table is a row that cries wolf on a run where nothing is wrong, and
+a report with one of those in it is a report nobody reads to the bottom of.
+The same argument already kept `gc.get_count()` out of `PROCESS_GAUGES`.
+
+A log written before this says nothing rather than 0.0. Filling in a zero
+would have every soak before 2026-09-07 claim it was measured on an idle
+machine, which is exactly the claim they cannot support.
+
+**What run 4 is now.** Run 3 with the condition gauges and nothing else, so
+that there is one soak on the record whose numbers can be read at all. Only
+after that is the `--max-fps 6` experiment worth running, because until the
+report can say what the machine was doing, its result is as uninterpretable as
+run 3's was.
+
+**A -- a region that is not still is still mostly still (2026-09-07).** The
+repeat frame above catches the case where *nothing* moved. On a live mainland
+region something always has: "not a repeat" means a few dozen prims out of
+fifteen thousand, and the refresh answered that by rebuilding every prim's own
+transform to change fifty of them. Measured on the 15,000-prim bench, building
+`transforms` for all of them is 6.77 ms a frame; patching the 150 that moved is
+0.06 ms.
+
+The measurement that made it worth doing is the one about the scan. Bailing on
+the first changed prim and collecting every changed prim as it goes cost the
+*same* 2.32 ms, because they are the same walk -- so once a frame has been
+shown not to be a repeat, the list of what moved has already been paid for.
+The frame now carries its `transforms`, its `sources` (the instance each entry
+was read off) and its parented count, and patches them.
+
+    3000 linksets of 5   15000 objects  1% moving   41.33 ms -> 36.19
+    1000 linksets of 5    5000 objects  1% moving   10.61 ms ->  9.07
+    1000 linksets of 5    5000 objects  5% moving   19.51 ms -> 17.82
+
+At 5% of 15,000 there is no change: 750 moving prims is enough that rebuilding
+their entities dominates and the patch's copy is a wash. The 1% row is the
+realistic one.
+
+One idea was refuted rather than deferred. The complement -- the ids that did
+*not* change, which `resolve_world_transforms` needs -- is the big side, and
+the note from the previous pass said to track the small set and never
+materialise the big one. A `__contains__` wrapper standing in for the set
+tests that idea directly, and loses: 2.80 ms against 1.85 for 15,000
+membership tests, because every test is then a Python method call. A C-level
+`transforms.keys() - changed_ids` is what the code does.
+
+*What a patch must never do* is patch through a removal. An id that has gone
+is still in last frame's transforms and nothing in the scan would visit it, so
+it would go on composing its children forever. It is caught by arithmetic
+rather than a second walk over the region: every prim that should have an
+entry is one the scan found in last frame's sources or one it did not, so
+`len(sources) + added == live` exactly when nothing was dropped -- and an add
+and a remove in the same frame do not cancel, because the added one is counted
+on the left as well.
+
+Two bugs were found by the randomised differential and neither by any case
+anyone thought of:
+
+* A prim with **no position** and a terse update for the **same local id**.
+  The patch deleted the terse entry as if it owned it, the terse loop put it
+  straight back, and the id was counted twice -- and that spare +1 cancelled a
+  removal elsewhere in the region, letting a dead prim compose its children.
+  `WorldView.objects` is keyed by *full* id, so it cannot be asked whether a
+  local id is in it; a carried `terse_only` set answers instead.
+* `_nothing_moved` calling a frame a repeat when it is not. The entity cache
+  cannot see a prim it never built an entity for -- a child whose parent has
+  not arrived -- so removing that orphan makes the two lengths agree again
+  while the region has in fact changed. Harmless before, because nothing was
+  carried; now it strands a transform. The added check is O(1): on the repeat
+  path every prim is positioned and cached, so `transforms` should hold
+  exactly the objects plus the terse-only ids.
+
+The second is why the differential now compares what the frame **carries** and
+not only what it drew. A stranded transform draws nothing, so both screens
+match while one scene is quietly still composing a prim that left the region;
+it surfaces as a wrong position thousands of frames later, nowhere near the
+frame that caused it. Ten seeds in the suite, and 1,000 seeds by 250 random
+operations were run before the commit: 181,848 patched frames, 65,184
+declined, no divergence.
+
+Nineteen mutants; fifteen died. The four survivors are all "correct but
+slower", and three of the fifteen needed tests that did not exist -- all three
+requiring *two* simulator operations in the same frame, which is exactly what
+the randomised harness cannot reach, because it does one per frame. That is
+worth keeping as a shape: a differential harness that steps one operation at a
+time can only find bugs that one operation causes.
 
 **A -- the frame that arrives back where it started (2026-09-07).** The
 refresh already skipped *rebuilding* an entity for a prim that had not moved.

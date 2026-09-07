@@ -100,6 +100,22 @@ def main(argv: list[str] | None = None) -> int:
             f"  gaps         {pace.shortest_gap_s:.1f} s shortest, "
             f"{pace.longest_gap_s:.1f} s longest{asked}"
         )
+        # Conditions, not results -- and printed before the results because
+        # they decide whether to believe them. A run whose second half was
+        # measured under somebody else's build says as much about the build as
+        # about this client, and nothing else on the page can tell the reader
+        # that. Absent from a log written before the probe recorded them, in
+        # which case the report says nothing rather than implying a quiet one.
+        if pace.load_first_half is not None and pace.load_second_half is not None:
+            print(
+                f"  machine      load {pace.load_first_half:.1f} in the first "
+                f"half, {pace.load_second_half:.1f} in the second"
+            )
+        if pace.cores_first_half is not None and pace.cores_second_half is not None:
+            print(
+                f"  this client  {pace.cores_first_half:.2f} cores in the first "
+                f"half, {pace.cores_second_half:.2f} in the second"
+            )
     print()
 
     report = growth_report(samples, counters=args.counters)

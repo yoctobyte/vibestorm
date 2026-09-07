@@ -27,6 +27,7 @@ from __future__ import annotations
 import gc
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -75,6 +76,42 @@ def _thread_count() -> float:
     return float(threading.active_count())
 
 
+def machine_load_1m() -> float:
+    """The machine's one-minute load average -- the *machine's*, not ours.
+
+    Not a leak gauge. A condition. Every figure in a soak report is measured
+    against whatever else the machine was doing, and on a developer's own
+    desktop that is a compiler, a browser and the test suite of the thing
+    being soaked. Without this the report cannot tell "the client started
+    growing at minute fifty-five" from "something else started at minute
+    fifty-five", and the two look identical -- which is how a soak comes to
+    say a leak is real when what it measured was a build.
+
+    Returns 0.0 where the platform has no load average, which is not Linux.
+    """
+    try:
+        return float(os.getloadavg()[0])
+    except (AttributeError, OSError, IndexError, ValueError):
+        return 0.0
+
+
+def process_cpu_seconds() -> float:
+    """CPU seconds this process has used, user plus system.
+
+    The other half of `machine_load_1m`: load says the machine was busy, this
+    says whether *we* were. A viewer holding 30 fps on a quarter of a core
+    while the load average is six is a viewer that was not starved, and the
+    report should be able to say so rather than leaving it to be remembered.
+    """
+    try:
+        with open("/proc/self/stat", "rb") as handle:
+            fields = handle.read().rsplit(b") ", 1)[-1].split()
+        ticks = float(int(fields[11]) + int(fields[12]))
+        return ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
 #: Taken on every sample whatever the caller declares. All three are cheap
 #: enough to read sixty times a second, which is not how often they are read.
 #:
@@ -87,7 +124,17 @@ PROCESS_GAUGES: dict[str, Gauge] = {
     "proc.rss_bytes": process_rss_bytes,
     "proc.py_blocks": _allocated_blocks,
     "proc.threads": _thread_count,
+    "proc.load_1m": machine_load_1m,
+    "proc.cpu_seconds": process_cpu_seconds,
 }
+
+#: Recorded on every sample and kept *out* of the growth report. These say
+#: what the run was measured under, not what the client was holding on to,
+#: and both would read as leaks: a load average that rises because a build
+#: started is "growing" by every test in this file, and CPU seconds only ever
+#: rise by definition. They belong in the header, beside the frame rate, where
+#: the reader is deciding whether to believe the rest of the page.
+CONDITION_NAMES = frozenset({"proc.load_1m", "proc.cpu_seconds"})
 
 
 #: Every name a census emits starts with this, so a census can never be
@@ -379,6 +426,18 @@ class Pace:
     #: How long the run was meant to last, same rules. `cut_short` is the
     #: question it exists to answer.
     run_seconds: float | None
+    #: The machine's one-minute load average, averaged over each half. Not the
+    #: client's number: the *conditions'*. A run whose second half was
+    #: measured under a build is a run whose second half says as much about
+    #: the build as about the client, and the report has no other way to know.
+    #: `None` for a log written before the probe recorded it.
+    load_first_half: float | None = None
+    load_second_half: float | None = None
+    #: How much of one core this process itself used over each half, from its
+    #: own CPU seconds. Load says the machine was busy; this says whether we
+    #: were, which is the difference between starved and idle.
+    cores_first_half: float | None = None
+    cores_second_half: float | None = None
 
     @property
     def cut_short(self) -> bool:
@@ -427,7 +486,43 @@ def pace_report(samples: Sequence[Mapping[str, Any]]) -> Pace | None:
         shortest_gap_s=min(gaps) if gaps else 0.0,
         interval_s=_asked_for(samples, "soak_interval_s"),
         run_seconds=_asked_for(samples, "soak_run_seconds"),
+        load_first_half=_mean_of(samples[: mid + 1], "proc.load_1m"),
+        load_second_half=_mean_of(samples[mid:], "proc.load_1m"),
+        cores_first_half=_rate_of(samples[: mid + 1], "proc.cpu_seconds"),
+        cores_second_half=_rate_of(samples[mid:], "proc.cpu_seconds"),
     )
+
+
+def _mean_of(samples: Sequence[Mapping[str, Any]], key: str) -> float | None:
+    """The mean of one gauge over these samples, or `None` if it is not there."""
+    values = [
+        float(s[key])
+        for s in samples
+        if isinstance(s.get(key), (int, float)) and not isinstance(s.get(key), bool)
+    ]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _rate_of(samples: Sequence[Mapping[str, Any]], key: str) -> float | None:
+    """How fast a monotonic seconds-counter rose, per second of wall clock.
+
+    For `proc.cpu_seconds` that is cores: 1.0 is one core saturated.
+    """
+    points = [
+        (float(s["elapsed_s"]), float(s[key]))
+        for s in samples
+        if isinstance(s.get(key), (int, float))
+        and not isinstance(s.get(key), bool)
+        and isinstance(s.get("elapsed_s"), (int, float))
+    ]
+    if len(points) < 2:
+        return None
+    seconds = points[-1][0] - points[0][0]
+    if seconds <= 0.0:
+        return None
+    return (points[-1][1] - points[0][1]) / seconds
 
 
 def _asked_for(samples: Sequence[Mapping[str, Any]], key: str) -> float | None:
@@ -485,7 +580,7 @@ def growth_report(
     seen: set[str] = set()
     for sample in samples:
         for name in sample:
-            if name in ("elapsed_s", "frame") or name in seen:
+            if name in ("elapsed_s", "frame") or name in CONDITION_NAMES or name in seen:
                 continue
             seen.add(name)
             names.append(name)
@@ -627,6 +722,8 @@ __all__ = [
     "format_growth_report",
     "growth_report",
     "pace_report",
+    "machine_load_1m",
+    "process_cpu_seconds",
     "process_rss_bytes",
     "read_soak_log",
 ]

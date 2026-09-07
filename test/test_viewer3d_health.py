@@ -26,6 +26,7 @@ from pathlib import Path
 from uuid import UUID
 
 from vibestorm.viewer3d.health import (
+    CONDITION_NAMES,
     MIN_SAMPLES_FOR_TREND,
     MIN_SAMPLES_FOR_VERDICT,
     OBJECT_CENSUS_PREFIX,
@@ -36,7 +37,9 @@ from vibestorm.viewer3d.health import (
     TypeCensus,
     format_growth_report,
     growth_report,
+    machine_load_1m,
     pace_report,
+    process_cpu_seconds,
     process_rss_bytes,
     read_soak_log,
 )
@@ -1052,3 +1055,92 @@ class CensusWiringTests(unittest.TestCase):
         )
         self.assertEqual(len(list(on.censuses)), 1)
         self.assertIsInstance(list(on.censuses)[0], TypeCensus)
+
+
+class ConditionsTests(unittest.TestCase):
+    """What the run was measured *under*, which is not what it was holding.
+
+    A soak on a developer's own desktop shares the machine with a compiler, a
+    browser and the test suite of the thing being soaked. Without these two
+    the report cannot tell "the client started growing at minute fifty-five"
+    from "something else started at minute fifty-five", and the two look
+    identical -- which is how a soak comes to call a build a leak. Observed
+    on 2026-09-07, on a run whose resident set was flat for thirty-five
+    minutes and then climbed for the rest, with a 100%-CPU build in `ps` and
+    nothing in the report that could say so.
+    """
+
+    def test_both_conditions_are_taken_on_every_sample(self) -> None:
+        for name in ("proc.load_1m", "proc.cpu_seconds"):
+            self.assertIn(name, PROCESS_GAUGES)
+        probe = HealthProbe()
+        sample = probe.sample(elapsed_s=1.0, frame=1)
+        for name in CONDITION_NAMES:
+            self.assertIn(name, sample)
+
+    def test_a_condition_is_never_reported_as_a_leak(self) -> None:
+        """The whole point of separating them.
+
+        A load average that climbs because a build started passes every test
+        for "growing" in this file, and `proc.cpu_seconds` only ever rises by
+        definition. Either one in the growth table is a row that cries wolf on
+        a run where nothing is wrong, and a report with one of those in it is
+        a report nobody reads to the bottom of.
+        """
+        samples = [
+            {
+                "elapsed_s": i * 30.0,
+                "frame": i * 900,
+                "proc.load_1m": float(i),
+                "proc.cpu_seconds": float(i) * 7.5,
+                "world.prims": 100.0,
+            }
+            for i in range(10)
+        ]
+        names = [growth.name for growth in growth_report(samples)]
+        self.assertEqual(names, ["world.prims"])
+
+    def test_the_pace_says_what_the_machine_and_the_client_were_doing(self) -> None:
+        samples = [
+            {
+                "elapsed_s": i * 30.0,
+                "frame": i * 900,
+                # Quiet, then a build starts halfway through.
+                "proc.load_1m": 1.0 if i < 5 else 9.0,
+                # A quarter of a core throughout: the client was never starved.
+                "proc.cpu_seconds": i * 30.0 * 0.25,
+            }
+            for i in range(10)
+        ]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertLess(pace.load_first_half, 5.0)
+        self.assertGreater(pace.load_second_half, 5.0)
+        self.assertAlmostEqual(pace.cores_first_half, 0.25, places=6)
+        self.assertAlmostEqual(pace.cores_second_half, 0.25, places=6)
+
+    def test_a_log_without_them_says_nothing_rather_than_guessing(self) -> None:
+        # Every soak log written before 2026-09-07 is one of these, and a
+        # report that filled in 0.0 would say those runs were measured on an
+        # idle machine -- which is exactly the claim they cannot support.
+        samples = [{"elapsed_s": i * 30.0, "frame": i * 900} for i in range(10)]
+        pace = pace_report(samples)
+        assert pace is not None
+        self.assertIsNone(pace.load_first_half)
+        self.assertIsNone(pace.cores_second_half)
+
+    def test_the_load_is_the_machine_s_and_the_cpu_is_ours(self) -> None:
+        """They have to be different numbers or one of them is redundant."""
+        self.assertGreaterEqual(machine_load_1m(), 0.0)
+        before = process_cpu_seconds()
+        total = 0
+        for i in range(400_000):
+            total += i * i
+        after = process_cpu_seconds()
+        self.assertGreater(after, before, "this process burned CPU and said it did not")
+
+    def test_a_platform_without_a_load_average_reads_zero(self) -> None:
+        from unittest import mock
+
+        with mock.patch("os.getloadavg", side_effect=OSError("no such thing here")):
+            self.assertEqual(machine_load_1m(), 0.0)
