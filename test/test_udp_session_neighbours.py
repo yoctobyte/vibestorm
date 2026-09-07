@@ -772,3 +772,118 @@ class SessionEventTests(NeighbourTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AcksAreFlushedEveryPassTests(NeighbourTestCase):
+    """Not only when the socket goes quiet, which was measured to be too late.
+
+    `_pump_neighbours` used to be called from one place: the `except
+    TimeoutError` branch of the receive loop. Two constants made that look
+    safe -- `ACK_BATCH` is 10, so a busy circuit flushes on its own, and the
+    receive timeout is 0.25 s, so a quiet one flushes four times a second.
+
+    On the wire it was not safe at all. Against a local sim, 22 of 53 reliable
+    packets from the region next door came back marked `MSG_RESENT`, one
+    `LayerData` six times in a second and a half, and the `RegionHandshake`
+    that had been on the gap list for weeks as "resent for no reason" was
+    simply a retransmit. The reason the reasoning failed is a third constant
+    neither of the first two mentions: OpenSim sets its RTO to five times the
+    measured round trip, clamped below at `m_minRTO` -- 250 ms. On localhost
+    the round trip is nothing, so the simulator's resend timer *is* 250 ms,
+    the same as the timeout that was the only thing flushing our acks. Two
+    timers of the same length race, and this one lost about half the time.
+    `ACK_BATCH` never rescued it either: the high-water mark was nine.
+
+    Moving the call into the loop body took RESENT packets to zero, repeated
+    sequences to zero and the ack high-water mark from nine to one.
+
+    This drives the real loop with a fake socket, because the bug was never in
+    `_pump_neighbours` -- which was always correct -- but in where it was
+    called from. A test of the function would have passed throughout.
+    """
+
+    def _run(self, *, packets: int) -> list[tuple[bytes, tuple[str, int]]]:
+        from unittest.mock import patch
+
+        from vibestorm.udp.neighbour import NeighbourCircuit
+        from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet
+        from vibestorm.udp.session import SessionConfig, run_live_session
+        from vibestorm.udp.world_client import WorldClient
+
+        address = ("127.0.0.1", 9001)
+        client = WorldClient()
+        sent: list[tuple[bytes, tuple[str, int]]] = []
+        state = {"injected": False, "left": packets}
+
+        # `CoarseLocationUpdate`, because it is reliable, tiny, and the circuit
+        # answers it with nothing -- so the only packet that can come back is
+        # the ack this test is about.
+        inbound = build_packet(
+            bytes([0xFF, 0xFF, 0x00, 0x06]) + bytes([0, 0, 0xFF, 0xFF, 0xFF]),
+            sequence=1,
+            flags=LL_RELIABLE_FLAG,
+        )
+
+        async def runner() -> None:
+            loop = asyncio.get_running_loop()
+            stop = asyncio.Event()
+
+            async def fake_recvfrom(sock: object, size: int):
+                if not state["injected"]:
+                    state["injected"] = True
+                    client.current.neighbours[NORTH_HANDLE] = NeighbourCircuit(
+                        handle=NORTH_HANDLE,
+                        address=address,
+                        agent_id=AGENT,
+                        session_id=SESSION,
+                        circuit_code=0x12345678,
+                        dispatcher=self.dispatcher,
+                    )
+                if state["left"] > 0:
+                    # Back to back, with no idle moment between them: under the
+                    # old wiring the receive timeout never fires and the batch
+                    # never fills, so nothing is ever acked.
+                    state["left"] -= 1
+                    return inbound, address
+                stop.set()
+                await asyncio.sleep(3600)
+                raise AssertionError("unreachable")
+
+            async def fake_sendto(sock: object, data: bytes, addr: tuple[str, int]):
+                sent.append((data, addr))
+
+            loop.sock_recvfrom = fake_recvfrom  # type: ignore[method-assign]
+            loop.sock_sendto = fake_sendto  # type: ignore[method-assign]
+            with patch("vibestorm.udp.session.socket.socket"):
+                task = asyncio.create_task(
+                    run_live_session(
+                        self.session().bootstrap,
+                        self.dispatcher,
+                        config=SessionConfig(caps_prelude=False, open_neighbours=False),
+                        world_client=client,
+                        stop_event=stop,
+                    )
+                )
+                await stop.wait()
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+        asyncio.run(runner())
+        return sent
+
+    def test_the_neighbour_is_acked_without_waiting_for_a_quiet_socket(self) -> None:
+        sent = self._run(packets=5)
+        to_neighbour = [data for data, addr in sent if addr == ("127.0.0.1", 9001)]
+        self.assertTrue(
+            to_neighbour,
+            "five reliable packets arrived back to back and nothing was acked",
+        )
+
+    def test_and_one_packet_is_enough_to_get_one(self) -> None:
+        # The batch is ten. If acking waited for it, one would buy nothing.
+        sent = self._run(packets=1)
+        to_neighbour = [data for data, addr in sent if addr == ("127.0.0.1", 9001)]
+        self.assertTrue(to_neighbour, "a single reliable packet went unacked")

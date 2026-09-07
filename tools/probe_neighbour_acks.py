@@ -26,11 +26,19 @@ missed. Record every packet the neighbour circuit receives with its sequence,
 its resent bit and its name, and how many acks sit undelivered in
 `queued_acks` at each moment.
 
-One story that was on this list and is now off it: acks starving because
-`_pump_neighbours` runs only in the receive-timeout branch. `ACK_BATCH` is 10
-and `receive_timeout_seconds` is 0.25, so a quiet circuit flushes four times a
-second and a busy one fills the batch. The starved case is a narrow middle,
-not the default. The high-water mark below is what would show it.
+**The answer, on 2026-09-07, was the first story**, and it was not close: 22
+of 53 reliable packets came back RESENT, one `LayerData` six times in a second
+and a half, and the handshake was a retransmit of itself. The cause was
+`_pump_neighbours` running only in the receive-timeout branch. Reasoning had
+said that could not matter -- `ACK_BATCH` is 10, `receive_timeout_seconds` is
+0.25 -- and missed that OpenSim clamps its RTO below at `m_minRTO`, 250 ms, so
+on a local sim the resend timer and the flush timer are the same length. The
+fix moved one call into the loop body; a second run of this probe showed zero
+RESENT, zero repeats, and the ack high-water mark down from nine to one.
+
+Keep it. It is the only thing here that can tell a retransmit from a fresh
+send, so it is what any future change to the acking has to be checked against,
+and it is three minutes.
 
     set -a; . local/vibestorm-login.env; set +a
     .venv/bin/python tools/probe_neighbour_acks.py [seconds]

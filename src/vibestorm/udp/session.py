@@ -3370,6 +3370,16 @@ async def run_live_session(
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
             for packet in session.drain_due_packets(now):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+            # Every pass, not only when the socket goes quiet. Measured: with
+            # this in the receive-timeout branch alone, 22 of 53 reliable
+            # packets from the region next door came back marked RESENT, one
+            # `LayerData` six times in a second and a half. On a local sim the
+            # simulator's round trip is nothing, so its RTO clamps to
+            # `m_minRTO` -- 250 ms, the same as the timeout that was the only
+            # thing flushing these. Racing a resend timer with a timer of the
+            # same length loses about half the time, and `ACK_BATCH` never
+            # rescued it: the high-water mark was nine against a batch of ten.
+            await _pump_neighbours(session, sock, loop)
 
             if stop_event is None:
                 remaining = deadline - loop.time()
@@ -3385,7 +3395,6 @@ async def run_live_session(
                     timeout=recv_timeout,
                 )
             except TimeoutError:
-                await _pump_neighbours(session, sock, loop)
                 continue
 
             # One socket carries every simulator, so the source address is

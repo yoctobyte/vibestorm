@@ -170,67 +170,76 @@ gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
 
-**A fix that was designed and then not written, because reading the numbers
-said it was already covered.** `_pump_neighbours` -- which flushes the acks a
-child circuit owes -- is called from exactly one place: the `except
-TimeoutError` branch of the receive loop. That reads like starvation: a
-neighbour's acks sit unsent for as long as the root circuit keeps talking,
-and every unacked packet is resent every RTO for ever. A time-based
-`drain_acks_due(now)` was drafted.
+**A fix that was designed, then talked out of on the strength of two
+constants, and then put back by one measurement (2026-09-07).**
+`_pump_neighbours` -- which flushes the acks a child circuit owes -- was
+called from exactly one place: the `except TimeoutError` branch of the receive
+loop. That reads like starvation, and a time-based flush was drafted.
 
-Two constants make it a non-event. `receive_timeout_seconds` is **0.25**, so
-on any region quiet enough to have a gap the acks go out four times a second
--- comfortably inside a 1000 ms RTO. And `ACK_BATCH` is **10**, so on a
-region busy enough to have no gap the batch fills and flushes on its own. The
-uncovered case is the narrow middle: steady traffic, fewer than ten reliable
-packets from the neighbour, and never a quarter-second of silence.
+Two constants seemed to say it could not matter. `ACK_BATCH` is 10, so a busy
+circuit flushes on its own; `receive_timeout_seconds` is 0.25, so a quiet one
+flushes four times a second. The uncovered case looked like a narrow middle,
+and this document said so, in a paragraph explaining that the reasoning was
+*finished* rather than wasted.
 
-Which does not make the reasoning wasted -- it makes it *finished*. The cost
-of reading two constants was a few minutes; the cost of the fix would have
-been new time-based state in the hottest loop this client has, justified by a
-failure mode that the existing two paths already bracket. Recorded here so
-the next agent to notice the single call site does not redesign it.
+Then the probe ran, and it was not narrow at all:
 
-**And with that door closed, the repeated handshakes are half explained,
-which is worth more than the guess that was there.** Four `RegionHandshake`
-packets in ninety seconds on a child circuit that answered every one had been
-sitting on the gap list under "the likeliest reading is that OpenSim resends
-on region-info changes, but nobody has checked". A dotted grep of the
-reference tree finds `.SendRegionHandshake()` in exactly three places, and
-none of them is that:
+    180 s against the region next door       before   after
+    reliable packets                             53      31
+    marked MSG_RESENT                            22       0
+    sequences that arrived more than once        12       0
+    RegionHandshake copies                        2       1
+    queued acks, high-water mark                  9       1
 
-- `LLUDPServer.cs:1629`, when the circuit is created, for a login rather than
-  a teleport -- which a child circuit does go through, since it opens with
-  `UseCircuitCode`;
-- `ScenePresence.cs:2272`, completing the movement, when this is not a region
-  crossing -- which a child circuit does *not*, because we never send
-  `CompleteAgentMovement` on one;
-- `ScenePresence.cs:4064`, in `SendInitialData`, behind the terrain-PBR flag
-  and after `NeedInitialData = -1`, so at most once.
+Forty per cent of the neighbour's reliable traffic was retransmission. One
+`LayerData` arrived six times in a second and a half. The reasoning failed on
+a third constant that neither of the first two mentions: OpenSim sets its RTO
+to five times the measured round trip, **clamped below at `m_minRTO`, 250 ms**
+(pinned in `test/test_opensim_source_pins.py`). On a local sim the round trip
+is nothing, so the simulator's resend timer *is* 250 ms -- exactly the timeout
+that was the only thing flushing our acks. Two timers of the same length race,
+and this one lost about half the time. `ACK_BATCH` never rescued it either:
+nine queued at the worst moment, against a batch of ten.
 
-So a child circuit has one certain sender and one possible one, not four, and
-none of them periodic. A repeated `UseCircuitCode` -- the one thing this
-client could plausibly do that looks like it should trigger another -- gets
-none: while the circuit is being made the resend is acked and dropped under a
-comment reading "ignore viewer resends", and once it exists the packet never
-reaches the handler, the whole path being inside
-`if (!Scene.TryGetClient(endPoint, out client))`.
+The fix is moving one call out of the `except` and into the loop body. It
+costs an ack packet per inbound reliable packet in the worst case -- about
+fourteen bytes -- to stop retransmissions of full-size terrain packets, so it
+is a large win in bytes as well as a correct one.
 
-What that leaves is a sharper question than the one it replaces. Two of the
-four are accounted for; the other two are either resends or a sender not in
-this version of the source, and those two possibilities look completely
-different on the wire -- a resend carries `MSG_RESENT` and reuses its
-sequence number, and a fresh send does neither. That is one run of
-`tools/probe_neighbour_acks.py`, and it is now a yes-or-no rather than a
-fishing trip.
+`test/test_udp_session_neighbours.py` holds it, and holds it at the call site
+rather than at the function: `_pump_neighbours` was always correct, so a test
+of it would have passed throughout. Five reliable packets arrive back to back
+with no idle moment between them, and something must have been acked. Both the
+old wiring and no wiring at all fail it.
 
-The first version of that count was **wrong**, and the test is what said so.
-Grepping `SendRegionHandshake()` undotted also matches the method's own
-definition and the commented-out call in `LLClientView`; an eyeballed pass
-had two senders and a puzzle, and asserting the number found the third on the
-first run, before it reached the documentation. That is the case for pinning
-a count rather than describing one, and it is the same lesson as the gauge
-that would have read flat-zero: **the check has to be able to fail.**
+**Which is what the repeated handshakes were, all along.** Four
+`RegionHandshake` packets in ninety seconds had been on the gap list for weeks
+as "harmless, and unexplained", with a guess attached: that OpenSim resends on
+region-info changes. It does not -- there is no such path in the source. They
+were retransmits of one handshake we were too slow to ack. After the fix the
+same probe sees one handshake, once.
+
+The source reading that went alongside is still worth having, and is pinned:
+there are exactly three `.SendRegionHandshake()` call sites, a *child* circuit
+can reach two of them (the circuit being created, and `SendInitialData` behind
+the terrain-PBR flag), neither is periodic, and a repeated `UseCircuitCode`
+gets none -- while the circuit is being made the resend is acked and dropped
+under a comment reading "ignore viewer resends", and once it exists the packet
+never reaches the handler at all.
+
+That count caught an error of its own on the first run. Grepping
+`SendRegionHandshake()` undotted also matches the method's definition and a
+call inside a comment block; an eyeballed pass had two senders and a puzzle,
+and asserting the number found the third, in `LLUDPServer`, before it reached
+this document.
+
+**The order of those two paragraphs is the lesson.** The reading was correct
+and answered the wrong question -- it established where handshakes *come*
+from, which is not where the extra ones came from. Reading two constants and
+concluding "already covered" took a few minutes and was wrong; running the
+probe took three, and was not. **Where a measurement is available and cheap,
+a chain of correct deductions is not a substitute for it** -- it is only a
+way of deciding what to measure.
 
 **A -- 2026-09-05: the frame is no longer the problem, and the world looks
 right.** Two more rounds since the note below, both driven by measurement
@@ -2773,22 +2782,16 @@ C, D and E are closed for text assets. What is left, in the owner's own order:
      region's own, and are drawn at its offset; its textures and mesh assets
      go through this region's capabilities behind our own prims; and its own
      sea level, off its own handshake, is the level its sea is drawn at.
-   - **The neighbour sends its handshake more than once.** Measured over
-     ninety seconds: four `RegionHandshake` packets, each answered reliably,
-     with terrain flowing throughout -- so the first reply plainly arrived.
-     Half of it is explained now, from the source rather than by guessing,
-     and pinned in `test/test_opensim_source_pins.py`: there are exactly
-     three `.SendRegionHandshake()` call sites in OpenSim, of which a *child*
-     circuit can reach two -- the circuit being created, and `SendInitialData`
-     behind the terrain-PBR flag -- and neither is periodic. (The third is
-     `CompleteMovement`, which a child circuit never reaches because we never
-     send `CompleteAgentMovement` on one. A fourth mention is a call inside a
-     comment block.) The earlier guess here, that OpenSim resends on
-     region-info changes, is not in this version of the source at all.
-     What is left is the other two packets, and they are either resends or a
-     sender this reading has not found -- which look nothing alike on the
-     wire, since a resend carries `MSG_RESENT` and reuses its sequence
-     number. `tools/probe_neighbour_acks.py` answers it in one run.
+   - ~~**The neighbour resends its handshake a few times an hour.**~~ Spent,
+     and it was never the handshake. Four `RegionHandshake` packets in ninety
+     seconds were retransmits of *one*, because this client was too slow to
+     ack it: `_pump_neighbours` ran only when the socket went quiet, and on a
+     local sim OpenSim's RTO clamps to `m_minRTO`, 250 ms -- the same as the
+     receive timeout it was racing. Flushing every pass took the region next
+     door from 22 RESENT packets in 53 to none, and the handshake to one
+     copy. The guess recorded here for weeks, that OpenSim resends on
+     region-info changes, is not in the source at all; the three call sites
+     that do exist are pinned in `test/test_opensim_source_pins.py`.
    - ~~**The camera does not see round anything.**~~ Spent. A ridge between
      the camera and the avatar pulls it in, and so does a prim: the ground is
      marched and the prims are cast against, in that order, and the nearer
