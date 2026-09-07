@@ -52,6 +52,64 @@ class EventQueueDecodeTests(unittest.TestCase):
         self.assertEqual(event.region_size_x, 256)
         self.assertEqual(event.region_size_y, 256)
 
+    def test_decode_establish_agent_communication(self) -> None:
+        """The event that hands over a neighbour's seed capability.
+
+        Its decoder branch had no test at all: deleting it left the whole
+        suite green, because the tests that exercise what the session *does*
+        with this event build the typed object directly and never decode one.
+        A branch nothing decodes through is a branch that can be deleted.
+
+        Its keys are hyphenated where every other event's are not -- that is
+        the wire, not a typo, and it is exactly the kind of detail that a test
+        constructing the dataclass by hand cannot protect.
+        """
+        from vibestorm.event_queue.events import (
+            EstablishAgentCommunicationEvent,
+            decode_event_queue_payload,
+        )
+
+        batch = decode_event_queue_payload(
+            {
+                "id": 12,
+                "events": [
+                    {
+                        "message": "EstablishAgentCommunication",
+                        "body": {
+                            "agent-id": "cb792342-6ae5-4f80-a24d-3a7f0f3b350b",
+                            "sim-ip-and-port": "127.0.0.1:9001",
+                            "seed-capability": "http://127.0.0.1:9000/CAPS/abcd/",
+                        },
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(batch.ack_id, 12)
+        (event,) = batch.events
+        self.assertIsInstance(event, EstablishAgentCommunicationEvent)
+        self.assertEqual(event.agent_id, "cb792342-6ae5-4f80-a24d-3a7f0f3b350b")
+        self.assertEqual(event.sim_ip_and_port, "127.0.0.1:9001")
+        self.assertEqual(event.seed_capability, "http://127.0.0.1:9000/CAPS/abcd/")
+
+    def test_an_establish_agent_communication_missing_its_fields_is_still_typed(self) -> None:
+        """Empty strings rather than a raise. The session stores the seed
+        capability under the address, and an event carrying neither is a
+        neighbour that will not load -- but it is not a reason to drop the
+        whole batch, which is what raising here would do."""
+        from vibestorm.event_queue.events import (
+            EstablishAgentCommunicationEvent,
+            decode_event_queue_payload,
+        )
+
+        batch = decode_event_queue_payload(
+            {"id": 1, "events": [{"message": "EstablishAgentCommunication", "body": {}}]}
+        )
+
+        (event,) = batch.events
+        self.assertIsInstance(event, EstablishAgentCommunicationEvent)
+        self.assertEqual(event.seed_capability, "")
+
     def test_decode_teleport_finish(self) -> None:
         from vibestorm.event_queue.events import (
             TeleportFinishEvent,
