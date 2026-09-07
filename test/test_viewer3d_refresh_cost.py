@@ -290,16 +290,29 @@ class CarriedTransformsTests(unittest.TestCase):
                 dict(built.objects),
                 dict(built.avatars),
                 dict(built.cache),
+                dict(built.placement),
+                # Deep: the index is a dict of sets, so a shallow copy of it
+                # shares every one of them, and the frame that edits a branch
+                # of it edits the record of the frame before this.
+                {parent: set(kin) for parent, kin in built.children.items()},
             )
 
         before = snapshot(first)
 
+        # The next frame has to *edit* every carried structure or the copies
+        # are untested: one prim moves, one arrives under an existing parent,
+        # and one leaves the parent it had -- which is the only way the index
+        # of who hangs off whom is written to at all.
         world.remember_object(_prim(1, (60.0, 10.0, 20.0)))
-        world.remember_object(_prim(3, (7.0, 7.0, 20.0)))
+        world.remember_object(_prim(3, (7.0, 7.0, 20.0), parent_id=1))
+        world.remember_object(_prim(2, (40.0, 40.0, 20.0)))
         scene.refresh_from_world_view(world)
 
         self.assertEqual(snapshot(first), before)
         self.assertIsNot(scene._built, first)
+        # And the frame that was built is the one that was asked for.
+        self.assertAlmostEqual(scene.object_entities[3].position[0], 67.0)
+        self.assertAlmostEqual(scene.object_entities[2].position[0], 40.0)
 
     def _patch_outcomes(self, scene, world):
         """Refresh once, saying whether the patch was taken or declined."""
@@ -477,3 +490,103 @@ class CarriedEntitiesTests(unittest.TestCase):
         self.assertAlmostEqual(scene.object_entities[2].position[0], 62.0)
         self.assertAlmostEqual(scene.object_entities[3].position[0], 62.0)
         self.assertAlmostEqual(scene.object_entities[3].position[1], 13.0)
+
+
+class CarriedPlacementTests(unittest.TestCase):
+    """The composing is patched too, and here is what that must not lose.
+
+    A prim's world position changes only if its own transform did or an
+    ancestor's did, so the frame walks *downward* from what changed rather
+    than over the region. That walk needs an index of which prims hang off
+    which, kept across frames -- and everything below is a way for that index,
+    or the walk over it, to be wrong about a prim nothing said anything about.
+    """
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        return Scene()
+
+    def test_a_parent_arriving_places_what_was_waiting_on_it(self) -> None:
+        """The index has to hold parents that are not there.
+
+        Updates are not ordered, so a child routinely arrives first and sits
+        unplaced. Nothing about the child changes on the frame its parent
+        lands -- so unless the index remembered which prims were waiting on
+        that id, the walk down from the parent reaches nobody and the child
+        stays where it is not.
+        """
+        world = _world(_prim(2, (2.0, 0.0, 0.0), parent_id=1))
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+        self.assertNotIn(2, scene.object_entities)
+
+        world.remember_object(_prim(1, (10.0, 10.0, 20.0)))
+        scene.refresh_from_world_view(world)
+
+        self.assertAlmostEqual(scene.object_entities[2].position[0], 12.0)
+
+    def test_a_grandchild_follows_a_root_that_moved(self) -> None:
+        """The walk is a descent, not one level of it."""
+        world = _world(
+            _prim(1, (10.0, 10.0, 20.0)),
+            _prim(2, (2.0, 0.0, 0.0), parent_id=1),
+            _prim(3, (0.0, 3.0, 0.0), parent_id=2),
+            _prim(4, (0.0, 0.0, 4.0), parent_id=3),
+        )
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+
+        world.remember_object(_prim(1, (60.0, 10.0, 20.0)))
+        scene.refresh_from_world_view(world)
+
+        self.assertAlmostEqual(scene.object_entities[4].position[0], 62.0)
+        self.assertAlmostEqual(scene.object_entities[4].position[1], 13.0)
+        self.assertAlmostEqual(scene.object_entities[4].position[2], 24.0)
+
+    def test_a_parent_cycle_neither_hangs_nor_draws(self) -> None:
+        """Two prims parented to each other, which a simulator should never send.
+
+        A walk downward from what changed goes round a cycle forever, so it
+        gives up and lets the full composing say what it says -- which is that
+        nothing caught in one has a place. A viewer that hung on a malformed
+        update would be worse than one that leaves those prims out.
+        """
+        world = _world(
+            _prim(1, (10.0, 10.0, 20.0)),
+            _prim(2, (2.0, 0.0, 0.0), parent_id=1),
+            _prim(9, (5.0, 5.0, 25.0)),
+        )
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+        self.assertIn(2, scene.object_entities)
+
+        world.remember_object(_prim(1, (10.0, 10.0, 20.0), parent_id=2))
+        scene.refresh_from_world_view(world)
+
+        self.assertNotIn(1, scene.object_entities)
+        self.assertNotIn(2, scene.object_entities)
+        # And the rest of the region is untouched by its neighbour's mess.
+        self.assertAlmostEqual(scene.object_entities[9].position[0], 5.0)
+
+    def test_a_prim_that_stops_being_a_child_is_placed_where_it_says(self) -> None:
+        """Unlinking is a reparent to nobody, and the index has to let go.
+
+        Leave the child in its old parent's list and the next time that parent
+        moves it drags a prim it no longer owns along with it.
+        """
+        world = _world(
+            _prim(1, (10.0, 10.0, 20.0)),
+            _prim(2, (2.0, 0.0, 0.0), parent_id=1),
+        )
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+
+        world.remember_object(_prim(2, (40.0, 40.0, 20.0)))
+        scene.refresh_from_world_view(world)
+        self.assertAlmostEqual(scene.object_entities[2].position[0], 40.0)
+
+        world.remember_object(_prim(1, (60.0, 10.0, 20.0)))
+        scene.refresh_from_world_view(world)
+
+        self.assertAlmostEqual(scene.object_entities[2].position[0], 40.0)

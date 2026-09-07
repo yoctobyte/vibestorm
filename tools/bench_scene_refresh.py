@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 import random
 import sys
 import time
@@ -109,31 +110,60 @@ def move(world, local_ids, rng: random.Random) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--frames", type=int, default=8, help="frames to time per row")
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=4,
+        help="times to walk the whole table, keeping each row's best.",
+    )
     args = parser.parse_args(argv)
 
+    # The load, before and after, because this is a developer's own desktop and
+    # a number measured on a busy one says as much about the compiler running
+    # beside it as about the code. On 2026-09-07 the same row came back at
+    # 2.8 ms and at 6.2 twenty minutes apart, with nothing between the two but
+    # two of the owner's builds -- and CPU time rather than wall clock narrows
+    # that without closing it, because a core that is stalled on somebody
+    # else's cache misses is still a core spending our time.
+    load_before = os.getloadavg()[0]
+    best: dict[tuple[str, int], float] = {}
+    drew: dict[tuple[str, int], tuple[int, int]] = {}
+    # Round by round rather than row by row: a round takes seconds, so samples
+    # for one row land at several different moments of the machine's day
+    # instead of all inside one busy minute.
+    for _ in range(max(args.rounds, 1)):
+        for label, (roots, children) in SHAPES.items():
+            world = build_region(roots, children)
+            every_id = list(world.objects)
+            rng = random.Random(11)
+            scene = Scene()
+            scene.refresh_from_world_view(world)  # warm the caches
+            for percent in MOVING_PERCENTS:
+                moving = len(every_id) * percent // 100
+                for _frame in range(args.frames):
+                    move(world, rng.sample(every_id, moving), rng)
+                    start = time.process_time()
+                    scene.refresh_from_world_view(world)
+                    taken = time.process_time() - start
+                    key = (label, percent)
+                    if key not in best or taken < best[key]:
+                        best[key] = taken
+                drawn = len(scene.object_entities) + len(scene.avatar_entities)
+                drew[(label, percent)] = (drawn, len(world.objects))
+
     for label, (roots, children) in SHAPES.items():
-        world = build_region(roots, children)
-        every_id = list(world.objects)
-        rng = random.Random(11)
-        scene = Scene()
-        scene.refresh_from_world_view(world)  # warm the caches
         for percent in MOVING_PERCENTS:
-            moving = len(every_id) * percent // 100
-            times = []
-            for _ in range(args.frames):
-                move(world, rng.sample(every_id, moving), rng)
-                start = time.perf_counter()
-                scene.refresh_from_world_view(world)
-                times.append(time.perf_counter() - start)
-            drawn = len(scene.object_entities) + len(scene.avatar_entities)
-            if drawn != len(world.objects):
-                print(f"  !! drew {drawn} of {len(world.objects)} -- the region is not intact")
-            best = min(times) * 1000.0
+            key = (label, percent)
+            drawn, total = drew[key]
+            if drawn != total:
+                print(f"  !! drew {drawn} of {total} -- the region is not intact")
+            ms = best[key] * 1000.0
             print(
-                f"{label:22s} {len(world.objects):6d} objects  {percent:2d}% moving  "
-                f"{best:7.2f} ms/frame  ({1000.0 / best:6.0f} fps ceiling)"
+                f"{label:22s} {total:6d} objects  {percent:2d}% moving  "
+                f"{ms:7.2f} ms/frame  ({1000.0 / ms:6.0f} fps ceiling)"
             )
         print()
+    print(f"machine load {load_before:.1f} at the start, {os.getloadavg()[0]:.1f} at the end")
     return 0
 
 

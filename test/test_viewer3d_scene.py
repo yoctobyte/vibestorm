@@ -1906,6 +1906,11 @@ class RandomisedRefreshAgreementTests(unittest.TestCase):
             built.parented,
             built.terse_only,
             set(built.sources),
+            # Only the parents that still have children. A patched index
+            # leaves an empty set behind where a full build would have no key
+            # at all, and that difference is bookkeeping rather than an answer
+            # about the world.
+            {parent: kin for parent, kin in built.children.items() if kin},
         )
 
     def _step(self, rng, view, next_index):

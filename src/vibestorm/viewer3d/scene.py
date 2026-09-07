@@ -76,7 +76,7 @@ from vibestorm.viewer3d.avatar_pose import (
     pose_for_motion,
     sit_pose,
 )
-from vibestorm.viewer3d.linkset import resolve_world_transforms
+from vibestorm.viewer3d.linkset import IDENTITY, compose, resolve_world_transforms
 from vibestorm.world.chat_types import (
     CHAT_TYPE_SAY,
     CHAT_TYPE_START_TYPING,
@@ -1402,6 +1402,9 @@ class _BuiltEntities:
     #: entry is still the terse one's to overwrite -- `objects` is keyed by
     #: full id, so it cannot be asked whether a local id is in it.
     terse_only: set[int] = field(default_factory=set)
+    #: Which prims hang off which, by local id. What lets the next frame
+    #: recompose downward from what moved instead of walking the region.
+    children: dict[int, set[int]] = field(default_factory=dict)
     #: How many entries in `transforms` have a parent. Kept as a count rather
     #: than a flag so patching can maintain it exactly -- unparenting the last
     #: linked prim in the region has to be able to turn the composing back off.
@@ -1652,6 +1655,7 @@ def _build_entities(
         transforms=frame.transforms,
         sources=frame.sources,
         terse_only=frame.terse_only,
+        children=frame.children,
         parented=frame.parented,
     )
 
@@ -1713,6 +1717,11 @@ class _RegionFrame(NamedTuple):
     transforms: dict[int, tuple[int, object, object]]
     sources: dict[int, object]
     terse_only: set[int]
+    #: Which prims hang off which, by local id, for every entry in
+    #: `transforms` with a parent -- including parents that are not in view.
+    #: An absent parent is the interesting case: it is how the prims waiting on
+    #: one are found the moment it arrives.
+    children: dict[int, set[int]]
     parented: int
     #: Whose *entity* has to be built again -- the prims whose own data changed
     #: and the prims the composing moved, which is not the same set: a child
@@ -1756,6 +1765,7 @@ def _region_frame_transforms(
     transforms: dict[int, tuple[int, object, object]] = {}
     sources: dict[int, object] = {}
     terse_only: set[int] = set()
+    children: dict[int, set[int]] = {}
     unchanged: set[int] = set()
     parented = 0
     # Straight attribute access, not `getattr(obj, "position", None)`. This
@@ -1776,6 +1786,11 @@ def _region_frame_transforms(
         parent_id = obj.parent_id
         if parent_id:
             parented += 1
+            kin = children.get(parent_id)
+            if kin is None:
+                children[parent_id] = {local_id}
+            else:
+                kin.add(local_id)
         transforms[local_id] = (parent_id, position, obj.rotation)
         sources[local_id] = obj
         was = cache_get(local_id)
@@ -1800,7 +1815,7 @@ def _region_frame_transforms(
         # region to say so.
         else {}
     )
-    return _RegionFrame(placed, transforms, sources, terse_only, parented, None)
+    return _RegionFrame(placed, transforms, sources, terse_only, children, parented, None)
 
 
 def _patched_region_frame(
@@ -1848,6 +1863,19 @@ def _patched_region_frame(
     transforms = dict(previous.transforms)
     sources = dict(previous.sources)
     terse_only = set(previous.terse_only)
+    # Copied one branch at a time. A shallow copy of the index shares its
+    # sets, and editing one of those edits the record of the frame before
+    # this. Only the parents something moved under are copied, which is a
+    # handful, against three thousand for copying the lot.
+    children = dict(previous.children)
+    copied: set[int] = set()
+
+    def kin_of(parent_id: int) -> set[int]:
+        if parent_id not in copied:
+            children[parent_id] = set(children.get(parent_id, ()))
+            copied.add(parent_id)
+        return children[parent_id]
+
     parented = previous.parented
     changed_ids: set[int] = set()
     #: Terse updates for ids a full update owns. They change no transform --
@@ -1876,6 +1904,7 @@ def _patched_region_frame(
                     del sources[local_id]
                     if entry[0]:
                         parented -= 1
+                        kin_of(entry[0]).discard(local_id)
             continue
         live += 1
         was = old_get(local_id)
@@ -1887,9 +1916,11 @@ def _patched_region_frame(
         entry = transforms.get(local_id)
         if entry is not None and entry[0]:
             parented -= 1
+            kin_of(entry[0]).discard(local_id)
         parent_id = obj.parent_id
         if parent_id:
             parented += 1
+            kin_of(parent_id).add(local_id)
         transforms[local_id] = (parent_id, position, obj.rotation)
         sources[local_id] = obj
         terse_only.discard(local_id)
@@ -1912,6 +1943,7 @@ def _patched_region_frame(
         entry = transforms.get(local_id)
         if entry is not None and entry[0]:
             parented -= 1
+            kin_of(entry[0]).discard(local_id)
         transforms[local_id] = (0, terse.position, terse.rotation)
         sources[local_id] = terse
         terse_only.add(local_id)
@@ -1926,25 +1958,118 @@ def _patched_region_frame(
         return None
     if not parented:
         changed_ids.update(shadowed)
-        return _RegionFrame({}, transforms, sources, terse_only, parented, changed_ids)
-    # A set difference at C speed, not 15,000 `set.add` calls in the loop
-    # above: the complement is the big side here, and building it a name at a
-    # time is most of what the patch just saved. Measured -- a `__contains__`
-    # wrapper standing in for the set instead is *slower* than the set,
-    # 2.80 ms against 1.85 for 15,000 membership tests.
-    # `changed_ids` doubles as the rebuild set: the resolve adds to it every id
-    # the composing moved, which is the rest of the answer to "whose entity is
-    # not what it was". Working that out afterwards means comparing a tuple per
-    # prim against last frame's -- a second walk over the whole region, to
-    # recover something this walk already knew.
-    placed = resolve_world_transforms(  # type: ignore[arg-type]
-        transforms,
-        unchanged=transforms.keys() - changed_ids,
-        previous=previous_placement,
-        moved=changed_ids,
+        return _RegionFrame(
+            {}, transforms, sources, terse_only, children, parented, changed_ids
+        )
+    placed = _patched_placement(
+        transforms, children, changed_ids, previous_placement, previous.parented
     )
+    if placed is None:
+        # Only a parent cycle gets here, and only on the frame it forms. The
+        # full resolve leaves everything caught in one unplaced, which is what
+        # this cannot work out by walking downward from what changed.
+        # `changed_ids` doubles as the rebuild set, so the resolve is asked to
+        # add every id the composing moved: working that out afterwards means
+        # comparing a tuple per prim against last frame's, a second walk over
+        # the whole region to recover what this walk already knew.
+        #
+        # `unchanged` is a set difference at C speed rather than 15,000
+        # `set.add` calls in the loop above -- the complement is the big side
+        # here. Measured: a `__contains__` wrapper standing in for the set is
+        # *slower* than the set, 2.80 ms against 1.85 for 15,000 tests.
+        placed = resolve_world_transforms(  # type: ignore[arg-type]
+            transforms,
+            unchanged=transforms.keys() - changed_ids,
+            previous=previous_placement,
+            moved=changed_ids,
+        )
     changed_ids.update(shadowed)
-    return _RegionFrame(placed, transforms, sources, terse_only, parented, changed_ids)
+    return _RegionFrame(
+        placed, transforms, sources, terse_only, children, parented, changed_ids
+    )
+
+
+def _patched_placement(
+    transforms: dict,
+    children: dict[int, set[int]],
+    changed_ids: set[int],
+    previous_placement: dict,
+    previously_parented: int,
+) -> dict | None:
+    """Last frame's composed positions, recomposed only where they moved.
+
+    The third and last of the region-sized walks. `resolve_world_transforms`
+    is already careful -- a prim whose own transform is unchanged keeps the
+    very tuple it had -- but it still visits every prim in the region to hand
+    14,850 of them back what they already held, and that walk is now most of
+    what a frame costs.
+
+    A prim's world transform changes only if its own did or an ancestor's did,
+    so the work is a walk *downward* from what changed, which needs the one
+    thing the resolve never kept: which prims hang off which. `children` is
+    that index, maintained beside `transforms` for the price of the edits.
+
+    `changed_ids` is both the input and the output. It arrives holding the
+    prims whose own transform changed and leaves holding every prim whose
+    *world* transform is not what it was -- their descendants included, which
+    is the caller's answer to whose entity has to be built again.
+
+    Returns `None` when it cannot answer, which means a parent cycle: the walk
+    would go round it forever, so it stops and lets the full resolve say what
+    it says. A simulator should never send one; the randomised differential
+    makes them on purpose.
+    """
+    if not previously_parented:
+        # Last frame composed nothing -- `placed` was `{}` because the region
+        # held no parented prim -- so there is no answer to patch. Every prim
+        # in the region would have to be walked to build one, which is the
+        # thing this exists not to do.
+        return None
+    placed = dict(previous_placement)
+    stack = list(changed_ids)
+    # A cycle is the only way the walk does not terminate, and it announces
+    # itself by revisiting: four passes over the region is far more than any
+    # honest linkset depth and cheap to check against.
+    budget = 4 * len(transforms) + 64
+    while stack:
+        budget -= 1
+        if budget < 0:
+            return None
+        local_id = stack.pop()
+        entry = transforms.get(local_id)
+        if entry is None:
+            # A guard rather than a case. Every id in the index has an entry
+            # when it goes in, and the two ways one leaves -- a prim removed,
+            # and a prim whose position went away -- both decline the frame
+            # before reaching here, so nothing patched should ever find this
+            # true. It is here because "should" is doing the work in that
+            # sentence, and the cost of being wrong is a prim composing its
+            # children out of a transform that is not there.
+            gone = placed.pop(local_id, None)
+            if gone is not None:
+                changed_ids.add(local_id)
+                stack.extend(children.get(local_id, ()))
+            continue
+        parent_id, position, rotation = entry
+        turn = rotation if rotation is not None else IDENTITY
+        if parent_id:
+            parent = placed.get(parent_id)
+            if parent is None:
+                # Its parent is not placed, so neither is it -- and neither is
+                # anything below it, which is why the descent carries on.
+                if placed.pop(local_id, None) is not None:
+                    changed_ids.add(local_id)
+                    stack.extend(children.get(local_id, ()))
+                continue
+            here = compose(parent, (position, turn))
+        else:
+            here = (position, turn)
+        placed[local_id] = here
+        changed_ids.add(local_id)
+        kin = children.get(local_id)
+        if kin:
+            stack.extend(kin)
+    return placed
 
 
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:

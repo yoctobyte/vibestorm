@@ -323,6 +323,75 @@ the randomised harness cannot reach, because it does one per frame. That is
 worth keeping as a shape: a differential harness that steps one operation at a
 time can only find bugs that one operation causes.
 
+**A -- the composing, which was the last of the three (2026-09-07).**
+`resolve_world_transforms` is already careful: a prim whose own transform did
+not change keeps the very tuple it had. It still visited every prim in the
+region to hand 14,850 of them back what they already held, and after the first
+two patches that walk was most of what a frame cost -- 47% of it by profile.
+
+A prim's world position changes only if its own did or an ancestor's did, so
+the work is a walk **downward** from what changed. That needs the one thing
+the resolve never kept: which prims hang off which. `_BuiltEntities.children`
+is that index now, maintained beside `transforms` for the price of the edits,
+and copied one branch at a time -- a shallow copy of a dict of sets shares
+every set in it, and editing one of those edits the record of the frame
+before.
+
+The index holds parents that are **not in view**, which is the interesting
+half: updates are not ordered, so a child routinely arrives before its root
+and sits unplaced. Nothing about the child changes on the frame its parent
+lands, so unless the index remembered who was waiting on that id, the walk
+down from the parent reaches nobody and the child stays where it is not.
+
+It gives up on a parent cycle rather than going round it: the budget is four
+passes over the region, far more than any honest linkset depth, and beyond it
+the full resolve is asked instead -- which says that nothing caught in a cycle
+has a place at all, and is the one answer a downward walk cannot reach. A
+simulator should never send one; the randomised differential makes them on
+purpose.
+
+Fourteen mutants, eleven killed. The three survivors are the old resolve
+itself (performance, which the bench measures and no test can), one documented
+guard against a state that is argued unreachable, and a stale index entry that
+costs an extra visit and produces the same answer -- because the walk composes
+from the *transform entry*, not from the list it arrived by.
+
+**A -- the benchmark was measuring the owner's compiler (2026-09-07).** Two
+runs of `tools/bench_scene_refresh.py`, twenty minutes apart on identical
+code, came back at 2.82 ms and 6.24 ms for the same row. `ps` in between: two
+of the owner's builds at 95% of a core each, on a machine at load 15. The
+benchmark had exactly the hole the soak report had, one level down, and it had
+been quietly inflating every figure recorded here today.
+
+Two changes, and neither closes it completely:
+
+* **CPU time, not wall clock.** `time.process_time` is this process's own user
+  plus system time, so the scheduler handing a core to somebody else stops
+  counting against us. What it cannot exclude is a core *stalled* on another
+  process's cache misses, which is still our time being spent.
+* **Rounds, and the best of all of them.** The whole table is walked several
+  times rather than each row measured in one sitting, so a row's samples land
+  at several moments of the machine's day instead of all inside one busy
+  minute. The reported figure is the minimum, which is the only sample close
+  to the truth on a machine somebody else is compiling on.
+
+And the load is printed at the bottom, for the same reason the soak report
+prints it at the top.
+
+Re-measured under that method, at load 15, before and after the composing
+patch:
+
+    3000 linksets of 5   15000 objects  1% moving   25.05 ms -> 15.04   (40 -> 66 fps)
+    3000 linksets of 5   15000 objects  5% moving   50.75 ms -> 38.18
+    1000 linksets of 5    5000 objects  1% moving    6.67 ms ->  3.93
+    1000 linksets of 5    5000 objects  5% moving   13.97 ms -> 10.25
+
+Note the "before" column: 25.05 ms where the previous entry recorded 27.17 for
+the same code. Every wall-clock figure in the entries above this one is
+inflated by whatever else was running, and they are left as written rather
+than restated, because the *differences* they report were measured back to
+back and are the part that was ever load-independent.
+
 **A -- and every one of those savings, times the regions in view
 (2026-09-07).** `_refresh_neighbour_entities` handed `_build_entities` a cache
 and a placement map but never a *previous build*, so a region next door paid
