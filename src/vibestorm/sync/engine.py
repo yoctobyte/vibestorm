@@ -338,9 +338,9 @@ async def push_folder_to_object(
     it across, so without them an unmatched notecard can only be reported.
 
     ``new_file_cap`` and ``agent_folder_id`` do the same for a texture, by the
-    same route and for the same reason. A texture is only ever *created*: the
-    asset behind an existing row is replaced through a capability per asset
-    type, and the two this client has are for script and notecard.
+    same route and for the same reason. A texture is only ever *created*:
+    OpenSim registers no ``UpdateTextureTaskInventory``, so there is no way
+    to replace the asset behind an existing texture row.
     """
     outcome = SyncOutcome()
     if not folder.is_dir():

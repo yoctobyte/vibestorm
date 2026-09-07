@@ -578,3 +578,52 @@ class TextureUploadFallsThroughToTypeZeroTests(unittest.TestCase):
         to. That cap is a convention among readers, not a rule."""
         self.assertIn("textureAsset.Data = texture_list[i].AsBinary();", self.source)
 
+
+class NoTextureUpdateCapabilityTests(unittest.TestCase):
+    """Why a texture is uploaded and never replaced.
+
+    This client reports an image whose name is already in an object as
+    skipped, and the comment beside that used to read as an admission -- "the
+    asset behind a row is updated through a capability per asset type, and
+    this client has two". That phrasing invites a reader to go and implement
+    the third.
+
+    There is no third. OpenSim registers six `Update*TaskInventory`
+    capabilities and none of them is for a texture, so replacing the asset
+    behind a texture row is not something a viewer does at all: it uploads a
+    new asset and points at it. The limitation is the protocol's, and a
+    reader who does not know that will spend an afternoon finding out.
+
+    The list is also a map of what *could* be round-tripped and is not.
+    `UpdateGestureTaskInventory` is the interesting one -- a gesture is a
+    line-based text format this client already decodes.
+    """
+
+    def setUp(self) -> None:
+        self.source = _source("Caps", "BunchOfCaps", "BunchOfCaps.cs")
+        if self.source is None:
+            self.skipTest("referencedocs/Caps/BunchOfCaps/BunchOfCaps.cs is not committed")
+
+    def _task_update_caps(self) -> set[str]:
+        return set(re.findall(r'"(Update[A-Za-z]+TaskInventory)"', self.source))
+
+    def test_the_task_update_capabilities_are_these_six(self) -> None:
+        self.assertEqual(
+            self._task_update_caps(),
+            {
+                "UpdateAnimSetTaskInventory",
+                "UpdateGestureTaskInventory",
+                "UpdateMaterialTaskInventory",
+                "UpdateNotecardTaskInventory",
+                "UpdateScriptTaskInventory",
+                "UpdateSettingsTaskInventory",
+            },
+        )
+
+    def test_none_of_them_is_for_a_texture(self) -> None:
+        """Stated separately from the list above so the failure reads right:
+        if a future OpenSim adds one, this is the test whose name says what
+        just became possible."""
+        self.assertNotIn("UpdateTextureTaskInventory", self.source)
+        self.assertFalse([cap for cap in self._task_update_caps() if "Texture" in cap])
+

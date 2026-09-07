@@ -370,14 +370,19 @@ def _plan_textures(
     can_create_textures: bool,
     existing: frozenset[str],
 ) -> list[PushEntry]:
-    """Textures are created, never replaced.
+    """Textures are created, never replaced -- and that is the protocol's rule.
 
-    This client can build a new texture asset and put it in an object. It
-    cannot update one that is already there: the asset behind a task
-    inventory row is replaced through a capability per asset type, and the
-    only two this client has are for script and notecard. So a texture whose
-    name is already in the object is reported rather than silently uploaded
-    beside itself as `sunset 1`, which is what a create would do.
+    The asset behind a task inventory row is replaced through a capability
+    per asset type, and OpenSim registers six of them: AnimSet, Gesture,
+    Material, Notecard, Script, Settings. There is no texture one. Replacing
+    a texture is not something a viewer does at all -- it uploads a new asset
+    and points at it -- so this is not a gap waiting to be filled, and
+    `NoTextureUpdateCapabilityTests` pins the list so a reader does not spend
+    an afternoon finding that out.
+
+    So a texture whose name is already in the object is reported rather than
+    silently uploaded beside itself as `sunset 1`, which is what a create
+    would do.
 
     That asymmetry is worth stating plainly because it makes a folder push
     only partly idempotent for textures: the *second* run reports them
