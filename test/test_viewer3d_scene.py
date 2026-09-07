@@ -1832,3 +1832,144 @@ class BuiltEntitiesIsARecordNotAValueTests(unittest.TestCase):
         self.assertNotEqual(build(), build())
         one = build()
         self.assertEqual(one, one)
+
+
+class RandomisedRefreshAgreementTests(unittest.TestCase):
+    """The same two scenes, a thousand random changes, still agreeing.
+
+    `RepeatFrameMatchesAFullRebuildTests` walks fourteen steps somebody thought
+    of. This walks steps nobody did: prims arriving, leaving, moving, being
+    reparented onto other prims, and terse-only prims doing the same, in an
+    order chosen by a seeded generator.
+
+    It exists because the refresh carries state across frames, and every
+    carried-state bug is an *omission* -- a frame that quietly kept an answer
+    that had stopped being true. An omission is invisible in the frame it
+    happens: the screen keeps showing what it was showing. The only check that
+    does not depend on having imagined the case is a second scene that carries
+    nothing.
+
+    Seeded, so a failure is reproducible; the seed is in the subTest.
+    """
+
+    OPERATIONS = 120
+
+    def _prim(self, index, local_id, parent_id, position):
+        from vibestorm.world.models import WorldObject
+
+        return WorldObject(
+            full_id=UUID(int=index), local_id=local_id, parent_id=parent_id,
+            pcode=PCODE_PRIM, material=0, click_action=0, scale=(1.0, 1.0, 1.0),
+            state=0, crc=0, update_flags=0, region_handle=0, time_dilation=0,
+            object_data_size=0, position=position, rotation=(0.0, 0.0, 0.0, 1.0),
+            variant="prim_basic", name_values={}, texture_entry_size=0,
+            texture_anim_size=0, data_size=0, text_size=0, media_url_size=0,
+            ps_block_size=0, extra_params_size=0, extra_params_entries=(),
+            default_texture_id=None,
+        )
+
+    def _terse(self, local_id, position):
+        from vibestorm.world.models import TerseWorldObject
+
+        return TerseWorldObject(
+            local_id=local_id, state=0, region_handle=0, time_dilation=0,
+            position=position, velocity=(0.0, 0.0, 0.0),
+            acceleration=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0),
+            angular_velocity=(0.0, 0.0, 0.0), is_avatar=False,
+        )
+
+    def _shape(self, scene):
+        def values(entities):
+            return {
+                key: (e.position, e.rotation, e.pcode, e.parent_id)
+                for key, e in entities.items()
+            }
+
+        return values(scene.object_entities), values(scene.avatar_entities)
+
+    def _step(self, rng, view, next_index):
+        """One plausible thing a simulator does, chosen at random."""
+        full_ids = list(view.objects)
+        choice = rng.randrange(7)
+        if choice == 0 or not full_ids:
+            # A prim arrives, sometimes parented to one already here.
+            parent = 0
+            if full_ids and rng.random() < 0.5:
+                parent = view.objects[rng.choice(full_ids)].local_id
+            view.objects[UUID(int=next_index)] = self._prim(
+                next_index, next_index, parent,
+                (rng.uniform(0.0, 256.0), rng.uniform(0.0, 256.0), 25.0),
+            )
+            return next_index + 1
+        if choice == 1:
+            view.objects.pop(rng.choice(full_ids))
+            return next_index
+        if choice in (2, 3):
+            # A prim moves: a new instance, exactly as an update gives.
+            key = rng.choice(full_ids)
+            was = view.objects[key]
+            view.objects[key] = self._prim(
+                key.int, was.local_id, was.parent_id,
+                (was.position[0] + rng.uniform(-1.0, 1.0), was.position[1], was.position[2]),
+            )
+            return next_index
+        if choice == 4:
+            # A prim is reparented -- onto another prim, or off one.
+            key = rng.choice(full_ids)
+            was = view.objects[key]
+            others = [view.objects[k].local_id for k in full_ids if k != key]
+            parent = rng.choice(others) if others and rng.random() < 0.7 else 0
+            view.objects[key] = self._prim(
+                key.int, was.local_id, parent, was.position
+            )
+            return next_index
+        if choice == 5:
+            local_id = 900 + rng.randrange(4)
+            view.terse_objects[local_id] = self._terse(
+                local_id, (rng.uniform(0.0, 256.0), 10.0, 20.0)
+            )
+            return next_index
+        if view.terse_objects:
+            view.terse_objects.pop(rng.choice(list(view.terse_objects)))
+        return next_index
+
+    def test_a_carried_scene_agrees_with_a_fresh_one_throughout(self):
+        import random
+
+        from vibestorm.world.models import WorldView
+
+        for seed in (1, 2, 3, 5, 8):
+            rng = random.Random(seed)
+            view = WorldView()
+            carried = Scene()
+            next_index = 1
+            for step in range(self.OPERATIONS):
+                next_index = self._step(rng, view, next_index)
+                carried.refresh_from_world_view(view)
+                fresh = Scene()
+                fresh.refresh_from_world_view(view)
+                if self._shape(carried) != self._shape(fresh):
+                    self.fail(
+                        f"seed {seed} diverged at step {step} "
+                        f"({len(view.objects)} objects, "
+                        f"{len(view.terse_objects)} terse)"
+                    )
+
+    def test_the_run_actually_exercises_both_paths(self):
+        """A differential test that never took the fast path proves nothing
+        about the fast path."""
+        import random
+
+        from vibestorm.world.models import WorldView
+
+        rng = random.Random(1)
+        view = WorldView()
+        carried = Scene()
+        next_index = 1
+        for _ in range(self.OPERATIONS):
+            next_index = self._step(rng, view, next_index)
+            carried.refresh_from_world_view(view)
+            carried.refresh_from_world_view(view)  # the same frame twice
+
+        self.assertGreater(carried.repeat_frames, 0)
+        self.assertGreater(carried.rebuilt_frames, 0)

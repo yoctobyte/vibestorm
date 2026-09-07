@@ -210,6 +210,41 @@ every behavioural test and quietly walks two dozen fields per prim per frame.
 `_RefusesToBeComparedByValue` raises if anything asks -- the wrong answer is
 made impossible to obtain rather than merely slow.
 
+**And the net was widened before the next pass, not after.**
+`RandomisedRefreshAgreementTests` runs five seeds of a hundred and twenty
+random changes -- prims arriving, leaving, moving, being reparented onto other
+prims and off them, terse-only prims doing the same -- and after every single
+one a scene that carried its state must equal a scene that carried nothing.
+Every carried-state bug is an omission, and an omission is invisible in the
+frame it happens: the screen keeps showing what it was showing. Fourteen steps
+somebody thought of will not find the fifteenth. It also asserts that the run
+took *both* paths, because a differential test that never took the fast path
+proves nothing about the fast path.
+
+**What is left, measured rather than guessed.** The still rows are done; the
+*moving* rows are now the whole of it, and they did not move:
+
+    3000 linksets of 5   15000 objects   1% moving   41 ms   (24 fps ceiling)
+    3000 linksets of 5   15000 objects   5% moving   73 ms   (14 fps ceiling)
+
+One percent of 15,000 prims is 150 that moved, and they cost 38 ms -- 250
+microseconds apiece, which is not what rebuilding 150 entities costs. It is
+that *any* change puts the frame back on the full O(n) path: 69,000 dictionary
+lookups and four dictionaries of 15,000 entries rebuilt to hold what 14,850 of
+them already held. Profiled, `_region_frame_transforms` and
+`resolve_world_transforms` are 61% of that, and both already carry unchanged
+answers across -- they simply rebuild the dictionary they carry them into.
+
+So the next pass is the one this one turned out not to need: keep `transforms`
+and the resolved placement across frames and patch the entries that changed,
+rather than rebuild them. The scan is not the cost -- that is the lesson of
+`_nothing_moved`, and it is measured -- so the design does not need `WorldView`
+to say what changed. It needs a parent-to-children index kept across frames so
+a moved root can recompose its own linkset and nothing else, and it needs
+removals handled explicitly rather than falling out of building fresh
+dictionaries. That is state to keep correct, and the equivalence harness
+already written for this pass is what it should be built against.
+
 **And it is counted, not just benched.** `scene.repeat_frames` and
 `scene.rebuilt_frames` go into the soak log. A bench can say a repeat frame
 costs 3 ms instead of 31; only a run can say how often a live region has one,
