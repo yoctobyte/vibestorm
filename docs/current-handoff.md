@@ -262,11 +262,14 @@ keeping one text object per HUD line, forever.
 The objects are *cyclic garbage*: pygame_gui builds a small graph per laid-out
 line, the parts of it refer to each other, and only the cyclic collector frees
 them. So the question is not what holds a reference -- nothing does -- but why
-the collection stops arriving. CPython runs its oldest generation when
-`long_lived_pending > long_lived_total / 4`. A viewer's static heap is most of
-`long_lived_total` and is never garbage; it does nothing but push that
-threshold up, until a quarter of it is more text objects than the run
-produces.
+the collection stops arriving. This interpreter collects the old generation
+**incrementally**: a young collection runs every few thousand net allocations
+and drags a slice of the old generation along with it, so one complete pass
+over the old generation costs as many slices as that generation is large. A
+viewer's static heap is most of the old generation and is never garbage; all
+it does is lengthen every pass, until the pass that would free a text object
+promoted an hour ago has still not come round. Freezing moves that heap into
+the permanent generation, which is not scanned at all.
 
 The harness that settled it is `tools/gc_pressure.py`: a real HUD with its
 diagnostics panel open, driven for twenty thousand frames with no window, and
@@ -276,6 +279,31 @@ each census and reported a clean heap for as long as it was asked to -- a
 census that collects first cannot see a collection failing to happen. Removing
 that call reproduced the sawtooth on the first run, and the file now says so at
 the top so it does not get put back.
+
+The mechanism is measurable on its own, without a HUD, and
+`tools/gc_pressure.py --mode threshold` does it: hold a heap, then count how
+much cyclic garbage has to be allocated before one automatic collection
+arrives.
+
+    heap                         objects per collection
+    empty                                        37,964
+    624k objects held                           415,586
+    the same, frozen                              3,998
+
+A hundredfold, and the middle row is what a loaded viewer is. (The first row
+is this process's own baseline -- the module imports pygame -- and moves with
+what is loaded; the pair that means something is the second against the
+third.) It also explains a test this pass wrote twice and had to kill once. The pin
+on the index mapping first allocated a fixed 60,000 cyclic objects and waited
+for the counter to move: it passed in its own file and failed in the full
+suite, because in the full suite 60,000 is not one collection's worth. The
+second version allocated *until* the counter moved -- which is unbounded for
+exactly the reason being measured, and reached **8 GB** of resident set before
+it was killed. The version that shipped checks only what an explicit call
+moves, and identifies the automatic counter by elimination: it is the one
+`gc.collect(0)` and `gc.collect()` both leave alone. The positive
+demonstration belongs in the harness, where it is the measurement rather than
+a precondition.
 
     mode=none  frames=20000            mode=freeze  frames=20000
       frame     list   deque  TextBox     frame     list   deque  TextBox
@@ -309,12 +337,34 @@ prims, and nothing else in the file would notice, so
 source between those two lines and fails if one appears. Checked against a
 mutant: inserting `await asyncio.sleep(0)` there turns it red.
 
-Three counters go on the sample -- `gc.gen0`, `gc.gen1`, `gc.gen2`, straight
-off `gc.get_stats()` -- and all three are declared **counters** in
-`tools/soak_report.py`, with a test that says so. Left as gauges they would be
-three permanent `growing` rows at the top of every report, which is how a
-report stops being read. They are there for one comparison: a `gc.gen2` that
-slows while `obj._total` climbs is this bug, by name, without a two-hour rerun.
+Three counters go on the sample, straight off `gc.get_stats()`, and all three
+are declared **counters** in `tools/soak_report.py` with a test that says so.
+Left as gauges they would be three permanent `growing` rows at the top of every
+report, which is how a report stops being read. They are there for one
+comparison: an automatic-collection count that slows while `obj._total` climbs
+is this bug, by name, without a two-hour rerun.
+
+**And the first version of both of those was wrong, in the way this pass keeps
+finding.** They went out as `gc.gen0`, `gc.gen1`, `gc.gen2`, and the paragraph
+above went out saying `long_lived_pending > long_lived_total / 4` -- which is
+the *pre-3.13* collector. Python 3.13 replaced it with the incremental one and
+kept `gc.get_stats()` at three entries while the meaning moved underneath.
+Measured on the interpreter this actually runs on (3.14.4, thresholds
+`(2000, 10, 0)`): index **1** is where the automatic collector counts, and 0
+and 2 move only when something calls `gc.collect(0)` or `gc.collect()` by
+hand. Soak run 4's first sample says `gc.gen0 = 0` and `gc.gen1 = 12`, which is
+what gave it away -- a young generation that had never been collected while the
+one above it had been collected twelve times is not a thing.
+
+So they are `gc.young_collections`, `gc.auto_collections` and
+`gc.full_collections` now: named for what each index was *measured* to count,
+with a test that trips if an interpreter moves them. `soak_report.py` still
+lists the old names as counters, because run 4 is written in them. This is the
+same mistake as printing a wire byte where a reader expects metres, one layer
+down: a number labelled by what it was assumed to be. The fix and its
+measurements are unaffected -- freezing still removed the sawtooth and cut a
+full collection from 20.6 ms to 2.0 -- only the explanation was wrong, and
+`7e792ed`'s commit message still carries the wrong one.
 
 **Run 3 and run 4 do not compare on `obj.*`.** `gc.get_objects()` does not
 report the permanent generation, so from run 4 on the census counts the world

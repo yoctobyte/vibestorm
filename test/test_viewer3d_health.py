@@ -1183,9 +1183,52 @@ class CyclicGarbageTests(unittest.TestCase):
             value = float(read())
             assert math.isfinite(value), name
             assert value >= 0.0, name
-        before = GC_COUNTERS["gc.gen2"]()
+        before = GC_COUNTERS["gc.full_collections"]()
         gc.collect()
-        self.assertGreater(GC_COUNTERS["gc.gen2"](), before)
+        self.assertGreater(GC_COUNTERS["gc.full_collections"](), before)
+
+    def test_the_names_match_what_the_indices_actually_count(self) -> None:
+        """The mapping the names claim, pinned to the interpreter running.
+
+        Python 3.13 replaced the three-generation collector with an
+        incremental one, and `gc.get_stats()` kept its three entries while the
+        meaning moved. Names that said `gen0`/`gen1`/`gen2` were describing a
+        collector this client does not run on -- the same mistake as printing
+        a wire byte where a reader expects metres, one layer down.
+
+        What is checked here is what can be checked in a millisecond: the two
+        indices an explicit call moves, and therefore -- by elimination -- the
+        one it does not. `gc.auto_collections` is the counter no hand-written
+        collection touches, which is what "automatic" means and what the name
+        promises.
+
+        What is deliberately *not* checked here is that the automatic
+        collector does eventually count there, because how much garbage that
+        takes is the very quantity this fix is about: on a small heap roughly
+        twelve thousand objects, on a viewer-sized one four hundred thousand.
+        The first version of this test allocated until the counter moved, and
+        in the full suite -- where the heap is large -- it reached eight
+        gigabytes before it was killed. That demonstration lives in
+        `tools/gc_pressure.py --mode threshold`, where it is the measurement
+        rather than a precondition.
+        """
+        import gc
+
+        def counts() -> dict[str, float]:
+            return {name: read() for name, read in GC_COUNTERS.items()}
+
+        before = counts()
+        gc.collect(0)
+        after = counts()
+        self.assertGreater(after["gc.young_collections"], before["gc.young_collections"])
+        self.assertEqual(after["gc.auto_collections"], before["gc.auto_collections"])
+        self.assertEqual(after["gc.full_collections"], before["gc.full_collections"])
+
+        before = counts()
+        gc.collect()
+        after = counts()
+        self.assertGreater(after["gc.full_collections"], before["gc.full_collections"])
+        self.assertEqual(after["gc.auto_collections"], before["gc.auto_collections"])
 
     def test_every_collection_count_is_declared_a_counter(self) -> None:
         """Or the report calls the fix a leak.

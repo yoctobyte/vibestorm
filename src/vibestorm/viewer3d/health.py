@@ -81,19 +81,29 @@ def freeze_static_heap() -> int:
 
     Not an optimisation. It is the fix for a leak that is not a leak: the
     objects pygame_gui makes for a line of text refer to each other, so only
-    the *cyclic* collector frees them, and CPython runs its oldest generation
-    when the pending long-lived allocations exceed a quarter of the long-lived
-    total. A viewer's static heap -- the UI, the GL objects, the modules -- is
-    most of that total and none of it is ever garbage, so it does nothing but
-    push the threshold up and make the collection that would free the text
-    objects rarer and rarer.
+    the *cyclic* collector frees them, and this interpreter collects the old
+    generation **incrementally**. A young collection runs every few thousand
+    net allocations and scans only a slice of the old generation with it, so
+    one complete pass over the old generation takes as many slices as that
+    generation is large. A viewer's static heap -- the UI, the GL objects, the
+    modules -- is most of the old generation and none of it is ever garbage:
+    all it does is lengthen every pass, until the pass that would free a text
+    object promoted an hour ago has still not come round.
 
-    Measured, on the HUD alone driven for 20,000 frames: without this, live
-    objects sawtooth between 36,000 and 64,000 and a full collection costs
-    20.6 ms; with it, between 700 and 4,000, and 2.0 ms. Soak run 3 is the
-    same thing at scale -- flat for fifty-five minutes and then a straight
-    climb to a gigabyte, because as the heap grew the sawtooth's teeth grew
-    with it until the collections stopped arriving in time.
+    Freezing moves that static heap into the permanent generation, which is
+    not scanned at all, so a pass over what is left completes in a fraction of
+    the slices.
+
+    Measured directly, by `tools/gc_pressure.py --mode threshold`: with
+    624,000 objects held in the old generation, one automatic collection is
+    worth **415,586** allocated cyclic objects; freeze that heap and the same
+    collection arrives every **3,998**. A hundredfold. Driving the real HUD
+    for 20,000 frames says the same thing in the shape a soak sees it: live
+    objects sawtooth between 36,000 and 64,000 without this and between 700
+    and 4,000 with it, and a full collection costs 20.6 ms against 2.0 ms.
+    Soak run 3 is the same again at two hours -- flat for fifty-five minutes
+    and then a straight climb to a gigabyte, as each pass took longer than the
+    one before.
 
     Call this once, after the viewer is built and **before** the world
     arrives. Frozen objects are never collected again, so a prim frozen here
@@ -120,15 +130,23 @@ def _gc_collections(generation: int) -> Gauge:
 
 
 #: Counters, not gauges: they only rise. Declared here rather than in the
-#: viewer because the *rate* of the oldest one is the thing that explains a
-#: heap growing while every container in the report is settled -- generation
-#: two collecting less and less often as the heap it is measured against
-#: grows. A run where `gc.gen2` barely moves and `obj._total` climbs is that
-#: story and no other.
+#: viewer because the *rate* of the automatic one explains a heap growing
+#: while every container in the report is settled -- collections arriving
+#: further and further apart as the generation they scan gets longer. A run
+#: where `gc.auto_collections` slows while `obj._total` climbs is that story
+#: and no other.
+#:
+#: The names say what each index was **measured** to count on this
+#: interpreter, not what `gc.get_stats()` calls them. Python 3.13 replaced the
+#: three-generation collector with an incremental one, and the indices no
+#: longer mean generations: index 1 is where the automatic collector counts,
+#: and 0 and 2 move only when something calls `gc.collect(0)` or `gc.collect()`
+#: by hand. `test_viewer3d_health.py` pins that mapping, so it cannot drift
+#: under a future interpreter without a red test.
 GC_COUNTERS: dict[str, Gauge] = {
-    "gc.gen0": _gc_collections(0),
-    "gc.gen1": _gc_collections(1),
-    "gc.gen2": _gc_collections(2),
+    "gc.young_collections": _gc_collections(0),
+    "gc.auto_collections": _gc_collections(1),
+    "gc.full_collections": _gc_collections(2),
 }
 
 

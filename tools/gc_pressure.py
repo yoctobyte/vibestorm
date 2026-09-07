@@ -8,10 +8,18 @@ lays out, the parts of that graph refer to each other, and so only the *cyclic*
 collector can free them -- which makes the question "why does the collection
 stop arriving", not "who is holding this".
 
-CPython runs its oldest generation when ``long_lived_pending`` passes
-``long_lived_total / 4``. A viewer's static heap is most of that total and is
-never garbage; all it does is push the threshold up, until a quarter of it is
-more text objects than an hour of HUD updates produces.
+This interpreter collects the old generation **incrementally**: a young
+collection runs every few thousand net allocations and drags a slice of the
+old generation along with it, so one complete pass over the old generation
+costs as many slices as that generation is large. A viewer's static heap is
+most of the old generation and is never garbage; all it does is lengthen every
+pass, until the pass that would free a text object promoted an hour ago has
+still not come round.
+
+(Written first against the pre-3.13 rule -- oldest generation collected when
+``long_lived_pending`` passed ``long_lived_total / 4`` -- which is the wrong
+collector for Python 3.13 and later. The measurements below did not change;
+the explanation did.)
 
 This drives a real HUD at a fixed frame budget with no window and samples the
 heap by type as it goes, in three modes:
@@ -82,9 +90,76 @@ def build_hud() -> tuple[HUD, Scene]:
     return hud, scene
 
 
+class _Cycle:
+    """Two of these referring to each other are garbage only the cycle finder frees."""
+
+
+def _objects_until_a_collection(limit: int = 4_000_000) -> int:
+    """How much cyclic garbage one automatic collection is worth, right now.
+
+    This is the number the whole fix turns on, and it is not a constant: the
+    old generation is collected incrementally, so a pass over it costs as many
+    slices as it is large, and the garbage that piles up while that pass
+    finishes grows with it.
+    """
+    gc.collect()
+    start = gc.get_stats()[1]["collections"]
+    made = 0
+    while gc.get_stats()[1]["collections"] == start and made < limit:
+        first = _Cycle()
+        second = _Cycle()
+        first.other = second
+        second.other = first
+        made += 2
+    return made
+
+
+def measure_threshold() -> int:
+    """Three numbers: this process's own heap, a viewer-sized one, and frozen.
+
+    No HUD and no window -- the static heap is stood in for by held cycles,
+    because what matters is its *size*, not what is in it. Takes a few
+    seconds.
+
+    The first row is not zero and is not stable: this module imports pygame,
+    so the "empty" heap is already tens of thousands of objects, and the
+    figure moves with what the interpreter happens to have loaded. The pair
+    that means something is the second row against the third, measured back to
+    back on the same heap.
+    """
+    print(f"{'heap':<28} {'objects per collection':>22}")
+    small = _objects_until_a_collection()
+    print(f"{'empty':<28} {small:>22,}")
+
+    static = []
+    for _ in range(300_000):
+        first = _Cycle()
+        second = _Cycle()
+        first.other = second
+        second.other = first
+        static.append(first)
+    gc.collect()
+    held = len(gc.get_objects())
+    large = _objects_until_a_collection()
+    print(f"{f'{held // 1000}k objects held':<28} {large:>22,}")
+
+    gc.freeze()
+    frozen = _objects_until_a_collection()
+    print(f"{'the same, frozen':<28} {frozen:>22,}")
+    print()
+    print(
+        f"holding {held // 1000}k objects made one collection worth "
+        f"{large / small:.0f}x as much garbage; freezing gave it back."
+    )
+    print(f"machine load {os.getloadavg()[0]:.1f}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("none", "freeze", "collect"), default="none")
+    parser.add_argument(
+        "--mode", choices=("none", "freeze", "collect", "threshold"), default="none"
+    )
     parser.add_argument("--frames", type=int, default=20000)
     parser.add_argument("--sample-every", type=int, default=2000)
     parser.add_argument(
@@ -94,6 +169,9 @@ def main(argv: list[str]) -> int:
         help="frames between explicit collections, with --mode collect",
     )
     args = parser.parse_args(argv)
+
+    if args.mode == "threshold":
+        return measure_threshold()
 
     hud, scene = build_hud()
 

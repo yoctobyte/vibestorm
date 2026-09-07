@@ -43,6 +43,12 @@ DEFAULT_COUNTERS = (
     "world.object_updates",
     "scene.repeat_frames",
     "scene.rebuilt_frames",
+    "gc.young_collections",
+    "gc.auto_collections",
+    "gc.full_collections",
+    # The names these went out under before the index mapping was measured.
+    # Soak run 4 is written in them; a report of it must still read them as
+    # counters rather than as three permanent `growing` rows.
     "gc.gen0",
     "gc.gen1",
     "gc.gen2",
