@@ -274,20 +274,31 @@ class CarriedTransformsTests(unittest.TestCase):
         dictionaries would make the record of what was drawn a lie -- and the
         lie would be retrospective, which is the kind nothing catches.
         """
-        world = _world(_prim(1, (10.0, 10.0, 20.0)), _prim(2, (12.0, 10.0, 20.0)))
+        world = _world(
+            _prim(1, (10.0, 10.0, 20.0)),
+            _prim(2, (2.0, 0.0, 0.0), parent_id=1),
+        )
         scene = self._scene()
         scene.refresh_from_world_view(world)
         first = scene._built
-        before = dict(first.transforms), dict(first.sources), set(first.terse_only)
+
+        def snapshot(built):
+            return (
+                dict(built.transforms),
+                dict(built.sources),
+                set(built.terse_only),
+                dict(built.objects),
+                dict(built.avatars),
+                dict(built.cache),
+            )
+
+        before = snapshot(first)
 
         world.remember_object(_prim(1, (60.0, 10.0, 20.0)))
         world.remember_object(_prim(3, (7.0, 7.0, 20.0)))
         scene.refresh_from_world_view(world)
 
-        self.assertEqual(
-            (dict(first.transforms), dict(first.sources), set(first.terse_only)),
-            before,
-        )
+        self.assertEqual(snapshot(first), before)
         self.assertIsNot(scene._built, first)
 
     def _patch_outcomes(self, scene, world):
@@ -339,3 +350,130 @@ class CarriedTransformsTests(unittest.TestCase):
         world.objects.pop(UUID(int=2))
         self.assertEqual(self._patch_outcomes(scene, world), [False])
         self.assertNotIn(2, scene._built.transforms)
+
+
+class CarriedEntitiesTests(unittest.TestCase):
+    """The frame patches its entities too, and here is what that must not lose.
+
+    A prim's entity survives a frame when neither the prim nor anything above
+    it in its linkset moved, and the frame now knows which those are without
+    asking each of fifteen thousand prims two dictionary questions to find
+    out. Everything below is a way for a prim to stop being what it was
+    *without* its own update saying so -- which is exactly the class of thing
+    a set of "what changed" ids is prone to missing.
+    """
+
+    def _scene(self):
+        from vibestorm.viewer3d.scene import Scene
+
+        return Scene()
+
+    def _orphan_with_a_terse_update(self):
+        """A full update whose parent will never arrive, and a terse one for it.
+
+        This is the shape where the terse pass is not "a prim no full update
+        has been seen for" but the *fallback* for a full update that could not
+        be placed: the prim draws as a placeholder rather than not at all.
+        """
+        world = _world(_prim(5, (1.0, 0.0, 0.0), parent_id=99))
+        world.terse_objects[5] = _terse(5, (10.0, 10.0, 20.0))
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+        self.assertAlmostEqual(scene.object_entities[5].position[0], 10.0)
+        return world, scene
+
+    def test_a_terse_update_still_moves_a_prim_a_full_update_owns(self) -> None:
+        """The full update owns the *transform*; the terse one is what is drawn.
+
+        Nothing about the transforms changes here -- the full update's entry
+        stands, and the terse update is skipped as shadowed -- so a frame that
+        rebuilds only what changed the transforms leaves this placeholder
+        exactly where it was for the rest of the session.
+        """
+        world, scene = self._orphan_with_a_terse_update()
+
+        world.terse_objects[5] = _terse(5, (20.0, 10.0, 20.0))
+        scene.refresh_from_world_view(world)
+
+        self.assertAlmostEqual(scene.object_entities[5].position[0], 20.0)
+
+    def test_a_terse_update_going_away_takes_its_placeholder_with_it(self) -> None:
+        """And nothing else in the frame notices that it went.
+
+        A terse-only prim leaving is a removal and the frame declines. One a
+        full update shadows is in no count at all: it was never an entry of its
+        own, so its going changes no total, and the placeholder would stay on
+        screen with nothing behind it.
+        """
+        world, scene = self._orphan_with_a_terse_update()
+
+        del world.terse_objects[5]
+        scene.refresh_from_world_view(world)
+
+        self.assertNotIn(5, scene.object_entities)
+        self.assertNotIn(5, scene.avatar_entities)
+
+    def test_a_prim_that_loses_its_place_loses_its_entity(self) -> None:
+        """A child is drawn through its parent, so a broken chain undraws it.
+
+        The prim that changed is the *root*: it was reparented onto an id that
+        does not exist, so it can no longer be placed -- and neither can the
+        child hanging off it, which nothing told anything about. The composing
+        is the only thing that knows, because knowing means having tried.
+        """
+        world = _world(
+            _prim(1, (10.0, 10.0, 20.0)),
+            _prim(2, (2.0, 0.0, 0.0), parent_id=1),
+        )
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+        self.assertAlmostEqual(scene.object_entities[2].position[0], 12.0)
+
+        world.remember_object(_prim(1, (10.0, 10.0, 20.0), parent_id=99))
+        scene.refresh_from_world_view(world)
+
+        self.assertNotIn(1, scene.object_entities)
+        self.assertNotIn(2, scene.object_entities)
+
+    def test_a_prim_that_changes_which_dict_it_belongs_in_leaves_the_old_one(self) -> None:
+        """Avatars and objects are two dictionaries, and a prim can cross.
+
+        `TerseWorldObject.is_avatar` comes off the update, so the same local id
+        can be an avatar in one frame and a prim in the next. A patch that only
+        drops the entity from the dictionary it is about to write into leaves
+        the other one holding it, and the viewer draws the prim twice --
+        once where it is, and once, forever, where it was.
+        """
+        world = _world(_prim(1, (10.0, 10.0, 20.0)))
+        world.terse_objects[7] = _terse(7, (5.0, 5.0, 25.0), is_avatar=True)
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+        self.assertIn(7, scene.avatar_entities)
+
+        world.terse_objects[7] = _terse(7, (5.0, 5.0, 25.0), is_avatar=False)
+        scene.refresh_from_world_view(world)
+
+        self.assertIn(7, scene.object_entities)
+        self.assertNotIn(7, scene.avatar_entities)
+
+    def test_a_child_whose_root_moved_is_rebuilt_without_its_own_update(self) -> None:
+        """The ordinary case, and the reason `moved` is not `changed`.
+
+        A linkset's children get no update at all when the root moves; every
+        one of them is somewhere else regardless. A rebuild set of "prims whose
+        own data changed" draws the whole linkset at its old position.
+        """
+        world = _world(
+            _prim(1, (10.0, 10.0, 20.0)),
+            _prim(2, (2.0, 0.0, 0.0), parent_id=1),
+            _prim(3, (0.0, 3.0, 0.0), parent_id=2),
+        )
+        scene = self._scene()
+        scene.refresh_from_world_view(world)
+
+        world.remember_object(_prim(1, (60.0, 10.0, 20.0)))
+        scene.refresh_from_world_view(world)
+
+        self.assertAlmostEqual(scene.object_entities[2].position[0], 62.0)
+        self.assertAlmostEqual(scene.object_entities[3].position[0], 62.0)
+        self.assertAlmostEqual(scene.object_entities[3].position[1], 13.0)

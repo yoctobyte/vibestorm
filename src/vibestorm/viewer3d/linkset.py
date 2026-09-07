@@ -99,6 +99,7 @@ def resolve_world_transforms(
     *,
     unchanged: Container[int] = (),
     previous: Mapping[int, Transform] | None = None,
+    moved: set[int] | None = None,
 ) -> dict[int, Transform]:
     """World transforms for everything whose parents are all present.
 
@@ -120,6 +121,14 @@ def resolve_world_transforms(
     Passing neither resolves everything from scratch, which is what the two are
     defined against: ``unchanged`` empty means every object is treated as newly
     arrived.
+
+    ``moved``, if given, is filled with the ids whose *world* transform is not
+    what it was -- which is not the same as the ids the caller said changed: a
+    child that did not move is somewhere else entirely if its root did, and
+    only this walk knows which those are. The set is maintained here either
+    way; passing one in is asking to be told. It is the caller's answer to
+    "whose entity has to be built again", and it saves the caller a second walk
+    over every prim in the region to work that out by comparing tuples.
     """
     known: Mapping[int, Transform] = previous if previous is not None else {}
     resolved: dict[int, Transform] = {}
@@ -128,7 +137,8 @@ def resolve_world_transforms(
     # whose own transform changed: a child that did not move is somewhere else
     # entirely if its root did. Seeded with the roots, then grown outward as
     # the composing goes, so a moved root carries its whole linkset.
-    moved: set[int] = set()
+    if moved is None:
+        moved = set()
 
     known_get = known.get
     resolved_get = resolved.get
@@ -174,6 +184,16 @@ def resolve_world_transforms(
         if not progressed:
             break
         pending = still_pending
+
+    # What is left in `pending` is what could not be resolved at all: a prim
+    # whose parent never arrived, or one caught in a cycle. It has no world
+    # transform now, and a caller asking whose entity is not what it was needs
+    # to hear about the ones that had one last time -- losing a placement is a
+    # change, and the only other way to notice it is to compare every id in
+    # last frame's answer against this one.
+    for local_id in pending:
+        if local_id in known:
+            moved_add(local_id)
 
     return resolved
 

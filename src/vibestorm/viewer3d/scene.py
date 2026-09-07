@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -1431,8 +1432,6 @@ def _build_entities(
         # to produce four dictionaries equal to the four from last frame.
         # Measured at 30.1 ms against 2.4 ms for the check that says so.
         return previous
-    object_entities: dict[int, SceneEntity] = {}
-    avatar_entities: dict[int, SceneEntity] = {}
     offset_x, offset_y = offset
     shifted = bool(offset_x or offset_y)
     # Empty unless something in view has a parent, so a region of
@@ -1456,6 +1455,51 @@ def _build_entities(
         )
     placed = frame.placed
 
+    object_entities: dict[int, SceneEntity] = {}
+    avatar_entities: dict[int, SceneEntity] = {}
+    fresh_cache: dict[int, tuple[object, object, SceneEntity]] = {}
+    if frame.rebuild is None:
+        full_todo: Iterable = objects.values()
+        terse_todo: Iterable = terse_objects.values()
+    else:
+        # The same argument as the transforms one level down. Deciding that a
+        # prim's entity is still good costs two dictionary lookups and an
+        # identity check, which is nothing -- until it is fifteen thousand of
+        # them, sixty times a second, to arrive back at the entity already in
+        # hand. The frame that patched the transforms already knows which prims
+        # those two lookups would have said anything about.
+        object_entities = dict(previous.objects)  # type: ignore[union-attr]
+        avatar_entities = dict(previous.avatars)  # type: ignore[union-attr]
+        fresh_cache = dict(previous.cache)  # type: ignore[union-attr]
+        sources = frame.sources
+        terse_only = frame.terse_only
+        terse_get = terse_objects.get
+        full_list: list = []
+        terse_list: list = []
+        for local_id in frame.rebuild:
+            # Dropped first and unconditionally. A prim that changed pcode
+            # swaps which dict it belongs in, and one whose entity cannot be
+            # built this frame -- a child whose parent has just gone -- has to
+            # leave rather than keep the one it had.
+            object_entities.pop(local_id, None)
+            avatar_entities.pop(local_id, None)
+            fresh_cache.pop(local_id, None)
+            source = sources.get(local_id)
+            if source is not None and local_id not in terse_only:
+                full_list.append(source)
+            # Not `elif`. The terse pass below is not only for ids no full
+            # update has been seen for: it is also the fallback for a full
+            # update that could not be built -- an orphaned child draws as a
+            # terse placeholder rather than not at all -- and the guard it
+            # opens with is what decides between the two. Splitting the ids by
+            # which half of the world owns the *transform* skips that fallback
+            # and the prim disappears.
+            terse = terse_get(local_id)
+            if terse is not None:
+                terse_list.append(terse)
+        full_todo = full_list
+        terse_todo = terse_list
+
     # Full ObjectUpdate-derived objects (have rich data).
     #
     # Rebuilding all of these every frame is what a 15,000-prim region
@@ -1468,10 +1512,9 @@ def _build_entities(
     # answer to "has anything about this prim changed?" -- and a child also
     # has to be rebuilt when its *parent* moved, which the placement
     # carries.
-    fresh_cache: dict[int, tuple[object, object, SceneEntity]] = {}
     cache_get = cache.get
     placed_get = placed.get
-    for obj in objects.values():
+    for obj in full_todo:
         local_id = obj.local_id
         cached = cache_get(local_id)
         if cached is not None and cached[0] is obj:
@@ -1564,7 +1607,7 @@ def _build_entities(
             object_entities[local_id] = entity
 
     # Terse-only objects (no full ObjectUpdate seen yet) — render a placeholder.
-    for terse in terse_objects.values():
+    for terse in terse_todo:
         if terse.local_id in object_entities or terse.local_id in avatar_entities:
             continue
         yaw = _quat_to_yaw(terse.rotation)
@@ -1662,6 +1705,12 @@ class _RegionFrame(NamedTuple):
     sources: dict[int, object]
     terse_only: set[int]
     parented: int
+    #: Whose *entity* has to be built again -- the prims whose own data changed
+    #: and the prims the composing moved, which is not the same set: a child
+    #: that did not change is somewhere else entirely if its root did. `None`
+    #: means "all of them", which is what a rebuilt frame says and what a
+    #: neighbouring region says every frame.
+    rebuild: set[int] | None
 
 
 def _region_frame_transforms(
@@ -1742,7 +1791,7 @@ def _region_frame_transforms(
         # region to say so.
         else {}
     )
-    return _RegionFrame(placed, transforms, sources, terse_only, parented)
+    return _RegionFrame(placed, transforms, sources, terse_only, parented, None)
 
 
 def _patched_region_frame(
@@ -1792,6 +1841,13 @@ def _patched_region_frame(
     terse_only = set(previous.terse_only)
     parented = previous.parented
     changed_ids: set[int] = set()
+    #: Terse updates for ids a full update owns. They change no transform --
+    #: the full update's entry stands -- but the terse pass is what draws a
+    #: full update that could not be resolved, so a changed one still means a
+    #: changed entity. Kept apart from `changed_ids` until after the composing:
+    #: putting them in before it would tell the resolve that the *full* prim's
+    #: transform changed, and recompose its whole linkset for nothing.
+    shadowed: list[int] = []
     added = 0
     live = 0
     for obj in objects.values():
@@ -1835,6 +1891,8 @@ def _patched_region_frame(
             # A full update owns this id, exactly as `_region_frame_transforms`
             # gives the full object the entry. Counting it here as well would
             # say the region had grown by one.
+            if old_get(local_id) is not terse:
+                shadowed.append(local_id)
             continue
         live += 1
         if current is terse:
@@ -1848,21 +1906,36 @@ def _patched_region_frame(
         transforms[local_id] = (0, terse.position, terse.rotation)
         sources[local_id] = terse
         terse_only.add(local_id)
+    # A terse update that went away. If it was terse-only, its entry went with
+    # it and the count below declines the frame. If a full update owned the id,
+    # nothing above notices at all -- and the placeholder it was drawing, for a
+    # full update that could not be resolved, would stay on screen for the rest
+    # of the session. The terse half of a region is the prims currently moving,
+    # so this difference is over dozens, not over the region.
+    shadowed.extend(previous.terse.keys() - terse_objects.keys())
     if len(previous.sources) + added != live:
         return None
     if not parented:
-        return _RegionFrame({}, transforms, sources, terse_only, parented)
+        changed_ids.update(shadowed)
+        return _RegionFrame({}, transforms, sources, terse_only, parented, changed_ids)
     # A set difference at C speed, not 15,000 `set.add` calls in the loop
     # above: the complement is the big side here, and building it a name at a
     # time is most of what the patch just saved. Measured -- a `__contains__`
     # wrapper standing in for the set instead is *slower* than the set,
     # 2.80 ms against 1.85 for 15,000 membership tests.
+    # `changed_ids` doubles as the rebuild set: the resolve adds to it every id
+    # the composing moved, which is the rest of the answer to "whose entity is
+    # not what it was". Working that out afterwards means comparing a tuple per
+    # prim against last frame's -- a second walk over the whole region, to
+    # recover something this walk already knew.
     placed = resolve_world_transforms(  # type: ignore[arg-type]
         transforms,
         unchanged=transforms.keys() - changed_ids,
         previous=previous_placement,
+        moved=changed_ids,
     )
-    return _RegionFrame(placed, transforms, sources, terse_only, parented)
+    changed_ids.update(shadowed)
+    return _RegionFrame(placed, transforms, sources, terse_only, parented, changed_ids)
 
 
 def _quat_to_yaw(quat: tuple[float, float, float, float] | None) -> float:

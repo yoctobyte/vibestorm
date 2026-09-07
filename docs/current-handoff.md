@@ -323,6 +323,64 @@ the randomised harness cannot reach, because it does one per frame. That is
 worth keeping as a shape: a differential harness that steps one operation at a
 time can only find bugs that one operation causes.
 
+**A -- the other fifteen-thousand-prim loop (2026-09-07).** Patching the
+transforms left the entity walk: for every prim in the region, two dictionary
+lookups and an identity check to conclude that the entity already in hand is
+still the right one. That is nothing per prim and 27,000 lookups a frame at
+15,000, and the frame that patched the transforms already knew which prims
+those lookups would have said anything about.
+
+    3000 linksets of 5   15000 objects  1% moving   36.19 ms -> 27.17
+    3000 linksets of 5   15000 objects  5% moving   67.08 ms -> 56.03
+    1000 linksets of 5    5000 objects  1% moving    9.07 ms ->  6.68
+
+Against where this pass started: 41.33 ms to 27.17, 24 fps to 37, before a
+triangle is drawn.
+
+The rebuild set is *not* the set of prims whose data changed. A linkset's
+children get no update at all when their root moves, and every one of them is
+somewhere else regardless -- so the composing has to say which those are.
+`resolve_world_transforms` already maintains that set internally (it is how a
+moved root carries its whole linkset) and now fills a caller's set on request.
+Working it out afterwards means comparing a tuple per prim against last
+frame's, which is the walk being removed.
+
+Three ways a prim stops being what it was without its own update saying so,
+all three found by the randomised differential and none by any case anyone had
+thought of:
+
+* **The terse pass is a fallback, not a category.** It is not only for prims
+  no full update has been seen for: it is also what draws a full update that
+  could not be *placed* -- an orphaned child appears as a placeholder rather
+  than not at all. Splitting the rebuild ids by which half of the world owns
+  the *transform* skips that fallback, and the prim disappears.
+* **A terse update for an id a full update owns changes no transform and still
+  changes the picture**, for the same reason. It has to be collected -- but
+  *after* the composing, not before: folding it in earlier tells the resolve
+  that the full prim's transform changed and recomposes its whole linkset for
+  nothing.
+* **A prim can lose its place.** Reparent a root onto an id that does not
+  exist and it can no longer be composed, and neither can the child hanging
+  off it -- which nothing told anything about. The resolve is the only thing
+  that knows, because knowing means having tried; what is left in its
+  `pending` at the end is exactly that set, and the ids in it that had a place
+  last frame are now entities that have to go.
+
+Eleven mutants, seven killed. Of the four survivors, two are performance-only
+in the same sense as the last pass ("never patch the entities at all" is the
+old code, and it is the bench that says what that costs, not a test), one is
+defensive (`fresh_cache.pop` before a rebuild that may fail to produce an
+entity -- no reachable path was found where it matters, and it keeps the cache
+an honest record of the frame), and the fourth needed a test: a prim that
+changes which dictionary it belongs in. `TerseWorldObject.is_avatar` comes off
+the update, so the same local id can be an avatar in one frame and a prim in
+the next; dropping it only from the dictionary about to be written leaves the
+other holding it, and the viewer draws the prim twice -- once where it is, and
+once, forever, where it was.
+
+The differential ran 1,200 seeds by 300 random operations before this was
+committed: 261,900 patched frames, 94,399 declined, no divergence.
+
 **A -- the frame that arrives back where it started (2026-09-07).** The
 refresh already skipped *rebuilding* an entity for a prim that had not moved.
 It did not skip finding out. A still 15,000-prim region spent 30 ms a frame on
