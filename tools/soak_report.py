@@ -35,6 +35,8 @@ DEFAULT_COUNTERS = (
     "udp.packet_acks",
     "udp.appended_acks",
     "udp.pings_answered",
+    "udp.reliable_resends",
+    "udp.reliable_abandoned",
     "eq.attempts",
     "eq.batches",
     "eq.events",

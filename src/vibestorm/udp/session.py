@@ -163,7 +163,12 @@ from vibestorm.udp.messages import (
     yaw_to_packed_quaternion,
 )
 from vibestorm.udp.neighbour import NeighbourCircuit
-from vibestorm.udp.packet import LL_RELIABLE_FLAG, build_packet, split_packet
+from vibestorm.udp.packet import (
+    LL_RELIABLE_FLAG,
+    LL_RESENT_FLAG,
+    build_packet,
+    split_packet,
+)
 from vibestorm.udp.recent import RecentSequences
 from vibestorm.udp.template import (
     DecodedMessageNumber,
@@ -263,6 +268,66 @@ class SessionConfig:
     open_neighbours: bool = True
 
 
+#: How long to wait for an ack before sending a reliable packet again.
+#:
+#: Ours to choose, not the simulator's. OpenSim's own default is 1000 ms and
+#: it clamps its measured value into [250, 3000] (pinned in
+#: `test/test_opensim_source_pins.py`); a second is the same order and errs
+#: towards patience, because the cost of resending too eagerly is paid on
+#: every packet and the cost of resending too late is one extra second on a
+#: packet that was lost anyway.
+RELIABLE_RESEND_AFTER_S = 1.0
+
+#: How many times to send one packet before giving up on it.
+#:
+#: OpenSim gives up never, which is right for a simulator: it has one client
+#: to look after and stops when that client goes quiet. A viewer that never
+#: gives up keeps talking to a simulator that has stopped listening, and the
+#: session has its own timeout for that case. Five attempts over five seconds
+#: is far past any plausible loss on a working link.
+RELIABLE_RESEND_ATTEMPTS = 5
+
+#: How many unacked packets to hold at all.
+#:
+#: This is a bound, for the reason everything in this pass is a bound: the
+#: container now holds whole packets rather than short labels, so a simulator
+#: that stops acking would otherwise turn a stalled session into a growing
+#: one. Reaching it means something is badly wrong already; dropping the
+#: oldest is the least surprising thing to do about it.
+PENDING_RELIABLE_LIMIT = 256
+
+
+@dataclass(slots=True)
+class PendingReliable:
+    """One reliable packet that has gone out and not been acked."""
+
+    label: str
+    #: The bytes exactly as they went out the first time, so a resend is the
+    #: same packet rather than a new one wearing the same sequence number.
+    packet: bytes
+    #: When it went out, or `None` when the caller that built it did not know
+    #: the time -- `_build_outbound_packet` takes `now` optionally, and
+    #: `start` is one of the callers that leaves it out. Inventing a zero here
+    #: is worse than admitting the gap: it makes the packet overdue by the
+    #: whole monotonic clock, so the first sweep resends it immediately. The
+    #: sweep starts the clock instead, which costs one interval and cannot
+    #: fire early.
+    sent_at: float | None
+    attempts: int = 1
+
+
+def _marked_resent(packet: bytes) -> bytes:
+    """The same packet with `MSG_RESENT` set.
+
+    One bit in the first byte, which is the flags byte and is never zerocoded
+    -- zerocoding compresses the body and copies the header through. So this
+    works on a packet that was compressed on the way out, and leaves its
+    sequence number where it was, which is the whole point: a resend the
+    simulator cannot recognise as one is a second packet.
+    """
+    return bytes([packet[0] | LL_RESENT_FLAG]) + packet[1:]
+
+
 @dataclass(slots=True, frozen=True)
 class SessionEvent:
     at_seconds: float
@@ -348,7 +413,13 @@ class LiveCircuitSession:
     config: SessionConfig = field(default_factory=SessionConfig)
     on_event: Callable[[SessionEvent], None] | None = None
     next_sequence: int = 1
-    pending_reliable: dict[int, str] = field(default_factory=dict)
+    #: The reliable packets this client has sent and not seen acked, by
+    #: sequence number. Keeps the bytes, not just a label: a resend has to be
+    #: the same packet, and until it did keep them a resend was not merely
+    #: absent but impossible.
+    pending_reliable: dict[int, PendingReliable] = field(default_factory=dict)
+    reliable_resends: int = 0
+    reliable_abandoned: int = 0
     #: The reliable sequence numbers seen lately -- bounded, and deliberately
     #: not a `set`. It used to be one, holding every reliable packet of the
     #: whole session; see `vibestorm.udp.recent` for what a soak measured and
@@ -1227,6 +1298,45 @@ class LiveCircuitSession:
                         )
                     )
 
+        return packets
+
+    def drain_resends(self, now: float) -> list[bytes]:
+        """Reliable packets that have gone unacked for too long, sent again.
+
+        Deliberately not part of `drain_due_packets`, which returns nothing
+        until `movement_completed` -- and the packets it matters most to
+        resend, `UseCircuitCode` and `CompleteAgentMovement`, are the ones
+        sent before that is true. A resend path that only worked once the
+        session was up would cover every case except the one where losing a
+        packet strands you.
+        """
+        if self.close_reason is not None:
+            return []
+        packets: list[bytes] = []
+        for sequence, pending in list(self.pending_reliable.items()):
+            if pending.sent_at is None:
+                pending.sent_at = now
+                continue
+            if now - pending.sent_at < RELIABLE_RESEND_AFTER_S:
+                continue
+            if pending.attempts >= RELIABLE_RESEND_ATTEMPTS:
+                del self.pending_reliable[sequence]
+                self.reliable_abandoned += 1
+                self._record_event(
+                    now,
+                    "transport.reliable_abandoned",
+                    f"seq={sequence} {pending.label} after {pending.attempts} attempts",
+                )
+                continue
+            pending.sent_at = now
+            pending.attempts += 1
+            self.reliable_resends += 1
+            self._record_event(
+                now,
+                "transport.reliable_resend",
+                f"seq={sequence} {pending.label} attempt={pending.attempts}",
+            )
+            packets.append(_marked_resent(pending.packet))
         return packets
 
     def drain_due_packets(self, now: float) -> list[bytes]:
@@ -2124,7 +2234,25 @@ class LiveCircuitSession:
         if zerocoded:
             packet = encode_zerocode(packet)
         if reliable:
-            self.pending_reliable[sequence] = label
+            # The bytes as they go out, zerocoding and appended acks and all.
+            # A resend is the same packet with one bit set, which is what
+            # OpenSim does on its side and what lets the simulator recognise
+            # it: re-encoding would be a second packet wearing the first's
+            # sequence number. The acks ride along again, which is harmless --
+            # an ack repeated says the same thing.
+            while len(self.pending_reliable) >= PENDING_RELIABLE_LIMIT:
+                oldest = next(iter(self.pending_reliable))
+                dropped = self.pending_reliable.pop(oldest)
+                self.reliable_abandoned += 1
+                if now is not None:
+                    self._record_event(
+                        now,
+                        "transport.reliable_abandoned",
+                        f"seq={oldest} {dropped.label} (making room)",
+                    )
+            self.pending_reliable[sequence] = PendingReliable(
+                label=label, packet=packet, sent_at=now
+            )
         if now is not None:
             detail = f"seq={sequence}"
             if reliable:
@@ -3369,6 +3497,8 @@ async def run_live_session(
             for _, packet in client.drain_outbound_packets(session_handle):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
             for packet in session.drain_due_packets(now):
+                await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
+            for packet in session.drain_resends(now):
                 await loop.sock_sendto(sock, packet, (bootstrap.sim_ip, bootstrap.sim_port))
             # Every pass, not only when the socket goes quiet. Measured: with
             # this in the receive-timeout branch alone, 22 of 53 reliable

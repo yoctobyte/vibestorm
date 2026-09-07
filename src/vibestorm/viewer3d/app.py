@@ -487,6 +487,13 @@ def build_health_probe(scene, renderer, client, hud, *, interval_s: float) -> He
         "udp.packet_acks": _int_of(session, "packet_acks_received"),
         "udp.appended_acks": _int_of(session, "appended_acks_received"),
         "udp.pings_answered": _int_of(session, "ping_requests_handled"),
+        # A resend is not a failure on its own -- a lossy link has some -- but
+        # a session that resends steadily is one whose acks are not arriving,
+        # and nothing else on this report would say so. `abandoned` is the
+        # sharper one: it counts packets this client gave up on, which is data
+        # the simulator never got.
+        "udp.reliable_resends": _int_of(session, "reliable_resends"),
+        "udp.reliable_abandoned": _int_of(session, "reliable_abandoned"),
         # Attempts first, because it is the one that answers "is the poll
         # loop alive". The other two sit perfectly still on a quiet queue,
         # which reads in the report exactly like a loop that has died.

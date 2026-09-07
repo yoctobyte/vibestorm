@@ -163,12 +163,84 @@ killed, one of them only after a fixture that had been passing for the wrong
 reason was replaced. **A verdict is an instrument too, and it needs the same
 treatment as a gauge: make it say something you can check.**
 
-That leaves the finding underneath, which is real and is not fixed here.
-RSS climbs about 45 MB an hour and allocated blocks about 52,000 an hour on a
+That leaves two findings underneath, one of which is fixed further down (this
+client never resent a packet) and one of which is not. RSS climbs about 45 MB
+an hour and allocated blocks about 52,000 an hour on a
 region with three prims in it -- 340 MB to 489 MB over the two hours, while every one of the forty-odd container
 gauges is settled or flat. Something is growing that nothing on the report
 names. A type histogram sampled at the same cadence is the next instrument,
 and the second soak is what says whether it is worth building.
+
+**A -- this client had never resent a packet in its life (2026-09-07).** The
+same soak that found the unbounded set left six entries in
+`udp.pending_reliable` at the end of two hours: six reliable packets sent,
+never acknowledged, and nothing ever tried again. The gauge read `settled`,
+which is the report being right about the shape and silent about the meaning
+-- a container that stops growing because the losses stopped is
+indistinguishable from one that stops growing because nothing ever leaves.
+
+`_build_outbound_packet` recorded `pending_reliable[sequence] = label`. The
+label. So a resend was not merely absent, it was **impossible**: the packet
+was gone by the time anyone could want it back. The only readers were the ack
+handler, which pops, and the session snapshot, which sorts the keys to print
+them.
+
+The simulator's half is pinned: it resends every RTO for as long as the client
+is talking and gives up never. We did the opposite, once, and then went quiet.
+A lost `CompleteAgentMovement` or `AgentThrottle` strands the session with no
+symptom except a thing that never happens, which is the hardest kind of bug to
+go looking for and one of the easiest to measure.
+
+`pending_reliable` now holds the bytes as they went out, the send time and the
+attempt count. `drain_resends` sends anything older than a second again, with
+`MSG_RESENT` or-ed into the flags byte and **the same sequence number** --
+which is the one rule that matters. A resend with a fresh number is a second
+packet, invisible to the simulator's own duplicate detection, and a client
+that did that would be inventing the duplicate storm it spent this same pass
+learning to survive. It is bounded twice: five attempts, then the packet is
+abandoned out loud, and 256 packets held at all, because the container now
+holds whole packets rather than short labels and a simulator that stopped
+acking would otherwise turn a stalled session into a growing one.
+
+Three decisions are worth keeping hold of.
+
+*It is not part of `drain_due_packets`*, which is where it obviously belongs
+and would have been wrong. That returns nothing until `movement_completed` --
+and `UseCircuitCode` and `CompleteAgentMovement`, the two packets whose loss
+strands a session outright, both go out before that is true. A resend path
+that only worked once the session was up would have covered every case except
+the one that matters.
+
+*The send time may be unknown.* `_build_outbound_packet` takes `now`
+optionally and `start` is one of the callers that leaves it out, so the first
+version of `PendingReliable` defaulted `sent_at` to `0.0` -- which made those
+two packets overdue by the whole monotonic clock, and the very first sweep
+resent both instantly. The test that caught it was the negative control, the
+one asserting nothing goes out *before* the timeout, on its first run. The
+field is `float | None` now and the sweep starts the clock, which costs one
+interval and cannot fire early.
+
+*And the tests go at the call site.* Straight from the ack bug an hour
+earlier: `_pump_neighbours` was always a correct function, so a test of the
+function would have passed throughout its entire broken life. Two tests drive
+the real loop with a fake socket -- one that a packet is resent, one that it
+is not resent early -- and both fail if the sweep is folded in behind the
+movement guard.
+
+Fifteen mutants planted, thirteen killed on the first pass. Both survivors
+were real gaps: nothing tested that a packet built without a clock is ever
+resent (which is to say, nothing tested `start`'s two packets), and nothing
+tested the interval *between* resends, so dropping the timer restart -- which
+turns a retry into a burst four times a second -- went unnoticed. Fifteen of
+fifteen now.
+
+Still open, and the reason `udp.reliable_resends` and
+`udp.reliable_abandoned` are on the soak report from here: a resend is not a
+failure on its own, but a session that resends steadily is one whose acks are
+not arriving, and nothing else on that report would say so. The neighbour
+circuits do not resend either -- they send `UseCircuitCode`, `AgentThrottle`
+and `RegionHandshakeReply` reliably and forget them the same way. Same fix,
+different class, not done here.
 
 **A fix that was designed, then talked out of on the strength of two
 constants, and then put back by one measurement (2026-09-07).**

@@ -802,7 +802,9 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
     called from. A test of the function would have passed throughout.
     """
 
-    def _run(self, *, packets: int) -> list[tuple[bytes, tuple[str, int]]]:
+    def _run(
+        self, *, packets: int, seed_unacked: bool = False, run_for: float = 0.0
+    ) -> list[tuple[bytes, tuple[str, int]]]:
         from unittest.mock import patch
 
         from vibestorm.udp.neighbour import NeighbourCircuit
@@ -813,7 +815,7 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
         address = ("127.0.0.1", 9001)
         client = WorldClient()
         sent: list[tuple[bytes, tuple[str, int]]] = []
-        state = {"injected": False, "left": packets}
+        state: dict[str, object] = {"injected": False, "left": packets}
 
         # `CoarseLocationUpdate`, because it is reliable, tiny, and the circuit
         # answers it with nothing -- so the only packet that can come back is
@@ -827,10 +829,19 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
         async def runner() -> None:
             loop = asyncio.get_running_loop()
             stop = asyncio.Event()
+            state["started_at"] = loop.time()
 
             async def fake_recvfrom(sock: object, size: int):
                 if not state["injected"]:
                     state["injected"] = True
+                    if seed_unacked:
+                        client.current.pending_reliable.clear()
+                        client.current._build_outbound_packet(
+                            bytes([0x02, 0x10]),
+                            reliable=True,
+                            now=loop.time(),
+                            label="TestOutbound",
+                        )
                     client.current.neighbours[NORTH_HANDLE] = NeighbourCircuit(
                         handle=NORTH_HANDLE,
                         address=address,
@@ -839,12 +850,20 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
                         circuit_code=0x12345678,
                         dispatcher=self.dispatcher,
                     )
-                if state["left"] > 0:
+                if int(state["left"]) > 0:
                     # Back to back, with no idle moment between them: under the
                     # old wiring the receive timeout never fires and the batch
                     # never fills, so nothing is ever acked.
-                    state["left"] -= 1
+                    state["left"] = int(state["left"]) - 1
                     return inbound, address
+                # Blocking here does not block for long: the loop wraps this
+                # call in `wait_for(receive_timeout_seconds)`, so it is
+                # cancelled after a quarter second and the loop goes round
+                # again. Which is the point -- that is how a real idle session
+                # spins, and it is the only way the resend sweep gets to run
+                # more than once.
+                if loop.time() - float(state["started_at"]) < run_for:
+                    await asyncio.sleep(3600)
                 stop.set()
                 await asyncio.sleep(3600)
                 raise AssertionError("unreachable")
@@ -887,3 +906,38 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
         sent = self._run(packets=1)
         to_neighbour = [data for data, addr in sent if addr == ("127.0.0.1", 9001)]
         self.assertTrue(to_neighbour, "a single reliable packet went unacked")
+
+
+class ResendsGoOutFromTheLoopTests(AcksAreFlushedEveryPassTests):
+    """`drain_resends` is only worth anything if the loop calls it.
+
+    The same lesson as the class above, applied before rather than after:
+    `_pump_neighbours` was always a correct function and the bug was entirely
+    in where it was called from, so a test of the function would have passed
+    throughout. This one drives the real loop.
+
+    It also pins the harder half. `drain_due_packets` -- the sibling that the
+    resend sweep could plausibly have been folded into -- returns nothing
+    until `movement_completed`, and this session never completes a movement.
+    A sweep wired in there would send nothing here, which is precisely the
+    case that matters: `UseCircuitCode` and `CompleteAgentMovement` are the
+    packets whose loss strands a session, and both go out before the flag.
+    """
+
+    def test_an_unacked_packet_is_sent_again_by_the_loop(self) -> None:
+        from vibestorm.udp.packet import split_packet
+
+        sent = self._run(packets=1, seed_unacked=True, run_for=1.6)
+        to_sim = [
+            data
+            for data, addr in sent
+            if addr == ("127.0.0.1", 9000) and split_packet(data).header.is_resent
+        ]
+        self.assertTrue(to_sim, "nothing was ever resent to the region we are in")
+
+    def test_and_nothing_is_resent_before_the_timeout(self) -> None:
+        from vibestorm.udp.packet import split_packet
+
+        sent = self._run(packets=1, seed_unacked=True, run_for=0.6)
+        to_sim = [data for data, _ in sent if split_packet(data).header.is_resent]
+        self.assertEqual(to_sim, [], "a packet was resent before it was due")

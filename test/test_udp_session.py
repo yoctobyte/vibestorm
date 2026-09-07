@@ -13,9 +13,18 @@ from vibestorm.login.models import (
 from vibestorm.udp.control_flags import DIRECTION_BITS, AgentControlFlags
 from vibestorm.udp.dispatch import MessageDispatcher
 from vibestorm.udp.messages import ReplyTaskInventoryMessage, parse_improved_instant_message
-from vibestorm.udp.packet import LL_RELIABLE_FLAG, LL_ZERO_CODE_FLAG, build_packet, split_packet
+from vibestorm.udp.packet import (
+    LL_RELIABLE_FLAG,
+    LL_RESENT_FLAG,
+    LL_ZERO_CODE_FLAG,
+    build_packet,
+    split_packet,
+)
 from vibestorm.udp.recent import RecentSequences
 from vibestorm.udp.session import (
+    PENDING_RELIABLE_LIMIT,
+    RELIABLE_RESEND_AFTER_S,
+    RELIABLE_RESEND_ATTEMPTS,
     LiveCircuitSession,
     SessionConfig,
     SessionEvent,
@@ -2129,3 +2138,201 @@ def _wearables_update(count: int, *, include_empty: bool = False):
         serial_num=0,
         wearables=tuple(entries),
     )
+
+
+class ResendingWhatWasNotAckedTests(unittest.TestCase):
+    """This client used to send a reliable packet once and then forget it.
+
+    A soak run put six of them in `pending_reliable` at the end of two hours:
+    six packets sent, never acknowledged, and nothing tried again. The
+    simulator does the opposite -- it resends every RTO for as long as the
+    client is talking and gives up never, which is pinned in
+    `test/test_opensim_source_pins.py`. A lost `CompleteAgentMovement` or
+    `AgentThrottle` strands the session with no symptom except a thing that
+    never happens.
+
+    The one rule a resend must obey is that it keeps its sequence number. A
+    "resend" with a fresh number is a second packet, and the simulator's own
+    duplicate detection cannot see it for what it is -- which is how a viewer
+    invents a duplicate storm while trying to fix a dropped packet.
+    """
+
+    def setUp(self) -> None:
+        self.dispatcher = MessageDispatcher.from_repo_root(Path.cwd())
+        self.bootstrap = LoginBootstrap(
+            agent_id=UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            session_id=UUID("11111111-2222-3333-4444-555555555555"),
+            secure_session_id=UUID("99999999-8888-7777-6666-555555555555"),
+            circuit_code=0x12345678,
+            sim_ip="127.0.0.1",
+            sim_port=9000,
+            seed_capability="http://127.0.0.1:9000/caps/seed",
+            region_x=256,
+            region_y=512,
+            message="ok",
+        )
+
+    def _session_with_one_unacked(self) -> tuple[LiveCircuitSession, int, bytes]:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.pending_reliable.clear()
+        packet = session._build_outbound_packet(
+            bytes([0x02, 0x10]), reliable=True, now=10.0, label="TestOutbound"
+        )
+        (sequence,) = session.pending_reliable
+        return session, sequence, packet
+
+    def test_one_that_is_not_acked_goes_out_again(self) -> None:
+        session, sequence, _ = self._session_with_one_unacked()
+        again = session.drain_resends(11.5)
+        self.assertEqual(len(again), 1)
+        self.assertEqual(split_packet(again[0]).header.sequence, sequence)
+
+    def test_and_it_says_so_on_the_wire(self) -> None:
+        # Without the flag the simulator counts it as a fresh arrival.
+        session, _, _ = self._session_with_one_unacked()
+        again = session.drain_resends(11.5)
+        self.assertTrue(split_packet(again[0]).header.is_resent)
+
+    def test_a_resend_does_not_take_a_new_sequence_number(self) -> None:
+        # The failure this guards is worse than the one it fixes: a resend
+        # with a new number is a second packet, and the simulator has no way
+        # to know it already has it.
+        session, sequence, _ = self._session_with_one_unacked()
+        before = session.next_sequence
+        session.drain_resends(11.5)
+        self.assertEqual(session.next_sequence, before)
+        self.assertIn(sequence, session.pending_reliable)
+
+    def test_the_resend_is_the_same_packet_apart_from_the_flag(self) -> None:
+        session, _, original = self._session_with_one_unacked()
+        again = session.drain_resends(11.5)[0]
+        self.assertEqual(again[1:], original[1:])
+        self.assertEqual(again[0], original[0] | LL_RESENT_FLAG)
+
+    def test_nothing_goes_out_before_the_timeout(self) -> None:
+        session, _, _ = self._session_with_one_unacked()
+        self.assertEqual(session.drain_resends(10.5), [])
+
+    def test_one_that_was_acked_is_not_resent(self) -> None:
+        session, sequence, _ = self._session_with_one_unacked()
+        session.pending_reliable.pop(sequence)
+        self.assertEqual(session.drain_resends(11.5), [])
+
+    def test_it_keeps_trying_and_then_gives_up(self) -> None:
+        session, sequence, _ = self._session_with_one_unacked()
+        now = 10.0
+        sent = 0
+        for _ in range(20):
+            now += RELIABLE_RESEND_AFTER_S
+            sent += len(session.drain_resends(now))
+        # The first send counts as one attempt, so there are four resends
+        # left before the cap is reached.
+        self.assertEqual(sent, RELIABLE_RESEND_ATTEMPTS - 1)
+        self.assertNotIn(sequence, session.pending_reliable)
+        self.assertEqual(session.reliable_resends, RELIABLE_RESEND_ATTEMPTS - 1)
+        self.assertEqual(session.reliable_abandoned, 1)
+
+    def test_giving_up_is_said_out_loud(self) -> None:
+        # A packet dropped in silence is the failure this whole path exists to
+        # stop, so the giving up must not be silent either.
+        seen: list[SessionEvent] = []
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher, on_event=seen.append)
+        session.start(10.0)
+        session.pending_reliable.clear()
+        session._build_outbound_packet(
+            bytes([0x02, 0x10]), reliable=True, now=10.0, label="TestOutbound"
+        )
+        now = 10.0
+        for _ in range(20):
+            now += RELIABLE_RESEND_AFTER_S
+            session.drain_resends(now)
+        kinds = [event.kind for event in seen]
+        self.assertIn("transport.reliable_resend", kinds)
+        self.assertIn("transport.reliable_abandoned", kinds)
+
+    def test_the_unacked_packets_are_bounded(self) -> None:
+        # It holds whole packets now rather than short labels, so a simulator
+        # that stops acking would turn a stalled session into a growing one.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        for _ in range(PENDING_RELIABLE_LIMIT * 3):
+            session._build_outbound_packet(
+                bytes([0x02, 0x10]), reliable=True, now=10.0, label="TestOutbound"
+            )
+            self.assertLessEqual(len(session.pending_reliable), PENDING_RELIABLE_LIMIT)
+
+    def test_an_unreliable_packet_is_not_remembered_at_all(self) -> None:
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.pending_reliable.clear()
+        session._build_outbound_packet(
+            bytes([0x02, 0x10]), reliable=False, now=10.0, label="TestOutbound"
+        )
+        self.assertEqual(session.pending_reliable, {})
+
+    def test_it_resends_before_the_movement_is_complete(self) -> None:
+        # The case that matters most, and the reason this is not part of
+        # `drain_due_packets`: that returns nothing until `movement_completed`,
+        # and the packets whose loss strands the session -- `UseCircuitCode`,
+        # `CompleteAgentMovement` -- all go out before it is true.
+        session, _, _ = self._session_with_one_unacked()
+        self.assertFalse(session.movement_completed)
+        self.assertEqual(session.drain_due_packets(11.5), [])
+        self.assertEqual(len(session.drain_resends(11.5)), 1)
+
+    def test_a_packet_built_without_a_clock_is_still_resent(self) -> None:
+        # `start` is one of the callers that does not pass `now`, and the two
+        # packets it builds -- `UseCircuitCode` and `CompleteAgentMovement` --
+        # are the ones whose loss strands the session outright. A sweep that
+        # skipped anything it had no send time for would cover every packet
+        # except those two.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        session.pending_reliable.clear()
+        session._build_outbound_packet(
+            bytes([0x02, 0x10]), reliable=True, label="Untimed"
+        )
+        (sequence,) = session.pending_reliable
+        self.assertIsNone(session.pending_reliable[sequence].sent_at)
+
+        # The first sweep starts its clock rather than resending it, so it
+        # cannot be overdue by the whole monotonic clock the moment it is seen.
+        self.assertEqual(session.drain_resends(1000.0), [])
+        self.assertEqual(session.pending_reliable[sequence].sent_at, 1000.0)
+
+        again = session.drain_resends(1000.0 + RELIABLE_RESEND_AFTER_S)
+        self.assertEqual(len(again), 1)
+        self.assertEqual(split_packet(again[0]).header.sequence, sequence)
+
+    def test_and_the_start_packets_are_the_ones_that_means(self) -> None:
+        # Named rather than assumed: if `start` ever begins passing a time,
+        # the test above stops covering the case it was written for, and this
+        # is what says so.
+        session = LiveCircuitSession(self.bootstrap, self.dispatcher)
+        session.start(10.0)
+        labels = {pending.label for pending in session.pending_reliable.values()}
+        self.assertEqual(labels, {"UseCircuitCode", "CompleteAgentMovement"})
+        self.assertTrue(
+            all(p.sent_at is None for p in session.pending_reliable.values()),
+            "start now times its packets -- fold the untimed case into a caller "
+            "that still does not, or drop it",
+        )
+
+    def test_a_resend_restarts_the_clock_rather_than_repeating_every_pass(self) -> None:
+        # The sweep runs every time round the receive loop, which on an idle
+        # session is four times a second. Without restarting the timer, one
+        # unacked packet goes out on every one of those until the attempt cap
+        # -- a burst rather than a retry, and aimed at a simulator that is
+        # already not answering.
+        session, sequence, _ = self._session_with_one_unacked()
+        self.assertEqual(len(session.drain_resends(11.5)), 1)
+        self.assertEqual(session.drain_resends(11.6), [])
+        self.assertEqual(session.drain_resends(12.4), [])
+        self.assertEqual(len(session.drain_resends(12.6)), 1)
+        self.assertEqual(session.pending_reliable[sequence].attempts, 3)
+
+    def test_a_closed_session_stops_trying(self) -> None:
+        session, _, _ = self._session_with_one_unacked()
+        session.close_reason = "simulator closed circuit"
+        self.assertEqual(session.drain_resends(11.5), [])
