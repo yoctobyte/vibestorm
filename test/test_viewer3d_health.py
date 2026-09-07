@@ -32,12 +32,14 @@ from vibestorm.viewer3d.health import (
     MIN_SAMPLES_FOR_VERDICT,
     OBJECT_CENSUS_PREFIX,
     PROCESS_GAUGES,
+    STEP_CONCENTRATION,
     TREND_SIGMA,
     Growth,
     HealthProbe,
     SoakLog,
     TypeCensus,
     _fit,
+    _rise_concentration,
     format_growth_report,
     freeze_static_heap,
     growth_report,
@@ -326,6 +328,148 @@ class FitTests(unittest.TestCase):
 
     def test_samples_that_all_landed_at_the_same_moment_do_not_divide_by_zero(self) -> None:
         assert _fit([(5.0, 1.0), (5.0, 2.0), (5.0, 3.0)]) == (0.0, 0.0)
+
+
+class SteppedTests(unittest.TestCase):
+    """Two plateaus and a jump have a slope, and it is not a leak.
+
+    The fit told a trend from noise and could not tell a trend from a step.
+    Run 4 is the demonstration: `proc.rss_bytes` sat at 630,185,984 for eighty
+    minutes, stepped once to 651,558,912, and sat there for the remaining
+    twenty. A line through that shape climbs 31 MB an hour at nineteen sigma,
+    so the report said `growing` and a reader would have gone hunting a leak
+    that does not exist -- the step falls on the one sample where the load
+    average hit 18.5, which was another process on a shared machine.
+
+    Shape is what separates them, and it separates them cleanly. Half of a
+    leak's rise takes about half its samples; half of a step's takes one or
+    two. Every soak on record agrees -- see `STEP_CONCENTRATION`.
+    """
+
+    @staticmethod
+    def _plateaus(count: int, *, low: float, high: float):
+        """Flat, one jump at the two-thirds mark, flat again. Run 4's shape."""
+        return [low if i < (2 * count) // 3 else high for i in range(count)]
+
+    @staticmethod
+    def _climb(count: int, *, low: float, high: float):
+        """The same total gain, arriving a little at a time. A leak's shape."""
+        step = (high - low) / (count - 1)
+        return [low + step * i for i in range(count)]
+
+    def test_a_step_is_not_called_a_leak(self) -> None:
+        values = self._plateaus(240, low=630_185_984.0, high=651_558_912.0)
+        assert growth_report(_samples("a", values))[0].verdict == "stepped"
+
+    def test_the_same_gain_spread_out_is(self) -> None:
+        """The control, and it has to be the same numbers or it proves nothing."""
+        values = self._climb(240, low=630_185_984.0, high=651_558_912.0)
+        assert growth_report(_samples("a", values))[0].verdict == "growing"
+
+    def test_a_step_still_reports_the_rate_it_measured(self) -> None:
+        """`stepped` changes the word, not the arithmetic.
+
+        A reader who wants to know how big the step was still gets the number
+        and its error; what changes is that the column no longer tells them it
+        is a leak.
+        """
+        values = self._plateaus(240, low=630_185_984.0, high=651_558_912.0)
+        row = growth_report(_samples("a", values))[0]
+        self.assertGreater(row.late_rate_per_hour, 0.0)
+        self.assertEqual(row.peak, 651_558_912.0)
+
+    def test_a_flat_gauge_is_flat_and_not_stepped(self) -> None:
+        """Nothing gained is not a step, however concentrated nothing is."""
+        assert growth_report(_samples("a", [7.0] * 40))[0].verdict == "flat"
+
+    def test_a_gauge_that_only_falls_is_settled_and_not_stepped(self) -> None:
+        values = [100.0 - i for i in range(40)]
+        assert growth_report(_samples("a", values))[0].verdict == "settled"
+
+    def test_one_step_on_top_of_a_real_leak_is_still_a_leak(self) -> None:
+        """The failure that would make this a way to lose findings.
+
+        A leak does not stop being one because something else jolted the
+        machine in the middle of it. The rise here is a steady climb *plus* a
+        jump, and the climb spreads across every sample, so the concentration
+        never gets near the cut.
+        """
+        values = self._climb(240, low=0.0, high=240_000.0)
+        values = [v + (0.0 if i < 160 else 100_000.0) for i, v in enumerate(values)]
+        assert growth_report(_samples("a", values))[0].verdict == "growing"
+
+
+    def test_a_step_followed_by_a_drift_is_still_a_step(self) -> None:
+        """Half the rise, not all of it -- because all of it is never early.
+
+        This gauge jumps 100 and then drifts up by 1 a sample. Half the rise
+        is the jump, and it lands in one interval out of 119. The *whole* rise
+        is only complete at the last drifting sample, so a detector asking
+        when the total arrived would answer "at the end" for every series that
+        has any drift at all -- which is every real gauge. Half is the
+        question that has an informative answer.
+        """
+        values = [100.0] * 140 + [200.0] * 20 + [200.0 + i for i in range(1, 81)]
+        row = growth_report(_samples("a", values))[0]
+        assert row.verdict == "stepped", row.verdict
+
+    def test_a_jump_at_startup_does_not_excuse_a_leak_after_it(self) -> None:
+        """Why the statistic reads the second half, like everything else here.
+
+        A client allocates its caches once, early, and that one jump is larger
+        than anything that follows. Measured end to end it is half the rise on
+        its own, so the run reads `stepped` and the steady climb underneath it
+        is filed as explained. It is not explained. The second half contains
+        no jump and a 100-a-sample climb, and that is what the reader needs to
+        be shown.
+        """
+        values = [0.0] * 60 + [1_000_000.0] * 60 + [1_000_000.0 + 100.0 * i for i in range(120)]
+        assert growth_report(_samples("a", values))[0].verdict == "growing"
+
+    def test_a_transient_spike_is_settled_not_stepped(self) -> None:
+        """Order matters: the noise cut comes first, and this is why.
+
+        A gauge that jumps 45 bytes for one sample and comes straight back has
+        the most concentrated rise a series can have -- one interval out of
+        119 -- and has gone precisely nowhere. Shape alone cannot tell that
+        from a step that stayed. Significance can, and so it is asked first: a
+        rise this size is inside the run's own scatter, which is what
+        `settled` means. Checking the shape first would put a `stepped` row in
+        front of a reader for a spike that had already come back.
+        """
+        values = [400_000.0] * 240
+        values[200] = 400_045.0
+        row = growth_report(_samples("a", values))[0]
+        assert row.verdict == "settled", (row.verdict, row.late_rate_per_hour)
+
+
+class RiseConcentrationTests(unittest.TestCase):
+    """The statistic itself, against the runs it was measured on."""
+
+    def test_a_step_concentrates_its_rise_into_almost_nothing(self) -> None:
+        values = SteppedTests._plateaus(240, low=630_185_984.0, high=651_558_912.0)
+        points = [(i * 30.0, v) for i, v in enumerate(values)]
+        self.assertLessEqual(_rise_concentration(points), STEP_CONCENTRATION)
+
+    def test_a_leak_spreads_it_across_the_run(self) -> None:
+        values = SteppedTests._climb(240, low=0.0, high=400_000.0)
+        points = [(i * 30.0, v) for i, v in enumerate(values)]
+        # Measured at 19 to 26 per cent on the real leaking soaks; a clean
+        # ramp sits at about a half, and either is far above the cut.
+        self.assertGreater(_rise_concentration(points), STEP_CONCENTRATION * 3)
+
+    def test_a_gauge_that_gained_nothing_is_not_infinitely_concentrated(self) -> None:
+        """Dividing by a total of zero is the obvious way to write this wrong.
+
+        A flat gauge would come out at 0.0 -- maximally step-shaped -- and
+        every unchanging row in the report would be relabelled a step.
+        """
+        points = [(i * 30.0, 5.0) for i in range(40)]
+        self.assertEqual(_rise_concentration(points), 1.0)
+
+    def test_a_gauge_that_only_falls_is_the_same(self) -> None:
+        points = [(i * 30.0, 100.0 - i) for i in range(40)]
+        self.assertEqual(_rise_concentration(points), 1.0)
 
 
 class SawtoothTests(unittest.TestCase):

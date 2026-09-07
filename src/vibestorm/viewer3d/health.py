@@ -49,6 +49,19 @@ MIN_SAMPLES_FOR_VERDICT = 4
 #: is discarded, which at the default cadence is three minutes of a soak.
 MIN_SAMPLES_FOR_TREND = 6
 
+#: How concentrated a rise may be before the report calls it a step rather
+#: than a climb: the share of a run's second-half samples that has to carry
+#: half of everything the gauge gained.
+#:
+#: A leak arrives a little at a time, so half of it takes about half the
+#: samples. A step arrives at once. Measured across every soak on record, and
+#: the two do not overlap: run 4's `proc.rss_bytes` put half its rise into
+#: **2 of 120 samples**, while every row of the two runs that really were
+#: leaking -- run 1 and run 3, `rss`, `py_blocks`, `obj._total`, `obj.list` --
+#: needed **19 to 26 per cent** of them. The cut is at five, which is nearly
+#: four times clear of the nearest leak.
+STEP_CONCENTRATION = 0.05
+
 #: How many standard errors a fitted slope must clear before the report calls
 #: it a climb rather than the shape of the noise. Not a knob: the two soak
 #: runs this was measured against sit twenty-fold either side of it. A heap
@@ -746,6 +759,41 @@ def _fit(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
     return slope, stderr
 
 
+def _rise_concentration(points: Sequence[tuple[float, float]]) -> float:
+    """What share of the second half's samples carries half of what it gained.
+
+    The shape a fit cannot see. A least-squares slope tells a trend from
+    noise, and it says nothing about whether the trend arrived evenly or all
+    at once -- two flat plateaus with one jump between them have a slope, and
+    it is a large one.
+
+    That is not a hypothetical. Run 4 sat at 630,185,984 bytes for eighty
+    minutes, stepped once to 651,558,912, and sat there for the rest; the fit
+    called it 31 MB an hour at nineteen sigma, which is exactly what a line
+    through that shape is. The step lands on the one sample where the machine's
+    load average hit 18.5 -- somebody else's build, on a machine this soak
+    shares -- and a reader who took the slope at face value would have gone
+    looking for a leak that is not there.
+
+    Returns 1.0 for a gauge that gained nothing, so a flat series is never
+    called a step.
+    """
+    half = points[len(points) // 2 :]
+    rises = sorted(
+        (max(0.0, later - earlier) for (_, earlier), (_, later) in zip(half, half[1:])),
+        reverse=True,
+    )
+    total = sum(rises)
+    if total <= 0.0 or not rises:
+        return 1.0
+    running = 0.0
+    for count, rise in enumerate(rises, 1):
+        running += rise
+        if running >= total / 2.0:
+            return count / len(rises)
+    return 1.0
+
+
 def _late_fit(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
     """The fit over the second half, per hour. See `Growth.late_rate_per_hour`."""
     if len(points) < 2:
@@ -814,6 +862,14 @@ def _verdict(points: Sequence[tuple[float, float]], kind: str) -> str:
         # says "growing" costs a second look, and one that says "settling"
         # costs the finding.
         return "growing"
+    if _rise_concentration(points) <= STEP_CONCENTRATION:
+        # It climbed, and the climb is real, and it happened at once. That is
+        # a different thing from a leak and sends the reader somewhere else
+        # entirely -- to *when*, and to what else was happening then, rather
+        # than to what is being held on to. Unlike `steady`, which was tried
+        # and dropped for being a second word for the same answer, this is a
+        # genuinely different answer.
+        return "stepped"
     return "settling" if _rate_is_converging(points) else "growing"
 
 
@@ -850,6 +906,7 @@ __all__ = [
     "HealthProbe",
     "MIN_SAMPLES_FOR_TREND",
     "MIN_SAMPLES_FOR_VERDICT",
+    "STEP_CONCENTRATION",
     "TREND_SIGMA",
     "OBJECT_CENSUS_LIMIT",
     "OBJECT_CENSUS_PREFIX",
