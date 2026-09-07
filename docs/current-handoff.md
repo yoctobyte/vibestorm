@@ -472,6 +472,62 @@ one layer up: a reader consults the comment to interpret the row and concludes
 leak. Corrected, and the bound it now claims was already pinned by two tests
 in `test_udp_recent_sequences.py`.
 
+**A -- the suite wants ten gigabytes, and it is one upstream window
+(2026-09-07).** Carried over as an open question -- pytest was seen at 10.8 GB
+RSS while progressing normally, and it was not established whether that was
+pre-existing. It is, it is reproducible, and it is now diagnosed all the way
+down. `tools/hud_memory.py` holds the measurement and the reasoning.
+
+Traced per test with a `pytest_runtest_logreport` hook that records RSS after
+every teardown, the rises land in seven files and nowhere else:
+
+    3.3 GB    28 tests  test/test_viewer3d_hud_render_mode.py
+    1.5 GB     7 tests  test/test_viewer3d_hud_scale.py
+    1.4 GB    11 tests  test/test_viewer3d_hud_dirty.py
+    1.3 GB     9 tests  test/test_viewer3d_object_inspector.py
+    0.8 GB     7 tests  test/test_viewer3d_hud_refresh.py
+    0.8 GB     7 tests  test/test_viewer3d_health.py
+    0.3 GB     2 tests  test/test_viewer3d_hud_events.py
+    -------
+    9.3 GB    62 tests, every one of which builds a HUD
+
+Build a HUD, drop it, collect, census: **7,162 objects and 120.8 MB per HUD**,
+a straight line over twelve rounds with no deviation in any of them. A census
+taken *after* `gc.collect()` still counting them is a retention and not
+allocator arenas -- the same distinction the soak work turned on, asked one
+process down.
+
+**Bisected to a single construct.** Every pygame_gui element type churns flat
+at zero per round -- thirty buttons, a text entry, a text box, a selection
+list, a drop down -- except `UIWindow`, at **+601 per round**. The HUD builds
+nine of them, which is 5,409 of the 7,162; the rest is the widgets those
+windows carry, since the one in the bisection is empty.
+
+**Upstream, and there is nothing here to fix.** pygame_gui 0.6.14, in a
+process with no vibestorm code in it at all, leaks the same 601 per window.
+`window.kill()` leaks 604. `manager.clear_and_reset()` leaks 621. Walking the
+referrers back finds no module global holding any of it -- not through frames
+either, which the first attempt at that walk got wrong -- so the window sits
+in a closed cycle `gc` will not free, which is what a C-level reference the
+collector cannot traverse looks like from Python. The HUD itself *is*
+collected; its `UIManager` is not.
+
+**Deliberately not fixed, and this is the reasoning rather than a shrug.** The
+only lever is building fewer windows, which means sharing HUDs between tests.
+Those 62 tests toggle render modes, resize, hide and show windows and change
+scale -- sharing one HUD across them trades 9.3 GB for order-dependence, and a
+suite that fails depending on what ran before it is worse than a suite that
+wants a lot of memory on a machine with 60 GB of it. The suite passes, and it
+has never been the thing that failed.
+
+What makes it worth writing down anyway is the second reader: **the owner runs
+their own builds on this machine**, so a suite that wants ten gigabytes is one
+unlucky overlap from an OOM kill landing on somebody's compile. If that ever
+happens the trade above is the one to re-make, and the measurement is kept so
+it can be made on numbers. Run `tools/hud_memory.py --mode elements` after any
+pygame_gui upgrade: if `a window` joins the other rows at +0, the 9.3 GB goes
+away without anyone touching a test.
+
 **A -- the viewer knew where it was and said otherwise (2026-09-07).** Found
 in a screenshot taken to check something else. The HUD read
 
