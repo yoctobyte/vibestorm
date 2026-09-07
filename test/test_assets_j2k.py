@@ -5,8 +5,11 @@ import unittest
 from vibestorm.assets.j2k import (
     MAX_TEXTURE_EDGE,
     MAX_TEXTURE_PIXELS,
+    MAX_UPLOAD_TEXTURE_EDGE,
     J2KDecodeError,
+    J2KEncodeError,
     decode_j2k,
+    encode_j2k,
 )
 
 
@@ -177,3 +180,197 @@ class OversizedRasterTests(unittest.TestCase):
             self.assertIn("too large", str(caught.exception))
         finally:
             Image.MAX_IMAGE_PIXELS = original
+
+
+def _png(size: tuple[int, int], mode: str = "RGB", colour=(200, 100, 50)) -> bytes:
+    """What the owner actually hands us: an ordinary image file."""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new(mode, size, colour).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+class EncodeJ2KTests(unittest.TestCase):
+    """Encoding, which is the half D needs.
+
+    Uploading a texture into an object is not the same operation as pushing
+    an edited script back: the file is one the owner made outside the world,
+    in whatever their paint program writes, and it has to become the format a
+    grid stores before `NewFileAgentInventory` will take it.
+    """
+
+    def test_the_output_is_a_bare_codestream_not_a_container(self) -> None:
+        """`ff4f ff51` is SOC followed by SIZ. A JP2 container starts with a
+        twelve-byte signature box instead, and while both decode here, the
+        `.j2c` a grid serves through GetTexture is the bare one -- and it is
+        smaller, since the container's boxes restate what SIZ already says.
+
+        Pillow picks the container from the *filename*, and there is no
+        filename when saving to a buffer, so this is `no_jp2` doing its job.
+        Passing `codec="j2k"` instead looks right, is not a parameter the
+        plugin reads, and silently produces a container.
+        """
+        encoded = encode_j2k(_png((64, 64)))
+        self.assertEqual(encoded[:4], b"\xff\x4f\xff\x51")
+
+    def test_our_own_decoder_reads_what_our_encoder_writes(self) -> None:
+        decoded = decode_j2k(encode_j2k(_png((64, 32))))
+        self.assertEqual((decoded.width, decoded.height), (64, 32))
+        self.assertEqual(decoded.mode, "RGB")
+
+    def test_a_flat_colour_survives_the_round_trip(self) -> None:
+        """The encode is lossy -- `irreversible=True` is the 9/7 wavelet --
+        so this asks for the colour back within a tolerance rather than
+        byte-exactly. A flat field is the one case where a wavelet codec has
+        nothing to lose, so the tolerance is small on purpose: a wide one
+        would pass even if the channels were transposed.
+        """
+        decoded = decode_j2k(encode_j2k(_png((64, 64), colour=(200, 100, 50))))
+        red, green, blue = decoded.pixels[0], decoded.pixels[1], decoded.pixels[2]
+        self.assertAlmostEqual(red, 200, delta=4)
+        self.assertAlmostEqual(green, 100, delta=4)
+        self.assertAlmostEqual(blue, 50, delta=4)
+
+    def test_alpha_survives(self) -> None:
+        """A texture with no alpha where the owner drew one is a texture with
+        a black or white halo everywhere they expected transparency."""
+        decoded = decode_j2k(encode_j2k(_png((64, 64), "RGBA", (10, 20, 30, 128))))
+        self.assertEqual(decoded.mode, "RGBA")
+        self.assertAlmostEqual(decoded.pixels[3], 128, delta=4)
+
+    def test_a_palette_image_with_transparency_keeps_it(self) -> None:
+        """Transparency on a palette image lives in `info`, not in the mode,
+        and converting to RGB rather than RGBA drops it silently. A GIF or an
+        indexed PNG is an ordinary thing to find in a folder."""
+        from PIL import Image
+
+        image = Image.new("P", (32, 32))
+        image.info["transparency"] = 0
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG", transparency=0)
+        self.assertEqual(decode_j2k(encode_j2k(buffer.getvalue())).mode, "RGBA")
+
+    SIZES = (
+        ("already a power of two", (64, 64), (64, 64)),
+        ("rounded down, not up", (100, 100), (64, 64)),
+        ("each edge on its own", (100, 32), (64, 32)),
+        ("capped at the ceiling", (3000, 3000), (1024, 1024)),
+        ("capped on one edge only", (3000, 16), (1024, 16)),
+        ("one pixel stays one pixel", (1, 1), (1, 1)),
+        ("three rounds down to two", (3, 3), (2, 2)),
+    )
+
+    def test_dimensions_become_powers_of_two_within_the_cap(self) -> None:
+        for name, given, expected in self.SIZES:
+            with self.subTest(name):
+                decoded = decode_j2k(encode_j2k(_png(given)))
+                self.assertEqual((decoded.width, decoded.height), expected)
+
+    def test_rounding_never_reaches_zero(self) -> None:
+        """The floor under the rule above. A 1x1 image is a legal texture and
+        the obvious implementations of "largest power of two below" return 0
+        for it, which turns a small file into an error for no reason."""
+        self.assertEqual(decode_j2k(encode_j2k(_png((1, 1)))).width, 1)
+
+    def test_the_cap_can_be_lowered_for_a_caller_that_wants_smaller(self) -> None:
+        decoded = decode_j2k(encode_j2k(_png((512, 512)), max_edge=128))
+        self.assertEqual((decoded.width, decoded.height), (128, 128))
+
+    def test_bytes_that_are_not_an_image_are_an_encode_error(self) -> None:
+        for name, payload in (
+            ("empty", b""),
+            ("text", b"this is not an image"),
+            ("a truncated png", _png((32, 32))[:20]),
+        ):
+            with self.subTest(name):
+                with self.assertRaises(J2KEncodeError):
+                    encode_j2k(payload)
+
+    @staticmethod
+    def _png_claiming(width: int, height: int) -> bytes:
+        """A sixteen-pixel PNG whose IHDR says otherwise.
+
+        Width and height sit at offsets 16 and 20, inside the IHDR chunk, and
+        the chunk's CRC at 29 has to be recomputed -- Pillow *does* check it,
+        and a wrong one makes the file unrecognisable rather than oversized.
+        The first version of this helper skipped that step, so the test
+        passed on "not an image" while believing it had proved a size bound.
+
+        With the CRC right, `open` reads the header, believes it, and
+        `load()` is where the memory would go.
+        """
+        import zlib
+
+        header = bytearray(_png((16, 16)))
+        header[16:20] = struct.pack(">I", width)
+        header[20:24] = struct.pack(">I", height)
+        header[29:33] = struct.pack(">I", zlib.crc32(bytes(header[12:29])))
+        return bytes(header)
+
+    def test_an_oversized_source_is_refused_before_it_is_loaded(self) -> None:
+        """The same bound as the decode, for the same reason.
+
+        The source is a local file rather than something off the wire, so the
+        threat model is different -- but the arithmetic is identical.
+
+        The size is chosen to sit **between** this client's limit and
+        Pillow's own: 25 megapixels is over `MAX_TEXTURE_PIXELS` and under
+        the 178 at which `DecompressionBombError` fires. The first version of
+        this test claimed 40,000 on each edge, which is over both -- so it
+        passed through Pillow's guard and went on passing with this client's
+        removed. A test that can be satisfied by somebody else's check is not
+        testing ours.
+        """
+        with self.assertRaisesRegex(J2KEncodeError, "too large"):
+            encode_j2k(self._png_claiming(5000, 5000))
+
+    def test_the_bound_holds_with_pillow_s_own_guard_switched_off(self) -> None:
+        """`Image.MAX_IMAGE_PIXELS` is a mutable module global this
+        application does not set, so its value is whatever Pillow defaults to
+        and whatever any other import has since done to it. The answer must
+        not depend on it."""
+        from PIL import Image
+
+        original = Image.MAX_IMAGE_PIXELS
+        Image.MAX_IMAGE_PIXELS = None
+        try:
+            with self.assertRaisesRegex(J2KEncodeError, "too large"):
+                encode_j2k(self._png_claiming(5000, 5000))
+        finally:
+            Image.MAX_IMAGE_PIXELS = original
+
+    def test_an_image_that_already_fits_is_not_resampled(self) -> None:
+        """Resampling a 1024x1024 texture to 1024x1024 is not free, and the
+        guard against it is invisible in the output -- a LANCZOS resize to
+        the same size is very nearly the identity, and the encode is lossy
+        enough to hide the difference. So the assertion is on the work done
+        rather than on the result, which is the only place it shows.
+        """
+        from PIL import Image
+
+        calls = []
+        original = Image.Image.resize
+
+        def counting(self, size, *args, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(size)
+            return original(self, size, *args, **kwargs)
+
+        Image.Image.resize = counting
+        try:
+            encode_j2k(_png((64, 64)))
+            self.assertEqual(calls, [])
+            encode_j2k(_png((100, 100)))
+            self.assertEqual(calls, [(64, 64)])
+        finally:
+            Image.Image.resize = original
+
+    def test_the_upload_cap_is_the_size_both_grids_settled_on(self) -> None:
+        """A floor and a ceiling. Nothing server-side enforces this --
+        OpenSim's `BunchOfCaps` stores the bytes without looking at them --
+        so it is a convention, and a constant with only a floor passes every
+        test above while being 2**60."""
+        self.assertGreaterEqual(MAX_UPLOAD_TEXTURE_EDGE, 512)
+        self.assertLessEqual(MAX_UPLOAD_TEXTURE_EDGE, MAX_TEXTURE_EDGE)
+        self.assertEqual(MAX_UPLOAD_TEXTURE_EDGE & (MAX_UPLOAD_TEXTURE_EDGE - 1), 0)
+
