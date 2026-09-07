@@ -33,17 +33,34 @@ NEW_FILE_INVENTORY_TYPES: frozenset[str] = frozenset(
     {"sound", "snapshot", "animation", "animset", "wearable", "object"}
 )
 
+#: The one type the fall-through gets *right*.
+#:
+#: ``"texture"`` matches none of the branches above, so it keeps
+#: ``assType = 0`` and ``inType = 0`` — and ``AssetType.Texture`` and
+#: ``InventoryType.Texture`` are both 0, so the item lands correctly typed.
+#: The upload works, and works for a reason nobody chose.
+#:
+#: Which is why it is pinned rather than trusted: "no branch matches" is a
+#: claim that rots without anything failing, so
+#: ``TextureUploadFallsThroughToTypeZeroTests`` reads the branch list out of
+#: the committed OpenSim source and fails if ``texture`` ever appears in it.
+NEW_FILE_FALLTHROUGH_TYPES: frozenset[str] = frozenset({"texture"})
+
 
 def new_file_inventory_type_warning(inventory_type: str) -> str | None:
     """Warn when ``NewFileAgentInventory`` will silently mistype the item.
 
-    Returns None for a supported type. This does not raise: the upload really
-    does create an item, so refusing would be wrong — but reporting success
-    without saying the item is mistyped would be worse.
+    Returns None for a type the capability handles, and for ``texture``,
+    where falling through every branch is how the right answer is reached.
+    This does not raise: the upload really does create an item, so refusing
+    would be wrong — but reporting success without saying the item is
+    mistyped would be worse.
     """
     if inventory_type in NEW_FILE_INVENTORY_TYPES:
         return None
-    supported = ", ".join(sorted(NEW_FILE_INVENTORY_TYPES))
+    if inventory_type in NEW_FILE_FALLTHROUGH_TYPES:
+        return None
+    supported = ", ".join(sorted(NEW_FILE_INVENTORY_TYPES | NEW_FILE_FALLTHROUGH_TYPES))
     return (
         f"NewFileAgentInventory does not handle inventory_type={inventory_type!r}; "
         f"OpenSim will store the item with asset type 0 (texture) and inventory "

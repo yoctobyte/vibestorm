@@ -531,3 +531,50 @@ class FloatingTextLengthTests(unittest.TestCase):
             r"AddByte\(\(byte\)\(len \+ 1\)\); // add null",
             "AddShortLimitedUTF8 no longer writes a one-byte length prefix",
         )
+
+
+class TextureUploadFallsThroughToTypeZeroTests(unittest.TestCase):
+    """Why a texture is the one thing this capability types correctly by accident.
+
+    `NewFileAgentInventory` is documented in this client as mistyping
+    anything outside a short list of `inventory_type` strings, because
+    `UploadCompleteHandler` branches on those strings and leaves both types
+    at their initial value otherwise. That is right, and for a texture the
+    initial value is the answer: `AssetType.Texture` and
+    `InventoryType.Texture` are both 0.
+
+    So uploading a texture through this capability works, and works for a
+    reason nobody chose. The claim rests entirely on two initialisers and on
+    the absence of a branch, and "the absence of a branch" is exactly the
+    kind of claim that rots quietly -- add `else if (inventoryType ==
+    "texture")` upstream and this client's silence becomes wrong without
+    anything failing. Hence the pin.
+    """
+
+    def setUp(self) -> None:
+        self.source = _source("Caps", "BunchOfCaps", "BunchOfCaps.cs")
+        if self.source is None:
+            self.skipTest("referencedocs/Caps/BunchOfCaps/BunchOfCaps.cs is not committed")
+
+    def test_both_types_start_at_zero(self) -> None:
+        self.assertIn("sbyte assType = 0;", self.source)
+        self.assertIn("sbyte inType = 0;", self.source)
+
+    def test_the_branch_list_is_the_one_this_client_records(self) -> None:
+        """Every string the handler actually switches on, read from the source
+        rather than from this client's own constant."""
+        branches = set(re.findall(r'inventoryType\s*==\s*"([a-z]+)"', self.source))
+        self.assertEqual(
+            branches,
+            {"sound", "snapshot", "animation", "animset", "wearable", "object"},
+        )
+
+    def test_nothing_branches_on_texture(self) -> None:
+        self.assertNotIn("texture", re.findall(r'inventoryType\s*==\s*"([a-z]+)"', self.source))
+
+    def test_the_texture_asset_is_stored_without_being_looked_at(self) -> None:
+        """And the other half of the same claim: the bytes are not inspected,
+        so nothing server-side enforces the dimensions `encode_j2k` rounds
+        to. That cap is a convention among readers, not a rule."""
+        self.assertIn("textureAsset.Data = texture_list[i].AsBinary();", self.source)
+
