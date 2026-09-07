@@ -4085,7 +4085,13 @@ with binaries on the next pull.
 Still text-only: the *viewer's* "save all text assets" button. The CLI is the
 complete path.
 
-**D -- done, live-verified 2026-09-05.** Both asset kinds now go in.
+**D -- done, live-verified 2026-09-05; two kinds added since.** Scripts
+and notecards below, then textures (2026-09-07, live-verified) and
+gestures (2026-09-07, `d9ce170`, **not yet live-verified** -- soak run 5
+owned the sim). The three that remain out are sounds, animations and
+meshes, each of which needs an encoder or validator this client lacks;
+see the Object Sync Track section for why that is a boundary and not a
+to-do list.
 
 *Scripts* were closed on 2026-09-02: unmatched `.lsl` files go through
 `RezScript` to make the row, then the contents upload onto it.
@@ -4124,6 +4130,16 @@ encoder returns a bare body, and `WorldClient.queue_outbound_packet` expects a
 straight in produces no error anywhere; the sim silently drops it and logs
 nothing, which reads exactly like a permissions denial. Always go through the
 session's `build_*_packet`.
+
+*Gestures* were closed on 2026-09-07 and are the cheapest of the four,
+because the capability shares its handler with the notecard one: the two hops
+are the same two hops and `upload_task_gesture` is nine lines. What is *not*
+shared is that the push parses the gesture first. Nothing on the far side
+looks at it -- `UpdateGestureItemAsset` stores what it is sent -- so an
+unreadable gesture is accepted, sits in the object, and fails whenever
+somebody plays it, with nothing pointing back at the upload. Refusing it here
+means this client never uploads a gesture it cannot itself read, which is the
+strongest check available without a viewer.
 
 **The viewer's Upload button now goes through that engine (2026-09-05).** It
 used to be ~180 lines of its own -- its own name matching, its own row
@@ -4466,16 +4482,44 @@ appears in it.
   second run says skipped, not unchanged, and skipped is the honest word,
   because nothing was compared.
 
-  That list is a map of what could be round-tripped and is not.
-  **`UpdateGestureTaskInventory`** is the one worth looking at: a gesture is
-  line-based UTF-8 that `assets/gesture.py` already decodes, and it shares
-  its handler with the notecard capability this client already speaks, so the
-  round trip would be the notecard one again rather than a new protocol.
+  That list is a map of what could be round-tripped and is not. It is one
+  shorter than it was: **`UpdateGestureTaskInventory`** was built on
+  2026-09-07 (`d9ce170`). A gesture is line-based UTF-8 that
+  `assets/gesture.py` already decodes and it shares its handler with the
+  notecard capability, so the push is `upload_task_gesture` -- nine lines on
+  top of `upload_notecard_bytes` -- rather than a second protocol.
+  `.gesture` is now in `TEXT_ASSET_TYPES` (7, 10, 21), so pull writes it and
+  push sends it back. **Not yet verified live**: soak run 5 owned the sim.
+
+  The one part that is not shared is the check. `_encode_for_upload` parses a
+  gesture before sending it, which neither of the other two text types needs:
+  a script that will not compile comes back with errors and a notecard has no
+  structure to get wrong, but a malformed gesture is stored exactly as sent
+  and fails later, when somebody tries to play it, with nothing pointing back
+  at the upload that caused it.
+
+  The mutation battery is worth reading before adding the fourth type, because
+  eight of eighteen mutants survived the first pass and all eight were the
+  same mistake in three costumes -- **a test that exercises the piece and not
+  the wiring**. Every test drove `_encode_for_upload` directly, so routing a
+  gesture to the notecard capability, falling through to the notecard
+  uploader, and swallowing `GestureDecodeError` outright were all invisible;
+  `upload_task_gesture` had no test at all; and `GESTURE_TASK_CAP_NAME` was
+  asserted only against itself, so renaming it to `UpdateGestureAgentInventory`
+  -- a real capability, wrong for a task row -- kept the suite green. The cap
+  name is now pinned to the registrations the source pin extracts, and
+  `_EngineCase` records `(kind, capability)` per upload so the loop can be
+  tested rather than assumed.
 
   Beware the sixth name. `UpdateAnimSetTaskInventory` appears in
   `BunchOfCaps.cs` on a **commented-out** registration line, so a client that
   asks for it gets nothing. A first pass at the source pin counted it and
   said six; the pin now matches registrations rather than mentions.
+
+  Of the three names left, **Material** and **Settings** are the plausible
+  next ones -- both carry structured text the way a gesture does -- but
+  neither has a decoder in `assets/` yet, so each is a validator first and a
+  round trip second. That order is the lesson above, not a preference.
 * **Sounds, animations, meshes.** Each needs its own encoder or validator.
   A suffix map that claimed them would create correctly typed items holding
   the owner's raw file, which no consumer can read, and report success. Not
