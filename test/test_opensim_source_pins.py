@@ -449,6 +449,58 @@ class TimeDilationTests(unittest.TestCase):
         )
 
 
+class ChatLengthTests(unittest.TestCase):
+    """Why a long chat line is a hitch nobody will see, and not a bomb.
+
+    Chat arrives from other avatars and from scripts, so its length is not
+    this client's to choose, and `ChatFromSimulator` carries the message in a
+    Variable 2 field -- the wire allows 65,535 bytes. The ticker wraps a whole
+    entry before deciding how much of it fits, so the work is linear in the
+    message and the display is not: measured with the viewer's own font at
+    600 px wide, 65,535 characters wrap to 729 rows in 207 ms, of which only
+    the last boxful is ever drawn -- `visible_rows` gathers from the newest
+    backwards and stops, but it stops *after* `wrap_entry` has built every row
+    of the entry it is reading.
+
+    That would be worth fixing if it could happen. It cannot, from OpenSim:
+    the message goes through `Util.StringToBytes1024` before the two-byte
+    length is written, so a kilobyte is the whole field. At that size the same
+    measurement is **4.4 ms** -- comfortably inside one frame at 30 fps, and
+    two orders of magnitude away from mattering.
+
+    So this pin is the reason the ticker was left alone, and it is here rather
+    than in a comment because it is the kind of reason that stops being true
+    without anybody editing the file it is written in.
+    """
+
+    def setUp(self) -> None:
+        self.client = _source("UDP", "LLClientView.cs")
+
+    def test_chat_goes_out_through_the_kilobyte_limited_writer(self) -> None:
+        if self.client is None:
+            self.skipTest("referencedocs/UDP/LLClientView.cs not present")
+        self.assertIn(
+            "byte[] msg = Util.StringToBytes1024(message);",
+            self.client,
+            "chat is no longer bounded by StringToBytes1024 before it is sent",
+        )
+
+    def test_and_the_length_it_writes_is_the_bounded_one(self) -> None:
+        """The bound only holds if the length written is that array's own.
+
+        A writer that clamped the bytes but then wrote the *original* string's
+        length would be a different bug and a worse one, so the two lines are
+        pinned together rather than the first one alone.
+        """
+        if self.client is None:
+            self.skipTest("referencedocs/UDP/LLClientView.cs not present")
+        start = self.client.index("byte[] msg = Util.StringToBytes1024(message);")
+        window = self.client[start : start + 400]
+        self.assertIn("len = msg.Length;", window)
+        self.assertIn("data[pos++] = (byte)len;", window)
+        self.assertIn("data[pos++] = (byte)(len >> 8);", window)
+
+
 class FloatingTextLengthTests(unittest.TestCase):
     """Why 254 characters is the whole of a prim's floating text.
 

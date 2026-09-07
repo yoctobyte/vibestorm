@@ -413,8 +413,26 @@ two standard errors, and it is not a knob -- the two runs on record sit
 twenty-fold either side of it. Run 4's flat rows fit at **0.5 and 0.9 sigma**;
 run 3's real leak fits at **37 to 41 sigma on every row**, and comes through
 the new rule reading `growing` exactly as before, at 464 MB an hour with an
-error of 12 MB. Anything from 1.5 to 10 separates the two identically. The
-tests carry both directions: a seven-phase sweep of the same healthy sawtooth
+error of 12 MB. Anything from 1.5 to 10 separates the two identically.
+
+Checked afterwards against the runs it was *not* designed on, which is the
+part that would have caught a threshold fitted to two examples. Run 1 -- the
+other pre-`gc.freeze()` two-hour soak -- reads `proc.rss_bytes` at 41.4 MB an
+hour with an error of 0.41 MB, **100 sigma**, `growing`, and `proc.py_blocks`
+at 91 sigma. Three independent soaks then, two leaking and one not, all
+landing on the right side.
+
+The short logs are the honest caveat rather than a fourth success. A
+two-minute run is entirely startup and every row of it reads `growing`, which
+is right. A ninety-second one has five samples in its second half, and over
+forty-five seconds the fit will take a dip and a recovery for a slope --
+`proc.gc_tracked` in `smoke.jsonl` reads +27,219 an hour through a gauge that
+ended *lower* than it started. Nothing is wrong with the arithmetic; there is
+simply no trend in forty-five seconds to find, and the error column is what
+says so. `MIN_SAMPLES_FOR_VERDICT` is four, and it is about having two halves
+to compare rather than about having enough run to mean anything.
+
+The tests carry both directions: a seven-phase sweep of the same healthy sawtooth
 (a verdict that depends on which phase you recorded is not measuring the
 heap), and the same sweep with run 3's measured leak of 64,263 an hour laid
 under a swing larger than an hour of it, which must still read `growing` from
@@ -471,6 +489,38 @@ by construction" -- which is the same defect as the coarse height byte below,
 one layer up: a reader consults the comment to interpret the row and concludes
 leak. Corrected, and the bound it now claims was already pinned by two tests
 in `test_udp_recent_sequences.py`.
+
+**A -- the chat ticker, checked and left alone (2026-09-07).** The same
+sweep as the hover-text cap, one input over, and this one comes back
+negative. Chat arrives from other avatars and from scripts, so its length is
+not this client's to choose, and `ChatFromSimulator` carries the message in a
+Variable 2 field: the wire allows 65,535 bytes.
+
+The ticker's shape invites the same bug the labels had. `visible_rows`
+gathers rows from the newest entry backwards and stops when the box is full,
+which is the right rule -- but it stops *after* `wrap_entry` has wrapped the
+whole entry, so the work is linear in the message while the display is not.
+Measured with the viewer's own font at 600 px:
+
+    chars      rows   wrap ms
+       80         1       2.6
+    1,020        12       4.4
+    8,000        89      34.6
+   65,535       729     207.7
+
+207 ms for a boxful of rows would be worth fixing. It cannot arrive: OpenSim
+puts the message through `Util.StringToBytes1024` before writing the two-byte
+length, so a kilobyte is the whole field, and a kilobyte costs **4.4 ms** --
+inside one frame at 30 fps and two orders of magnitude from mattering. There
+was no allocation bomb to find either; unlike the label textures, the ticker
+surface is sized to its container, so the rows that do not fit are simply
+never drawn rather than rasterised into something enormous.
+
+Pinned rather than commented, in `ChatLengthTests` -- both the call *and* the
+length that gets written beside it, because a writer that clamped the bytes
+and then wrote the original string's length would be a different bug and a
+worse one. This is the kind of reason that stops being true without anybody
+editing the file it is written in.
 
 **A -- the suite wants ten gigabytes, and it is one upstream window
 (2026-09-07).** Carried over as an open question -- pytest was seen at 10.8 GB
