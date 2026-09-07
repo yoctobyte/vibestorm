@@ -8,6 +8,7 @@ import socket
 import xmlrpc.client
 from dataclasses import dataclass
 from uuid import UUID
+from xml.parsers.expat import ExpatError
 
 from vibestorm.login.models import (
     BootstrapBakedCacheEntry,
@@ -21,6 +22,14 @@ class LoginError(RuntimeError):
     """Raised when login/bootstrap fails."""
 
 
+#: Ceiling on a login response. A grid answers this call with a struct of a
+#: few kilobytes -- the largest field is the initial outfit, and even a
+#: heavily dressed avatar's is small. Set far above that and still finite,
+#: because `xmlrpc.client` reads in 1 kB pieces and hands every one of them
+#: to the parser, so the transfer is chunked and the *accumulation* is not.
+MAX_LOGIN_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
 class TimeoutTransport(xmlrpc.client.Transport):
     def __init__(self, timeout_seconds: float) -> None:
         super().__init__()
@@ -30,6 +39,46 @@ class TimeoutTransport(xmlrpc.client.Transport):
         connection = super().make_connection(host)
         connection.timeout = self.timeout_seconds
         return connection
+
+    def parse_response(self, response: object) -> tuple[object, ...]:
+        """Feed the parser, and stop feeding it past `MAX_LOGIN_RESPONSE_BYTES`.
+
+        The base implementation loops on `stream.read(1024)` until the server
+        stops sending. The reads are bounded; nothing else is. Whoever is on
+        the far end of a login URI decides how much of this process's memory
+        the answer occupies, and on the login path that is a decision taken
+        before the user has been told anything at all.
+
+        The count is of *decompressed* bytes on purpose. `Transport` asks for
+        gzip and unwraps it here, so counting what came off the socket would
+        bound the transfer and not the memory, and a compressed body is where
+        the two differ by three orders of magnitude.
+        """
+        stream = self._decoded_stream(response)
+        parser, unmarshaller = self.getparser()
+        total = 0
+        try:
+            while total <= MAX_LOGIN_RESPONSE_BYTES:
+                data = stream.read(min(1024, MAX_LOGIN_RESPONSE_BYTES + 1 - total))
+                if not data:
+                    parser.close()
+                    return unmarshaller.close()
+                total += len(data)
+                parser.feed(data)
+        finally:
+            if stream is not response:
+                stream.close()
+        raise LoginError(
+            f"login response exceeds the {MAX_LOGIN_RESPONSE_BYTES:,} byte limit"
+        )
+
+    @staticmethod
+    def _decoded_stream(response: object):
+        """Unwrap a gzipped body the way `Transport.parse_response` does."""
+        header = getattr(response, "getheader", None)
+        if header is not None and header("Content-Encoding", "") == "gzip":
+            return xmlrpc.client.GzipDecodedResponse(response)
+        return response
 
 
 #: The substring OpenSim's refusal carries when a previous session is still
@@ -87,6 +136,14 @@ class LoginClient:
             raise LoginError(f"login request failed: {exc}") from exc
         except xmlrpc.client.Error as exc:
             raise LoginError(f"login XML-RPC failed: {exc}") from exc
+        except ExpatError as exc:
+            # Not an `xmlrpc.client.Error` and not an `OSError` -- it comes
+            # from the parser underneath and subclasses `Exception` directly,
+            # so every handler above this one missed it and a truncated or
+            # malformed login response reached the user as a traceback rather
+            # than as a failed login. The same shape as
+            # `DecompressionBombError` escaping `decode_j2k`.
+            raise LoginError(f"login response was not valid XML: {exc}") from exc
         if not isinstance(response, dict):
             raise LoginError("login response is not a struct")
 

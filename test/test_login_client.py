@@ -1,9 +1,15 @@
-import unittest
 import socket
+import unittest
 import xmlrpc.client
 from uuid import UUID
 
-from vibestorm.login.client import LoginClient, LoginError, sl_password_hash
+from vibestorm.login.client import (
+    MAX_LOGIN_RESPONSE_BYTES,
+    LoginClient,
+    LoginError,
+    TimeoutTransport,
+    sl_password_hash,
+)
 from vibestorm.login.models import DEFAULT_LOGIN_OPTIONS, LoginCredentials, LoginRequest
 
 
@@ -315,3 +321,195 @@ class LingeringSessionRetryTests(unittest.TestCase):
 
         self.assertIsNotNone(error)
         self.assertEqual(len(calls), 1)
+
+
+class _Response:
+    """A login server's HTTP response, as `Transport.parse_response` sees it.
+
+    `asks` is what the test is really about. A ceiling that is measured after
+    the read is not a ceiling, so the assertions are on what was requested.
+    """
+
+    def __init__(self, body: bytes, *, encoding: str = "", chunk: int | None = None):
+        self._body = body
+        self._encoding = encoding
+        self._served = 0
+        self._chunk = chunk
+        self.asks: list[int] = []
+
+    def getheader(self, name: str, default: str = "") -> str:
+        return self._encoding if name == "Content-Encoding" else default
+
+    def read(self, amt: int = -1) -> bytes:
+        self.asks.append(amt)
+        end = len(self._body) if amt < 0 else min(len(self._body), self._served + amt)
+        if self._chunk is not None:
+            end = min(end, self._served + self._chunk)
+        chunk = self._body[self._served : end]
+        self._served = end
+        return chunk
+
+
+class _EndlessResponse:
+    """A grid that opens a valid document and never closes it."""
+
+    def __init__(self) -> None:
+        #: Bytes handed over, not bytes asked for. Asking is what a reader
+        #: with an unclamped chunk size does too much of, and the difference
+        #: between the two is exactly the overshoot being measured.
+        self.given = 0
+        self._head = b"<methodResponse><params><param><value><string>"
+
+    def getheader(self, name: str, default: str = "") -> str:
+        return default
+
+    def read(self, amt: int = -1) -> bytes:
+        if amt < 0:
+            raise AssertionError("unbounded read against an endless response")
+        if self._head:
+            out, self._head = self._head[:amt], self._head[amt:]
+        else:
+            out = b"x" * amt
+        self.given += len(out)
+        return out
+
+
+def _method_response(text: str) -> bytes:
+    return (
+        f"<methodResponse><params><param><value><string>{text}"
+        "</string></value></param></params></methodResponse>"
+    ).encode()
+
+
+class TransportParseTests(unittest.TestCase):
+    """`TimeoutTransport.parse_response`, which replaces the base loop.
+
+    The base one reads in 1 kB pieces and feeds every one of them to the
+    parser until the server stops sending. The reads are bounded and the
+    accumulation is not, so how much of this process's memory a login answer
+    occupies is decided by whoever is on the far end of the login URI --
+    before the user has been told anything at all.
+    """
+
+    def _parse(self, response: object) -> object:
+        return TimeoutTransport(timeout_seconds=5.0).parse_response(response)
+
+    def test_an_ordinary_response_still_parses(self) -> None:
+        """The floor. A ceiling that broke parsing would pass every test below."""
+        self.assertEqual(self._parse(_Response(_method_response("hello"))), ("hello",))
+
+    def test_a_response_arriving_in_small_pieces_still_parses(self) -> None:
+        """A short read is not the end of a body, and the parser is fed
+        incrementally precisely so that it need not be."""
+        response = _Response(_method_response("hello"), chunk=7)
+        self.assertEqual(self._parse(response), ("hello",))
+        self.assertGreater(len(response.asks), 1)
+
+    def test_a_gzipped_response_still_parses(self) -> None:
+        """`Transport` asks for gzip, so a grid may well send it.
+
+        This unwrapping is reimplemented here rather than inherited, and if
+        it were wrong every grid that compresses would refuse to log in --
+        with a parse error blamed on the grid.
+        """
+        import gzip
+
+        body = gzip.compress(_method_response("hello"))
+        self.assertEqual(self._parse(_Response(body, encoding="gzip")), ("hello",))
+
+    def test_the_count_is_of_decompressed_bytes(self) -> None:
+        """Which is the count that matters: deflate reaches about 1,029:1, so
+        bounding what came off the socket would bound the transfer and leave
+        the memory unbounded by three orders of magnitude."""
+        import gzip
+
+        oversized = _method_response("x" * (MAX_LOGIN_RESPONSE_BYTES + 1024))
+        self.assertLess(len(gzip.compress(oversized)), MAX_LOGIN_RESPONSE_BYTES)
+        with self.assertRaisesRegex(LoginError, "exceeds the"):
+            self._parse(_Response(gzip.compress(oversized), encoding="gzip"))
+
+    def test_a_response_that_never_ends_is_refused(self) -> None:
+        response = _EndlessResponse()
+        with self.assertRaisesRegex(LoginError, "exceeds the"):
+            self._parse(response)
+        # The limit plus the one byte that detects the overrun, and not a
+        # byte more. A reader that asks for a full chunk each time overshoots
+        # by up to a kilobyte, which is harmless here and is the same
+        # arithmetic that is not harmless at 64 MB.
+        self.assertEqual(response.given, MAX_LOGIN_RESPONSE_BYTES + 1)
+
+    def test_a_body_of_exactly_the_limit_is_accepted(self) -> None:
+        """The limit is inclusive, and a boundary nobody pins drifts.
+
+        The module constant is lowered for this rather than an eight megabyte
+        document being built, because the arithmetic under test is the
+        comparison and not the size.
+        """
+        import vibestorm.login.client as module
+
+        skeleton = len(_method_response(""))
+        original = module.MAX_LOGIN_RESPONSE_BYTES
+        module.MAX_LOGIN_RESPONSE_BYTES = skeleton + 100
+        try:
+            body = _method_response("y" * 100)
+            self.assertEqual(len(body), module.MAX_LOGIN_RESPONSE_BYTES)
+            self.assertEqual(self._parse(_Response(body)), ("y" * 100,))
+            with self.assertRaisesRegex(LoginError, "exceeds the"):
+                self._parse(_Response(_method_response("y" * 101)))
+        finally:
+            module.MAX_LOGIN_RESPONSE_BYTES = original
+
+    def test_the_limit_is_generous_but_finite(self) -> None:
+        """A login struct is kilobytes. The floor keeps a real one working;
+        the ceiling is the entire point, and a bound with only a floor passes
+        every test here while being 2**60."""
+        self.assertGreaterEqual(MAX_LOGIN_RESPONSE_BYTES, 1024 * 1024)
+        self.assertLessEqual(MAX_LOGIN_RESPONSE_BYTES, 64 * 1024 * 1024)
+
+
+class MalformedResponseTests(unittest.TestCase):
+    """A grid that answers with something that is not XML.
+
+    `ExpatError` comes from the parser underneath `xmlrpc`, subclasses
+    `Exception` directly, and is neither an `xmlrpc.client.Error` nor an
+    `OSError` -- so every handler in `_login_sync` missed it and a truncated
+    login response reached the user as a traceback instead of a failed login.
+    The same shape as `DecompressionBombError` escaping `decode_j2k`, on the
+    one code path that runs before the user has been told anything.
+    """
+
+    def _login_against(self, payload: bytes) -> None:
+        import vibestorm.login.client as module
+
+        class Transport(xmlrpc.client.Transport):
+            def request(self, host, handler, request_body, verbose=False):  # type: ignore[no-untyped-def]
+                parser, unmarshaller = self.getparser()
+                parser.feed(payload)
+                parser.close()
+                return unmarshaller.close()
+
+        original = module.TimeoutTransport
+        module.TimeoutTransport = lambda timeout_seconds: Transport()  # type: ignore[assignment]
+        try:
+            LoginClient()._login_sync(
+                LoginRequest(
+                    login_uri="http://127.0.0.1:9/",
+                    credentials=LoginCredentials(first="a", last="b", password="c"),
+                )
+            )
+        finally:
+            module.TimeoutTransport = original
+
+    def test_a_truncated_response_is_a_login_error(self) -> None:
+        with self.assertRaises(LoginError):
+            self._login_against(b"<methodResponse><params><param><value><string>unclosed")
+
+    def test_a_response_that_is_not_xml_at_all_is_a_login_error(self) -> None:
+        """A proxy's HTML error page is the usual way this happens."""
+        with self.assertRaises(LoginError):
+            self._login_against(b"<html><body>502 Bad Gateway</body></html>")
+
+    def test_the_message_says_what_went_wrong(self) -> None:
+        with self.assertRaisesRegex(LoginError, "not valid XML"):
+            self._login_against(b"not xml")
+
