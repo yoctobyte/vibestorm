@@ -59,6 +59,23 @@ def _samples(name: str, values, *, step: float = 30.0, counters=()) -> list[dict
     ]
 
 
+def _samples_with_gc(name: str, values, collections, *, step: float = 30.0) -> list[dict]:
+    """Samples carrying the collector counter the viewer really records.
+
+    `collections` is one running total per sample, the way `gc.get_stats()`
+    reports it: it goes up on the sample the collector ran on.
+    """
+    return [
+        {
+            "elapsed_s": i * step,
+            "frame": i * 100,
+            name: float(value),
+            "gc.auto_collections": float(runs),
+        }
+        for i, (value, runs) in enumerate(zip(values, collections, strict=True))
+    ]
+
+
 class ProcessGaugeTests(unittest.TestCase):
     """The four numbers every sample carries, whatever the caller asked for."""
 
@@ -1574,6 +1591,16 @@ class ConditionsTests(unittest.TestCase):
             self.assertEqual(machine_load_1m(), 0.0)
 
 
+def _row(report, name: str):
+    """The one row for `name`. `growth_report` returns every gauge in the
+    samples, and `_samples_with_gc` puts the collector counter in every one
+    of them, so the row wanted here is never reliably the first."""
+    for growth in report:
+        if growth.name == name:
+            return growth
+    raise AssertionError(f"no row for {name}: {[g.name for g in report]}")
+
+
 class CyclicGarbageTests(unittest.TestCase):
     """The leak that is not a leak, and the two things that expose it.
 
@@ -1720,6 +1747,85 @@ class _StubClient:
 
     def world_view(self):
         return None
+
+
+class CyclicVerdictTests(unittest.TestCase):
+    """Telling a leak from the interval between collections.
+
+    Soak run 6 is the case, and the numbers below are its own, every sixth
+    sample of the seventy minutes it ran. A dozen rows climbed for
+    thirty-five minutes, one collection ran, every one of them fell back to
+    where it had started, and they climbed again -- while the process's
+    resident size moved by eighty kilobytes in the half hour either side.
+    The rows were pygame_gui's text layouts and the deques and lists inside
+    them: reference cycles, which is what the collector is for and what
+    nothing else frees. Reported as `growing`, eighteen of them buried the
+    finding that the heap was flat.
+    """
+
+    #: `obj.pygame_gui...TextBoxLayout` from `local/soak/run6.jsonl`.
+    RUN6 = [3, 64, 73, 102, 120, 134, 143, 152, 163, 175, 192,
+            39, 46, 55, 65, 81, 94, 104, 109, 115, 121, 121, 127, 132]
+    #: `gc.auto_collections` from the same samples. The collector ran once in
+    #: the middle, and five times during startup before the first sample.
+    RUN6_GC = [8] + [13] * 10 + [14] * 13
+
+    def test_a_row_a_collection_takes_back_is_not_growing(self) -> None:
+        samples = _samples_with_gc("obj.thing", self.RUN6, self.RUN6_GC)
+        row = _row(growth_report(samples), "obj.thing")
+        assert row.verdict == "cyclic", row
+
+    def test_the_same_row_reads_as_growing_without_the_collector_series(self) -> None:
+        """The evidence, not a change of heart about the shape.
+
+        Soak logs written before this one have no `gc.auto_collections` in
+        them, and nothing in the value column alone separates that shape from
+        a leak. The verdict has to stay the alarming one when the evidence is
+        missing, or reading an old log quietly becomes a clean bill of health.
+        """
+        row = _row(growth_report(_samples("obj.thing", self.RUN6)), "obj.thing")
+        assert row.verdict == "growing", row
+
+    def test_a_leak_is_still_a_leak_when_collections_happen(self) -> None:
+        """The collector runs during a leak too. It just does not help."""
+        values = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+        samples = _samples_with_gc("obj.leak", values, [13] * 5 + [14] * 5)
+        row = _row(growth_report(samples), "obj.leak")
+        assert row.verdict == "growing", row
+
+    def test_a_partial_reclaim_is_still_reported(self) -> None:
+        """Half is the line, and a row that keeps most of itself is over it.
+
+        A cache that gives up a tenth at each collection and climbs past its
+        old peak is holding on to something, and the reader has to see it.
+        """
+        values = [100, 200, 300, 400, 500, 600, 540, 640, 740, 840]
+        samples = _samples_with_gc("obj.mostly", values, [13] * 6 + [14] * 4)
+        row = _row(growth_report(samples), "obj.mostly")
+        assert row.verdict == "growing", row
+
+    def test_a_fall_that_is_not_a_collection_does_not_count(self) -> None:
+        """A cache evicting itself is identical in the value column.
+
+        It is a different finding -- somebody's eviction policy rather than
+        the collector -- and calling it `cyclic` sends the reader to the
+        wrong place. The counter is the only thing that separates them.
+        """
+        samples = _samples_with_gc("obj.cache", self.RUN6, [13] * len(self.RUN6))
+        row = _row(growth_report(samples), "obj.cache")
+        assert row.verdict == "growing", row
+
+    def test_a_counter_is_never_cyclic(self) -> None:
+        """Counters are read for the opposite failure and have their own words."""
+        row = _row(
+            growth_report(
+                _samples_with_gc("udp.total_received", self.RUN6, self.RUN6_GC),
+                counters=["udp.total_received"],
+            ),
+            "udp.total_received",
+        )
+        assert row.verdict == "rising", row
+
 
 
 class _StubHud:

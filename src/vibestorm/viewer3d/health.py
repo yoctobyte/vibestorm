@@ -71,6 +71,13 @@ STEP_CONCENTRATION = 0.05
 #: place to put it.
 TREND_SIGMA = 2.0
 
+#: How much of a gauge one automatic collection has to take back before its
+#: climb is better described as garbage than as growth. A half deliberately:
+#: below that the row is holding on to more than the collector reclaims, and
+#: the reader still has something to look at. Above it, what the row was
+#: measuring was the interval between collections.
+CYCLIC_RECLAIM_FRACTION = 0.5
+
 
 def process_rss_bytes() -> float:
     """Resident set size of this process, in bytes.
@@ -708,6 +715,7 @@ def growth_report(
     bug. Sorting on the total change puts them the wrong way round.
     """
     counter_names = frozenset(counters)
+    collections = _collection_times(samples)
     names: list[str] = []
     seen: set[str] = set()
     for sample in samples:
@@ -740,7 +748,7 @@ def growth_report(
                 peak=max(values),
                 late_rate_per_hour=late_rate,
                 late_rate_stderr_per_hour=late_stderr,
-                verdict=_verdict(points, kind),
+                verdict=_verdict(points, kind, collections),
             )
         )
     report.sort(key=lambda g: (g.kind != "gauge", -abs(g.late_rate_per_hour), g.name))
@@ -864,7 +872,55 @@ def _rate_is_converging(points: Sequence[tuple[float, float]]) -> bool:
     return last < middle / 2.0
 
 
-def _verdict(points: Sequence[tuple[float, float]], kind: str) -> str:
+def _collection_times(samples: Sequence[Mapping[str, Any]]) -> frozenset[float]:
+    """When the automatic collector ran, by elapsed time.
+
+    Generation 1, for the reason given at `gc.auto_collections` above: on
+    3.13 and later that is the one the interpreter runs on its own.
+    """
+    times: set[float] = set()
+    previous: float | None = None
+    for sample in samples:
+        value = sample.get("gc.auto_collections")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if previous is not None and value > previous:
+            times.add(float(sample.get("elapsed_s", 0.0)))
+        previous = float(value)
+    return frozenset(times)
+
+
+def _reclaimed_fraction(
+    points: Sequence[tuple[float, float]],
+    collections: frozenset[float],
+) -> float:
+    """The largest share of a gauge that one collection took back.
+
+    A leak survives collection by definition -- that is what makes it a leak
+    -- so a row that falls by most of itself the moment the collector runs is
+    reporting the collector's schedule and not the viewer's memory. Soak run
+    6 climbed for thirty-five minutes across a dozen rows, dropped all of it
+    at one collection, and started again; without this every one of those
+    rows read `growing`, and the run's real finding -- a flat heap -- was
+    underneath eighteen false ones.
+
+    Measured against the value before the drop rather than against the row's
+    range, because the range includes startup, where a viewer goes from
+    nothing to a loaded scene and every row is at its smallest.
+    """
+    best = 0.0
+    for (_, before), (when, after) in zip(points, points[1:], strict=False):
+        if when not in collections or before <= 0.0:
+            continue
+        best = max(best, (before - after) / before)
+    return best
+
+
+def _verdict(
+    points: Sequence[tuple[float, float]],
+    kind: str,
+    collections: frozenset[float] = frozenset(),
+) -> str:
     values = [v for _, v in points]
     if len(points) < MIN_SAMPLES_FOR_VERDICT:
         return "too-short"
@@ -887,6 +943,12 @@ def _verdict(points: Sequence[tuple[float, float]], kind: str) -> str:
         # the run happened to stop. A reader who wants to know which it was
         # reads the rate and its error, which is what they are printed for.
         return "settled"
+    if _reclaimed_fraction(points, collections) >= CYCLIC_RECLAIM_FRACTION:
+        # It climbed, and then a collection took most of it back. Reported
+        # ahead of the sample-count rules on purpose: this is evidence about
+        # what the row holds, and the rules below are guesses made in its
+        # absence.
+        return "cyclic"
     if len(points) < MIN_SAMPLES_FOR_TREND:
         # Not enough to see a trend in, so do not claim one. Of the two words
         # available the alarming one is the safe default: a short run that
@@ -935,6 +997,7 @@ __all__ = [
     "Growth",
     "Pace",
     "HealthProbe",
+    "CYCLIC_RECLAIM_FRACTION",
     "MIN_SAMPLES_FOR_TREND",
     "MIN_SAMPLES_FOR_VERDICT",
     "STEP_CONCENTRATION",
