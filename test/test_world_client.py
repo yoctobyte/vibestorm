@@ -682,5 +682,81 @@ class AssetFetchRoutingTests(unittest.TestCase):
         self.assertEqual(len(client.drain_outbound_packets()), 1)
 
 
+class CommandHandlerCoverageTests(unittest.TestCase):
+    """Every command the bus can carry has somewhere to go.
+
+    A command with no handler raises `NoHandlerError` from `dispatch`, which
+    is a `BusError` -- and the viewer's frame loop catches `BusError` and
+    turns it into a chat alert, because input arriving while a circuit is
+    coming up is ordinary. So a command that was never registered does not
+    crash: it does nothing, quietly, for the life of the session, and the
+    only sign is a line in the chat panel that reads like a timing problem.
+
+    Derived from the commands module rather than listed here, so adding a
+    command without registering a handler is a red test rather than a feature
+    that silently does not work.
+    """
+
+    @staticmethod
+    def _command_types():
+        import dataclasses
+        import inspect
+
+        from vibestorm.bus import commands
+
+        return sorted(
+            (
+                obj
+                for _name, obj in inspect.getmembers(commands, inspect.isclass)
+                if dataclasses.is_dataclass(obj) and obj.__module__ == commands.__name__
+            ),
+            key=lambda obj: obj.__name__,
+        )
+
+    def test_there_are_commands_to_check(self) -> None:
+        """Or the test below passes by finding nothing, for ever."""
+        self.assertGreaterEqual(len(self._command_types()), 8)
+
+    def test_every_command_has_a_handler(self) -> None:
+        from vibestorm.udp.world_client import WorldClient
+
+        client = WorldClient()
+        missing = [
+            command.__name__
+            for command in self._command_types()
+            if command not in client.bus._handlers
+        ]
+        self.assertEqual(missing, [], f"no handler registered: {missing}")
+
+    def test_no_two_commands_share_a_handler(self) -> None:
+        """The copy-paste failure this file cannot otherwise see.
+
+        Registering the same type twice raises on its own, so the mistake that
+        survives is registering the *wrong method* for a type -- two commands
+        pointing at one handler, one of them doing the other's job.
+        """
+        from vibestorm.udp.world_client import WorldClient
+
+        client = WorldClient()
+        by_handler: dict[object, list[str]] = {}
+        for command, handler in client.bus._handlers.items():
+            by_handler.setdefault(getattr(handler, "__func__", handler), []).append(
+                command.__name__
+            )
+        shared = {name: names for name, names in by_handler.items() if len(names) > 1}
+        self.assertEqual(shared, {})
+
+    def test_registering_twice_is_harmless(self) -> None:
+        """`WorldClient` registers in `__post_init__` and guards against a
+        second pass; without the guard, anything that re-ran it would raise
+        `HandlerAlreadyRegisteredError` at a point nothing expects one."""
+        from vibestorm.udp.world_client import WorldClient
+
+        client = WorldClient()
+        client._register_default_command_handlers()
+        self.assertGreaterEqual(len(client.bus._handlers), 8)
+
+
+
 if __name__ == "__main__":
     unittest.main()
