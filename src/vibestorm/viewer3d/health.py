@@ -987,6 +987,24 @@ def _verdict(
         # what the row holds, and the rules below are guesses made in its
         # absence.
         return "cyclic"
+    if limit is not None:
+        # It is climbing, and it has somewhere to stop. That is a different
+        # report from a leak and sends the reader nowhere, which is the point:
+        # `udp.seen_sequences` is the gauge that found the one real leak this
+        # instrument has found, and having replaced the unbounded set with a
+        # window it now climbs towards that window on every run. Calling that
+        # `growing` for the rest of the project's life is how a report stops
+        # being read. The ceiling is a row of its own, so the reader can see
+        # how much of it is gone.
+        #
+        # Ahead of the sample-count rule below, and that placement is the
+        # finding from soak run 9's first report: five samples in, this row
+        # printed `growing` with its own ceiling logged one column over. The
+        # short-run default is an argument about the *trend* -- do not claim
+        # it settled without enough to see it settle. `bounded` claims nothing
+        # about the trend. It says the row has a ceiling and is under it,
+        # which is as true at five samples as at five hundred.
+        return "bounded"
     if len(points) < MIN_SAMPLES_FOR_TREND:
         # Not enough to see a trend in, so do not claim one. Of the two words
         # available the alarming one is the safe default: a short run that
@@ -1001,18 +1019,7 @@ def _verdict(
         # and dropped for being a second word for the same answer, this is a
         # genuinely different answer.
         return "stepped"
-    verdict = "settling" if _rate_is_converging(points) else "growing"
-    if limit is not None:
-        # It is climbing, and it has somewhere to stop. That is a different
-        # report from a leak and sends the reader nowhere, which is the point:
-        # `udp.seen_sequences` is the gauge that found the one real leak this
-        # instrument has found, and having replaced the unbounded set with a
-        # window it now climbs towards that window on every run. Calling that
-        # `growing` for the rest of the project's life is how a report stops
-        # being read. The ceiling is a row of its own, so the reader can see
-        # how much of it is gone.
-        return "bounded"
-    return verdict
+    return "settling" if _rate_is_converging(points) else "growing"
 
 
 def format_growth_report(report: Sequence[Growth], *, limit: int = 0) -> str:

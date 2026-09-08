@@ -5073,6 +5073,30 @@ Worth keeping: a fifth of everything the region sent was reliable
 region with three prims and one avatar in it.
 
 
+### And run 9's first report found the last place the wolf still cried
+
+Run 9 -- ten hours, started to watch `udp.seen_sequences` actually reach its
+ceiling -- printed `growing` for that row five samples in, with
+`udp.seen_sequences.limit = 8192` logged in the column beside it.
+
+The `bounded` verdict was the last rule in `_verdict`, after
+`if len(points) < MIN_SAMPLES_FOR_TREND: return "growing"`. That short-run
+rule is an argument about the **trend**: do not claim it settled without
+enough samples to see it settle. `bounded` claims nothing about the trend. It
+says the row has a ceiling and is under it, which is as true at five samples
+as at five hundred. It runs ahead of the sample count now.
+
+The order that remains is `flat`, then `settled`, then `cyclic`, then
+`bounded` -- the three that say more still win -- and `over-bound` stays ahead
+of all of them. One consequence worth stating: a gauge that declares a ceiling
+can no longer report `stepped`. For a bounded row the ceiling is the headline,
+and `udp.seen_sequences` is the only gauge that declares one.
+
+The instrument keeps failing the same way and it is worth naming: **a verdict
+that is right but useless is a verdict that stops being read**, and the ten
+minutes at the start of every run are exactly when someone is reading it.
+
+
 ### The same fault, a second time, in the same file
 
 `_selected_preset` was fixed earlier this pass: `UIDropDownMenu.selected_option`

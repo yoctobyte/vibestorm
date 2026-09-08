@@ -2005,6 +2005,42 @@ class BoundedVerdictTests(unittest.TestCase):
             sample["obj.thing" + LIMIT_SUFFIX] = 8192.0
         self.assertEqual(_row(growth_report(samples), "obj.thing").verdict, "cyclic")
 
+    def test_a_short_run_with_a_ceiling_is_bounded_rather_than_growing(self) -> None:
+        """Soak run 9's first report is what found this.
+
+        Five samples in, `udp.seen_sequences` printed `growing` with its own
+        ceiling logged in the column beside it: the short-run rule fired
+        first. That rule is an argument about the *trend* -- do not claim it
+        settled without enough to see it settle -- and `bounded` claims
+        nothing about the trend. A ten-hour soak whose first ten minutes cry
+        wolf about the one gauge this whole mechanism was built for is a
+        report nobody finishes reading.
+        """
+        short = [0.0, 30.0, 66.0, 102.0, 138.0]
+        self.assertLess(len(short), MIN_SAMPLES_FOR_TREND)
+        report = growth_report(_samples_with_limit("udp.seen_sequences", short, 8192))
+        self.assertEqual(_row(report, "udp.seen_sequences").verdict, "bounded")
+
+    def test_the_same_short_run_without_a_ceiling_still_says_growing(self) -> None:
+        """The control. The short-run default is untouched where there is no
+        ceiling to read, which is every other row in the report."""
+        short = [0.0, 30.0, 66.0, 102.0, 138.0]
+        samples = [
+            {
+                "elapsed_s": s["elapsed_s"],
+                "frame": s["frame"],
+                "udp.seen_sequences": s["udp.seen_sequences"],
+            }
+            for s in _samples_with_limit("udp.seen_sequences", short, 8192)
+        ]
+        self.assertEqual(_row(growth_report(samples), "udp.seen_sequences").verdict, "growing")
+
+    def test_a_short_run_over_its_ceiling_is_still_the_loud_word(self) -> None:
+        """`over-bound` is ahead of everything, sample count included."""
+        short = [0.0, 3000.0, 6000.0, 9000.0, 12000.0]
+        report = growth_report(_samples_with_limit("udp.seen_sequences", short, 8192))
+        self.assertEqual(_row(report, "udp.seen_sequences").verdict, "over-bound")
+
     def test_the_ceiling_is_a_row_of_its_own(self) -> None:
         """So the reader can see how much of it is gone without going to the
         source for the number."""
