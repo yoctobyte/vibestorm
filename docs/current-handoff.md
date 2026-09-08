@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-08 (nineteenth pass)
+Last updated: 2026-09-08 (twentieth pass)
 
 ## The Owner's Priorities
 
@@ -19,6 +19,17 @@ get a folder's contents in, and keep the two in step. D is the piece with real
 missing code.
 
 ### Where each stands
+
+**A -- as of soak run 8 (2026-09-08), four hours clean.** 240 minutes,
+434,360 frames, 30.2 fps in both halves, RSS up four megabytes across the last
+166 minutes, no crash and no disconnect -- with the owner's own compiler builds
+loading the machine to 3-4 throughout. Every container gauge settles, goes
+flat, or is a counter. The one that still prints `growing`,
+`udp.seen_sequences`, ended at 3,775 against a bound of 8,192 and is reported
+as `bounded` on any run started after the `.limit` gauge landed. The write-up
+is further down under "Soak run 8".
+
+What follows in this section is the history that got there, newest first.
 
 **A -- and the soak found one on its first run (2026-09-07).** Two hours
 against the quiet local region -- three prims and one avatar -- and of fifty
@@ -5014,6 +5025,53 @@ profile path -- so the backticks in "The built-in local \`tester\` profile" ran
 built-in local  profile". The test runs `--help` and requires stderr to be
 empty, and a second one refuses a backtick or a `$(` anywhere in the heredoc,
 which is the class rather than the instance.
+
+### Soak run 8: four hours, and the one gauge still called `growing` is not one
+
+`--hidden --camera-sweep --camera-orbit-seconds 60 --run-seconds 14400
+--max-fps 30 --soak-interval 30 --soak-objects`, against the quiet local
+region. 481 samples over 240.0 minutes, 434,360 frames, no crash, no
+disconnect, one reliable resend and nothing abandoned.
+
+```
+  frame rate   30.2 fps in the first half, 30.2 in the second (+0% slower)
+  gaps         21.5 s shortest, 30.0 s longest (asked for every 30 s)
+  machine      load 3.8 in the first half, 3.4 in the second
+  this client  0.22 cores in the first half, 0.22 in the second
+```
+
+**Read the load line before the rest.** The owner's own Pascal compiler builds
+were running on this machine throughout -- `pascal26` at 105% of a core when I
+looked -- and the test suite was run twice against it as well. A load average
+between three and four is not this client, which held 0.22 cores from start to
+finish. That the frame rate is identical to the first decimal across both
+halves *while* that was happening is the stronger reading of the number, not a
+weaker one.
+
+Camera orbit confirmed rather than assumed: `render.camera_yaw` swept
+0.003 to 4.036 radians, so the scene was rebuilt from a moving eye for four
+hours rather than being drawn from one angle.
+
+**RSS is a staircase that stops.** 472 MB at the first sample, 583 MB thirty
+seconds later -- GL context, textures, fonts -- and then a slow climb to
+622.8 MB by minute 74. After that: 625.9 MB at minute 141, 627.0 MB at the
+end. **Four megabytes in the last 166 minutes.** The report calls it
+`stepped`, which is the honest word for it; there is no rate here worth
+extrapolating.
+
+**`udp.seen_sequences` still reads `growing`, and this run is what shows the
+verdict was the wrong word rather than the number being wrong.** It ended at
+3,775 entries, rising 944 an hour. The bound is `2 * SEQUENCE_MEMORY` = 8,192,
+so at that rate this run would have reached the ceiling at hour 8.7 and stayed
+there. Run 8 was started before the `.limit` gauge existed, so the report had
+nothing to compare against and fell back to the only thing it could say. The
+gauge is `udp.seen_sequences.limit` now and a run started today reads
+`bounded`.
+
+Worth keeping: a fifth of everything the region sent was reliable
+(3,775 of 18,877), which is what makes the sequence memory grow at all in a
+region with three prims and one avatar in it.
+
 
 ### The same fault, a second time, in the same file
 
