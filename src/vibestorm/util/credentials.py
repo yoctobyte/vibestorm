@@ -77,7 +77,16 @@ def save_profile(path: Path, values: dict[str, str]) -> None:
         for k, v in sorted(values.items()):
             lines.append(f"{k}={shlex.quote(v)}")
 
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Created narrow rather than created wide and narrowed afterwards.
+        # `write_text` then `chmod` leaves a window — however short — in which a
+        # file holding a password exists at the process umask, typically 0644,
+        # and anyone with a read on the directory can win that race. `os.open`
+        # with the mode up front never opens that window. The `chmod` stays for
+        # the case the file already existed: `O_CREAT` only applies its mode to
+        # a file it actually creates.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
         try:
             path.chmod(0o600)
         except Exception:

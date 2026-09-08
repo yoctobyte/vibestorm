@@ -5015,6 +5015,88 @@ built-in local  profile". The test runs `--help` and requires stderr to be
 empty, and a second one refuses a backtick or a `$(` anywhere in the heredoc,
 which is the class rather than the instance.
 
+### The same fault, a second time, in the same file
+
+`_selected_preset` was fixed earlier this pass: `UIDropDownMenu.selected_option`
+is a `(display text, object id)` pair on the pinned pygame_gui, every
+comparison in the login screen was written against a bare string, so all of
+them were false and Second Life logged in to `127.0.0.1`.
+
+Writing the first test that ever touched "Remember me" found the identical
+fault eight lines further down. `UICheckBox.is_checked` is a plain `bool`
+**attribute**; the accessor is `get_state()`. The screen called
+`self.remember_checkbox.is_checked()`, which raises `TypeError: 'bool' object
+is not callable` — every time, ticked or not.
+
+Where it raises is the interesting part:
+
+```python
+if self.login_task and self.login_task.done():
+    try:
+        self.bootstrap = self.login_task.result()
+        # Success!
+        self._save_credentials_if_checked()
+        self.connecting = False
+    except LoginError as exc:
+        ...
+    except Exception as exc:
+        self.status_label.set_text(f"Unexpected error: {exc}")
+        self._stop_connecting_state()
+```
+
+So the *successful* login path ran into the `except Exception` arm. A user who
+logged in got "Unexpected error: 'bool' object is not callable" on the status
+line, every field re-enabled underneath them, `connecting` left true — and
+nothing saved, ever. It went unnoticed because `self.bootstrap` is assigned on
+the line *before* the raise, and `run_viewer` advances on `if
+login_screen.bootstrap:`. The viewer went in anyway. The feature had never
+worked and the failure was cosmetic enough to read as a glitch.
+
+`checkbox_is_checked()` accepts both shapes, for the reason `_selected_preset`
+does: the pin is `pygame_gui>=0.6,<1`. An indeterminate box reports false,
+which is the answer we want — only a definite tick may write a password to
+disk.
+
+Three copies of the preset chain existed by then: one to fill the fields in,
+one to log in with, one to save under. They are one `PRESET_URIS` table and one
+`uri_for_preset()` now, because "the grid you log in to and the grid your
+password is filed under are the same grid" should be true by construction, not
+by three `elif` chains agreeing. An unknown preset name falls back to the local
+sim — not to the empty string, and least of all to a remote grid.
+
+The tests drive it the way a person does: `click()` on the real checkbox, and
+`SuccessfulLoginTests` runs `_start_login` → task → `update()` with a fake
+client that *succeeds*, which is the exact frame the `TypeError` fired in.
+Reverting the one-line reader fails seven of them. The one that still passes
+against the broken code is the control: with the box unticked, nothing is
+saved either way.
+
+### A password file that existed world-readable for a moment
+
+`save_profile` wrote the file and then narrowed it:
+
+```python
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+try:
+    path.chmod(0o600)
+except Exception:
+    pass
+```
+
+Between those two statements the file holds a plaintext password at the
+process umask — 0644 on a normal account, 0666 under a permissive one. Short,
+but it is a window, and anyone with a read on `local/` can wait in it. It is
+created through `os.open(..., O_WRONLY|O_CREAT|O_TRUNC, 0o600)` now. The
+`chmod` stays: `O_CREAT` applies its mode only to a file it actually creates,
+so overwriting someone's already-0644 profile still needs it.
+
+Pinning that is not a mode assertion — the mode is 0600 afterwards either way.
+The test makes the `chmod` fail, which `save_profile` tolerates by design, so
+what is left on disk is exactly the mode the file was *created* with, and runs
+it under `umask(0o000)` so the old code would leave 0666 behind. It fails
+against the old implementation and passes against the new one.
+
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a

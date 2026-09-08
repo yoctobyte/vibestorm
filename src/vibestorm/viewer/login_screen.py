@@ -62,6 +62,69 @@ class BackgroundParticle:
         surface.blit(glow_surf, (int(self.x - r), int(self.y - r)))
 
 
+#: The login URI each named grid preset means, and where each starts the
+#: avatar. One table, because this mapping used to be written out three times
+#: -- once to fill the fields in, once to log in with, and once to save under
+#: -- and three copies of a chain of `elif`s is three chances for the grid you
+#: log in to and the grid your password is filed under to stop being the same
+#: grid. "Custom" is deliberately absent: it means "whatever is in the box".
+PRESET_URIS: dict[str, str] = {
+    "Local OpenSim": "http://127.0.0.1:9000/",
+    "OSgrid": "http://login.osgrid.org/",
+    "Second Life": "https://login.agni.lindenlab.com/cgi-bin/login.cgi",
+}
+
+#: Home, not last, for Second Life, and the same choice `run.sh` makes with the
+#: same reason: `last` drops the avatar wherever the previous session ended,
+#: which on a grid we do not control is not a known starting state.
+PRESET_START_LOCATIONS: dict[str, str] = {
+    "Local OpenSim": "uri:Vibestorm Test&128&128&25",
+    "OSgrid": "last",
+    "Second Life": "home",
+}
+
+#: The fallback for a preset name that is not in the table at all.
+FALLBACK_PRESET = "Local OpenSim"
+
+
+def checkbox_is_checked(checkbox: object) -> bool:
+    """Whether a checkbox is ticked, whatever the installed library calls it.
+
+    The second instance of the same fault as `_selected_preset`, in the same
+    file. `UICheckBox.is_checked` is a plain `bool` attribute on the pinned
+    pygame_gui and the accessor is `get_state()`, so `is_checked()` raised
+    `TypeError: 'bool' object is not callable` -- inside the `except
+    Exception` arm that runs the moment a login *succeeds*. The visible
+    result was that a successful login flashed "Unexpected error: 'bool'
+    object is not callable" and "Remember me" never saved anything, ticked or
+    not.
+
+    Both shapes are accepted, for the same reason as the dropdown: the pin is
+    `pygame_gui>=0.6,<1` and this is the sort of thing that moves inside a
+    range like that. An indeterminate checkbox reports `is_checked` false,
+    which is the answer we want: only a definite tick may write a password to
+    disk.
+    """
+    state = getattr(checkbox, "is_checked", None)
+    if state is None:
+        state = checkbox.get_state()  # type: ignore[attr-defined]
+    elif callable(state):
+        state = state()
+    return state is True
+
+
+def uri_for_preset(preset: str, custom_uri: str) -> str:
+    """The login URI a preset selection means.
+
+    An unknown preset name falls back to the local sim rather than to the
+    empty string: a name that has drifted out of the table should not quietly
+    become "no URI at all", and least of all should it become a remote grid.
+    """
+    if preset == "Custom":
+        return custom_uri.strip()
+    return PRESET_URIS.get(preset, PRESET_URIS[FALLBACK_PRESET])
+
+
 class LoginScreen:
     """Highly aesthetic in-game Pygame login interface."""
 
@@ -161,7 +224,7 @@ class LoginScreen:
             manager=self.manager,
         )
         self.preset_dropdown = UIDropDownMenu(
-            options_list=["Local OpenSim", "OSgrid", "Second Life", "Custom"],
+            options_list=[*PRESET_URIS, "Custom"],
             starting_option=self._get_starting_preset_name(),
             relative_rect=pygame.Rect(px + self._s(150), y_cursor, field_w, row_h),
             manager=self.manager,
@@ -298,24 +361,14 @@ class LoginScreen:
     def _apply_preset_defaults(self) -> None:
         """Populate input fields using existing profile data or defaults."""
         preset = self._selected_preset()
-        preset_uri = "http://127.0.0.1:9000/"
-        preset_start = "uri:Vibestorm Test&128&128&25"
-
-        if preset == "OSgrid":
-            preset_uri = "http://login.osgrid.org/"
-            preset_start = "last"
-        elif preset == "Second Life":
-            preset_uri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi"
-            # Home, not last, and the same choice `run.sh` makes with the same
-            # reason: `last` drops the avatar wherever the previous session
-            # ended, which on a grid we do not control is not a known starting
-            # state. `./gui.sh sl` says out loud that it starts at home, and
-            # passes `--start home`; this screen used to overwrite that with
-            # `last` on the way past.
-            preset_start = "home"
-        elif preset == "Custom":
+        if preset == "Custom":
             preset_uri = self.profile_data.get("VIBESTORM_LOGIN_URI", "")
             preset_start = self.profile_data.get("VIBESTORM_START_LOCATION", "last")
+        else:
+            preset_uri = uri_for_preset(preset, "")
+            preset_start = PRESET_START_LOCATIONS.get(
+                preset, PRESET_START_LOCATIONS[FALLBACK_PRESET]
+            )
 
         # Fill fields
         if preset != "Custom":
@@ -466,15 +519,7 @@ class LoginScreen:
         password = self.password_entry.get_text()
         start_loc = self.start_entry.get_text().strip()
 
-        preset = self._selected_preset()
-        if preset == "Custom":
-            uri = self.uri_entry.get_text().strip()
-        elif preset == "OSgrid":
-            uri = "http://login.osgrid.org/"
-        elif preset == "Second Life":
-            uri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi"
-        else:  # Local OpenSim
-            uri = "http://127.0.0.1:9000/"
+        uri = uri_for_preset(self._selected_preset(), self.uri_entry.get_text())
 
         if not first or not last or not password or not uri:
             self.status_label.set_text("Please fill in all credentials.")
@@ -528,17 +573,8 @@ class LoginScreen:
         self.login_button.set_text("Connect")
 
     def _save_credentials_if_checked(self) -> None:
-        if self.remember_checkbox.is_checked():
-            preset = self._selected_preset()
-            if preset == "Custom":
-                uri = self.uri_entry.get_text().strip()
-            elif preset == "OSgrid":
-                uri = "http://login.osgrid.org/"
-            elif preset == "Second Life":
-                uri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi"
-            else:
-                uri = "http://127.0.0.1:9000/"
-
+        if checkbox_is_checked(self.remember_checkbox):
+            uri = uri_for_preset(self._selected_preset(), self.uri_entry.get_text())
             values = {
                 "VIBESTORM_LOGIN_URI": uri,
                 "VIBESTORM_FIRST_NAME": self.first_entry.get_text().strip(),
