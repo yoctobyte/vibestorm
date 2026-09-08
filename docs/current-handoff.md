@@ -4162,11 +4162,19 @@ kind:
   `UpdateScriptTaskInventory` -- had four tests and, once the viewer's copy
   went, no reachable caller. It is a real function in the engine again.
 
-What is still not exercised is the *button press itself*: reaching it needs a
-window and a live simulator together. Everything behind it is verified
-headlessly, and the one piece of judgement left in the closure -- deciding
-which folder a chosen path means -- is a module-level `sync_folder_for_task`
-with its own tests.
+What is still not exercised **end to end** is the button press itself:
+reaching it that way needs a window and a live simulator together.
+Everything behind it is verified headlessly, and the one piece of judgement
+left in the closure -- deciding which folder a chosen path means -- is a
+module-level `sync_folder_for_task` with its own tests.
+
+Updated 2026-09-08: the *routing* is covered now, which is the half that did
+not need a simulator. `HUDActionRoutingTests` presses each of the six
+inspector buttons and checks it reached its own handler and nobody else's --
+so Save Asset calling the Save All path, or Upload Folder calling Upload
+Files, is a red test rather than a thing somebody notices in world. What
+remains uncovered is only what a real press does *after* the handler is
+entered, which is where the simulator comes in.
 
 **E -- delivered, live-verified 2026-09-05.** `vibestorm.sync` is a package
 now, and `sync-object` on the CLI drives it:
