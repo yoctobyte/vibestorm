@@ -22,6 +22,7 @@ covered on the day it is written.
 """
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -48,6 +49,24 @@ def cli_subcommands() -> list[str]:
         if isinstance(action, argparse._SubParsersAction):
             return sorted(action.choices)
     raise AssertionError("the CLI has no subparsers any more")
+
+
+def is_command_words() -> set[str]:
+    """The words `is_command` accepts.
+
+    A third list, and the one that fails worst. The first argument is a
+    profile name unless it is a command, so a command missing from *here*
+    is not rejected -- it is taken as a profile, and the launcher runs its
+    default command instead. `./run.sh sync-object --object <uuid> --folder
+    ./work --push` logged in and ran a sixty-second protocol session.
+    """
+    body = launcher_text().split("is_command()", 1)[1].split("esac", 1)[0]
+    words: set[str] = set()
+    for line in body.splitlines():
+        match = re.match(r"\s{4}([a-z0-9|.\-]+)\)\s*$", line)
+        if match:
+            words.update(match.group(1).split("|"))
+    return words
 
 
 def _dispatch_body() -> str:
@@ -145,12 +164,60 @@ class LauncherReachTests(unittest.TestCase):
         self.assertGreaterEqual(len(launcher_case_arms()), 10)
 
 
+class ThreeListsTests(unittest.TestCase):
+    """`is_command`, the dispatch `case`, and the usage text.
+
+    Three hand-maintained lists of the same names in one file. `sync-object`
+    was missing from two of them.
+    """
+
+    def test_every_dispatch_arm_is_recognised_as_a_command(self) -> None:
+        arms = set(launcher_case_arms()) - {"*"}
+        self.assertEqual(sorted(arms - is_command_words()), [])
+
+    def test_every_recognised_command_has_an_arm(self) -> None:
+        """The other direction is a word that stops being read as a profile
+        and lands on `*)`, which at least says so."""
+        self.assertEqual(sorted(is_command_words() - set(launcher_case_arms())), [])
+
+    def test_the_word_list_is_not_empty(self) -> None:
+        self.assertGreaterEqual(len(is_command_words()), 10)
+
+
 class LauncherHelpTests(unittest.TestCase):
     """The usage text is the only place a person finds these names."""
 
     def usage_block(self) -> str:
         text = launcher_text()
         return text.split("Login commands use env vars first", 1)[0]
+
+    def test_help_runs_clean(self) -> None:
+        """`--help` printed a shell error and swallowed a word.
+
+        The usage heredoc is `<<EOF`, unquoted, so everything in it is
+        expanded -- which is wanted for `$LOGIN_PROFILE` and is not wanted for
+        backticks. "The built-in local `tester` profile" ran `tester` as a
+        command: an error on stderr, and the word gone from the help text,
+        leaving "The built-in local  profile".
+        """
+        result = subprocess.run(
+            [str(RUN_SH), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=REPO_ROOT,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, "")
+        self.assertIn("tester", result.stdout)
+
+    def test_the_usage_heredoc_expands_nothing_it_did_not_mean_to(self) -> None:
+        """The class rather than the instance. The heredoc has to stay
+        unquoted -- it interpolates the profile path -- so what it must not
+        contain is a backtick or a `$(`."""
+        usage = launcher_text().split("usage() {", 1)[1].split("\nEOF", 1)[0]
+        self.assertNotIn("`", usage)
+        self.assertNotIn("$(", usage)
 
     def test_every_arm_a_person_can_type_is_in_the_usage_text(self) -> None:
         usage = self.usage_block()

@@ -4990,6 +4990,22 @@ first `}` stops short of the name.
 `unknowns` was missing from the usage text as well, so the third test is that
 every arm a person can type is listed in `--help`.
 
+There is a **third** list in that file, and it fails worst of the three.
+`is_command` decides whether the first argument is a command or a profile
+name, and a command missing from it is not rejected -- it is taken as a
+profile, and the launcher goes on to run its default command. `./run.sh
+sync-object` on its own asked for a login under a profile named
+`sync-object` and would have run a sixty-second protocol session. All three
+lists are compared now.
+
+And `./run.sh --help` was printing a shell error and swallowing a word. The
+usage heredoc is `<<EOF`, unquoted -- which it has to be, it interpolates the
+profile path -- so the backticks in "The built-in local \`tester\` profile" ran
+`tester` as a command: an error on stderr, and the help text reading "The
+built-in local  profile". The test runs `--help` and requires stderr to be
+empty, and a second one refuses a backtick or a `$(` anywhere in the heredoc,
+which is the class rather than the instance.
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a

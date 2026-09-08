@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 is_command() {
   case "$1" in
-    help|-h|--help|login|login-show|login-reset|opensim|bootstrap|caps|eventq|udp|handshake|session|census|inventory-walk|upload-smoke|upload-notecard|console|viewer|viewer3d|test|fixtures|unknowns)
+    help|-h|--help|login|login-show|login-reset|opensim|bootstrap|caps|eventq|udp|handshake|session|census|inventory-walk|sync-object|upload-smoke|upload-notecard|console|viewer|viewer3d|test|fixtures|unknowns)
       return 0
       ;;
     *)
@@ -155,7 +155,7 @@ Login commands use env vars first, then an ignored local profile at:
 Named profiles use ignored files like:
   local/vibestorm-login-tester.env
 
-The built-in local `tester` profile uses the local OpenSim test account if no
+The built-in local 'tester' profile uses the local OpenSim test account if no
 profile file exists yet. Explicit env vars still override it.
 
 If login details are still missing and stdin is interactive, this script prompts
