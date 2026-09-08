@@ -5097,6 +5097,32 @@ it under `umask(0o000)` so the old code would leave 0666 behind. It fails
 against the old implementation and passes against the new one.
 
 
+### And then the general form of it, since twice is a pattern
+
+`test/test_pygame_gui_agreement.py` walks each pygame_gui-driven screen's own
+source for `self.<widget>.<method>(...)` and asks the live widget whether
+`<method>` is callable. Three screens, one construction each: the login
+screen, the 2D HUD, the 3D HUD, at 37, 38 and 129 pairs.
+
+It does **not** catch the dropdown bug — that is a call that succeeds and
+hands back the wrong shape, and only a test that knows what the shape means
+can see it. It catches the family the checkbox bug belongs to, which is the
+one an upgrade inside `pygame_gui>=0.6,<1` is most likely to introduce again.
+
+Two things the first version dropped silently, both worth remembering because
+the count still looked healthy either way:
+
+- **A widget whose class is a local subclass.** The 3D HUD's inspector is a
+  `HideOnCloseWindow`, a `UIWindow` subclass declared *inside* the method that
+  builds it, so `type(value).__module__` is the HUD's module and a check on
+  the type's own module skipped it. Read the MRO, not the type's module.
+- **A widget that does not exist yet.** `_file_dialog` is `None` until someone
+  opens a dialog, so there is no instance to ask. The assignment
+  `self._file_dialog = UIFileDialog(...)` names the class, and the methods get
+  checked against the class instead. `test_the_lazily_built_widgets_are_reached_too`
+  is the floor that keeps that half from becoming decorative.
+
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a
