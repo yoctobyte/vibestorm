@@ -184,6 +184,85 @@ class ThreeListsTests(unittest.TestCase):
         self.assertGreaterEqual(len(is_command_words()), 10)
 
 
+def _array_flags(name: str) -> set[str]:
+    """Long options collected into a shell array like `session_args`."""
+    flags: set[str] = set()
+    for match in re.finditer(rf"\b{name}\+?=\(([^)]*)\)", launcher_text(), re.S):
+        flags.update(re.findall(r"(--[a-z0-9-]+)", match.group(1)))
+    return flags
+
+
+def _parser_for(module: str, subcommand: str | None):
+    import argparse
+
+    if module == "vibestorm.app.cli":
+        from vibestorm.app.cli import build_parser
+
+        parser = build_parser()
+        for action in parser._subparsers._group_actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return action.choices.get(subcommand)
+        return None
+    if module == "vibestorm.viewer3d.app":
+        from vibestorm.viewer3d.app import build_parser as viewer3d_parser
+
+        return viewer3d_parser()
+    if module == "vibestorm.viewer.app":
+        from vibestorm.viewer.app import build_parser as viewer_parser
+
+        return viewer_parser()
+    return None
+
+
+def _accepted_options(parser) -> set[str]:
+    accepted: set[str] = set()
+    for action in parser._actions:
+        accepted.update(action.option_strings)
+    return accepted
+
+
+class LauncherFlagTests(unittest.TestCase):
+    """Every long option the launcher passes is one argparse still accepts.
+
+    The other half of the same contract as the subcommand names, and it fails
+    later: a renamed flag is an argparse error *after* `prepare_login` has
+    already asked for a password, or -- for the viewers -- after a window has
+    opened. `--camera-sweep`, `--no-auto-bake-upload`, `--spawn-cube`,
+    `--capture-mode` and `--agent-update-interval` are all set here and
+    defined over there, with nothing in between.
+
+    The flags are read out of each `do_*` body and out of the shell arrays it
+    expands, so a new one is checked without being listed here.
+    """
+
+    def _targets(self):
+        for name, body in sorted(_shell_functions().items()):
+            match = re.search(r"-m (vibestorm\.[a-z0-9_.]+)(?: ([a-z0-9-]+))?", body)
+            if not match:
+                continue
+            flags = set(re.findall(r"(--[a-z0-9-]+)", body))
+            for array in re.findall(r"\$\{([a-z0-9_]+)\[@\]\}", body):
+                flags |= _array_flags(array)
+            yield name, match.group(1), match.group(2), flags
+
+    def test_every_flag_the_launcher_passes_is_one_the_parser_knows(self) -> None:
+        for name, module, subcommand, flags in self._targets():
+            with self.subTest(name):
+                parser = _parser_for(module, subcommand)
+                self.assertIsNotNone(parser, f"{name} runs {module} {subcommand}, which has no parser")
+                unknown = sorted(flags - _accepted_options(parser))
+                self.assertEqual(unknown, [], f"{name} passes options {module} rejects: {unknown}")
+
+    def test_the_flags_are_actually_being_found(self) -> None:
+        """Anti-vacuity. Every reader here is a regex over a shell file, and
+        one that stops matching turns the test above into a loop over
+        nothing."""
+        targets = list(self._targets())
+        self.assertGreaterEqual(len(targets), 10)
+        self.assertTrue(all(flags for _name, _module, _sub, flags in targets))
+        self.assertIn("--camera-sweep", set().union(*(f for *_r, f in targets)))
+
+
 class LauncherHelpTests(unittest.TestCase):
     """The usage text is the only place a person finds these names."""
 

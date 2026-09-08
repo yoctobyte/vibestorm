@@ -4998,6 +4998,15 @@ sync-object` on its own asked for a login under a profile named
 `sync-object` and would have run a sixty-second protocol session. All three
 lists are compared now.
 
+The same contract exists for the **flags** the launcher passes, and it fails
+later than the names do: a renamed option is an argparse error *after*
+`prepare_login` has asked for a password, or -- for the viewers -- after a
+window has opened. `--camera-sweep`, `--no-auto-bake-upload`, `--spawn-cube`,
+`--capture-mode` and `--agent-update-interval` are all set in the shell and
+defined in Python with nothing in between. They are compared now, read out of
+each `do_*` body and out of the shell arrays it expands, so a new one is
+checked without being listed anywhere.
+
 And `./run.sh --help` was printing a shell error and swallowing a word. The
 usage heredoc is `<<EOF`, unquoted -- which it has to be, it interpolates the
 profile path -- so the backticks in "The built-in local \`tester\` profile" ran
