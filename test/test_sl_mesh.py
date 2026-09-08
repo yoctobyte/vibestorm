@@ -407,3 +407,68 @@ class NonFiniteDomainTests(unittest.TestCase):
         mesh = decode_sl_mesh_asset(_mesh_asset([submesh]))
         self.assertEqual(min(mesh.vertices), -4.0)
         self.assertEqual(max(mesh.vertices), 4.0)
+
+
+class HeaderNestingTests(unittest.TestCase):
+    """A mesh header that nests until the interpreter gives up.
+
+    `_parse_value` recurses on `[` and `{`, and five bytes buy one level, so
+    ten kilobytes of an asset buys two thousand. `RecursionError` is not an
+    `SLMeshDecodeError`, so it walks past every handler that catches one --
+    and this runs on the render thread, from `perspective.py`, on an asset any
+    object owner chooses. A real mesh header is a map of maps: three levels.
+    """
+
+    def nested_arrays(self, depth: int) -> bytes:
+        return b"".join(b"[" + struct.pack(">i", 1) for _ in range(depth)) + b"!" + b"]" * depth
+
+    def nested_maps(self, depth: int) -> bytes:
+        opened = b"{" + struct.pack(">i", 1) + b"k" + struct.pack(">i", 1) + b"a"
+        return opened * depth + b"!" + b"}" * depth
+
+    def test_arrays_nested_past_the_limit_are_refused(self) -> None:
+        from vibestorm.assets.sl_mesh import (
+            MAX_LLSD_DEPTH,
+            SLMeshDecodeError,
+            parse_binary_llsd,
+        )
+
+        for depth in (MAX_LLSD_DEPTH + 1, 2000):
+            with self.subTest(depth=depth):
+                with self.assertRaises(SLMeshDecodeError):
+                    parse_binary_llsd(self.nested_arrays(depth))
+
+    def test_maps_nested_past_the_limit_are_refused(self) -> None:
+        """Its own case because arrays and maps are separate branches, and a
+        depth incremented in one and not the other is a limit half applied."""
+        from vibestorm.assets.sl_mesh import (
+            MAX_LLSD_DEPTH,
+            SLMeshDecodeError,
+            parse_binary_llsd,
+        )
+
+        for depth in (MAX_LLSD_DEPTH + 1, 2000):
+            with self.subTest(depth=depth):
+                with self.assertRaises(SLMeshDecodeError):
+                    parse_binary_llsd(self.nested_maps(depth))
+
+    def test_the_whole_asset_decoder_refuses_it_too(self) -> None:
+        """Through the entry point `perspective.py` actually calls."""
+        from vibestorm.assets.sl_mesh import SLMeshDecodeError
+
+        with self.assertRaises(SLMeshDecodeError):
+            decode_sl_mesh_asset(self.nested_arrays(2000))
+
+    def test_nesting_up_to_the_limit_still_parses(self) -> None:
+        """The control. A guard that refuses everything is not a guard."""
+        from vibestorm.assets.sl_mesh import MAX_LLSD_DEPTH, parse_binary_llsd
+
+        value, _ = parse_binary_llsd(self.nested_arrays(MAX_LLSD_DEPTH))
+        for _ in range(MAX_LLSD_DEPTH):
+            value = value[0]
+        self.assertIsNone(value)
+
+    def test_the_limit_is_far_deeper_than_a_real_header(self) -> None:
+        from vibestorm.assets.sl_mesh import MAX_LLSD_DEPTH
+
+        self.assertGreaterEqual(MAX_LLSD_DEPTH, 32)

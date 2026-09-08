@@ -20,6 +20,16 @@ class SLMeshDecodeError(ValueError):
     """Raised when an SL mesh asset cannot be decoded."""
 
 
+#: How deeply the binary LLSD header may nest before this stops following.
+#:
+#: `_parse_value` recurses on `[` and `{`, and five bytes buy one level, so
+#: ten kilobytes of an asset buys two thousand -- and a `RecursionError` is
+#: not an `SLMeshDecodeError`, so it walks past every handler that catches
+#: one. This runs on the render thread, on an asset any object owner chooses.
+#: A real mesh header is a map of maps: three levels.
+MAX_LLSD_DEPTH = 64
+
+
 @dataclass(slots=True, frozen=True)
 class MeshMaterialGroup:
     """One submesh's slice of the combined index buffer.
@@ -138,7 +148,7 @@ def parse_binary_llsd(data: bytes, offset: int = 0) -> tuple[object, int]:
     return value, offset
 
 
-def _parse_value(data: bytes, offset: int) -> tuple[object, int]:
+def _parse_value(data: bytes, offset: int, depth: int = 0) -> tuple[object, int]:
     if offset >= len(data):
         raise SLMeshDecodeError("LLSD value is truncated")
     tag = data[offset : offset + 1]
@@ -166,11 +176,14 @@ def _parse_value(data: bytes, offset: int) -> tuple[object, int]:
         return data[offset : offset + length].decode("utf-8", errors="replace"), offset + length
     if tag == b"d":
         return _read_f64(data, offset)
+    if tag in (b"[", b"{"):
+        if depth >= MAX_LLSD_DEPTH:
+            raise SLMeshDecodeError(f"LLSD header nests deeper than {MAX_LLSD_DEPTH}")
     if tag == b"[":
         count, offset = _read_i32(data, offset)
         values: list[object] = []
         for _ in range(count):
-            value, offset = _parse_value(data, offset)
+            value, offset = _parse_value(data, offset, depth + 1)
             values.append(value)
         _need_tag(data, offset, b"]", "LLSD array terminator")
         return values, offset + 1
@@ -179,7 +192,7 @@ def _parse_value(data: bytes, offset: int) -> tuple[object, int]:
         values: dict[str, object] = {}
         for _ in range(count):
             key, offset = _parse_key(data, offset)
-            value, offset = _parse_value(data, offset)
+            value, offset = _parse_value(data, offset, depth + 1)
             values[key] = value
         _need_tag(data, offset, b"}", "LLSD map terminator")
         return values, offset + 1

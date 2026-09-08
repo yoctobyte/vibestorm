@@ -5080,6 +5080,43 @@ Worth keeping: a fifth of everything the region sent was reliable
 region with three prims and one avatar in it.
 
 
+### The same recursion, in the mesh decoder, on the render thread
+
+`assets/sl_mesh.py` parses the binary LLSD header of a mesh asset, and
+`_parse_value` recurses on `[` and `{` with nothing counting. Five bytes buy
+one level, so ten kilobytes of an asset buys two thousand, and the
+`RecursionError` walks past every `except SLMeshDecodeError` there is. This
+one runs on the **render thread**, from `perspective.py`, on an asset any
+object owner chooses. A real mesh header is a map of maps: three levels.
+
+Neither this nor the XML one was ever going to come out of the existing
+sweeps. `test_decoder_fuzz.py` feeds random bytes, which do not get past a
+header; `test_asset_decoder_fuzz.py` feeds flipped bytes, truncations and junk
+tails of a real asset, which do not produce two thousand nested containers.
+A structural attack is not a mutation of a valid file.
+
+So rather than a third test about the second instance,
+`test/test_no_unbounded_recursion.py` asks the general question: **find every
+function in `src/vibestorm` that can reach itself, and require it to carry a
+depth.** Five functions qualify. Four take one. The fifth, `_format_value`,
+serialises *outward* -- its input is a payload this client builds, never a
+structure echoed back from the wire -- and is exempt with that written down,
+because "this one is fine" is the sentence both of the bugs above would have
+been covered by.
+
+Two things about the survey are worth keeping:
+
+- **Mutual recursion is the case that matters.** `caps/llsd.py` recurses
+  through three functions and none of them calls itself; a scan for direct
+  self-calls sees none of it.
+- **Only bare names and `self.<name>` are followed.** A first draft resolved
+  any `x.close()` to a module-level `close` and reported fifteen imaginary
+  cycles in the viewer, which is how a survey ends up unread.
+
+There is an anti-vacuity test naming the five it must keep finding, and a
+resolver test on a module written for the purpose.
+
+
 ### Soak run 9: ten hours, and the bound is a fact now rather than a design
 
 Run 8 ended with `udp.seen_sequences` at 3,775 and the note that at that rate
