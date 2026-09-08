@@ -276,9 +276,28 @@ class LoginScreen:
             return "Custom"
         return "Local OpenSim"
 
+    def _selected_preset(self) -> str:
+        """The grid preset's name, whatever shape the library hands it back in.
+
+        `UIDropDownMenu.selected_option` is a `(display text, object id)` pair
+        from pygame_gui 0.6.10 on, and was a bare string before it. Every
+        comparison in this file was written against the string, so on the
+        installed library they were all false and every one of them fell
+        through to the Local OpenSim branch -- which meant choosing Second
+        Life in the dropdown and pressing Connect logged in to 127.0.0.1.
+
+        Not a guess about which shape is right: both are accepted, because
+        the pin is `pygame_gui>=0.6,<1` and this is the sort of thing that
+        moves inside a range like that.
+        """
+        option = self.preset_dropdown.selected_option
+        if isinstance(option, tuple | list):
+            return str(option[0]) if option else ""
+        return str(option)
+
     def _apply_preset_defaults(self) -> None:
         """Populate input fields using existing profile data or defaults."""
-        preset = self.preset_dropdown.selected_option
+        preset = self._selected_preset()
         preset_uri = "http://127.0.0.1:9000/"
         preset_start = "uri:Vibestorm Test&128&128&25"
 
@@ -287,7 +306,13 @@ class LoginScreen:
             preset_start = "last"
         elif preset == "Second Life":
             preset_uri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi"
-            preset_start = "last"
+            # Home, not last, and the same choice `run.sh` makes with the same
+            # reason: `last` drops the avatar wherever the previous session
+            # ended, which on a grid we do not control is not a known starting
+            # state. `./gui.sh sl` says out loud that it starts at home, and
+            # passes `--start home`; this screen used to overwrite that with
+            # `last` on the way past.
+            preset_start = "home"
         elif preset == "Custom":
             preset_uri = self.profile_data.get("VIBESTORM_LOGIN_URI", "")
             preset_start = self.profile_data.get("VIBESTORM_START_LOCATION", "last")
@@ -341,39 +366,52 @@ class LoginScreen:
 
     def process_event(self, event: pygame.event.Event) -> bool:
         """Process pygame events. Returns True if event was consumed."""
+        # `event.type == pygame_gui.UI_BUTTON_PRESSED`, not `pygame.USEREVENT`
+        # with a `user_type` on it. Both arrive: pygame_gui 0.6 posts the
+        # typed event *and* a legacy `USEREVENT` copy of it, which is why the
+        # old form here worked. It is the deprecated half of that pair, it is
+        # what pygame_gui says it will drop, and it is not what the HUD next
+        # door uses -- so this reads the typed event and lets the copy go by.
+        #
+        # Reading only the copy also meant `event.user_type` was read off
+        # every `USEREVENT` reaching this screen, including one this
+        # application posted itself, which has no such attribute.
         if self.connecting:
             # While connecting, only cancel button or quit is allowed
-            if event.type == pygame.USEREVENT:
-                if event.user_type == pygame_gui.UI_BUTTON_PRESSED:
-                    if event.ui_element == self.login_button:  # which is now named "Cancel"
-                        self._cancel_login()
-                        return True
-                    elif event.ui_element == self.quit_button:
-                        self.quit_requested = True
-                        return True
+            if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                if event.ui_element == self.login_button:  # which is now named "Cancel"
+                    self._cancel_login()
+                    return True
+                if event.ui_element == self.quit_button:
+                    self.quit_requested = True
+                    return True
             return False
 
         consumed = bool(self.manager.process_events(event))
 
-        if event.type == pygame.USEREVENT:
-            if event.user_type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED:
-                if event.ui_element == self.preset_dropdown:
-                    self._apply_preset_defaults()
-                    consumed = True
+        if event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED:
+            if event.ui_element == self.preset_dropdown:
+                self._apply_preset_defaults()
+                consumed = True
 
-            elif event.user_type == pygame_gui.UI_BUTTON_PRESSED:
-                if event.ui_element == self.login_button:
-                    self._start_login()
-                    consumed = True
-                elif event.ui_element == self.quit_button:
-                    self.quit_requested = True
-                    consumed = True
+        elif event.type == pygame_gui.UI_BUTTON_PRESSED:
+            if event.ui_element == self.login_button:
+                self._start_login()
+                consumed = True
+            elif event.ui_element == self.quit_button:
+                self.quit_requested = True
+                consumed = True
 
-            elif event.user_type == pygame_gui.UI_TEXT_ENTRY_FINISHED:
-                # Pressing Enter in fields starts login
-                if event.ui_element in (self.first_entry, self.last_entry, self.password_entry, self.start_entry):
-                    self._start_login()
-                    consumed = True
+        elif event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED:
+            # Pressing Enter in fields starts login
+            if event.ui_element in (
+                self.first_entry,
+                self.last_entry,
+                self.password_entry,
+                self.start_entry,
+            ):
+                self._start_login()
+                consumed = True
 
         return consumed
 
@@ -428,7 +466,7 @@ class LoginScreen:
         password = self.password_entry.get_text()
         start_loc = self.start_entry.get_text().strip()
 
-        preset = self.preset_dropdown.selected_option
+        preset = self._selected_preset()
         if preset == "Custom":
             uri = self.uri_entry.get_text().strip()
         elif preset == "OSgrid":
@@ -479,7 +517,7 @@ class LoginScreen:
         self.connecting = False
         # Enable fields
         self.preset_dropdown.enable()
-        if self.preset_dropdown.selected_option == "Custom":
+        if self._selected_preset() == "Custom":
             self.uri_entry.enable()
         self.first_entry.enable()
         self.last_entry.enable()
@@ -491,7 +529,7 @@ class LoginScreen:
 
     def _save_credentials_if_checked(self) -> None:
         if self.remember_checkbox.is_checked():
-            preset = self.preset_dropdown.selected_option
+            preset = self._selected_preset()
             if preset == "Custom":
                 uri = self.uri_entry.get_text().strip()
             elif preset == "OSgrid":
