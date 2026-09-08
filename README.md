@@ -149,7 +149,11 @@ detail behind every line is in `docs/current-handoff.md`.
    holds 30 fps for hours against the local region; the crash work is ongoing
    and mostly about packets no local sim sends.
 2. **Log in to the Second Life main grid, at the home location.** Blocked on
-   the owner's credentials, and only on those.
+   the owner's credentials, and only on those. The login payload now carries a
+   `mac` and `id0` -- sixteen random bytes generated once and kept in
+   `local/vibestorm-install-id`, **never anything read off the hardware**. See
+   `src/vibestorm/login/install_id.py`; `VIBESTORM_LOGIN_MAC=` and
+   `VIBESTORM_LOGIN_ID0=` set to empty send nothing, as before.
 3. **Edit an object and extract all its internals.** Done, live-verified.
 4. **Upload a whole folder into an in-world object.** Done, live-verified,
    for scripts, notecards, textures and gestures.

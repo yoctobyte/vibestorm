@@ -5073,6 +5073,45 @@ Worth keeping: a fifth of everything the region sent was reliable
 region with three prims and one avatar in it.
 
 
+### B: the two fields the payload was leaving empty
+
+The login payload carries `mac` and `id0`. Grids use them to tell one
+installation from another -- rate limiting, ban evasion, fraud scoring -- and
+this client sent the empty string for both. That is a plausible reason for a
+Second Life login to be refused, and it is in any case a distinctive thing to
+say to a grid that sees millions of logins.
+
+The open question recorded here was whether filling them in means
+fingerprinting the owner's machine for a third party. It does not have to.
+The question the grid is asking is "is this the same installation as last
+time?", and sixteen random bytes generated once and kept in
+`local/vibestorm-install-id` answer exactly that and nothing else. The
+machine's MAC address and disk serial answer a great deal more, follow the
+owner across every account and every reinstall, and are not ours to hand over.
+
+`src/vibestorm/login/install_id.py`, and `LoginRequest.mac` / `.id0` default
+to it. Setting `VIBESTORM_LOGIN_MAC=` or `VIBESTORM_LOGIN_ID0=` to empty sends
+nothing again.
+
+Two things a reader should know before relying on it:
+
+- **It is per checkout, not per machine.** A second clone is a second
+  installation as far as any grid is concerned.
+- **The shape is an educated guess.** Thirty-two hex characters is what a
+  hashed identifier of this kind looks like, and OpenSim's login service takes
+  the field as an opaque string and stores it. What Second Life requires of
+  it, nobody here has seen -- because nobody here has completed a login
+  against it. If it wants something else, `install_id.py` is the one place to
+  change.
+
+The strongest tests in `test/test_login_install_id.py` are the ones about what
+must *not* be there: the identity contains no MAC address, hostname, node name
+or username, and the module's own source is checked for `getnode`,
+`gethostname` and friends -- because the next person to edit that file will
+reach for them, and a docstring will not stop them. Planting
+`uuid.getnode()` fails four of them.
+
+
 ### And run 9's first report found the last place the wolf still cried
 
 Run 9 -- ten hours, started to watch `udp.seen_sequences` actually reach its

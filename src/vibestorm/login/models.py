@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from uuid import UUID
+
+from vibestorm.login.install_id import install_id0, install_mac
 
 
 DEFAULT_LOGIN_OPTIONS: tuple[str, ...] = (
@@ -68,8 +70,13 @@ class LoginRequest:
     version: str = "0.1.0"
     platform: str = "Linux"
     platform_version: str = "Unknown"
-    mac: str = ""
-    id0: str = ""
+    # Filled in from `login.install_id` rather than left empty: grids use
+    # these to tell one installation from another, and an empty pair is both
+    # a plausible reason to be refused and a distinctive thing to say. What
+    # goes in them is random and stored, never anything read off the hardware
+    # -- see that module for why, and for how to send nothing again.
+    mac: str = field(default_factory=install_mac)
+    id0: str = field(default_factory=install_id0)
     viewer_digest: str = ""
     agree_to_tos: bool = True
     read_critical: bool = True
