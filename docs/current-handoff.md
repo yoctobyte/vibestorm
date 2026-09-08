@@ -4540,6 +4540,63 @@ The two parsers are a *contract* problem: a parser that raises anything but
 check, and no amount of catching upstream fixes that. Both fuzz tests exist to
 say so, one at `apply_dispatch` and one at `handle_incoming`.
 
+### And then the two dispatches a user actually touches
+
+Having found it in the receive loop, the obvious next question was where else
+this client decides between many things. Two answers, both in front of the
+user, both found by counting tests rather than by running a battery:
+
+**`handle_event` had one test, for F1 to F3.** Thirteen key bindings and ten
+branches; every movement key, the fly toggle, chat focus, centring on the
+avatar, the orbit camera's zoom, rotate, pan and lift, and the map camera's
+pan and zoom were covered by nothing. `AgentControlFlags` has tests.
+`Camera3D.orbit_zoom` has tests. `Bus.dispatch` has tests. None of them says
+whether pressing W moves the avatar forward. Twenty mutants -- every table
+entry deleted, every `event.key ==` branch pointed at a key nobody presses --
+all die now.
+
+Three of those tests are worth naming because they are not obvious:
+
+- **Release.** A missing `RemoveControlFlags` does not stop anything
+  happening, it stops it *stopping*: the key is still held down as far as the
+  simulator knows.
+- **Shift+PageUp.** The one binding that means two things -- fly up, or raise
+  the camera -- and a lift that leaked the flag would fly the avatar every
+  time somebody adjusted the view.
+- **Return.** It has to consume the key, or focusing chat also walks.
+
+**The HUD had the crash half and only the crash half.** `HUDControlSweepTests`
+presses every control and asserts none of them raises, which is the right test
+and has been paying since `LoginScreen.resize`. It also says so in its own
+docstring: *"It asserts nothing about what any of them do."* Forty-odd
+`if event.ui_element is self.<something>` branches were reached and none of
+their effects were checked, so a button wired to its neighbour's window, or a
+toggle pointed at the wrong render setting, passed everything.
+
+Forty-three of those branches now have their effect pinned, in two classes
+split by what they need: `HUDRoutingTests` for the ones that work with nothing
+selected, `HUDActionRoutingTests` for the ones that dispatch to a named
+handler. The second is how the six inspector buttons -- the GUI end of C, D
+and E -- finally got covered: reaching them *end to end* needs a window and a
+live simulator together, which is why that entry has stood unclosed, but the
+routing needs only a HUD.
+
+Three behaviours turned up in the writing and are pinned as tests rather than
+left implied:
+
+- The water slider runs 0 to 100 and the setting runs 0 to 1. Interchangeable
+  at a glance, wrong by a factor of a hundred, and the clamp at the bottom
+  would have hidden it by turning every wrong value into the floor.
+- Choosing the render mode already showing is a deliberate no-op: rebuilding
+  the renderer throws away every uploaded mesh and texture for no change.
+- A double click on an inventory row has to select *and* open, or it opens
+  whatever was selected before it.
+
+The general form, stated once more because it has now paid six times in two
+days and in five different files: **a crash test and a routing test are
+different tests.** "Nothing raised" is worth having and is not coverage of a
+dispatch.
+
 ### Where the same fuzz found nothing, which is worth writing down
 
 The receive loop was the only crash surface, and knowing that is worth as
