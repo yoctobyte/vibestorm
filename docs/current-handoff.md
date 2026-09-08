@@ -4540,6 +4540,59 @@ The two parsers are a *contract* problem: a parser that raises anything but
 check, and no amount of catching upstream fixes that. Both fuzz tests exist to
 say so, one at `apply_dispatch` and one at `handle_incoming`.
 
+### Where the same fuzz found nothing, which is worth writing down
+
+The receive loop was the only crash surface, and knowing that is worth as
+much as the fixes. The same treatment, same shape of input, found nothing at
+all in:
+
+- **The event queue.** 32,000 randomly-shaped LLSD payloads across all eight
+  event names: only `EventQueueDecodeError`, which the session catches and
+  records.
+- **`caps/llsd.py`.** 20,000 malformed XML documents assembled from fragments
+  chosen to break a parser -- unterminated strings, oversized integers, bad
+  UUIDs, embedded NULs: only `LlsdError`.
+- **The inventory and environment payload parsers.** 18,000 payloads: clean,
+  clean, and `EnvironmentError`.
+- **Every asset decoder** -- mesh, binary LLSD, animation, notecard, gesture,
+  wearable, J2K: each raises its own declared error and nothing else.
+
+So the missing guards were not a house style, and neither was the parser
+contract being broken. `handle_incoming` was one place that had drifted. The
+two other message dispatches -- `world/updater.py` and `udp/neighbour.py`,
+fifteen branches -- were put through the mutation battery for the same reason
+and **lost nothing**, which is the control for the eighteen: had they leaked
+survivors too, the finding would have been about the project rather than
+about that method.
+
+### A soak that never turned its head
+
+`scene.rebuilt_frames` reads **10** across a two-hour run. The local region is
+still, the camera is parked, and the entity list is rebuilt when the *world*
+changes -- so two hours said almost nothing about the paths that run when the
+*view* changes: culling, sorting, and every cache keyed on where the camera
+is. This client has already found one unbounded cache of exactly that kind.
+
+`--camera-sweep` looks like the answer and is not, which cost a run to find
+out: it circles the camera this client *reports* to the simulator, for
+interest management, and never touches the one it draws from. Run 7 was
+started in that belief and came back with the same `rebuilt_frames` as run 6.
+
+`--camera-orbit-seconds N` turns the render camera instead. Two things about
+it are worth keeping:
+
+- **It has to be applied after the camera preset, not before.** The default
+  preset is `avatar_behind`, whose refresh sets the yaw from the avatar's
+  rotation on every frame, so an orbit ahead of it is overwritten before
+  anything is drawn -- and the run still finishes and the report still looks
+  healthy. That ordering is why `apply_frame_camera` is a function: an order
+  inside `run_viewer` is an order no test can see.
+- **The run now says whether it took.** `render.camera_yaw` is in the soak
+  log. It is not a leak candidate; it is the control for every gauge that is,
+  because a container reading `flat` means either "nothing leaked" or
+  "nothing was asked of it", and until this there was no way to tell those
+  apart. It reads `flat` exactly when the camera never turned.
+
 ### And a soak report that was crying wolf
 
 Soak run 6 held 30 fps for eighty-five minutes with a resident size that moved
