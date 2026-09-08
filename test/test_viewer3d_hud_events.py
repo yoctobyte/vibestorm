@@ -223,5 +223,237 @@ class MapHUDControlSweepTests(HUDControlSweepTests):
         self.assertEqual(self.REACHABLE - set(self.calls), set())
 
 
+class HUDRoutingTests(unittest.TestCase):
+    """Which control does which thing, which the sweep above does not ask.
+
+    `HUDControlSweepTests` presses every control and asserts that none of them
+    raises. That is the crash half, and it is the half that has been paying;
+    it is also, by its own docstring, everything the HUD's dispatch had. Forty
+    branches of `if event.ui_element is self.<something>_button` were reached
+    and none of their effects were checked, so a button wired to its
+    neighbour's window, or a toggle pointed at the wrong render setting,
+    passes every test in this file.
+
+    The pairs are written out rather than read from the source. A test that
+    derives the mapping from the code under test agrees with a swap.
+    """
+
+    SIZE = (1280, 800)
+
+    def setUp(self) -> None:
+        try:
+            import pygame
+            import pygame_gui
+        except ImportError as exc:  # pragma: no cover - optional viewer extra
+            self.skipTest(f"viewer dependencies unavailable: {exc}")
+        self.pygame = pygame
+        self.pygame_gui = pygame_gui
+        pygame.init()
+        pygame.display.set_mode(self.SIZE)
+        self.addCleanup(pygame.quit)
+        self.calls: list[tuple] = []
+        self.hud = self._hud()
+
+    def _recording(self, name: str):
+        def record(*args) -> None:
+            self.calls.append((name, *args))
+
+        return record
+
+    def _hud(self):
+        """Windows left as they start: closed. Which one a button opens is
+        the thing being asked, and a HUD with everything already open cannot
+        answer it."""
+        from vibestorm.viewer3d.hud import HUD
+
+        return HUD(
+            self.SIZE,
+            on_chat_submit=self._recording("chat"),
+            on_zoom_in=self._recording("zoom_in"),
+            on_zoom_out=self._recording("zoom_out"),
+            on_center=self._recording("center"),
+            on_teleport=self._recording("teleport"),
+            on_render_mode_change=self._recording("mode"),
+            on_render_setting_change=self._recording("setting"),
+        )
+
+    def press(self, attribute: str) -> None:
+        button = getattr(self.hud, attribute)
+        self.hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_BUTTON_PRESSED, {"ui_element": button}
+            )
+        )
+
+    # -- menus -------------------------------------------------------------
+
+    MENUS = (
+        ("file_button", "file"),
+        ("view_button", "view"),
+        ("debug_button", "debug"),
+        ("tools_button", "tools"),
+        ("help_button", "help"),
+    )
+
+    def test_each_menu_button_opens_its_own_menu(self) -> None:
+        for attribute, menu in self.MENUS:
+            with self.subTest(attribute):
+                self.hud._open_menu = None
+                self.press(attribute)
+                self.assertEqual(self.hud._open_menu, menu)
+
+    def test_pressing_an_open_menu_closes_it(self) -> None:
+        """Or the menu bar is a trap: opened, and no way back out of it with
+        the same button that opened it."""
+        self.hud._open_menu = None
+        self.press("file_button")
+        self.press("file_button")
+        self.assertIsNone(self.hud._open_menu)
+
+    # -- windows -----------------------------------------------------------
+
+    WINDOW_BUTTONS = (
+        ("show_chat_button", "chat_window"),
+        ("inventory_button", "inventory_window"),
+        ("render_settings_button", "render_settings_window"),
+        ("inspector_button", "inspector_window"),
+        ("teleport_button", "teleport_window"),
+        ("options_button", "options_window"),
+        ("movement_help_button", "help_window"),
+    )
+
+    def test_each_button_opens_its_own_window(self) -> None:
+        for attribute, window in self.WINDOW_BUTTONS:
+            with self.subTest(attribute):
+                for _name, other in self.WINDOW_BUTTONS:
+                    getattr(self.hud, other).hide()
+                self.press(attribute)
+                self.assertTrue(
+                    getattr(self.hud, window).visible,
+                    f"{attribute} did not open {window}",
+                )
+                opened = [
+                    other
+                    for _name, other in self.WINDOW_BUTTONS
+                    if getattr(self.hud, other).visible
+                ]
+                self.assertEqual(opened, [window], f"{attribute} also opened {opened}")
+
+    TOGGLE_WINDOWS = (
+        ("diagnostics_button", "diagnostics_window"),
+        ("heightmap_button", "heightmap_window"),
+    )
+
+    def test_the_two_toggling_windows_close_again(self) -> None:
+        """These two are the debug panels, and they are the only ones the same
+        button both opens and closes."""
+        for attribute, window in self.TOGGLE_WINDOWS:
+            with self.subTest(attribute):
+                getattr(self.hud, window).hide()
+                self.press(attribute)
+                self.assertTrue(getattr(self.hud, window).visible)
+                self.press(attribute)
+                self.assertFalse(getattr(self.hud, window).visible)
+
+    # -- render settings ---------------------------------------------------
+
+    RENDER_TOGGLES = (
+        ("render_terrain_button", "render_terrain"),
+        ("render_terrain_lines_button", "render_terrain_lines"),
+        ("render_clouds_button", "render_clouds"),
+        ("render_sky_button", "render_sky"),
+        ("render_neighbours_button", "render_neighbours"),
+        ("render_water_button", "render_water"),
+        ("render_objects_button", "render_objects"),
+    )
+
+    def test_each_toggle_changes_its_own_setting(self) -> None:
+        """Seven buttons, seven names, and nothing else checked that the
+        button labelled Water is not the one that turns off the sky."""
+        for attribute, setting in self.RENDER_TOGGLES:
+            with self.subTest(attribute):
+                self.calls.clear()
+                self.press(attribute)
+                changed = [call for call in self.calls if call[0] == "setting"]
+                self.assertEqual(len(changed), 1, f"{attribute}: {self.calls}")
+                self.assertEqual(changed[0][1], setting)
+
+    def test_a_toggle_goes_both_ways(self) -> None:
+        for attribute, _setting in self.RENDER_TOGGLES:
+            with self.subTest(attribute):
+                self.calls.clear()
+                self.press(attribute)
+                self.press(attribute)
+                values = [call[2] for call in self.calls if call[0] == "setting"]
+                self.assertEqual(len(values), 2)
+                self.assertNotEqual(values[0], values[1])
+
+    def _slide(self, value: float) -> None:
+        self.hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_HORIZONTAL_SLIDER_MOVED,
+                {"ui_element": self.hud.water_alpha_slider, "value": value},
+            )
+        )
+
+    def test_the_slider_sets_the_water_alpha_as_a_fraction(self) -> None:
+        """The slider runs 0 to 100 and the setting is 0 to 1.
+
+        Worth pinning because the two look interchangeable at a glance and
+        only one of them is wrong by a factor of a hundred -- which the clamp
+        below would then hide, by turning every value into the floor.
+        """
+        self._slide(25)
+        self.assertIn(("setting", "water_alpha", 0.25), self.calls)
+
+    def test_the_water_never_goes_fully_clear(self) -> None:
+        """A transparent sea is a hole in the world with the seabed showing
+        through it, so the bottom of the slider is a tenth rather than none."""
+        self._slide(0)
+        self.assertIn(("setting", "water_alpha", 0.1), self.calls)
+
+    # -- everything else ---------------------------------------------------
+
+    def test_the_render_mode_buttons_pick_their_own_mode(self) -> None:
+        from vibestorm.viewer3d.hud import RENDER_MODE_2D, RENDER_MODE_3D
+
+        self.press("render_mode_3d_button")
+        self.assertIn(("mode", RENDER_MODE_3D), self.calls)
+        self.press("render_mode_2d_button")
+        self.assertIn(("mode", RENDER_MODE_2D), self.calls)
+
+    def test_choosing_the_mode_already_showing_changes_nothing(self) -> None:
+        """Rebuilding the renderer because somebody clicked the button for the
+        view they are already looking at throws away every uploaded mesh and
+        texture for no change at all."""
+        self.calls.clear()
+        self.press("render_mode_2d_button")
+        self.assertEqual([call for call in self.calls if call[0] == "mode"], [])
+
+    def test_the_camera_buttons_call_their_own_callback(self) -> None:
+        for attribute, name in (
+            ("zoom_in_button", "zoom_in"),
+            ("zoom_out_button", "zoom_out"),
+            ("center_button", "center"),
+        ):
+            with self.subTest(attribute):
+                self.calls.clear()
+                self.press(attribute)
+                self.assertEqual([call[0] for call in self.calls], [name])
+
+    def test_quit_is_the_only_button_that_asks_to_quit(self) -> None:
+        """A stray `quit_requested` on any other branch ends the session on a
+        click nobody meant as one."""
+        for attribute, _window in self.WINDOW_BUTTONS:
+            self.press(attribute)
+        for attribute, _setting in self.RENDER_TOGGLES:
+            self.press(attribute)
+        self.assertFalse(self.hud.quit_requested)
+
+        self.press("file_quit_button")
+        self.assertTrue(self.hud.quit_requested)
+
+
+
 if __name__ == "__main__":
     unittest.main()
