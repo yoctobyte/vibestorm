@@ -56,6 +56,10 @@ from vibestorm.caps.client import CapabilityClient  # noqa: E402
 from vibestorm.caps.inventory_client import InventoryCapabilityClient  # noqa: E402
 from vibestorm.caps.inventory_types import INV_TYPE_BY_ASSET_TYPE  # noqa: E402
 from vibestorm.caps.inventory_walk import walk_inventory  # noqa: E402
+from vibestorm.caps.library import (  # noqa: E402
+    LIBRARY_OWNER_ID,
+    LIBRARY_ROOT_FOLDER_ID,
+)
 from vibestorm.login.client import LoginClient  # noqa: E402
 from vibestorm.login.models import LoginCredentials, LoginRequest  # noqa: E402
 from vibestorm.sync.engine import (  # noqa: E402
@@ -110,16 +114,15 @@ async def _wait_for_object(client, task_id: UUID, *, timeout: float = 60.0) -> i
     return None
 
 
-#: OpenSim's grid library, whose ids are fixed in its own source. The library
-#: is the right place to read a type off: every install ships it, this client
-#: cannot write to it, and its items were made by whoever built the default
-#: inventory rather than by us.
-LIBRARY_ROOT = UUID("00000112-000f-0000-0000-000100bba000")
-LIBRARY_OWNER = UUID("11111111-1111-0000-0000-000100bba000")
-
-
 async def _library_inv_types(bootstrap) -> dict[int, set[int]]:
     """Inventory types per asset type, read off the grid library.
+
+    The library is the right place to read a type off: every OpenSim install
+    ships it, this client cannot write to it, and its items were made by
+    whoever built the default inventory. Its ids come from `caps/library`,
+    which pins both to OpenSim's own source -- `FetchLibDescHandler` compares
+    the owner id and quietly returns nothing on a mismatch, so guessing it
+    looks exactly like an empty library.
 
     This check used to read the *account's* inventory, which is worse than
     useless. The account held no gestures until this tool's own crashed run
@@ -138,8 +141,8 @@ async def _library_inv_types(bootstrap) -> dict[int, set[int]]:
     snapshot, _ = await walk_inventory(
         InventoryCapabilityClient(timeout_seconds=20.0),
         url,
-        root_folder_id=LIBRARY_ROOT,
-        owner_id=LIBRARY_OWNER,
+        root_folder_id=LIBRARY_ROOT_FOLDER_ID,
+        owner_id=LIBRARY_OWNER_ID,
     )
     found: dict[int, set[int]] = {}
     for folder in snapshot.folders:
