@@ -4866,6 +4866,66 @@ those say more. A log written before the ceiling existed still reads
 `growing`, for the same reason the `cyclic` work kept that property: the
 absence of evidence must not quietly become a clean bill of health.
 
+### One packet took the ground away, and it was not a crash
+
+The receive-loop fuzz asked whether a decoder *raises*. This is the other
+half: what a decoder **returns** when the bytes are wrong.
+
+A terrain patch header carries a 32-bit IEEE float straight off the wire as
+the patch's DC offset, and every height in the patch is `coefficient * mult +
+dc_offset`. Twenty thousand random payloads: ninety-one decoded, and 1,280 of
+their heights came back non-finite -- every one of them from a NaN offset.
+
+What that does is worth being exact about, because it is not a crash and the
+crash tests all pass. `RegionHeightmap.apply_patch` writes into the heightmap
+the *session* keeps, so it is not one bad frame: `height_at` answers NaN over
+that 16x16 metre square from then on, the terrain mesh takes NaN vertices and
+draws nothing there, and `eye_clear_of_the_ground` quietly stops working --
+every comparison against a NaN is false, so the camera is never "blocked" by
+that hill and is left standing inside it. One packet, and a piece of the
+ground is gone and the camera walks through it, for as long as the session
+lasts. Nothing raises, nothing is logged, and the check that exists to stop it
+is still being called on every frame.
+
+The guard is on the header, not on the heights, and that is a claim the tests
+have to earn rather than assert: the arithmetic between them cannot reach a
+non-finite value from a finite offset, so the header is the only way in. A
+sweep of the header fields that feed it is where that is checked. Afterwards
+the same twenty thousand payloads produce no non-finite height and
+**eighty-nine of the ninety-one still decode** -- narrow, not a blanket
+refusal, which is the difference between a guard and a client that cannot
+draw ground.
+
+### Then the same question, asked of every decoder
+
+Seven others can hand back a float that is not a number, and the honest thing
+was to follow each one to where it lands rather than guard them all by
+reflex:
+
+- **Position and scale**, from the compressed object blob. Already refused at
+  the *scene* boundary by `linkset.is_a_place` and `scene._is_a_size`, which
+  drop such a prim exactly as they drop one whose parent never arrived.
+- **The ExtraParams family** -- light, flexible, projection, reflection probe
+  -- **the texture animation, and the texture entry's per-face numbers.**
+  These reach the HUD inspector's text rows and the session's diagnostic
+  lines and nothing else; the renderer reads only `texture_for_face`, which
+  is a UUID. A NaN there is the word "nan" in a panel.
+
+So terrain was the one that mattered, and it mattered because of *where it
+was kept*. That list is now written down in `NON_FINITE_IS_SURVIVABLE` with
+the reasons beside it, and the sweep fails when an eighth decoder joins --
+which is the question nobody had answered, and how the terrain bug got in:
+the value looked local to the decoder and was not.
+
+One thing the sweep needed before it meant anything. The corpus is random
+bytes, and a terrain payload's group header names a patch size -- every size
+but 16 and 32 is refused before a patch header is looked at, so the decoder
+that reads a float per patch was being swept without ever reading one.
+Removing the new guard did not fail the sweep. Two corpus shapes with a real
+group header in front fixed that, and the same idiom was already in the file
+for zerocode's end-of-packet marker: **a fuzz corpus has to get past the
+front door before it is fuzzing anything.**
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a

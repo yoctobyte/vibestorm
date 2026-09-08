@@ -19,6 +19,8 @@ nothing, so each decoder has to have *accepted* a minimum number of the
 random inputs -- to have run its body, not its guard.
 """
 
+import dataclasses
+import math
 import random
 import struct
 import unittest
@@ -43,6 +45,38 @@ MAX_BYTES = {
     "apply_layer_blob": 256,
 }
 
+#: Decoders that can hand back a float which is not a number, and why that
+#: is survivable where they land. Every one of these reads an IEEE float
+#: straight off the wire, so a NaN or an infinity is one bit pattern away at
+#: all times -- the question is never whether a decoder can produce one, it is
+#: what the thing on the other side does with it.
+#:
+#: This list is the answer, written down. It was reviewed once, against the
+#: consumers; the test below fails when a decoder joins it, which is the point.
+#: What it is guarding against is the terrain case: `decode_layer_blob` used to
+#: belong here, and the NaN it let through went into `RegionHeightmap`, which
+#: the session keeps -- so one packet took a 16x16 metre square of ground away
+#: for the rest of the session and quietly disabled the camera's clearance
+#: check over it, because every comparison against a NaN is false. It is
+#: absent from this list now, and has to stay absent.
+NON_FINITE_IS_SURVIVABLE = {
+    # Position and scale are the two that reach the renderer, and both are
+    # refused at the scene boundary rather than here: `linkset.is_a_place` and
+    # `scene._is_a_size` drop a prim whose transform is not one, exactly as
+    # they drop a prim whose parent never arrived.
+    "decode_compressed_object_data",
+    # The ExtraParams family and the texture entry's per-face numbers reach
+    # the HUD inspector's text rows and the session's diagnostic lines, and
+    # nothing else -- the renderer reads only `texture_for_face`, which is a
+    # UUID. A NaN there is the word "nan" in a panel.
+    "decode_flexible_params",
+    "decode_light_params",
+    "decode_projection_params",
+    "decode_reflection_probe_params",
+    "decode_texture_animation",
+    "parse_texture_entry",
+}
+
 FLOORS = {
     "apply_layer_blob": 6,
     "decode_compressed_object_data": 200,
@@ -61,6 +95,11 @@ FLOORS = {
     "parse_shape_extra_params": 5,
     "parse_texture_entry": 15,
 }
+
+
+#: stride 256, patch size 16, layer type 0x4C ("land") -- the prefix
+#: `decode_layer_blob` needs before it will read a patch header at all.
+TERRAIN_GROUP_HEADER = bytes.fromhex("0100104c")
 
 
 def _corpus(seed: int, count: int):
@@ -82,6 +121,14 @@ def _corpus(seed: int, count: int):
         yield b"\x80" + body + b"\x00"
         yield bytes(size)
         yield b"\xff" * size
+        # A terrain payload whose group header is real, so the patch header
+        # behind it is actually read. Noise gets nowhere near: the group
+        # header names a patch size, and every size but 16 and 32 is refused
+        # before a patch is looked at, so a decoder that reads a float per
+        # patch was being swept without ever reading one. The all-ones field
+        # is a NaN, which is the bit pattern that mattered.
+        yield TERRAIN_GROUP_HEADER + b"\x60" + b"\xff\xff\xff\xff" + body
+        yield TERRAIN_GROUP_HEADER + b"\x60" + rng.randbytes(4) + body
 
 
 def _targets():
@@ -137,9 +184,44 @@ def _targets():
     }
 
 
+def _non_finite_floats(value: object, path: str, depth: int = 0) -> list[tuple[str, float]]:
+    """Every float in a decoded structure that is not a number.
+
+    Walks dataclasses, sequences, mappings and plain objects, because what a
+    decoder returns is a record of records and the interesting float is never
+    at the top. Bounded in depth: a cycle here would hang the suite, and
+    nothing this deep is wire data any more.
+    """
+    if depth > 8 or isinstance(value, (bool, int, str, bytes, bytearray)):
+        return []
+    if isinstance(value, float):
+        return [] if math.isfinite(value) else [(path, value)]
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        found = []
+        for field in dataclasses.fields(value):
+            found += _non_finite_floats(getattr(value, field.name, None), f"{path}.{field.name}", depth + 1)
+        return found
+    if isinstance(value, (list, tuple, set, frozenset)):
+        found = []
+        for index, item in enumerate(value):
+            found += _non_finite_floats(item, f"{path}[{index}]", depth + 1)
+        return found
+    if isinstance(value, dict):
+        found = []
+        for key, item in value.items():
+            found += _non_finite_floats(item, f"{path}[{key!r}]", depth + 1)
+        return found
+    found = []
+    for name in getattr(value, "__slots__", ()) or ():
+        found += _non_finite_floats(getattr(value, name, None), f"{path}.{name}", depth + 1)
+    for name, item in vars(value).items() if hasattr(value, "__dict__") else ():
+        found += _non_finite_floats(item, f"{path}.{name}", depth + 1)
+    return found
+
+
 class DecoderFuzzTests(unittest.TestCase):
     SEED = 20260906
-    BODIES = 55  # times seven shapes, times sixteen decoders
+    BODIES = 55  # times nine shapes, times sixteen decoders
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -174,6 +256,51 @@ class DecoderFuzzTests(unittest.TestCase):
             [],
             f"decoders that mostly refused to run: {decoded}",
         )
+
+    def test_no_new_decoder_hands_back_a_float_that_is_not_a_number(self) -> None:
+        """The other half of "it did not raise".
+
+        A decoder that returns NaN has not failed; it has handed the problem
+        to whatever reads it, and the answer is different for each one. Seven
+        of them do it and every one has been followed to where it lands --
+        `NON_FINITE_IS_SURVIVABLE` is that review. An eighth appearing here is
+        a question nobody has answered yet, which is how the terrain bug got
+        in: the value looked local to the decoder and was not.
+        """
+        offenders: dict[str, tuple[str, float]] = {}
+        excused_that_really_did: set[str] = set()
+        for body in _corpus(self.SEED, self.BODIES):
+            for name, decode in self.targets.items():
+                if name in offenders:
+                    continue
+                try:
+                    result = decode(body[: MAX_BYTES.get(name, len(body))])
+                except Exception:  # noqa: BLE001 - the other test judges these
+                    continue
+                found = _non_finite_floats(result, name)
+                if not found:
+                    continue
+                if name in NON_FINITE_IS_SURVIVABLE:
+                    excused_that_really_did.add(name)
+                else:
+                    offenders[name] = found[0]
+        self.assertEqual(offenders, {})
+        # Anti-vacuity, and the reason it is needed: a corpus that stopped
+        # reaching the float fields would report no offenders and mean
+        # nothing. This is the shape of a floor, for the same reason the
+        # floors above exist.
+        self.assertGreaterEqual(len(excused_that_really_did), 4, excused_that_really_did)
+
+    def test_the_survivable_list_names_decoders_that_are_swept(self) -> None:
+        """A name that has drifted stops excusing anything and starts
+        excusing nothing, silently."""
+        self.assertEqual(sorted(set(NON_FINITE_IS_SURVIVABLE) - set(self.targets)), [])
+
+    def test_the_terrain_decoders_are_not_excused(self) -> None:
+        """The one that was not survivable. Named, so that adding it back to
+        the list to make a failure go away has to be done on purpose."""
+        self.assertNotIn("decode_layer_blob", NON_FINITE_IS_SURVIVABLE)
+        self.assertNotIn("apply_layer_blob", NON_FINITE_IS_SURVIVABLE)
 
     def test_the_floors_name_every_decoder_that_is_swept(self) -> None:
         # Otherwise a decoder added to the sweep with no floor beside it is
