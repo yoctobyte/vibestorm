@@ -5122,6 +5122,13 @@ the count still looked healthy either way:
   checked against the class instead. `test_the_lazily_built_widgets_are_reached_too`
   is the floor that keeps that half from becoming decorative.
 
+The same walk asks the other half of the question -- every bare *read* of
+`self.<widget>.<attribute>` -- and the answer is a finding in itself: across
+all three screens there are **four**, `preset_dropdown.selected_option` and
+three `.visible`. Almost everything these screens do to a widget is a call.
+The floors are set to the exact counts, so a lost read is visible; the 2D HUD
+has none at all and says so rather than passing on an empty set.
+
 
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 

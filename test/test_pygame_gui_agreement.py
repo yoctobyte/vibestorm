@@ -83,6 +83,48 @@ def calls_on_widgets(module: object, widget_names: set[str]) -> set[tuple[str, s
     return pairs
 
 
+def reads_on_widgets(module: object, widget_names: set[str]) -> set[tuple[str, str]]:
+    """`(widget, attribute)` pairs the module *reads* as `self.<widget>.<attribute>`.
+
+    Calls are excluded -- `calls_on_widgets` covers those -- and so is anything
+    the module assigns to itself: a screen is allowed to hang its own bookkeeping
+    off a widget, and a fresh one would not have it yet.
+    """
+    tree = ast.parse(inspect.getsource(module))
+    assigned: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        targets: list = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign | ast.AugAssign):
+            targets = [node.target]
+        for target in targets:
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Attribute):
+                holder = target.value
+                if isinstance(holder.value, ast.Name) and holder.value.id == "self":
+                    assigned.add((holder.attr, target.attr))
+
+    called = {
+        node.func
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    reads: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or node in called:
+            continue
+        if not isinstance(node.ctx, ast.Load):
+            continue
+        holder = node.value
+        if not isinstance(holder, ast.Attribute) or holder.attr not in widget_names:
+            continue
+        if isinstance(holder.value, ast.Name) and holder.value.id == "self":
+            pair = (holder.attr, node.attr)
+            if pair not in assigned:
+                reads.add(pair)
+    return reads
+
+
 def widget_classes() -> dict[str, type]:
     """Every `UI*` class pygame_gui exposes, by bare name."""
     import pygame_gui
@@ -135,6 +177,12 @@ class _AgreementCase(unittest.TestCase):
     #: Fewer pairs than this and the walk has stopped finding calls, rather
     #: than the screen having stopped making them.
     MINIMUM_PAIRS = 10
+
+    #: Same floor, for the attribute reads. These numbers are small on
+    #: purpose: almost everything these screens do to a widget is a call, and
+    #: the handful of bare reads is the finding rather than a defect. A floor
+    #: of the exact count is what makes a *lost* read visible.
+    MINIMUM_READS = 0
 
     #: A widget attribute that must be present, so a screen that failed to
     #: build its controls cannot pass by having nothing to check.
@@ -190,6 +238,32 @@ class _AgreementCase(unittest.TestCase):
                     f"{kind}.{method} is a {type(attribute).__name__}, not something to call",
                 )
 
+    def test_every_widget_attribute_the_screen_reads_exists(self) -> None:
+        """The other half of the same question.
+
+        A call that names something absent raises `AttributeError`; a *read*
+        that names something absent raises it too, and a library upgrade is as
+        likely to rename an attribute as to turn one into a method. This does
+        not know what any of them should *contain* -- `selected_option` being
+        a pair rather than a string passes here, and is pinned by name in
+        `test_login_screen.py::PresetShapeTests`.
+        """
+        module = self.module()
+        checkable = self.targets()
+        reads = reads_on_widgets(module, set(checkable))
+        if not self.MINIMUM_READS:
+            self.assertEqual(reads, set(), "this screen has started reading widget attributes")
+            self.skipTest("this screen only calls widget methods, it reads no attributes")
+        self.assertGreaterEqual(len(reads), self.MINIMUM_READS, f"only found {sorted(reads)}")
+        for widget_name, attribute in sorted(reads):
+            with self.subTest(f"{widget_name}.{attribute}"):
+                target = checkable[widget_name]
+                kind = target.__name__ if isinstance(target, type) else type(target).__name__
+                self.assertTrue(
+                    hasattr(target, attribute),
+                    f"{kind} has no {attribute!r}",
+                )
+
     def test_the_lazily_built_widgets_are_reached_too(self) -> None:
         """Anti-vacuity: the static half must actually resolve something the
         live half did not, or it is not adding coverage."""
@@ -204,6 +278,9 @@ class LoginScreenAgreementTests(_AgreementCase):
     __test__ = True
     EXPECTED_WIDGET = "remember_checkbox"
     MINIMUM_PAIRS = 30
+    #: `preset_dropdown.selected_option`, which is where the first of the two
+    #: bugs lived. A rename of it would land here.
+    MINIMUM_READS = 1
 
     def setUp(self) -> None:
         super().setUp()
@@ -242,6 +319,7 @@ class Viewer3DHudAgreementTests(_AgreementCase):
     __test__ = True
     EXPECTED_WIDGET = "chat_input"
     MINIMUM_PAIRS = 100
+    MINIMUM_READS = 3
     LAZY_WIDGETS = ("_file_dialog",)
 
     def module(self):
