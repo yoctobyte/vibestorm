@@ -457,5 +457,141 @@ class StopSessionTaskTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(task.cancelling() or task.cancelled() or task.done())
 
 
+
+class OrbitYawTests(unittest.TestCase):
+    """The soak's camera, and why it is not the other camera.
+
+    A viewer parked in one spot rebuilt its entity list ten times in a
+    two-hour soak: the local region is still and the camera stiller, so
+    everything that runs when the *view* changes -- culling, sorting, every
+    cache keyed on where the camera is -- went two hours without being asked
+    to. `--camera-sweep` does not help; it moves the camera this client
+    reports to the simulator for interest management, not the one it draws
+    from.
+    """
+
+    def test_a_full_turn_takes_one_period(self) -> None:
+        import math
+
+        from vibestorm.viewer3d.app import orbit_yaw
+
+        self.assertAlmostEqual(orbit_yaw(0.0, 0.0, 60.0), 0.0)
+        self.assertAlmostEqual(orbit_yaw(0.0, 15.0, 60.0), math.pi / 2)
+        self.assertAlmostEqual(orbit_yaw(0.0, 30.0, 60.0), math.pi)
+        self.assertAlmostEqual(orbit_yaw(0.0, 60.0, 60.0), 0.0)
+
+    def test_it_turns_from_where_the_camera_started(self) -> None:
+        """The offset is the yaw the run began at, so the flag does not also
+        silently reset the view a preset or the user had chosen."""
+        import math
+
+        from vibestorm.viewer3d.app import orbit_yaw
+
+        self.assertAlmostEqual(orbit_yaw(1.25, 0.0, 60.0), 1.25)
+        self.assertAlmostEqual(orbit_yaw(1.25, 30.0, 60.0), 1.25 + math.pi)
+
+    def test_a_period_of_zero_leaves_the_camera_alone(self) -> None:
+        """Which is the flag's default, so the off switch is in one place."""
+        from vibestorm.viewer3d.app import orbit_yaw
+
+        self.assertEqual(orbit_yaw(1.25, 999.0, 0.0), 1.25)
+        self.assertEqual(orbit_yaw(1.25, 999.0, -5.0), 1.25)
+
+    def test_the_orbit_wins_over_the_camera_preset(self) -> None:
+        """The order, which is the only thing `apply_frame_camera` is for.
+
+        The default camera preset is `avatar_behind`, and it sets the yaw from
+        the avatar's rotation on every single frame. An orbit applied before
+        it is overwritten before anything is drawn: the flag does nothing, the
+        run still finishes, and the report still looks healthy. This is what
+        that looks like as a test, with a stand-in preset that writes a yaw
+        nobody asked for.
+        """
+        import math
+        from dataclasses import dataclass
+
+        from vibestorm.viewer3d.app import apply_frame_camera
+
+        @dataclass
+        class _Camera:
+            mode: str = "orbit"
+            yaw: float = 0.0
+
+        camera = _Camera()
+
+        def preset() -> None:
+            camera.yaw = 99.0
+
+        apply_frame_camera(camera, preset, start_yaw=0.0, elapsed_s=15.0, orbit_seconds=60.0)
+        self.assertAlmostEqual(camera.yaw, math.pi / 2)
+
+    def test_the_preset_still_runs_when_the_orbit_is_off(self) -> None:
+        """Turning the flag off must not also turn the camera off."""
+        from dataclasses import dataclass
+
+        from vibestorm.viewer3d.app import apply_frame_camera
+
+        @dataclass
+        class _Camera:
+            mode: str = "orbit"
+            yaw: float = 0.0
+
+        camera = _Camera()
+
+        def preset() -> None:
+            camera.yaw = 99.0
+
+        apply_frame_camera(camera, preset, start_yaw=0.0, elapsed_s=15.0, orbit_seconds=0.0)
+        self.assertEqual(camera.yaw, 99.0)
+
+    def test_the_map_camera_is_left_alone(self) -> None:
+        """A top-down orthographic view has no yaw to turn."""
+        from dataclasses import dataclass
+
+        from vibestorm.viewer3d.app import apply_frame_camera
+
+        @dataclass
+        class _Camera:
+            mode: str = "map"
+            yaw: float = 7.0
+
+        camera = _Camera()
+        apply_frame_camera(camera, lambda: None, start_yaw=0.0, elapsed_s=15.0, orbit_seconds=60.0)
+        self.assertEqual(camera.yaw, 7.0)
+
+    def test_the_flag_parses_and_is_off_by_default(self) -> None:
+        from vibestorm.viewer3d.app import build_parser
+
+        self.assertEqual(build_parser().parse_args([]).camera_orbit_seconds, 0.0)
+        self.assertEqual(
+            build_parser().parse_args(["--camera-orbit-seconds", "45"]).camera_orbit_seconds,
+            45.0,
+        )
+
+    def test_it_is_not_the_same_flag_as_camera_sweep(self) -> None:
+        """They move different cameras and one is not a spelling of the other.
+
+        `--camera-sweep` circles the camera this client *reports* to the
+        simulator, which is interest management; this one turns the camera it
+        draws from. A run that asked for one and got the other looks healthy
+        and measures nothing.
+        """
+        from vibestorm.viewer3d.app import build_parser
+
+        args = build_parser().parse_args(["--camera-sweep"])
+        self.assertTrue(args.camera_sweep)
+        self.assertEqual(args.camera_orbit_seconds, 0.0)
+
+    def test_it_keeps_turning_over_a_long_run(self) -> None:
+        """Four hours at 30 fps is 432,000 frames. A yaw that accumulated
+        would be a number with no precision left in it by the end; this is a
+        function of elapsed time, so hour four is as exact as hour one."""
+        import math
+
+        from vibestorm.viewer3d.app import orbit_yaw
+
+        self.assertAlmostEqual(orbit_yaw(0.0, 4 * 3600.0 + 15.0, 60.0), math.pi / 2)
+
+
 if __name__ == "__main__":
     unittest.main()

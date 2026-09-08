@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -350,6 +352,19 @@ def build_parser() -> argparse.ArgumentParser:
             "with --soak-log."
         ),
     )
+    parser.add_argument(
+        "--camera-orbit-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Turn the render camera all the way round once every N seconds. "
+            "For soaks: a parked camera renders the same view for hours and "
+            "exercises none of the work that happens when the view changes. "
+            "0 leaves the camera alone. Distinct from --camera-sweep, which "
+            "moves the camera this client *reports* to the simulator, for "
+            "interest management, and does not move the one it draws from."
+        ),
+    )
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument(
@@ -662,6 +677,48 @@ class _PhaseStats:
 _PHASE_STATS = _PhaseStats() if os.environ.get("VIBESTORM_PROFILE_FRAMES") else None
 
 
+
+
+def orbit_yaw(start_yaw: float, elapsed_s: float, period_s: float) -> float:
+    """Where a camera turning once every `period_s` is pointing at `elapsed_s`.
+
+    For a soak, and for the thing a soak is worst at. A viewer parked in one
+    spot rebuilds its entity list ten times in two hours -- the local region
+    is still, and the camera is stiller -- so a two-hour run says almost
+    nothing about the paths that run when the view changes: culling, sorting,
+    every cache keyed on where the camera is. Those are exactly where this
+    client has already found one unbounded cache, and a soak that never turns
+    its head cannot find the next.
+
+    A non-positive period means "do not turn", so the flag's own default
+    switches the whole thing off without a second condition at the call site.
+    """
+    if period_s <= 0.0:
+        return start_yaw
+    return start_yaw + (2.0 * math.pi) * ((elapsed_s % period_s) / period_s)
+
+
+def apply_frame_camera(
+    camera: object,
+    refresh_preset: Callable[[], None],
+    *,
+    start_yaw: float,
+    elapsed_s: float,
+    orbit_seconds: float,
+) -> None:
+    """Put the camera where this frame wants it, in the order that works.
+
+    A function rather than two lines in the frame loop because the *order* is
+    the whole content, and an order inside `run_viewer` is an order no test
+    can see. `set_avatar_behind`, which the default camera preset calls every
+    frame, sets the yaw from the avatar's own rotation -- so an orbit applied
+    before it is overwritten before anything is drawn. The flag would do
+    nothing, the run would still finish, and the report would still look
+    healthy: a soak measuring the thing it was started to stop measuring.
+    """
+    refresh_preset()
+    if orbit_seconds > 0.0 and getattr(camera, "mode", None) in ("orbit", "free"):
+        camera.yaw = orbit_yaw(start_yaw, elapsed_s, orbit_seconds)
 
 
 async def stop_session_task(
@@ -1321,6 +1378,10 @@ async def run_viewer(args: argparse.Namespace) -> int:
     print(f"[viewer3d] gc.freeze objects={frozen}", flush=True)
     frame_number = 0
     elapsed_s = 0.0
+    # Read once. Taking it from the live camera each frame would make the
+    # orbit relative to wherever the last frame left it, which is the same
+    # yaw plus a constant -- so the camera would stop turning.
+    orbit_start_yaw = camera.yaw
     try:
         while running and not session_task.done():
             dt = clock.tick(frame_cap) / 1000.0
@@ -1404,7 +1465,13 @@ async def run_viewer(args: argparse.Namespace) -> int:
             scene.advance_avatar_poses(dt)
             scene.advance_clouds(dt)
             scene.advance_water(dt)
-            refresh_avatar_camera_preset()
+            apply_frame_camera(
+                camera,
+                refresh_avatar_camera_preset,
+                start_yaw=orbit_start_yaw,
+                elapsed_s=elapsed_s,
+                orbit_seconds=args.camera_orbit_seconds,
+            )
             _m1 = _t()
             renderer.update(dt, scene)
             _m2 = _t()
