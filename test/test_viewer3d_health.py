@@ -1828,5 +1828,62 @@ class CyclicVerdictTests(unittest.TestCase):
 
 
 
+class CameraYawGaugeTests(unittest.TestCase):
+    """The control for every other gauge in the log.
+
+    A soak spends hours drawing whatever the camera is pointing at. If that
+    never changes, then culling, sorting and every cache keyed on the view
+    went the whole run without being asked to -- and every container gauge
+    reading `flat` means only that nothing was asked of it. `render.camera_yaw`
+    is how a run says which of the two it was, and it says it in the ordinary
+    report: `flat` is a camera that never turned.
+    """
+
+    def test_it_reads_the_camera_the_renderer_draws_from(self) -> None:
+        from vibestorm.viewer3d.app import _float_of
+
+        class _Camera:
+            yaw = 1.75
+
+        class _Renderer:
+            camera = _Camera()
+
+        renderer = _Renderer()
+        read = _float_of(lambda: renderer, "camera", "yaw")
+        self.assertEqual(read(), 1.75)
+        renderer.camera.yaw = 3.5
+        self.assertEqual(read(), 3.5)
+
+    def test_a_renamed_attribute_raises_rather_than_reading_zero(self) -> None:
+        """The same rule the container gauges follow, and for the same reason.
+
+        A gauge that answers zero for a name nobody has any more reads
+        perfectly flat for the whole run, which is what a camera that turned
+        all the way round and a gauge watching nothing have in common.
+        """
+        from vibestorm.viewer3d.app import _float_of
+
+        class _Renderer:
+            camera = object()
+
+        with self.assertRaises(AttributeError):
+            _float_of(lambda: _Renderer(), "camera", "yaw")()
+
+    def test_an_owner_that_does_not_exist_yet_is_zero(self) -> None:
+        """There is no renderer before the window opens, and that is ordinary."""
+        from vibestorm.viewer3d.app import _float_of
+
+        self.assertEqual(_float_of(lambda: None, "camera", "yaw")(), 0.0)
+
+    def test_the_gauge_is_declared(self) -> None:
+        from vibestorm.viewer3d.app import build_health_probe
+
+        probe = build_health_probe(
+            _StubScene(), _StubRenderer(), _StubClient(), _StubHud(), interval_s=1.0
+        )
+        self.assertIn("render.camera_yaw", probe.gauges)
+
+
+
 class _StubHud:
     pass

@@ -422,6 +422,22 @@ def _len_of(owner_get, *names: str):
     return read
 
 
+def _float_of(owner_get, *names: str):
+    """A gauge over a plain number at ``x.a.b``. Misspelt raises, as above."""
+
+    def read() -> float:
+        target = owner_get()
+        for name in names:
+            if target is None:
+                return 0.0
+            target = getattr(target, name, _MISSING)
+            if target is _MISSING:
+                raise AttributeError(f"no gauge target {'.'.join(names)}: {name!r} is missing")
+        return float(target or 0.0)
+
+    return read
+
+
 def probe_for_args(args, scene, renderer, client, hud, *, soak_log) -> HealthProbe | None:
     """Turn the soak flags into a probe, or into nothing at all.
 
@@ -496,6 +512,13 @@ def build_health_probe(
         "gl.mesh_asset_paths": _len_of(lambda: renderer, "_mesh_asset_paths"),
         "gl.sculpt_asset_paths": _len_of(lambda: renderer, "_sculpt_asset_paths"),
         "gl.object_texture_bytes": _object_texture_bytes(renderer),
+        # Not a leak candidate -- it is the control for every gauge that is.
+        # A soak spends hours drawing whatever the camera happens to be
+        # pointing at, and if that never changes then culling, sorting and
+        # every cache keyed on the view went the whole run without being
+        # asked to. This reads `flat` in the report exactly when that
+        # happened, which is the only way a run says so about itself.
+        "render.camera_yaw": _float_of(lambda: renderer, "camera", "yaw"),
         # --- the world as the protocol left it
         "world.objects": _len_of(view, "objects"),
         "world.terse_objects": _len_of(view, "terse_objects"),
