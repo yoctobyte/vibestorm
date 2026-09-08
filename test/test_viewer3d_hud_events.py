@@ -223,20 +223,8 @@ class MapHUDControlSweepTests(HUDControlSweepTests):
         self.assertEqual(self.REACHABLE - set(self.calls), set())
 
 
-class HUDRoutingTests(unittest.TestCase):
-    """Which control does which thing, which the sweep above does not ask.
-
-    `HUDControlSweepTests` presses every control and asserts that none of them
-    raises. That is the crash half, and it is the half that has been paying;
-    it is also, by its own docstring, everything the HUD's dispatch had. Forty
-    branches of `if event.ui_element is self.<something>_button` were reached
-    and none of their effects were checked, so a button wired to its
-    neighbour's window, or a toggle pointed at the wrong render setting,
-    passes every test in this file.
-
-    The pairs are written out rather than read from the source. A test that
-    derives the mapping from the code under test agrees with a swap.
-    """
+class _HUDRoutingCase(unittest.TestCase):
+    """One HUD with recording callbacks, and a way to press one control."""
 
     SIZE = (1280, 800)
 
@@ -284,6 +272,22 @@ class HUDRoutingTests(unittest.TestCase):
                 self.pygame_gui.UI_BUTTON_PRESSED, {"ui_element": button}
             )
         )
+
+
+class HUDRoutingTests(_HUDRoutingCase):
+    """Which control does which thing, which the sweep above does not ask.
+
+    `HUDControlSweepTests` presses every control and asserts that none of them
+    raises. That is the crash half, and it is the half that has been paying;
+    it is also, by its own docstring, everything the HUD's dispatch had. Forty
+    branches of `if event.ui_element is self.<something>_button` were reached
+    and none of their effects were checked, so a button wired to its
+    neighbour's window, or a toggle pointed at the wrong render setting,
+    passes every test in this file.
+
+    The pairs are written out rather than read from the source. A test that
+    derives the mapping from the code under test agrees with a swap.
+    """
 
     # -- menus -------------------------------------------------------------
 
@@ -452,6 +456,149 @@ class HUDRoutingTests(unittest.TestCase):
 
         self.press("file_quit_button")
         self.assertTrue(self.hud.quit_requested)
+
+
+
+class HUDActionRoutingTests(_HUDRoutingCase):
+    """The other half of the dispatch: the controls that need a selection.
+
+    A press on Save Asset with nothing selected does nothing, correctly, so
+    the sweep above cannot tell it apart from a press that reached the wrong
+    handler -- both are silent. What can be told apart is *which* handler the
+    branch calls, and that is the whole of what the branch decides. So each
+    of these replaces the handlers on the instance and checks that the button
+    called its own and nobody else's.
+
+    These six inspector buttons are the GUI end of priorities C, D and E. The
+    handoff has said for two days that the button press itself is the one
+    thing not covered, because reaching it end to end needs a window and a
+    live simulator together. The routing does not: it needs a HUD.
+    """
+
+    #: Every control that dispatches to a named handler, and the handler it
+    #: is supposed to reach. Written out, not derived.
+    ACTIONS = (
+        ("inventory_open_button", "_open_selected_inventory_folder"),
+        ("inspector_load_inventory_button", "_request_selected_object_inventory"),
+        ("inspector_view_asset_button", "_view_selected_asset"),
+        ("inspector_save_asset_button", "_save_selected_asset"),
+        ("inspector_save_all_button", "_sync_selected_object_to_folder"),
+        ("inspector_upload_files_button", "_open_upload_file_dialog"),
+        ("inspector_upload_folder_button", "_open_upload_folder_dialog"),
+        ("teleport_go_button", "_submit_teleport"),
+    )
+
+    def _trap(self, names):
+        """Replace each named method with a recorder. Returns the record."""
+        seen: list[str] = []
+
+        def make(name):
+            def record(*_args, **_kwargs):
+                seen.append(name)
+
+            return record
+
+        for name in names:
+            self.assertTrue(hasattr(self.hud, name), f"no handler {name}")
+            setattr(self.hud, name, make(name))
+        return seen
+
+    def test_each_action_button_calls_its_own_handler(self) -> None:
+        handlers = [handler for _button, handler in self.ACTIONS]
+        for button, handler in self.ACTIONS:
+            with self.subTest(button):
+                self.hud = self._hud()
+                seen = self._trap(handlers)
+                self.press(button)
+                self.assertEqual(seen, [handler])
+
+    LISTS = (
+        ("inventory_list", "_select_inventory_row"),
+        ("inspector_list", "_select_inspector_row"),
+    )
+
+    def test_picking_a_row_reaches_the_right_list_handler(self) -> None:
+        for element, handler in self.LISTS:
+            with self.subTest(element):
+                self.hud = self._hud()
+                seen = self._trap([name for _e, name in self.LISTS])
+                self.hud.process_event(
+                    self.pygame.event.Event(
+                        self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                        {"ui_element": getattr(self.hud, element), "text": "a row"},
+                    )
+                )
+                self.assertEqual(seen, [handler])
+
+    def test_the_row_that_was_picked_is_the_row_that_is_passed(self) -> None:
+        """A handler called with the empty string clears the selection, which
+        is what a lost `text` field would look like from the outside."""
+        passed: list[str] = []
+        self.hud._select_inventory_row = lambda text: passed.append(text)
+        self.hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_NEW_SELECTION,
+                {"ui_element": self.hud.inventory_list, "text": "Objects"},
+            )
+        )
+        self.assertEqual(passed, ["Objects"])
+
+    def test_a_double_click_selects_and_then_opens(self) -> None:
+        """One click picks a folder and two open it, and the second has to do
+        both -- a double click that only opened would open whatever was
+        selected before it."""
+        seen = self._trap(["_select_inventory_row", "_open_selected_inventory_folder"])
+        self.hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_SELECTION_LIST_DOUBLE_CLICKED_SELECTION,
+                {"ui_element": self.hud.inventory_list, "text": "Objects"},
+            )
+        )
+        self.assertEqual(seen, ["_select_inventory_row", "_open_selected_inventory_folder"])
+
+    RESIZES = (
+        ("chat_window", "_layout_chat_window"),
+        ("asset_viewer_window", "_layout_asset_viewer_window"),
+        ("inventory_window", "_layout_inventory_window"),
+        ("inspector_window", "_layout_inspector_window"),
+    )
+
+    def test_each_window_relays_out_its_own_contents_when_resized(self) -> None:
+        """Four windows, four layouts, and a resize that ran the wrong one
+        leaves a panel with its widgets off the edge of itself."""
+        handlers = [handler for _window, handler in self.RESIZES]
+        for window, handler in self.RESIZES:
+            with self.subTest(window):
+                self.hud = self._hud()
+                seen = self._trap(handlers)
+                self.hud.process_event(
+                    self.pygame.event.Event(
+                        self.pygame_gui.UI_WINDOW_RESIZED,
+                        {"ui_element": getattr(self.hud, window)},
+                    )
+                )
+                self.assertEqual(seen, [handler])
+
+    def test_submitting_chat_sends_it_once_and_clears_the_box(self) -> None:
+        """A box that keeps what was sent sends it again on the next return."""
+        self.hud.chat_input.set_text("hello")
+        self.hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_TEXT_ENTRY_FINISHED,
+                {"ui_element": self.hud.chat_input, "text": "hello"},
+            )
+        )
+        self.assertEqual(self.calls, [("chat", "hello")])
+        self.assertEqual(self.hud.chat_input.get_text(), "")
+
+    def test_an_empty_line_is_not_sent(self) -> None:
+        self.hud.process_event(
+            self.pygame.event.Event(
+                self.pygame_gui.UI_TEXT_ENTRY_FINISHED,
+                {"ui_element": self.hud.chat_input, "text": "   "},
+            )
+        )
+        self.assertEqual(self.calls, [])
 
 
 
