@@ -4067,10 +4067,19 @@ OpenSim sim instead, and filled `last` where the launcher fills `home` (fixed
 one place a user reaches B by hand and the two tests covering it both passed
 on the bug.
 
+Underneath both entry points, the XML-RPC login had never run over TLS at
+all: `ServerProxy` picks a secure transport for an `https` URI only when it is
+not given one, this client always gave it a plain one, and the result was an
+unencrypted request to port 80 carrying the password hash. Fixed the same day
+and covered by a real TLS handshake on the loopback; also written up below.
+
 Nothing about B has been exercised against the live grid, because that needs
 the owner's SL credentials. **Do not send probe logins to Linden Lab's
 production endpoint with made-up credentials** -- repeated failures from this
-IP could cost the owner the ability to do B at all. Treat as untested.
+IP could cost the owner the ability to do B at all. Treat as untested. The
+one open question that needs the owner rather than the code: the payload
+sends an empty `mac` and `id0`, and filling those in means fingerprinting
+this machine for a third party.
 
 **C -- done for the CLI, live-verified 2026-09-05.** Object task inventory
 downloads to `local/asset-downloads/<task-id>/`, and
@@ -4736,6 +4745,64 @@ built a `LoginScreen` from the repository root loaded the machine owner's real
 stored credentials into the fields -- and, since the constructor auto-connects
 on a complete profile, tried to log in with them. Every case in that file now
 points the variable at a file that does not exist.
+
+### And behind the login screen, the login itself went out in clear
+
+Fixing the front door was worth doing and would not have been enough. The
+XML-RPC login this client makes has never once run over TLS.
+
+`xmlrpc.client.ServerProxy` chooses `SafeTransport` for an `https` URI **only
+when it is not handed a transport of its own.** This client always hands it
+one -- `TimeoutTransport`, which exists to set a socket timeout and to bound
+the size of the response -- and that transport subclassed the plain
+`Transport` regardless of scheme. So `https://login.agni.lindenlab.com/...`
+opened an **unencrypted** connection, and not to port 443 either: the port the
+URI implies is dropped along with the scheme, because `HTTPConnection(host)`
+defaults it to 80. Every `https` login this client could have made would have
+sent an account's password hash in the clear to the wrong port.
+
+Two reasons it sat there. The sim this project is developed against is
+`http://127.0.0.1:9000/`, so the one scheme in daily use was the working one.
+And **every existing test of `_login_sync` replaced `ServerProxy` wholesale**,
+so no test of the login path had ever opened a socket -- the transport was
+constructed and thrown away unexercised in all of them. That is the same
+lesson as the three above, in the one place where the thing not being reached
+is the encryption.
+
+`transport_for(uri, timeout)` now picks by scheme, and the timeout and the
+response bound moved into a mixin so neither transport can quietly lack one.
+`LiveTLSLoginTests` stands up an XML-RPC server on the loopback with its own
+certificate and logs in to it over `https`, so what is claimed is the whole
+chain -- scheme, transport, handshake, bootstrap -- rather than the type of an
+object. Two of its three tests are about the failure modes: a plain HTTP
+request to the TLS port must fail rather than be served, and an untrusted
+certificate must arrive as a `LoginError` and not a traceback.
+
+There is deliberately **no flag for turning verification off.** An OpenSim
+grid behind a private CA is a real case and the answer to it is
+`ssl.create_default_context(cafile=...)`, which `LoginClient(ssl_context=...)`
+accepts. The payload of this request is a password.
+
+Worth checking and now checked: every other HTTP client in this project --
+all eleven capability and event-queue calls -- goes through
+`urllib.request.urlopen`, which picks TLS from the scheme by itself. Nothing
+else in the tree supplies its own transport, so nothing else had this.
+
+While in there, a refused login now says the grid's `reason` beside its
+`message` when the two differ. A wrong password and an account that has to
+read a critical notice are both "login failed" in the message alone.
+Deliberately no table of reason codes and no branching on them: this client
+has never completed a login against Second Life, and a table of that grid's
+refusals would be a table nobody here has seen. Passing its own word through
+is the honest amount to claim.
+
+**Still unknown for B, and left alone on purpose.** The login payload sends an
+empty `mac` and an empty `id0`. Real viewers send hashed hardware
+identifiers, and whether Linden Lab's grid minds an empty one is not
+something this project can find out without an account. Filling them in means
+fingerprinting the owner's machine and sending it to a third party, which is
+the owner's call and not an implementation detail -- so it is written down
+here rather than quietly decided.
 
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 

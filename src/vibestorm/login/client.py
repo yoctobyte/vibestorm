@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import socket
+import ssl
 import xmlrpc.client
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from uuid import UUID
 from xml.parsers.expat import ExpatError
 
@@ -30,10 +32,15 @@ class LoginError(RuntimeError):
 MAX_LOGIN_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
-class TimeoutTransport(xmlrpc.client.Transport):
-    def __init__(self, timeout_seconds: float) -> None:
-        super().__init__()
-        self.timeout_seconds = timeout_seconds
+class _BoundedTransport:
+    """The timeout and the response bound, shared by both schemes.
+
+    A mixin rather than a base class because the two transports differ only in
+    which connection `xmlrpc.client` opens, and that difference lives entirely
+    in the classes below this one in the MRO.
+    """
+
+    timeout_seconds: float
 
     def make_connection(self, host: object) -> xmlrpc.client.HTTPConnection:
         connection = super().make_connection(host)
@@ -81,6 +88,59 @@ class TimeoutTransport(xmlrpc.client.Transport):
         return response
 
 
+class TimeoutTransport(_BoundedTransport, xmlrpc.client.Transport):
+    """Plain HTTP. Local sims and the older OpenSim grids."""
+
+    def __init__(self, timeout_seconds: float) -> None:
+        super().__init__()
+        self.timeout_seconds = timeout_seconds
+
+
+class TimeoutSafeTransport(_BoundedTransport, xmlrpc.client.SafeTransport):
+    """HTTPS, which is every grid worth reaching.
+
+    `context=None` means `xmlrpc` builds the default one, which verifies the
+    chain and the hostname. A caller may pass its own -- an OpenSim grid
+    behind a private CA is a real case, and `ssl.create_default_context(
+    cafile=...)` is the way to reach it. There is deliberately no flag for
+    turning verification off: the payload of this request is a password.
+    """
+
+    def __init__(self, timeout_seconds: float, *, context: ssl.SSLContext | None = None) -> None:
+        super().__init__(context=context)
+        self.timeout_seconds = timeout_seconds
+
+
+def transport_for(
+    login_uri: str,
+    timeout_seconds: float,
+    *,
+    context: ssl.SSLContext | None = None,
+) -> xmlrpc.client.Transport:
+    """The transport an XML-RPC login to `login_uri` needs.
+
+    `ServerProxy` picks `SafeTransport` for an `https` URI *only when it is
+    not given a transport of its own*. This client always gives it one, to set
+    the timeout and bound the response, and for a long time gave it a plain
+    `Transport` regardless of scheme -- so an `https` login URI opened an
+    unencrypted connection to **port 80** of that host (the port the URI
+    implies is dropped along with the scheme, since `HTTPConnection(host)`
+    defaults it) and sent the password hash in clear.
+
+    Nothing caught it because the local sim this client is developed against
+    is `http://`, so the one scheme in daily use was the one that worked, and
+    every test of `_login_sync` replaced `ServerProxy` wholesale and never
+    reached a transport at all.
+    """
+    # `urlsplit` lowercases the scheme itself, which is why there is no
+    # `.lower()` here. It is pinned in the tests, because a comparison whose
+    # correctness lives in another library's normalisation is one nobody
+    # rereads.
+    if urlsplit(login_uri).scheme == "https":
+        return TimeoutSafeTransport(timeout_seconds, context=context)
+    return TimeoutTransport(timeout_seconds)
+
+
 #: The substring OpenSim's refusal carries when a previous session is still
 #: attached. Matched on rather than parsed: the surrounding text is a sentence
 #: written for a human ("Please wait a a minute or two and retry", typo and
@@ -107,6 +167,11 @@ class LoginClient:
     #: this is decided — declining to retry loses the session without saving
     #: it — but a caller that wants the refusal surfaced can turn it off.
     retry_lingering_session: bool = True
+    #: TLS settings for an `https` login URI. `None` is the verifying default.
+    #: Supplied for a grid behind a private CA, and by the tests, which stand
+    #: up a real TLS server on the loopback rather than trusting that asking
+    #: for a secure transport produced one.
+    ssl_context: ssl.SSLContext | None = None
 
     async def login(self, request: LoginRequest) -> LoginBootstrap:
         return await asyncio.to_thread(self._login_with_retry, request)
@@ -124,7 +189,9 @@ class LoginClient:
             return self._login_sync(request)
 
     def _login_sync(self, request: LoginRequest) -> LoginBootstrap:
-        transport = TimeoutTransport(timeout_seconds=self.timeout_seconds)
+        transport = transport_for(
+            request.login_uri, self.timeout_seconds, context=self.ssl_context
+        )
         server = xmlrpc.client.ServerProxy(request.login_uri, allow_none=True, transport=transport)
         try:
             response = server.login_to_simulator(self._request_payload(request))
@@ -148,8 +215,7 @@ class LoginClient:
             raise LoginError("login response is not a struct")
 
         if str(response.get("login", "")).lower() != "true":
-            message = str(response.get("message", "login failed"))
-            raise LoginError(message)
+            raise LoginError(_refusal_text(response))
 
         try:
             return LoginBootstrap(
@@ -191,6 +257,27 @@ class LoginClient:
             "read_critical": request.read_critical,
             "options": list(request.options),
         }
+
+
+def _refusal_text(response: dict[str, object]) -> str:
+    """What to tell the user when the grid says no.
+
+    A refusal carries a `message` written for a human and, on the grids that
+    send one, a short machine-readable `reason` beside it. The reason is the
+    part that says what to *do* -- a wrong password and an account that must
+    read a critical notice both arrive as "login failed" otherwise -- so it is
+    appended when it is there and adds something.
+
+    No branching on particular reason values: this client has never completed
+    a login against the Second Life grid, and a table of its refusal codes
+    would be a table nobody here has seen. Passing the grid's own word through
+    is the honest amount to claim.
+    """
+    message = str(response.get("message", "")).strip() or "login failed"
+    reason = str(response.get("reason", "")).strip()
+    if reason and reason.lower() not in message.lower():
+        return f"{message} (reason: {reason})"
+    return message
 
 
 def sl_password_hash(password: str) -> str:

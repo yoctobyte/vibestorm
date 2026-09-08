@@ -1,14 +1,24 @@
+import http.client
+import shutil
 import socket
+import ssl
+import subprocess
+import tempfile
+import threading
 import unittest
 import xmlrpc.client
+from pathlib import Path
 from uuid import UUID
+from xmlrpc.server import SimpleXMLRPCRequestHandler, SimpleXMLRPCServer
 
 from vibestorm.login.client import (
     MAX_LOGIN_RESPONSE_BYTES,
     LoginClient,
     LoginError,
+    TimeoutSafeTransport,
     TimeoutTransport,
     sl_password_hash,
+    transport_for,
 )
 from vibestorm.login.models import DEFAULT_LOGIN_OPTIONS, LoginCredentials, LoginRequest
 
@@ -488,8 +498,8 @@ class MalformedResponseTests(unittest.TestCase):
                 parser.close()
                 return unmarshaller.close()
 
-        original = module.TimeoutTransport
-        module.TimeoutTransport = lambda timeout_seconds: Transport()  # type: ignore[assignment]
+        original = module.transport_for
+        module.transport_for = lambda *args, **kwargs: Transport()  # type: ignore[assignment]
         try:
             LoginClient()._login_sync(
                 LoginRequest(
@@ -498,7 +508,7 @@ class MalformedResponseTests(unittest.TestCase):
                 )
             )
         finally:
-            module.TimeoutTransport = original
+            module.transport_for = original
 
     def test_a_truncated_response_is_a_login_error(self) -> None:
         with self.assertRaises(LoginError):
@@ -513,3 +523,226 @@ class MalformedResponseTests(unittest.TestCase):
         with self.assertRaisesRegex(LoginError, "not valid XML"):
             self._login_against(b"not xml")
 
+
+
+class TransportSchemeTests(unittest.TestCase):
+    """Which connection an `https` login URI opens.
+
+    `ServerProxy` chooses `SafeTransport` for `https` only when it is not
+    handed a transport of its own. This client always hands it one -- for the
+    timeout and the response bound -- and for a long time handed it a plain
+    `Transport` whatever the scheme, so an `https` login URI opened an
+    **unencrypted** connection to **port 80** of that host and sent the
+    password hash in clear. The port goes missing along with the scheme:
+    `HTTPConnection(host)` defaults it to 80, and the 443 the URI implies was
+    never anywhere in the call.
+
+    That is priority B's grid -- `https://login.agni.lindenlab.com/...` -- and
+    the reason it went unnoticed is that the sim this client is developed
+    against is `http://`, so the one scheme in daily use was the working one.
+    """
+
+    def test_an_https_uri_gets_a_secure_transport(self) -> None:
+        transport = transport_for("https://login.agni.lindenlab.com/cgi-bin/login.cgi", 5.0)
+        self.assertIsInstance(transport, xmlrpc.client.SafeTransport)
+
+    def test_an_https_uri_connects_over_tls_on_443(self) -> None:
+        """The class alone is not the claim: what matters is the connection."""
+        connection = transport_for("https://example.invalid/x", 5.0).make_connection("example.invalid")
+        self.assertIsInstance(connection, http.client.HTTPSConnection)
+        self.assertEqual(connection.port, 443)
+
+    def test_an_http_uri_still_gets_a_plain_transport(self) -> None:
+        connection = transport_for("http://127.0.0.1:9000/", 5.0).make_connection("127.0.0.1:9000")
+        self.assertNotIsInstance(connection, http.client.HTTPSConnection)
+        self.assertEqual(connection.port, 9000)
+
+    def test_a_mixed_case_scheme_is_still_https(self) -> None:
+        """This one pins `urlsplit`, not the branch: it lowercases the scheme
+        on the way out, so the comparison in `transport_for` needs no `.lower()`
+        of its own. Written down because a comparison whose correctness lives
+        in another library's normalisation is one nobody rereads -- and because
+        the alternative is a redundant call that looks load-bearing."""
+        from urllib.parse import urlsplit
+
+        self.assertEqual(urlsplit("HTTPS://X/y").scheme, "https")
+        self.assertIsInstance(transport_for("HTTPS://X/y", 5.0), xmlrpc.client.SafeTransport)
+
+    def test_both_transports_carry_the_timeout(self) -> None:
+        """It is set in the mixin, so a transport that skipped it would wait on
+        the default -- which is no timeout at all, on the one call the user is
+        sitting in front of."""
+        for uri in ("https://example.invalid/x", "http://example.invalid/x"):
+            with self.subTest(uri):
+                connection = transport_for(uri, 3.5).make_connection("example.invalid")
+                self.assertEqual(connection.timeout, 3.5)
+
+    def test_both_transports_bound_the_response(self) -> None:
+        for transport in (TimeoutTransport(5.0), TimeoutSafeTransport(5.0)):
+            with self.subTest(type(transport).__name__):
+                self.assertIs(
+                    type(transport).parse_response,
+                    type(TimeoutTransport(5.0)).parse_response,
+                )
+
+    def test_an_unknown_scheme_does_not_quietly_become_secure(self) -> None:
+        self.assertNotIsInstance(transport_for("ftp://x/y", 5.0), xmlrpc.client.SafeTransport)
+
+
+class _AnyPathHandler(SimpleXMLRPCRequestHandler):
+    """Serve the call wherever it is posted.
+
+    The default handler answers only `/` and `/RPC2`, and a login URI is
+    `/cgi-bin/login.cgi` on every grid this client will ever talk to.
+    """
+
+    rpc_paths = ()
+
+
+class _TLSXMLRPCServer(SimpleXMLRPCServer):
+    def __init__(self, context: ssl.SSLContext) -> None:
+        super().__init__(("127.0.0.1", 0), requestHandler=_AnyPathHandler, logRequests=False)
+        self.socket = context.wrap_socket(self.socket, server_side=True)
+
+
+class LiveTLSLoginTests(unittest.TestCase):
+    """A real TLS handshake, because everything short of one has lied before.
+
+    Every other test in this file replaces `ServerProxy` wholesale, which is
+    why the plain-transport bug above survived: no test of `_login_sync` had
+    ever opened a socket. This one stands up an XML-RPC server on the loopback
+    with its own certificate and logs in to it over `https`, so the claim is
+    the whole chain -- scheme to transport to handshake to bootstrap -- rather
+    than the type of an object.
+    """
+
+    RESPONSE = {
+        "login": "true",
+        "agent_id": "11111111-1111-4111-8111-111111111111",
+        "session_id": "22222222-2222-4222-8222-222222222222",
+        "secure_session_id": "33333333-3333-4333-8333-333333333333",
+        "circuit_code": 123456,
+        "sim_ip": "127.0.0.1",
+        "sim_port": 9000,
+        "seed_capability": "https://127.0.0.1:9000/cap/seed",
+        "region_x": 256000,
+        "region_y": 256000,
+        "message": "Welcome",
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if shutil.which("openssl") is None:  # pragma: no cover - environment
+            raise unittest.SkipTest("openssl is needed to make a test certificate")
+        cls.directory = Path(tempfile.mkdtemp(prefix="vibestorm-tls-test-"))
+        cls.certificate = cls.directory / "cert.pem"
+        cls.key = cls.directory / "key.pem"
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-keyout", str(cls.key), "-out", str(cls.certificate),
+                "-days", "1", "-nodes", "-subj", "/CN=localhost",
+                "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def setUp(self) -> None:
+        self.calls: list[dict] = []
+        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.load_cert_chain(str(self.certificate), str(self.key))
+        self.server = _TLSXMLRPCServer(server_context)
+        self.server.register_function(self._login_to_simulator, "login_to_simulator")
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.thread.join, 5.0)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.uri = f"https://localhost:{self.server.server_address[1]}/cgi-bin/login.cgi"
+        self.client_context = ssl.create_default_context(cafile=str(self.certificate))
+
+    def _login_to_simulator(self, payload: dict) -> dict:
+        self.calls.append(payload)
+        return dict(self.RESPONSE)
+
+    def request(self, **overrides) -> LoginRequest:
+        fields = {
+            "login_uri": self.uri,
+            "credentials": LoginCredentials(first="Vibestorm", last="Tester", password="secret"),
+            "start": "home",
+        }
+        fields.update(overrides)
+        return LoginRequest(**fields)
+
+    def test_a_login_over_https_reaches_the_grid_and_comes_back(self) -> None:
+        bootstrap = LoginClient(ssl_context=self.client_context)._login_sync(self.request())
+        self.assertEqual(bootstrap.circuit_code, 123456)
+        self.assertEqual(str(bootstrap.agent_id), self.RESPONSE["agent_id"])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0]["start"], "home")
+        self.assertEqual(self.calls[0]["passwd"], sl_password_hash("secret"))
+
+    def test_the_password_never_goes_out_in_the_clear(self) -> None:
+        """The bug this replaces sent it to port 80 unencrypted. A plain HTTP
+        request to the TLS port has to fail rather than be served."""
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5.0)
+        with self.assertRaises((http.client.HTTPException, OSError)):
+            connection.request("POST", "/cgi-bin/login.cgi", body=b"<methodCall/>")
+            connection.getresponse()
+        self.assertEqual(self.calls, [])
+
+    def test_an_untrusted_certificate_is_a_failed_login_not_a_traceback(self) -> None:
+        """The default context does not trust this certificate. A grid behind a
+        private CA is a real case and the answer is a context, not a flag that
+        turns verification off -- so this has to arrive as a `LoginError`."""
+        with self.assertRaises(LoginError):
+            LoginClient()._login_sync(self.request())
+        self.assertEqual(self.calls, [])
+
+
+class RefusalTextTests(unittest.TestCase):
+    """What a refused login says, which is all the user gets."""
+
+    def _refusal(self, **fields) -> str:
+        from vibestorm.login.client import _refusal_text
+
+        return _refusal_text({"login": "false", **fields})
+
+    def test_the_grids_message_is_passed_through(self) -> None:
+        self.assertEqual(self._refusal(message="Wrong password."), "Wrong password.")
+
+    def test_the_reason_is_appended_when_the_message_does_not_carry_it(self) -> None:
+        """A bad password and an unread critical notice are both "login
+        failed" in the message alone; the reason is the part that says which."""
+        self.assertEqual(
+            self._refusal(message="Login failed.", reason="critical"),
+            "Login failed. (reason: critical)",
+        )
+
+    def test_a_reason_already_in_the_message_is_not_repeated(self) -> None:
+        self.assertEqual(
+            self._refusal(message="Agent presence problem", reason="presence"),
+            "Agent presence problem",
+        )
+
+    def test_a_refusal_with_nothing_in_it_still_says_something(self) -> None:
+        self.assertEqual(self._refusal(), "login failed")
+
+    def test_a_blank_message_does_not_swallow_the_reason(self) -> None:
+        self.assertEqual(self._refusal(message="  ", reason="key"), "login failed (reason: key)")
+
+    def test_the_lingering_session_retry_still_sees_its_message(self) -> None:
+        """The retry matches on the sentence OpenSim writes. Appending the
+        reason must not push it out of the string it matches against."""
+        from vibestorm.login.client import LINGERING_SESSION_MESSAGE
+
+        text = self._refusal(
+            message="You appear to be already logged in. Please wait a a minute or two and retry",
+            reason="presence",
+        )
+        self.assertIn(LINGERING_SESSION_MESSAGE, text.lower())
