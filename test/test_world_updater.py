@@ -622,3 +622,86 @@ class WorldUpdaterTests(unittest.TestCase):
         self.assertEqual(event.kind, "world.object_extra_params")
         self.assertIn("objects=2", event.detail)
         self.assertIn("local_ids=7,9", event.detail)
+
+
+class DecodeErrorContractTests(unittest.TestCase):
+    """What `apply_dispatch` is allowed to raise, held to one exception.
+
+    `LiveCircuitSession.handle_incoming` catches `MessageDecodeError` around
+    this call and nothing wider, because the receive loop calls
+    `handle_incoming` bare: anything that escapes ends the session and takes
+    the viewer with it. A truncated `ObjectUpdateCached` did exactly that
+    until the catch was added.
+
+    Catching `Exception` there would have been the smaller change and the
+    worse one -- it swallows a wrong field name, a mistake this project has
+    shipped twice, and both times the crash is what found it. That trade is
+    only sound while the parsers keep their promise, so this fuzzes every
+    message the updater dispatches on and fails on any other exception,
+    naming it. A `struct.error` or an `IndexError` from one of these is a
+    parser reaching past its own bounds check, and the fix belongs in the
+    parser rather than in a wider catch upstream.
+    """
+
+    #: Every name `WorldUpdater.apply_dispatch` branches on, read off the
+    #: source so a new branch cannot be added without a body to fuzz it.
+    NAMES = (
+        "SimStats",
+        "SimulatorViewerTimeMessage",
+        "CoarseLocationUpdate",
+        "ObjectUpdate",
+        "ImprovedTerseObjectUpdate",
+        "KillObject",
+        "ObjectUpdateCached",
+        "ObjectUpdateCompressed",
+        "ObjectProperties",
+        "ObjectPropertiesFamily",
+        "ObjectExtraParams",
+    )
+
+    def test_the_branch_list_is_still_the_source_s(self) -> None:
+        """A branch added without a fixture would be fuzzed by nothing."""
+        import re
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[1] / "src/vibestorm/world/updater.py"
+        found = re.findall(r'summary\.name == "([A-Za-z]+)"', source.read_text())
+        self.assertEqual(sorted(set(found)), sorted(set(self.NAMES)))
+
+    def test_only_a_decode_error_escapes(self) -> None:
+        import random
+
+        from vibestorm.udp.messages import MessageDecodeError
+
+        rng = random.Random(20260908)
+        # Truncation is the shape that actually arrives -- a short read, a
+        # clipped datagram -- so the lengths are weighted towards short, and
+        # zero is in there because an empty body is what a message with no
+        # payload at all decodes to.
+        lengths = [0, 1, 2, 3, 4, 5, 7, 11, 16, 17, 31, 33, 64, 100, 255, 512]
+        failures: list[str] = []
+        rejected: dict[str, int] = dict.fromkeys(self.NAMES, 0)
+        for name in self.NAMES:
+            for length in lengths:
+                for _ in range(25):
+                    body = bytes(rng.getrandbits(8) for _ in range(length))
+                    updater = WorldUpdater(WorldView())
+                    dispatched = WorldUpdaterTests._dispatch(name, body)
+                    try:
+                        updater.apply_dispatch(dispatched)
+                    except MessageDecodeError:
+                        rejected[name] += 1
+                    except Exception as exc:  # noqa: BLE001 -- the thing under test
+                        failures.append(
+                            f"{name} {length}B {body.hex()}: {type(exc).__name__}: {exc}"
+                        )
+                        break
+        self.assertEqual(failures, [], "\n".join(failures[:10]))
+        # And not vacuously: a name that reached no parser at all would pass
+        # the check above by doing nothing, which is how a fuzz test quietly
+        # stops testing anything after a rename.
+        self.assertEqual(
+            [name for name, count in rejected.items() if count == 0],
+            [],
+            f"reached no parser: {rejected}",
+        )
