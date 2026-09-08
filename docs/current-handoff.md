@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-07 (eighteenth pass)
+Last updated: 2026-09-08 (nineteenth pass)
 
 ## The Owner's Priorities
 
@@ -4059,9 +4059,18 @@ rotation. `LiveCircuitSession` now integrates the turn bits into the
 follows the new facing: ~12 m per six-second leg on all four compass headings.
 `tools/verify_avatar_turn.py` is the live check.
 
-**B -- launcher done, unverified.** `run.sh` now defaults SL sessions to
-`home` rather than `last`. Nothing about this has been exercised against the
-live grid, because that needs the owner's SL credentials. Treat as untested.
+**B -- both entry points fixed, still unverified against the grid.** `run.sh`
+defaults SL sessions to `home` rather than `last`. The *GUI* login screen did
+not: choosing "Second Life" in the grid dropdown logged in to the local
+OpenSim sim instead, and filled `last` where the launcher fills `home` (fixed
+2026-09-08, written up below). That one is worth reading, because it is the
+one place a user reaches B by hand and the two tests covering it both passed
+on the bug.
+
+Nothing about B has been exercised against the live grid, because that needs
+the owner's SL credentials. **Do not send probe logins to Linden Lab's
+production endpoint with made-up credentials** -- repeated failures from this
+IP could cost the owner the ability to do B at all. Treat as untested.
 
 **C -- done for the CLI, live-verified 2026-09-05.** Object task inventory
 downloads to `local/asset-downloads/<task-id>/`, and
@@ -4678,6 +4687,55 @@ quietly become a clean bill of health.
 Worth keeping separate from the finding itself: **an instrument that reports
 eighteen problems where there are none stops being read**, and that costs the
 next real one.
+
+### The third dispatch was the front door to B
+
+Two dispatches down, the third was the one the owner's second priority walks
+through, and it was broken. Choosing **Second Life** in the login screen's
+grid dropdown and pressing Connect logged in to `http://127.0.0.1:9000/`.
+
+`UIDropDownMenu.selected_option` is a `(display text, object id)` **pair** in
+the pygame_gui this project pins; it was a bare string in older releases.
+Every `preset == "Second Life"` in `login_screen.py` was written against the
+string, so on the installed library all of them were false and all of them
+fell through to the Local OpenSim branch -- URI, start location, and the URI
+the credentials are saved against. Nothing complained, because the local sim
+answered. And the URI field is hidden and disabled unless the preset is
+Custom, so it could not be corrected by hand either: the one grid this client
+cannot reach from its own login screen was the main grid.
+
+A second, smaller divergence in the same branch: the preset filled `last`
+where `./gui.sh sl` says `home`. `last` drops the avatar wherever the previous
+session ended, and on a grid we do not control that is not a known starting
+state -- which is exactly why the owner asked for home.
+
+**Both existing tests passed throughout, and would have passed on either
+bug.** One assigned a bare string to `selected_option` and then asserted the
+screen agreed; the other hand-built a legacy `pygame.USEREVENT` carrying
+`user_type` and then asserted the screen agreed with that. Neither value is
+one the library produces on its own. That is the fourth shape of a test that
+cannot fail, and it deserves its own name alongside the other three: **a check
+that supplies the state the code is looking for is a check that the code
+agrees with itself.**
+
+The replacements click the control -- real `MOUSEBUTTONDOWN`/`UP` through
+`process_event`, with whatever pygame_gui posts back handed to the same method
+-- and where state has to be set directly, the *shape* is read off a live
+widget rather than written out in the test. Eight mutations of the preset
+routing, the button handling and the credential check die against them.
+
+One correction worth recording, because I published the opposite to myself
+first. The legacy `USEREVENT` handling was not dead code: pygame_gui 0.6.14
+posts **both** the legacy event and the modern typed one, so the old path did
+work. The comment in the source says so now. The bugs were the pair and the
+start location, not the event shape.
+
+And one piece of test hygiene that was a real hazard: `get_profile_path()`
+returns the *relative* path `local/vibestorm-login.env`, so any test that
+built a `LoginScreen` from the repository root loaded the machine owner's real
+stored credentials into the fields -- and, since the constructor auto-connects
+on a complete profile, tried to log in with them. Every case in that file now
+points the variable at a file that does not exist.
 
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
