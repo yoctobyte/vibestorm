@@ -5073,6 +5073,57 @@ Worth keeping: a fifth of everything the region sent was reliable
 region with three prims and one avatar in it.
 
 
+### Four ways a capability response could take the viewer down, one of them free
+
+`caps/client.py` catches `LlsdError` around every parse and turns it into a
+`CapabilityError`. The comment there, in four places, says exactly why: "
+`LlsdError` is caught nowhere in this client, so letting it through would only
+rename the exception that escapes."
+
+Four things got past that handler, in the module the comment lives next to.
+
+- **`int()` and `float()` raise a bare `ValueError`.** `LlsdError` is a
+  *subclass* of `ValueError`, and `except LlsdError` does not catch its
+  parent. `<integer>abc</integer>` left the module as an exception nothing
+  upstream names.
+- **`_parse_value` recurses.** Two thousand opened arrays is a
+  `RecursionError`, which is not a `ValueError` at all.
+- **A `<real>` of `nan` or `inf` parsed cleanly** and went on into object
+  costs, prim physics and mesh headers. The terrain decoder taught this
+  project what that costs: every comparison against a NaN is false, so it
+  switches a bounds check off rather than tripping it, and it travels a long
+  way from where it entered.
+- **A DOCTYPE.** This is the one that costs nothing to send:
+
+      302 bytes in, 1,000,000 characters out.
+
+  Six nested entity declarations. Two more levels and it is ten gigabytes.
+  `read_bounded` caps what *arrives*, and the expansion happens after it
+  arrives, inside the parse -- so the cap is no defence at all. The same
+  declaration is the external-entity route, which is a capability response
+  naming `file:///etc/passwd`.
+
+Refusing the DOCTYPE outright closes both, and costs nothing, because no grid
+sends one. It is also why `_root` builds the tree on `xml.parsers.expat`
+directly now: `ET.XMLParser` no longer exposes its underlying parser, so
+there is nowhere else to hang the handler.
+
+The other three are a depth limit, a digit cap, and conversions that raise
+this module's error rather than the interpreter's.
+
+The digit cap is worth a note, because the first battery said it was
+redundant -- `int()` already refuses more than 4,300 digits. That refusal is a
+*setting*, `sys.set_int_max_str_digits`, and with it disabled the unguarded
+version does not raise at all: it succeeds, slowly, and hands back a
+million-digit integer. The test turns the interpreter's limit off, which is
+what makes it a test of ours.
+
+Ten planted, ten killed -- after the first run found two survivors: the digit
+cap above, and a depth that was passed on without being incremented in the
+*map* branch while every test nested arrays. Arrays and maps recurse through
+separate functions, and a limit that only one of them applies is not a limit.
+
+
 ### B: the two fields the payload was leaving empty
 
 The login payload carries `mac` and `id0`. Grids use them to tell one
