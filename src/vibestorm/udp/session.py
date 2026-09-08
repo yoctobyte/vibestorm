@@ -817,7 +817,7 @@ class LiveCircuitSession:
             )
             return self._flush_transport_packets(now)
 
-        if dispatched.summary.name == "__never__":
+        if dispatched.summary.name == "ParcelProperties":
             try:
                 parcel = parse_parcel_properties(dispatched)
             except MessageDecodeError as exc:
