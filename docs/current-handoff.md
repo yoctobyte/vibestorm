@@ -4483,6 +4483,55 @@ found both times. That argument is now a test —
 messages the updater dispatches on, 400 bodies each, and fails on anything
 else, naming it.
 
+### Then fuzz the whole thing, and it was fourteen
+
+The crash above was found by hand, writing truncated bodies for the messages
+this file already had fixtures for. Doing it properly -- every one of the 483
+names in the template, through `handle_incoming` -- found **fourteen** message
+names that could end the session with one datagram.
+
+Twelve were the same missing guard. Rather than twelve more copies of the same
+try, `handle_incoming` is now a thin wrapper with one
+`except MessageDecodeError` around the whole dispatch. Same narrowness, same
+reason, and it covers the branch nobody has written yet. The guards inside the
+branches stay: they say what a *particular* message failing means and let the
+rest of that branch carry on, which is a different job from "no parse failure
+ever ends a session".
+
+The other two were parsers breaking the promise the narrow catch rests on, and
+**both are on the login path** -- which is priority B:
+
+- `parse_agent_movement_complete` checked for 62 bytes and read to 70. 62 is
+  exactly what the fixed part would be with no region handle in it, so this is
+  a field that was added and a bounds check that was not updated. A body
+  between the two raised `struct.error`.
+- `parse_region_handshake` checked one constant, 123, against the whole body.
+  Wrong twice: too small even for an empty region name, and blind to the name
+  length it then reads out of the body. A short one sliced past its end into
+  `UUID(bytes=...)`, which raises `ValueError`. This is the first message a
+  region sends.
+
+And one that was a different animal altogether. `ObjectUpdate` and
+`ObjectUpdateCached` write a region handle into the diagnostics database. A
+handle is an unsigned 64-bit number and SQLite's INTEGER is a signed one, so a
+handle with the top bit set is an `OverflowError` -- **the diagnostics table
+taking the client down over a packet it was only trying to write down.** Those
+recorders run inside the receive loop, which is noted elsewhere in this
+document as a deliberate choice; this is the bill for it. `as_sqlite_int`
+folds the same sixty-four bits into range, so a real handle stores unchanged
+and a malformed one is still captured, which is the entire point of the table.
+
+193,200 bodies across all 483 names now pass clean. The suite carries a
+smaller sweep of the same shape, and it reads the branch list off
+`session.py` so a branch added later is fuzzed without anyone remembering.
+
+Worth separating the two lessons, because they point different ways. The
+missing guards are a *reach* problem -- the same one as the section below.
+The two parsers are a *contract* problem: a parser that raises anything but
+`MessageDecodeError` for bytes it cannot read has reached past its own bounds
+check, and no amount of catching upstream fixes that. Both fuzz tests exist to
+say so, one at `apply_dispatch` and one at `handle_incoming`.
+
 ### And a soak report that was crying wolf
 
 Soak run 6 held 30 fps for eighty-five minutes with a resident size that moved
