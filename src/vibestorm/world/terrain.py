@@ -489,6 +489,23 @@ def _decode_patch_header(bp: BitPack) -> PatchHeader | None:
     if quant_wbits == END_OF_PATCHES:
         return None
     dc_offset = bp.unpack_float()
+    if not math.isfinite(dc_offset):
+        # Four bytes off the wire, reinterpreted as an IEEE float, so a NaN or
+        # an infinity is one bit pattern away at all times. Every height in
+        # the patch is `value * mult + dc_offset`, so a single one of these
+        # poisons a 16x16 square of the region's ground -- and `apply_patch`
+        # writes into the heightmap the session keeps, so it stays poisoned
+        # for as long as the session lasts. `height_at` then answers NaN over
+        # that square, which does two things: the ground draws as nothing
+        # there, and `eye_clear_of_the_ground` stops working, because every
+        # comparison against a NaN is false and the camera is therefore never
+        # "blocked" by that hill. It is left inside it instead.
+        #
+        # Refused here rather than repaired, and refused on the header rather
+        # than on the heights: the arithmetic below cannot reach a non-finite
+        # value from a finite offset, so this is the only way in, and a
+        # decode error is a thing the session already records and survives.
+        raise TerrainDecodeError("terrain patch header has a non-finite DC offset")
     range_ = bp.unpack_bits(16)
     patch_ids = bp.unpack_bits(10)
     # libomv packs PatchIDs as: high 5 bits = X, low 5 bits = Y.
