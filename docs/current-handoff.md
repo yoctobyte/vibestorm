@@ -4073,7 +4073,21 @@ not given one, this client always gave it a plain one, and the result was an
 unencrypted request to port 80 carrying the password hash. Fixed the same day
 and covered by a real TLS handshake on the loopback; also written up below.
 
-Nothing about B has been exercised against the live grid, because that needs
+What *has* been checked, end to end and without a grid: `./gui.sh sl` runs
+`./run.sh sl viewer3d`, `prompt_login` returns early for the two viewer
+commands so no password is demanded at the shell, and the login screen the
+window opens on reads
+
+    preset : Second Life
+    uri    : https://login.agni.lindenlab.com/cgi-bin/login.cgi
+    start  : home
+    first  : ''
+
+-- the SL preset selected from the URI it was launched with, the home start
+location, and the name and password fields left for the person at the
+keyboard. Every step up to the password is now verified.
+
+Nothing beyond it has been exercised against the live grid, because that needs
 the owner's SL credentials. **Do not send probe logins to Linden Lab's
 production endpoint with made-up credentials** -- repeated failures from this
 IP could cost the owner the ability to do B at all. Treat as untested. The
