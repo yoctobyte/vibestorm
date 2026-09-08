@@ -125,6 +125,17 @@ def uri_for_preset(preset: str, custom_uri: str) -> str:
     return PRESET_URIS.get(preset, PRESET_URIS[FALLBACK_PRESET])
 
 
+def start_for_preset(preset: str) -> str:
+    """Where a preset selection starts the avatar.
+
+    Its own function for the same reason as `uri_for_preset`: the fallback for
+    an unknown name should be a decision someone made, testable on its own,
+    rather than the tail of an `elif` chain nobody can reach through the
+    dropdown.
+    """
+    return PRESET_START_LOCATIONS.get(preset, PRESET_START_LOCATIONS[FALLBACK_PRESET])
+
+
 class LoginScreen:
     """Highly aesthetic in-game Pygame login interface."""
 
@@ -366,9 +377,7 @@ class LoginScreen:
             preset_start = self.profile_data.get("VIBESTORM_START_LOCATION", "last")
         else:
             preset_uri = uri_for_preset(preset, "")
-            preset_start = PRESET_START_LOCATIONS.get(
-                preset, PRESET_START_LOCATIONS[FALLBACK_PRESET]
-            )
+            preset_start = start_for_preset(preset)
 
         # Fill fields
         if preset != "Custom":
@@ -376,7 +385,9 @@ class LoginScreen:
             self.start_entry.set_text(preset_start)
         else:
             self.uri_entry.set_text(self.profile_data.get("VIBESTORM_LOGIN_URI", preset_uri))
-            self.start_entry.set_text(self.profile_data.get("VIBESTORM_START_LOCATION", preset_start))
+            self.start_entry.set_text(
+                self.profile_data.get("VIBESTORM_START_LOCATION", preset_start)
+            )
 
         self.first_entry.set_text(self.profile_data.get("VIBESTORM_FIRST_NAME", ""))
         self.last_entry.set_text(self.profile_data.get("VIBESTORM_LAST_NAME", ""))
@@ -507,7 +518,9 @@ class LoginScreen:
         glass_surf = pygame.Surface((pwidth, pheight), pygame.SRCALPHA)
         pygame.draw.rect(glass_surf, (15, 23, 42, 225), (0, 0, pwidth, pheight), border_radius=14)
         # Highlight borders with glowing violet
-        pygame.draw.rect(glass_surf, (139, 92, 246, 80), (0, 0, pwidth, pheight), width=2, border_radius=14)
+        pygame.draw.rect(
+            glass_surf, (139, 92, 246, 80), (0, 0, pwidth, pheight), width=2, border_radius=14
+        )
         surface.blit(glass_surf, (px, py))
 
         # 4. Draw widgets on top
@@ -585,7 +598,9 @@ class LoginScreen:
             credentials.save_profile(self.profile_path, values)
 
 
-def draw_gradient(surface: pygame.Surface, start_color: tuple[int, int, int], end_color: tuple[int, int, int]):
+def draw_gradient(
+    surface: pygame.Surface, start_color: tuple[int, int, int], end_color: tuple[int, int, int]
+):
     """Draw a smooth vertical gradient by scaling a 1x256 pixel stripe."""
     h = surface.get_height()
     w = surface.get_width()

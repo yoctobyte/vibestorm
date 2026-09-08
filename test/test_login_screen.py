@@ -139,6 +139,17 @@ class PresetShapeTests(_ScreenCase):
         screen.preset_dropdown.selected_option = ("Second Life", "Second Life")
         self.assertEqual(screen._selected_preset(), "Second Life")
 
+    def test_the_dropdown_offers_every_preset_and_custom(self) -> None:
+        """Custom is how anyone reaches a grid this project has never heard
+        of, and it is not in the table -- so it has to be added to the list by
+        hand, and can be lost by hand."""
+        from vibestorm.viewer.login_screen import PRESET_URIS
+
+        screen = self.screen()
+        offered = list(screen.preset_dropdown.options_list)
+        names = [option[0] if isinstance(option, tuple | list) else option for option in offered]
+        self.assertEqual(names, [*PRESET_URIS, "Custom"])
+
     def test_a_bare_string_still_reads(self) -> None:
         """Older pygame_gui, and the pin allows the whole 0.x range."""
         screen = self.screen()
@@ -332,6 +343,14 @@ class PresetTableTests(unittest.TestCase):
 
         self.assertEqual(uri_for_preset("Custom", "  http://elsewhere/  "), "http://elsewhere/")
 
+    def test_a_name_that_is_not_in_the_table_starts_where_the_local_sim_does(self) -> None:
+        """Same fallback, same reason: an unknown grid must not inherit Second
+        Life's `home`, which means nothing on a sim that has no such avatar."""
+        from vibestorm.viewer.login_screen import PRESET_START_LOCATIONS, start_for_preset
+
+        self.assertEqual(start_for_preset("Third Life"), PRESET_START_LOCATIONS["Local OpenSim"])
+        self.assertEqual(start_for_preset("Second Life"), "home")
+
     def test_a_name_that_is_not_in_the_table_falls_back_to_the_local_sim(self) -> None:
         """Not to the empty string, and least of all to a remote grid: a
         preset name that drifts out of the table must fail towards the
@@ -368,6 +387,22 @@ class CheckboxShapeTests(_ScreenCase):
         self.assertIs(checkbox_is_checked(mock.Mock(is_checked=lambda: True)), True)
         self.assertIs(checkbox_is_checked(mock.Mock(is_checked=False)), False)
         self.assertIs(checkbox_is_checked(mock.Mock(is_checked=lambda: False)), False)
+
+    def test_a_library_with_only_get_state_is_read_through_it(self) -> None:
+        """The other accessor pygame_gui offers, and the one that stays if the
+        attribute is ever dropped. `mock.Mock` grows any attribute asked of
+        it, so this needs a plain object that genuinely does not have one."""
+        from vibestorm.viewer.login_screen import checkbox_is_checked
+
+        class _OnlyGetState:
+            def __init__(self, ticked: bool) -> None:
+                self._ticked = ticked
+
+            def get_state(self) -> bool:
+                return self._ticked
+
+        self.assertIs(checkbox_is_checked(_OnlyGetState(True)), True)
+        self.assertIs(checkbox_is_checked(_OnlyGetState(False)), False)
 
     def test_an_indeterminate_box_does_not_count_as_ticked(self) -> None:
         """Only a definite tick may write a password to disk."""

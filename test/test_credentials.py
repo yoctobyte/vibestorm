@@ -105,6 +105,23 @@ class SavedProfilePermissionTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(profile_file.stat().st_mode), 0o600)
             self.assertEqual(load_profile(profile_file)["VIBESTORM_PASSWORD"], "not the real one")
 
+    def test_a_shorter_profile_leaves_no_tail_of_the_longer_one(self) -> None:
+        """Overwriting has to truncate, not just write over the front.
+
+        Changing to a shorter password shortens the file. Without `O_TRUNC`
+        the tail of the previous write survives past the new content, and
+        `load_profile` parses it -- so the old password comes back as a
+        trailing line. `write_text` truncated for free; `os.open` has to ask.
+        """
+        with TemporaryDirectory() as tmpdir:
+            profile_file = Path(tmpdir) / "login.env"
+            save_profile(profile_file, dict(self.CREDENTIALS, VIBESTORM_PASSWORD="x" * 200))
+            save_profile(profile_file, dict(self.CREDENTIALS, VIBESTORM_PASSWORD="short"))
+            text = profile_file.read_text(encoding="utf-8")
+            self.assertNotIn("x" * 200, text)
+            self.assertEqual(load_profile(profile_file)["VIBESTORM_PASSWORD"], "short")
+            self.assertEqual(len(text.splitlines()), 1 + len(self.CREDENTIALS))
+
     def test_the_file_is_created_narrow_rather_than_narrowed_afterwards(self):
         """The mode has to be right at creation, not a moment later.
 
