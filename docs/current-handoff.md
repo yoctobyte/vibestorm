@@ -4209,17 +4209,25 @@ The catch is narrow on purpose, and the reason is a test rather than a
 comment: `DecodeErrorContractTests` fuzzes all eleven messages the updater
 dispatches on and fails on any exception that is not a `MessageDecodeError`.
 
-**A -- soak run 6, and eighteen leaks that were not there (2026-09-08).** The
-first clean two-hour run since the starvation guard: 30.1 fps in the first
-half, 30.2 in the second, every sample exactly 30.0 s apart, 0.24 cores
-throughout, on a machine sitting at load 5.6 that was not this client's doing.
-Resident size moved eighty kilobytes across the last half hour.
+**A -- soak run 6, clean, and eighteen leaks that were not there
+(2026-09-08).** The first full two hours since the starvation guard, and the
+first that is worth quoting: **241 samples over 120.0 minutes, 217,005 frames,
+30.1 fps in the first half and 30.2 in the second, 0.23 cores** -- on a machine
+sitting at load 5.8 that was not this client's doing. Resident size moved
+eighty kilobytes across the last half hour.
 
-The report still opened with eighteen `growing` rows, twelve of them
-pygame_gui's text layouts and the containers inside them: cyclic garbage,
-climbing between collections and dropped in full at each one. Verdicts now
-read `cyclic` when a collection takes half a row or more back, so the run's
-real finding -- a flat heap -- is not underneath eighteen false ones.
+Of fifty-odd container gauges, exactly one ends the run `growing`:
+`udp.seen_sequences`, at 601 entries. That is the *bounded* set that replaced
+the unbounded one -- 601 of a ceiling of 16,384, on a region quiet enough that
+two hours does not fill one window. Expected, and the entry above says why.
+`proc.rss_bytes` reads `stepped`, and the step is startup.
+
+Reading it took a report fix first, because it opened with eighteen `growing`
+rows. Twelve were one thing: pygame_gui's text layouts and the deques and
+lists inside them, climbing between collections and dropped in full at each
+one. Cyclic garbage. Verdicts now read `cyclic` when a collection takes half a
+row or more back, so a run like this one reads as what it is. The section
+below has the rest of that, including why it mattered enough to fix first.
 
 ### Concrete next step
 
