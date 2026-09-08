@@ -4193,6 +4193,34 @@ sim*, a notecard can be created from nothing, and pushing twice uploads once.
 Scope limits still stand: no deletes, no recursive folders, no automatic
 conflict resolution -- a conflict is reported and skipped.
 
+**A -- one malformed packet ended the session (2026-09-08).**
+`handle_incoming` catches `MessageDecodeError` around every parser it calls,
+except the branch that handles object updates, which went straight into
+`world_updater.apply_dispatch`. A truncated `ObjectUpdateCached` raises out of
+there, out of `handle_incoming`, and into a receive loop that calls it bare:
+the session task dies and the viewer goes with it. One packet.
+
+It was found by writing wire-level tests rather than by a soak, and the wider
+finding is in its own section below: eighteen of the thirty-six message
+branches in that method could be deleted with the whole suite green. All
+thirty-six are covered now.
+
+The catch is narrow on purpose, and the reason is a test rather than a
+comment: `DecodeErrorContractTests` fuzzes all eleven messages the updater
+dispatches on and fails on any exception that is not a `MessageDecodeError`.
+
+**A -- soak run 6, and eighteen leaks that were not there (2026-09-08).** The
+first clean two-hour run since the starvation guard: 30.1 fps in the first
+half, 30.2 in the second, every sample exactly 30.0 s apart, 0.24 cores
+throughout, on a machine sitting at load 5.6 that was not this client's doing.
+Resident size moved eighty kilobytes across the last half hour.
+
+The report still opened with eighteen `growing` rows, twelve of them
+pygame_gui's text layouts and the containers inside them: cyclic garbage,
+climbing between collections and dropped in full at each one. Verdicts now
+read `cyclic` when a collection takes half a row or more back, so the run's
+real finding -- a flat heap -- is not underneath eighteen false ones.
+
 ### Concrete next step
 
 C, D and E are closed for text assets. What is left, in the owner's own order:
@@ -4395,6 +4423,86 @@ run: see also the sawtooth-phase entry and the cut-short one. The pattern is
 worth naming -- **a soak measures the machine unless something checks that it
 did not** -- and `ps -eo pid,pcpu,etimes,comm --sort=-pcpu | head` before
 believing any long measurement remains the cheap version.
+
+## The Fourth Instance, And It Was In The Receive Loop (2026-09-08)
+
+The section below says the general form is not specific to sync, and predicts
+it will happen again. It had already happened, in the oldest and most central
+dispatch in the client.
+
+`LiveCircuitSession.handle_incoming` is thirty-six `dispatched.summary.name ==
+"..."` branches. Pointing each in turn at a name that never arrives and running
+the **whole** suite against it: **eighteen survived**. Half the messages this
+client handles could stop being handled and nothing would go red.
+
+The parsers were never the gap. Every one of those eighteen messages has parser
+tests, and they all still pass with the branch that calls the parser deleted --
+which is the point. Same shape as the gesture, notecard and texture findings,
+and this time the piece tests were not merely numerous but genuinely thorough.
+
+Two of the eighteen are worth naming:
+
+- **The task inventory read is two of them.** `ReplyTaskInventory` names an
+  Xfer file and `SendXferPacket` delivers it, and everything priorities C, D
+  and E do begins there. Every test that covered that path faked the session,
+  so both branches could be removed with the sync suite green.
+- **The UDP `ParcelProperties` branch is dead against OpenSim by
+  construction** — Claim #008: `LLClientView.SendLandProperties` builds an
+  event-queue event and there is no UDP send path. Its untested state was
+  the only defensible one in the list, and the test now says so rather than
+  leaving the reader to wonder.
+
+`test/test_udp_session_wiring.py` is the standing answer, and it goes in
+through `handle_incoming` with a real packet — framed off the message template
+rather than written out as hex, so a test cannot quietly address the wrong
+message — and looks at what the session *did*: the world it built, the events
+it recorded, the packets it sent back. All thirty-six branches now die when
+removed.
+
+Three of the first drafts did not. They asserted "no decode-error event was
+recorded", which a branch that never runs also satisfies: **an assertion about
+an absence passes hardest when the code is gone.** They now assert the
+`ConfirmXferPacket` going back out, the assembled inventory, the assembled
+asset.
+
+### The crash it found
+
+Writing the truncated-body cases turned up a real one. Every branch in
+`handle_incoming` catches `MessageDecodeError` — except the one that handles
+object updates, which called `world_updater.apply_dispatch` bare. One clipped
+`ObjectUpdateCached` off the wire raised out of there, out of `handle_incoming`
+and into a receive loop that also calls it bare, ending the session and the
+viewer with it. Priority A is "a reasonable visualization of the world, without
+crashes", and this is one packet.
+
+The catch is `except MessageDecodeError` and nothing wider on purpose.
+`except Exception` was the smaller change and the worse one: it also swallows a
+wrong field name, which this project has shipped twice and which the crash
+found both times. That argument is now a test —
+`DecodeErrorContractTests.test_only_a_decode_error_escapes` fuzzes all eleven
+messages the updater dispatches on, 400 bodies each, and fails on anything
+else, naming it.
+
+### And a soak report that was crying wolf
+
+Soak run 6 held 30 fps for eighty-five minutes with a resident size that moved
+by eighty kilobytes across the last half hour — and the report opened with
+eighteen `growing` rows. Twelve were one thing: pygame_gui's text layouts and
+the deques and lists inside them, climbing for thirty-five minutes, dropped in
+full by one automatic collection, climbing again. The run's actual finding, a
+flat heap, was underneath them.
+
+A leak survives collection; that is what makes it a leak. So a gauge that gives
+up half or more of itself at the sample where `gc.auto_collections` moves now
+reads `cyclic`. Half is the line because below it the row is holding on to more
+than the collector reclaims, and the reader still has something to look at.
+Without that counter in the log the verdict stays `growing` — nothing in the
+value column alone separates the two shapes, and reading an older log must not
+quietly become a clean bill of health.
+
+Worth keeping separate from the finding itself: **an instrument that reports
+eighteen problems where there are none stops being read**, and that costs the
+next real one.
 
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
