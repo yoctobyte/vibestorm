@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_assets_animation import _fixture as _animation_fixture  # noqa: E402
+from test_decoder_fuzz import _non_finite_floats  # noqa: E402
 from test_assets_gesture import _gesture  # noqa: E402
 from test_assets_wearable import _build as _wearable  # noqa: E402
 from test_sl_mesh import _mesh_asset  # noqa: E402
@@ -178,6 +179,42 @@ class AssetDecoderFuzzTests(unittest.TestCase):
                 f"{case.name} decoded only {accepted} of {ROUNDS} mutants; the "
                 f"corpus is bouncing off a guard rather than running the body",
             )
+
+
+    def test_no_decoder_hands_back_a_float_that_is_not_a_number(self) -> None:
+        """The wire sweep's second question, asked of the asset formats.
+
+        Seven wire decoders answer this one badly and each had to be followed
+        to where its NaN lands. All seven asset decoders answer it cleanly.
+
+        For the mesh that is by construction -- `_as_vec3` and `_as_vec2` fall
+        back to the default bounding box -- but this sweep is not what shows
+        it: both guards survive this corpus untouched, because flipping bytes
+        rarely lands on the eight that make up a domain corner. The guards are
+        pinned directly in `test_sl_mesh.py`. What this test is for is the
+        rest: a decoder that starts letting one through without anybody having
+        asked where it goes.
+
+        There is deliberately no excuse list here. If one of these starts
+        answering badly, that is a question about where the value lands, and
+        the answer belongs in this file rather than in a set that silences it.
+        """
+        rng = random.Random(SEED)
+        offenders: dict[str, tuple[str, float]] = {}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for case in _cases():
+                for mutant in _mutants(case.seed, rng):
+                    if case.name in offenders:
+                        break
+                    try:
+                        decoded = case.decode(mutant)
+                    except Exception:  # noqa: BLE001 - the class is the other test's
+                        continue
+                    found = _non_finite_floats(decoded, case.name)
+                    if found:
+                        offenders[case.name] = found[0]
+        self.assertEqual(offenders, {})
 
 
 if __name__ == "__main__":

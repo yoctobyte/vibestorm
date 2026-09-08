@@ -1,7 +1,13 @@
 import gzip
+import math
 import struct
 import unittest
 import zlib
+
+from vibestorm.assets.sl_mesh import decode_sl_mesh_asset
+
+NAN = float("nan")
+INF = float("inf")
 
 
 def _llsd_int(value: int) -> bytes:
@@ -353,3 +359,51 @@ class MeshBombTests(unittest.TestCase):
                     self.assertLessEqual(len(out), bound)
                     self.assertEqual(len(out), size)
 
+
+class NonFiniteDomainTests(unittest.TestCase):
+    """A bounding box that is not a box.
+
+    `PositionDomain` and `TexCoord0Domain` are LLSD reals off the wire, and
+    every vertex in the submesh is decoded by scaling a `u16` between those
+    two corners -- so a NaN corner is not one bad vertex, it is every vertex
+    in the mesh, and the mesh goes to the graphics card. `_as_vec3` and
+    `_as_vec2` fall back to the default box instead, which draws the object
+    at the wrong size rather than nowhere at all.
+
+    Pinned here rather than left to the mutation corpus in
+    `test_asset_decoder_fuzz.py`: that corpus flips bytes, and the eight
+    bytes of a domain corner are a small target. Both guards survived it.
+    """
+
+    def _mesh_with_domain(self, corner: bytes, *, key: str = "PositionDomain") -> bytes:
+        submesh = _triangle_submesh(with_uvs=True)
+        submesh[key] = _llsd_map({"Min": corner, "Max": corner})
+        return _mesh_asset([submesh])
+
+    def _all_finite(self, values) -> bool:
+        return all(math.isfinite(float(value)) for value in values)
+
+    def test_a_nan_position_domain_does_not_reach_the_vertices(self) -> None:
+        mesh = decode_sl_mesh_asset(self._mesh_with_domain(_vec3(NAN, NAN, NAN)))
+        self.assertTrue(self._all_finite(mesh.vertices))
+
+    def test_an_infinite_position_domain_does_not_either(self) -> None:
+        mesh = decode_sl_mesh_asset(self._mesh_with_domain(_vec3(INF, -INF, INF)))
+        self.assertTrue(self._all_finite(mesh.vertices))
+
+    def test_a_nan_texcoord_domain_does_not_reach_the_uvs(self) -> None:
+        mesh = decode_sl_mesh_asset(
+            self._mesh_with_domain(_vec2(NAN, NAN), key="TexCoord0Domain")
+        )
+        self.assertTrue(self._all_finite(mesh.uvs))
+
+    def test_a_real_domain_is_still_used(self) -> None:
+        """The control. A fallback that ignored the domain would pass all
+        three tests above and put every mesh in the world in a unit box."""
+        submesh = _triangle_submesh()
+        submesh["PositionDomain"] = _llsd_map(
+            {"Min": _vec3(-4.0, -4.0, -4.0), "Max": _vec3(4.0, 4.0, 4.0)}
+        )
+        mesh = decode_sl_mesh_asset(_mesh_asset([submesh]))
+        self.assertEqual(min(mesh.vertices), -4.0)
+        self.assertEqual(max(mesh.vertices), 4.0)

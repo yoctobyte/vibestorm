@@ -4926,6 +4926,23 @@ group header in front fixed that, and the same idiom was already in the file
 for zerocode's end-of-packet marker: **a fuzz corpus has to get past the
 front door before it is fuzzing anything.**
 
+The seven **asset** decoders were asked the same question and all seven
+answer cleanly. For the mesh that is by construction: a `PositionDomain` or
+`TexCoord0Domain` corner that is not finite falls back to the default
+bounding box, which matters more than it sounds -- every vertex is a `u16`
+scaled between those two corners, so a NaN corner is not one bad vertex, it
+is the whole mesh, and the mesh goes to the graphics card. The mutation
+corpus does *not* show that: flipping bytes rarely lands on the eight that
+make up a corner, and both guards survived it untouched. They are pinned
+directly instead.
+
+Worth recording because it is the same lesson one level down: the first
+version of that direct test named the key `TexCoordDomain`, and the field is
+`TexCoord0Domain`, so it built a mesh with no domain override at all and
+passed while testing nothing. The mutation run is what said so -- the
+position guard died and the texture-coordinate one did not, from two tests
+that looked identical.
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a
