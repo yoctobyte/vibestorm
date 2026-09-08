@@ -1164,7 +1164,25 @@ class LiveCircuitSession:
                 ),
             )
         else:
-            world_event = self.world_updater.apply_dispatch(dispatched)
+            try:
+                world_event = self.world_updater.apply_dispatch(dispatched)
+            except MessageDecodeError as exc:
+                # Every other branch in this method catches this already. This
+                # one did not, and it is the branch that handles the object
+                # updates -- so one truncated `ObjectUpdateCached` off the wire
+                # raised out of `handle_incoming`, out of the receive loop, and
+                # took the session with it. Nothing above this catches it: the
+                # loop calls `handle_incoming` bare.
+                #
+                # Narrow on purpose. `MessageDecodeError` is what these parsers
+                # promise for bytes they cannot read, and a fuzz test holds
+                # them to it. Catching `Exception` here would also swallow a
+                # wrong field name -- which is a bug this project has shipped
+                # twice, and both times the crash is what found it.
+                self._record_event(
+                    now, "world.decode_error", f"{dispatched.summary.name}: {exc}"
+                )
+                world_event = None
             if world_event is not None:
                 self._record_event(now, world_event.kind, world_event.detail)
                 self._record_object_update_observation(
