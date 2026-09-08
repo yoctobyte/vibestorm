@@ -276,6 +276,28 @@ ON inbound_messages(observed_at_seconds);
 """
 
 
+#: SQLite's INTEGER is a *signed* 64-bit column and a region handle off the
+#: wire is an unsigned 64-bit number. A real handle is a region's metre
+#: coordinates packed as ``x << 32 | y`` and never comes near the top bit, so
+#: this never fires on a well-formed packet -- but a malformed one supplies any
+#: sixty-four bits, and `sqlite3` answers that with `OverflowError` rather than
+#: with a truncation.
+#:
+#: These recorders run inside the receive loop, which calls `handle_incoming`
+#: bare, so that exception ends the session: the diagnostics table taking the
+#: client down over a packet it was only trying to write down. Found by fuzzing
+#: `handle_incoming` -- `ObjectUpdate` and `ObjectUpdateCached` were two of the
+#: fourteen messages that could crash it.
+#:
+#: The same sixty-four bits, read as signed. Nothing is lost: masking with
+#: ``0xFFFF_FFFF_FFFF_FFFF`` gives the original back, and a legitimate handle
+#: is stored unchanged, because it is far below where the two readings differ.
+def as_sqlite_int(value: int) -> int:
+    """Fold an unsigned 64-bit wire value into the range SQLite will store."""
+    masked = value & 0xFFFF_FFFF_FFFF_FFFF
+    return masked - (1 << 64) if masked >= (1 << 63) else masked
+
+
 @dataclass(slots=True, frozen=True)
 class UnknownStats:
     packet_count: int
@@ -494,6 +516,8 @@ class UnknownsDatabase:
         decode_error: str | None,
         packet_tags: list[str],
     ) -> int:
+        if region_handle is not None:
+            region_handle = as_sqlite_int(region_handle)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -534,6 +558,7 @@ class UnknownsDatabase:
         region_handle: int,
         entry: ObjectUpdateEntry,
     ) -> None:
+        region_handle = as_sqlite_int(region_handle)
         payloads = [
             {
                 "field_name": payload.field_name,
@@ -619,6 +644,7 @@ class UnknownsDatabase:
         time_dilation: int,
         packet_tags: list[str],
     ) -> int:
+        region_handle = as_sqlite_int(region_handle)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -657,6 +683,7 @@ class UnknownsDatabase:
         region_handle: int,
         entry: ImprovedTerseObjectEntry,
     ) -> None:
+        region_handle = as_sqlite_int(region_handle)
         entity_tags: list[str] = []
         if entry.local_id is not None:
             entity_tags.append("has_local_id")
@@ -771,6 +798,7 @@ class UnknownsDatabase:
         time_dilation: int,
         packet_tags: list[str],
     ) -> int:
+        region_handle = as_sqlite_int(region_handle)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -807,6 +835,7 @@ class UnknownsDatabase:
         region_handle: int,
         entry: ObjectUpdateCachedEntry,
     ) -> None:
+        region_handle = as_sqlite_int(region_handle)
         with self._connect() as connection:
             connection.execute(
                 """
@@ -846,6 +875,7 @@ class UnknownsDatabase:
         time_dilation: int,
         packet_tags: list[str],
     ) -> int:
+        region_handle = as_sqlite_int(region_handle)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -882,6 +912,7 @@ class UnknownsDatabase:
         region_handle: int,
         entry: ObjectUpdateCompressedEntry,
     ) -> None:
+        region_handle = as_sqlite_int(region_handle)
         data_preview_hex = entry.data[:16].hex()
         with self._connect() as connection:
             connection.execute(

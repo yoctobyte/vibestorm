@@ -1159,7 +1159,12 @@ def parse_use_circuit_code(message: MessageDispatch) -> UseCircuitCodeMessage:
 def parse_agent_movement_complete(message: MessageDispatch) -> AgentMovementCompleteMessage:
     if message.summary.name != "AgentMovementComplete":
         raise MessageDecodeError(f"expected AgentMovementComplete, got {message.summary.name}")
-    if len(message.body) < 62:
+    # 16 + 16 + 12 + 12 + 8 + 4 + 2. This read 62, which is what the fixed
+    # part would be without the region handle, and the four reads after
+    # offset 56 all went past it: a body of 63 to 69 bytes raised
+    # `struct.error` rather than `MessageDecodeError`, out of the receive
+    # loop, ending the session. This message arrives at login.
+    if len(message.body) < 70:
         raise MessageDecodeError("AgentMovementComplete body is too short")
 
     agent_id = UUID(bytes=message.body[0:16])
@@ -1350,7 +1355,7 @@ def parse_region_handshake(message: MessageDispatch) -> RegionHandshakeMessage:
         raise MessageDecodeError(f"expected RegionHandshake, got {message.summary.name}")
 
     body = message.body
-    if len(body) < 123:
+    if len(body) < 6:
         raise MessageDecodeError("RegionHandshake body is too short")
 
     region_flags = unpack_from("<I", body, 0)[0]
@@ -1358,6 +1363,15 @@ def parse_region_handshake(message: MessageDispatch) -> RegionHandshakeMessage:
     name_length = body[5]
     name_start = 6
     name_end = name_start + name_length
+    # Everything after the name is fixed: owner, estate flag, two floats,
+    # cache id, eight terrain ids, eight floats, region id. The old check was
+    # a single constant against the whole body, which is wrong twice over --
+    # too small even for an empty name, and blind to the name's length, so a
+    # short body sliced past its end and `UUID(bytes=...)` raised `ValueError`
+    # rather than `MessageDecodeError`. Out of the receive loop, that ends the
+    # session, and this is the first message a region sends.
+    if len(body) < name_end + 16 + 1 + 8 + 16 + 8 * 16 + 8 * 4 + 16:
+        raise MessageDecodeError("RegionHandshake body is too short")
     sim_name = body[name_start:name_end].decode("utf-8", errors="replace").rstrip("\x00")
     offset = name_end
     sim_owner = UUID(bytes=body[offset : offset + 16])

@@ -387,6 +387,49 @@ class SemanticMessageTests(unittest.TestCase):
         self.assertEqual(parsed.cache_id, cache_id)
         self.assertEqual(parsed.region_id, region_id)
 
+    def test_parse_agent_movement_complete_rejects_a_short_body(self) -> None:
+        """The fixed part is seventy bytes, and the check said sixty-two.
+
+        Sixty-two is what it would be without the region handle. Everything
+        after offset 56 read past the check, so a body in between raised
+        `struct.error` -- which `handle_incoming` does not catch, because it
+        catches what the parsers promise. Out of the receive loop that ends
+        the session, and this message arrives at login.
+        """
+        for length in (62, 65, 69):
+            with self.subTest(length=length):
+                dispatched = self.dispatcher.dispatch(
+                    bytes([0xFF, 0xFF, 0x00, 0xFA]) + bytes(length)
+                )
+                with self.assertRaises(MessageDecodeError):
+                    parse_agent_movement_complete(dispatched)
+
+    def test_parse_region_handshake_rejects_a_body_too_short_for_its_name(self) -> None:
+        """One constant against the whole body cannot check this message.
+
+        Everything after the region name is fixed, but the name's length is
+        read out of the body, so the requirement moves with it. The old
+        constant was 123 -- too small even for an empty name -- and a short
+        body sliced past its end into `UUID(bytes=...)`, which raises
+        `ValueError`. This is the first message a region sends.
+        """
+        full = bytearray()
+        full += (9).to_bytes(4, "little")
+        full += bytes([13])
+        full += bytes([7])
+        full += b"TestSim"
+        full += bytes(16 + 1 + 8 + 16 + 16 * 8 + 4 * 8 + 16)
+        parse_region_handshake(
+            self.dispatcher.dispatch(bytes([0xFF, 0xFF, 0x00, 0x94]) + bytes(full))
+        )
+        for length in (123, 200, len(full) - 1):
+            with self.subTest(length=length):
+                dispatched = self.dispatcher.dispatch(
+                    bytes([0xFF, 0xFF, 0x00, 0x94]) + bytes(full[:length])
+                )
+                with self.assertRaises(MessageDecodeError):
+                    parse_region_handshake(dispatched)
+
     def test_parse_region_handshake_trims_trailing_nul(self) -> None:
         sim_name = b"TestSim\x00"
         agent_owner = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")

@@ -25,6 +25,7 @@ matching and the only symptom would be a world that never fills in.
 
 from __future__ import annotations
 
+import random
 import sys
 import unittest
 from pathlib import Path
@@ -439,6 +440,99 @@ class AssetTransferTests(_WireCase):
         transfer_id = self._start_transfer()
         self.deliver("TransferInfo", self._info_body(transfer_id, status=-2, size=0))
         self.assertNotIn(transfer_id, self.session.pending_asset_transfers)
+
+
+class NothingEscapesTests(_WireCase):
+    """No datagram, however malformed, ends the session.
+
+    The receive loop calls `handle_incoming` bare -- there is no try around
+    it -- so anything that escapes kills the session task and the viewer with
+    it. `MalformedInputTests` below checks the handful of messages this file
+    already builds bodies for; this checks *every* message in the template,
+    because the region decides what arrives and a viewer does not get to
+    assume it is well formed.
+
+    Run against the whole template it found fourteen, and two of them were
+    not the missing guard everyone else was:
+
+    - `parse_agent_movement_complete` checked for 62 bytes and read to 70 --
+      the length the fixed part would be with no region handle in it. A body
+      between the two raised `struct.error`. This message arrives at login.
+    - `parse_region_handshake` checked one constant against the whole body,
+      too small even for an empty region name and blind to how long the name
+      actually was, so a short one sliced past its end and `UUID(bytes=...)`
+      raised `ValueError`. This is the first message a region sends.
+
+    Both are the same mistake as the fuzz test on `apply_dispatch`: a parser
+    that raises something other than `MessageDecodeError` for bytes it cannot
+    read is a parser reaching past its own bounds check, and the fix belongs
+    in the parser rather than in a wider catch upstream.
+    """
+
+    #: All-zero and all-ones sit either side of every length field: zero
+    #: makes a variable block empty and 0xFF makes it claim 255 bytes that
+    #: are not there, which is the shape that walks off the end.
+    PATTERNS = (b"\x00", b"\xff")
+    LENGTHS = (0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 223, 400)
+
+    @staticmethod
+    def _dispatched_names() -> list[str]:
+        """The names `handle_incoming` branches on, read off the source.
+
+        So that a branch added later is fuzzed without anyone remembering to
+        add it here -- which is exactly what did not happen for the eighteen
+        this file was written for.
+        """
+        import re
+
+        source = Path(__file__).resolve().parents[1] / "src/vibestorm/udp/session.py"
+        return sorted(set(re.findall(r'summary\.name == "([A-Za-z]+)"', source.read_text())))
+
+    def _sweep(self, names, lengths, bodies_for) -> None:
+        for name in names:
+            summary = self.dispatcher.index.by_name[name]
+            width = {"High": 1, "Medium": 2, "Low": 4, "Fixed": 4}[summary.frequency]
+            head = summary.wire_message_number.to_bytes(width, "big")
+            for length in lengths:
+                for body in bodies_for(length):
+                    self._sequence += 1
+                    packet = build_packet(head + body, sequence=self._sequence)
+                    try:
+                        self.session.handle_incoming(packet, 11.0)
+                    except Exception as exc:  # noqa: BLE001 -- the thing under test
+                        self.fail(
+                            f"{name} with {length} bytes ({body.hex() or 'empty'}) "
+                            f"escaped handle_incoming: {type(exc).__name__}: {exc}"
+                        )
+
+    def test_no_branch_of_the_dispatch_can_be_crashed(self) -> None:
+        rng = random.Random(20260908)
+
+        def bodies(length: int) -> list[bytes]:
+            fixed = [pattern * length for pattern in self.PATTERNS]
+            random_bodies = [bytes(rng.getrandbits(8) for _ in range(length)) for _ in range(2)]
+            return fixed + random_bodies
+
+        self._sweep(self._dispatched_names(), self.LENGTHS, bodies)
+
+    def test_no_message_in_the_template_can_be_crashed(self) -> None:
+        """Thinner, and over all of them.
+
+        A message with no branch today may get one tomorrow, and a simulator
+        is free to send anything in the template at any time regardless.
+        """
+        rng = random.Random(20260909)
+
+        def bodies(length: int) -> list[bytes]:
+            return [bytes(rng.getrandbits(8) for _ in range(length))]
+
+        self._sweep(sorted(self.dispatcher.index.by_name), (0, 3, 33, 223), bodies)
+
+    def test_the_sweep_is_reaching_the_parsers(self) -> None:
+        """Or it is 3,000 packets that decode to nothing and prove nothing."""
+        self.session.events.clear()
+        self._sweep(["RegionHandshake"], (0, 5, 33), lambda n: [b"\xff" * n])
+        self.assertIn("message.decode_error", self.kinds())
 
 
 class MalformedInputTests(_WireCase):

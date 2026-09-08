@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID
 
-from vibestorm.fixtures.unknowns_db import UnknownsDatabase
+from vibestorm.fixtures.unknowns_db import UnknownsDatabase, as_sqlite_int
 from vibestorm.udp.messages import (
     ImprovedTerseObjectEntry,
     KillObjectMessage,
@@ -547,3 +547,56 @@ class UnknownsDatabaseTests(unittest.TestCase):
             self.assertEqual(compressed_entity_row["update_flags"], 6)
             self.assertEqual(compressed_entity_row["data_size"], 4)
             self.assertEqual(compressed_entity_row["data_preview_hex"], "aabbccdd")
+
+
+class SqliteRangeTests(unittest.TestCase):
+    """A diagnostics table must not be able to end a session.
+
+    These recorders are called from inside the receive loop, and the loop
+    calls `handle_incoming` bare. A region handle is an unsigned 64-bit
+    number on the wire and SQLite's INTEGER is a signed one, so a handle with
+    the top bit set makes `sqlite3` raise `OverflowError` -- and the client
+    dies over a packet it was only trying to write down. Fuzzing
+    `handle_incoming` found it through `ObjectUpdate` and
+    `ObjectUpdateCached`.
+
+    A real handle is a region's metre coordinates packed `x << 32 | y` and
+    never comes near the top bit, so this can only arrive from a malformed or
+    hostile packet -- which is exactly the traffic this table exists to
+    capture, and therefore not something to drop.
+    """
+
+    def test_a_handle_with_the_top_bit_set_is_stored_rather_than_raising(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            database = UnknownsDatabase(Path(tmpdir) / "unknowns.sqlite3")
+            session_id = database.begin_session(
+                sim_ip="127.0.0.1",
+                sim_port=9000,
+                agent_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                configured_duration_seconds=60.0,
+            )
+            database.record_cached_packet(
+                session_id=session_id,
+                observed_at_seconds=1.0,
+                message_sequence=1,
+                capture_reason="world.object_update_cached",
+                region_handle=0xFFFF_FFFF_FFFF_FFFF,
+                time_dilation=65535,
+                packet_tags=["fuzz"],
+            )
+
+    def test_the_stored_value_is_the_same_sixty_four_bits(self) -> None:
+        """Folded, not clamped and not thrown away: masking gives it back."""
+        self.assertEqual(as_sqlite_int(0xFFFF_FFFF_FFFF_FFFF) & 0xFFFF_FFFF_FFFF_FFFF,
+                         0xFFFF_FFFF_FFFF_FFFF)
+        self.assertEqual(as_sqlite_int(1 << 63) & 0xFFFF_FFFF_FFFF_FFFF, 1 << 63)
+
+    def test_a_real_region_handle_is_untouched(self) -> None:
+        """Or every handle in the table would need decoding to be read.
+
+        1099511628032000 is the handle in the tests above: 256000 << 32 |
+        256000, a region a quarter of a million metres out, and still nowhere
+        near where the signed and unsigned readings differ.
+        """
+        for handle in (0, 123456789, 1099511628032000, (1 << 63) - 1):
+            self.assertEqual(as_sqlite_int(handle), handle)

@@ -578,6 +578,33 @@ class LiveCircuitSession:
         return packets
 
     def handle_incoming(self, payload: bytes, now: float) -> list[bytes]:
+        """Handle one datagram, and never raise a decode failure at the caller.
+
+        The receive loop calls this bare -- there is no try around it -- so
+        anything that escapes ends the session task and takes the viewer with
+        it. That is not hypothetical: fuzzing every message name through here
+        found fourteen that could do it, twelve of them a parser called
+        without a guard.
+
+        This is the net, and it is narrow in the way the individual guards
+        below are narrow: `MessageDecodeError` is what these parsers promise
+        for bytes they cannot read, and `test_only_a_decode_error_escapes`
+        holds them to it. Catching `Exception` here would also swallow a wrong
+        field name, a bug this project has shipped twice and which the crash
+        found both times.
+
+        The guards inside the branches stay, and are not made redundant by
+        this one: they say what a particular message failing means and let the
+        rest of that branch carry on. This one says only that no parse failure
+        ever ends a session.
+        """
+        try:
+            return self._handle_incoming(payload, now)
+        except MessageDecodeError as exc:
+            self._record_event(now, "message.decode_error", str(exc))
+            return self._flush_transport_packets(now)
+
+    def _handle_incoming(self, payload: bytes, now: float) -> list[bytes]:
         packet = decode_zerocode(payload)
         view = split_packet(packet)
         for ack in view.appended_acks:
