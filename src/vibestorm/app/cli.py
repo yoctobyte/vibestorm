@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import platform
+import sys
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
@@ -1476,6 +1477,16 @@ def main() -> int:
                 f"pos=({item['position'][0]:.2f},{item['position'][1]:.2f},{item['position'][2]:.2f}))",
             )
         return 0
+
+    if args.command is not None:
+        # Getting here with a subcommand named means no branch claimed it.
+        # The chain above is thirteen `if args.command == "..."` comparisons
+        # and nothing made the parser and the chain agree, so a subcommand
+        # renamed on one side used to fall through to the status line below
+        # and exit **0**: `sync-object` doing nothing and reporting success,
+        # on the one command priorities C, D and E run through.
+        print(f"error: no handler for command {args.command!r}", file=sys.stderr)
+        return 2
 
     status = get_status()
     print(f"{status.phase}: {status.message}")

@@ -4804,6 +4804,68 @@ fingerprinting the owner's machine and sending it to a third party, which is
 the owner's call and not an implementation detail -- so it is written down
 here rather than quietly decided.
 
+### Two more dispatches, and one of them exits zero when it breaks
+
+Having found the pattern in the receive loop, the input map, the HUD and the
+login screen, the remaining question was where else this client decides
+between many things. Two answers.
+
+**`_wire_scene` had no tests at all.** Nineteen `bus.subscribe(SomeEvent,
+scene.apply_x)` lines in the 3D viewer, seven in the 2D one, and the two are
+separate copies of a function with the same name in two modules. Both are
+complete today -- which is the point of writing the test now rather than
+after one of them drifts. Thirty-two mutants die: every subscription deleted
+one at a time in both viewers, three handlers pointed at a neighbour, one
+subscribed twice, and the render tile cache no longer cleared on a region
+change. The coverage half is read off the `Scene` class at run time, so an
+applier added later is covered without anyone remembering; the routing half
+has its event-to-applier pairs *written out*, because a pairing taken from
+the code under test agrees with that code by construction, which is precisely
+how the login screen's tests managed to pass on a live bug.
+
+**The CLI's subcommand chain was worse, because of how it failed.** `main` is
+thirteen `if args.command == "..."` comparisons and `build_parser` registers
+thirteen subcommands, and nothing made the two agree. A subcommand renamed on
+one side fell off the end of the chain into the status line, which prints a
+friendly sentence and **returns 0**. `./run.sh tester sync-object --object
+<uuid> --folder ./work --push` doing nothing and reporting success is the
+worst answer available on the one command priorities C, D and E run through.
+Falling off the end is now an error naming the command, on stderr, exit 2 --
+that is a change to the code and not only to the tests, and it is what makes
+the failure visible at all. The coverage test compares a live parser against
+the branch names read out of the source, so neither list is written down.
+
+### And an instrument that had started crying wolf again
+
+`udp.seen_sequences` is the gauge that found the only real leak this
+instrument has ever found. Having replaced the unbounded set with a
+two-window memory that cannot hold more than 8,192, the row now climbs
+towards that ceiling on every run -- and was reported `growing` on every run.
+True, useless, and the same failure as the eighteen `growing` rows that
+buried run 6: **a report that says the same thing forever stops being read.**
+
+`RecentSequences.capacity` states the bound once. It had been living in a
+docstring, a comment beside the gauge and an assertion in a test, and nowhere
+in the code. The soak log records it as `udp.seen_sequences.limit`, and
+`growth_report` reads any `<name>.limit` row as the ceiling for the row it
+names: under it a climb is `bounded`, over it `over-bound` -- ahead of every
+other rule, because that is the bound being wrong and no reading of the trend
+matters beside it. The claim moves out of the docstring and into something
+each run checks for four hours at a time.
+
+Two details that cost mutants before they were tests. `over-bound` is read
+off the **peak**, not the last sample: a bound exceeded once and recovered is
+still a bound that does not hold, and the recovery is what makes it easy to
+miss. And reaching the ceiling exactly is not exceeding it -- both halves
+full *is* the capacity, so the boundary belongs on the legal side, and an
+off-by-one there starts the crying wolf over again.
+
+`bounded` replaces the alarming verdicts only. A bounded row that settled
+still reads `settled` and one a collection took back still reads `cyclic`;
+those say more. A log written before the ceiling existed still reads
+`growing`, for the same reason the `cyclic` work kept that property: the
+absence of evidence must not quietly become a clean bill of health.
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a
