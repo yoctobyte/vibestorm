@@ -537,6 +537,14 @@ def build_health_probe(
         # The row is worth reading anyway, because the *rate* is what a
         # region's traffic looks like and a jump in it is a jump in that.
         "udp.seen_sequences": _len_of(session, "seen_reliable_sequences"),
+        # The window's own ceiling, logged beside the count. `growth_report`
+        # reads a `.limit` row as the bound on the row it names, so the run
+        # itself says whether the bound held rather than the docstring saying
+        # it should -- and a gauge climbing towards a ceiling stops being
+        # reported as a leak on every run from here on.
+        "udp.seen_sequences.limit": _float_of(
+            session, "seen_reliable_sequences", "capacity"
+        ),
         "udp.pending_reliable": _len_of(session, "pending_reliable"),
         "udp.queued_acks": _len_of(session, "queued_acks"),
         "udp.message_kinds": _len_of(session, "received_messages"),

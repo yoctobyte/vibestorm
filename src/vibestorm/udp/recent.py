@@ -70,6 +70,21 @@ class RecentSequences:
         self._recent: set[int] = set()
         self._older: set[int] = set()
 
+    @property
+    def capacity(self) -> int:
+        """The most this can ever be remembering.
+
+        The older half holds a full window, having been promoted whole, and
+        the newer half is swapped out *before* the insert that would take it
+        past the window -- so neither exceeds it and the pair cannot exceed
+        twice it.
+
+        Published because a bound nobody can read is a claim rather than a
+        fact. The soak log records it beside the count, so a run that ever put
+        more than this in here says so in the report instead of in a docstring.
+        """
+        return 2 * self._window
+
     def __contains__(self, sequence: int) -> bool:
         return sequence in self._recent or sequence in self._older
 

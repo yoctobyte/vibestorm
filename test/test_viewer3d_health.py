@@ -25,9 +25,11 @@ import unittest
 from pathlib import Path
 from uuid import UUID
 
+from vibestorm.udp.recent import SEQUENCE_MEMORY
 from vibestorm.viewer3d.health import (
     CONDITION_NAMES,
     GC_COUNTERS,
+    LIMIT_SUFFIX,
     MIN_SAMPLES_FOR_TREND,
     MIN_SAMPLES_FOR_VERDICT,
     OBJECT_CENSUS_PREFIX,
@@ -38,6 +40,7 @@ from vibestorm.viewer3d.health import (
     HealthProbe,
     SoakLog,
     TypeCensus,
+    _declared_limits,
     _fit,
     _rise_concentration,
     format_growth_report,
@@ -1044,6 +1047,34 @@ class GaugeWiringTests(unittest.TestCase):
         self.assertEqual(after["asset.fetched"], 1.0)
         self.assertEqual(after["asset.fetched_bytes"], 100.0)
 
+    def test_the_sequence_window_logs_its_own_ceiling(self) -> None:
+        """The `.limit` row the `bounded` verdict is read from.
+
+        Without it in the log every run reports `udp.seen_sequences` as
+        `growing` -- true, useless, and the way a report stops being read.
+        The value has to come from the window itself rather than be written
+        out here, or a window resized in `recent.py` leaves a stale ceiling
+        in the log that the report would then hold the client to.
+        """
+        probe, _scene, session = self._probe_and_parts()
+        sample = probe.sample(elapsed_s=0.0, frame=0)
+        self.assertIn("udp.seen_sequences" + LIMIT_SUFFIX, sample)
+        self.assertEqual(
+            sample["udp.seen_sequences" + LIMIT_SUFFIX],
+            float(session.seen_reliable_sequences.capacity),
+        )
+
+    def test_the_ceiling_is_above_what_the_window_can_hold(self) -> None:
+        """The two halves of the claim meeting: a window filled past its own
+        size, measured through the gauge the report reads."""
+        probe, _scene, session = self._probe_and_parts()
+        session.seen_reliable_sequences.update(range(SEQUENCE_MEMORY * 3))
+        sample = probe.sample(elapsed_s=1.0, frame=1)
+        self.assertLessEqual(
+            sample["udp.seen_sequences"], sample["udp.seen_sequences" + LIMIT_SUFFIX]
+        )
+        self.assertGreater(sample["udp.seen_sequences"], 0.0)
+
     def test_the_repeat_counters_are_not_each_other(self) -> None:
         """Two counters on the same object that both exist and both read as
         numbers: swapping the pair passes every other check in this class.
@@ -1887,3 +1918,119 @@ class CameraYawGaugeTests(unittest.TestCase):
 
 class _StubHud:
     pass
+
+
+def _samples_with_limit(name: str, values, limit, *, step: float = 30.0) -> list[dict]:
+    """Samples carrying a gauge and the ceiling it declares for itself."""
+    return [
+        {
+            "elapsed_s": i * step,
+            "frame": i * 100,
+            name: float(value),
+            f"{name}{LIMIT_SUFFIX}": float(limit),
+        }
+        for i, value in enumerate(values)
+    ]
+
+
+class BoundedVerdictTests(unittest.TestCase):
+    """A gauge that has somewhere to stop, and a report that knows it.
+
+    `udp.seen_sequences` is the gauge that found the only real leak this
+    instrument has found: a set of reliable sequence numbers that nothing
+    emptied, climbing 671 an hour for as long as a session lasted. The fix
+    replaced it with a two-window memory that cannot exceed 8,192 -- and the
+    row still climbs towards that number on every run, and was still reported
+    as `growing` on every run. A report that says the same true-but-useless
+    thing forever is one that stops being read, which is what costs the next
+    real finding.
+
+    So the window now publishes its own ceiling as `udp.seen_sequences.limit`
+    and the report reads it. That turns a claim in a docstring into something
+    each run checks: under the bound is `bounded`, over it is `over-bound`,
+    which is a different and much louder thing.
+    """
+
+    CLIMBING = [float(v) for v in range(0, 3000, 120)]  # 25 samples, still rising
+
+    def test_a_gauge_climbing_towards_its_ceiling_is_bounded(self) -> None:
+        report = growth_report(_samples_with_limit("udp.seen_sequences", self.CLIMBING, 8192))
+        self.assertEqual(_row(report, "udp.seen_sequences").verdict, "bounded")
+
+    def test_the_same_series_without_a_ceiling_is_growing(self) -> None:
+        """The evidence, not a change of heart about the shape. A log written
+        before the ceiling was recorded must not quietly become a clean bill
+        of health."""
+        samples = [
+            {"elapsed_s": s["elapsed_s"], "frame": s["frame"], "udp.seen_sequences": s["udp.seen_sequences"]}
+            for s in _samples_with_limit("udp.seen_sequences", self.CLIMBING, 8192)
+        ]
+        self.assertEqual(_row(growth_report(samples), "udp.seen_sequences").verdict, "growing")
+
+    def test_passing_the_ceiling_is_reported_and_beats_every_other_shape(self) -> None:
+        """The bound being wrong is not a trend, and no reading of the trend
+        matters beside it -- including the flat tail this series ends on,
+        which on its own would read as `settled`."""
+        values = [float(v) for v in range(0, 12000, 500)] + [12000.0] * 12
+        report = growth_report(_samples_with_limit("udp.seen_sequences", values, 8192))
+        self.assertEqual(_row(report, "udp.seen_sequences").verdict, "over-bound")
+
+    def test_an_overshoot_that_came_back_down_is_still_reported(self) -> None:
+        """`over-bound` is read off the peak, not off the last sample.
+
+        A bound that was exceeded once and recovered is still a bound that
+        does not hold, and the recovery is what makes it easy to miss: the
+        row ends under its ceiling and every other column looks ordinary.
+        """
+        values = [float(v) for v in range(0, 9000, 300)] + [400.0] * 12
+        report = growth_report(_samples_with_limit("udp.seen_sequences", values, 8192))
+        self.assertEqual(_row(report, "udp.seen_sequences").verdict, "over-bound")
+
+    def test_reaching_the_ceiling_exactly_is_not_exceeding_it(self) -> None:
+        """Both halves full *is* the capacity, so the boundary belongs on the
+        legal side. Off by one here and every long run cries wolf again."""
+        values = [float(v) for v in range(0, 8192, 300)] + [8192.0] * 12
+        report = growth_report(_samples_with_limit("udp.seen_sequences", values, 8192))
+        self.assertNotEqual(_row(report, "udp.seen_sequences").verdict, "over-bound")
+
+    def test_a_ceiling_does_not_hide_a_row_that_settled(self) -> None:
+        """`bounded` replaces the alarming words only. `settled` says more."""
+        flat_tail = [float(v) for v in range(0, 1200, 100)] + [1200.0] * 20
+        report = growth_report(_samples_with_limit("udp.seen_sequences", flat_tail, 8192))
+        self.assertEqual(_row(report, "udp.seen_sequences").verdict, "settled")
+
+    def test_a_ceiling_does_not_hide_a_collector_taking_it_back(self) -> None:
+        samples = _samples_with_gc("obj.thing", CyclicVerdictTests.RUN6, CyclicVerdictTests.RUN6_GC)
+        for sample in samples:
+            sample["obj.thing" + LIMIT_SUFFIX] = 8192.0
+        self.assertEqual(_row(growth_report(samples), "obj.thing").verdict, "cyclic")
+
+    def test_the_ceiling_is_a_row_of_its_own(self) -> None:
+        """So the reader can see how much of it is gone without going to the
+        source for the number."""
+        report = growth_report(_samples_with_limit("udp.seen_sequences", self.CLIMBING, 8192))
+        self.assertEqual(_row(report, "udp.seen_sequences" + LIMIT_SUFFIX).last, 8192.0)
+
+
+class DeclaredLimitTests(unittest.TestCase):
+    """Reading the ceilings out of a log."""
+
+    def limits(self, *samples: dict) -> dict:
+        return _declared_limits(list(samples))
+
+    def test_a_limit_row_names_the_row_it_bounds(self) -> None:
+        self.assertEqual(self.limits({"a.b.limit": 10.0}), {"a.b": 10.0})
+
+    def test_a_log_with_no_limits_declares_none(self) -> None:
+        self.assertEqual(self.limits({"a.b": 10.0}), {})
+
+    def test_the_largest_reading_wins(self) -> None:
+        """A ceiling that appears to move is one read at different moments.
+        The generous reading is the one that does not manufacture an
+        `over-bound` out of a sampling artefact."""
+        self.assertEqual(self.limits({"a.limit": 10.0}, {"a.limit": 8.0}), {"a": 10.0})
+
+    def test_nonsense_ceilings_are_ignored(self) -> None:
+        for value in (0, -1, float("nan"), float("inf"), True, "8192", None):
+            with self.subTest(repr(value)):
+                self.assertEqual(self.limits({"a.limit": value}), {})

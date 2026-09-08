@@ -78,6 +78,10 @@ TREND_SIGMA = 2.0
 #: measuring was the interval between collections.
 CYCLIC_RECLAIM_FRACTION = 0.5
 
+#: A gauge named `<something>.limit` is that something's declared ceiling
+#: rather than a series of its own.
+LIMIT_SUFFIX = ".limit"
+
 
 def process_rss_bytes() -> float:
     """Resident set size of this process, in bytes.
@@ -716,6 +720,7 @@ def growth_report(
     """
     counter_names = frozenset(counters)
     collections = _collection_times(samples)
+    limits = _declared_limits(samples)
     names: list[str] = []
     seen: set[str] = set()
     for sample in samples:
@@ -748,11 +753,38 @@ def growth_report(
                 peak=max(values),
                 late_rate_per_hour=late_rate,
                 late_rate_stderr_per_hour=late_stderr,
-                verdict=_verdict(points, kind, collections),
+                verdict=_verdict(points, kind, collections, limits.get(name)),
             )
         )
     report.sort(key=lambda g: (g.kind != "gauge", -abs(g.late_rate_per_hour), g.name))
     return report
+
+
+def _declared_limits(samples: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+    """Ceilings a gauge published for itself, as `<name>.limit`.
+
+    A container that is bounded by construction has a number saying so, and
+    until now that number lived only in the source. Logging it turns the
+    bound into something the run checks: the report says how much of it is
+    gone, and says `over-bound` rather than a trend if the count ever passes
+    it.
+
+    The largest value wins, on the theory that a ceiling that appears to move
+    is a ceiling read at different moments rather than a real one, and the
+    generous reading is the one that does not manufacture an `over-bound`.
+    """
+    limits: dict[str, float] = {}
+    for sample in samples:
+        for name, value in sample.items():
+            if not name.endswith(LIMIT_SUFFIX):
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            if not math.isfinite(value) or value <= 0:
+                continue
+            subject = name[: -len(LIMIT_SUFFIX)]
+            limits[subject] = max(limits.get(subject, 0.0), float(value))
+    return limits
 
 
 def _fit(points: Sequence[tuple[float, float]]) -> tuple[float, float]:
@@ -920,6 +952,7 @@ def _verdict(
     points: Sequence[tuple[float, float]],
     kind: str,
     collections: frozenset[float] = frozenset(),
+    limit: float | None = None,
 ) -> str:
     values = [v for _, v in points]
     if len(points) < MIN_SAMPLES_FOR_VERDICT:
@@ -934,6 +967,11 @@ def _verdict(
         # way they are not for a gauge: a counter only ever goes up, so it has
         # no phase to be caught on the wrong side of.
         return "stalled" if values[-1] - values[mid] <= 0.0 else "rising"
+    if limit is not None and max(values) > limit:
+        # It went past its own declared ceiling. Ahead of every other rule,
+        # because this is not a judgement about a shape -- it is the bound
+        # being wrong, and no reading of the trend matters beside that.
+        return "over-bound"
     late, stderr = _late_fit(points)
     if late <= 0.0 or (stderr > 0.0 and late < TREND_SIGMA * stderr):
         # Either it did not climb, or it climbed by less than the scatter it
@@ -963,7 +1001,18 @@ def _verdict(
         # and dropped for being a second word for the same answer, this is a
         # genuinely different answer.
         return "stepped"
-    return "settling" if _rate_is_converging(points) else "growing"
+    verdict = "settling" if _rate_is_converging(points) else "growing"
+    if limit is not None:
+        # It is climbing, and it has somewhere to stop. That is a different
+        # report from a leak and sends the reader nowhere, which is the point:
+        # `udp.seen_sequences` is the gauge that found the one real leak this
+        # instrument has found, and having replaced the unbounded set with a
+        # window it now climbs towards that window on every run. Calling that
+        # `growing` for the rest of the project's life is how a report stops
+        # being read. The ceiling is a row of its own, so the reader can see
+        # how much of it is gone.
+        return "bounded"
+    return verdict
 
 
 def format_growth_report(report: Sequence[Growth], *, limit: int = 0) -> str:

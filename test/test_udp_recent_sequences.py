@@ -251,3 +251,39 @@ class StandsInForTheSetTests(unittest.TestCase):
         for sequence in range(SEQUENCE_MEMORY * 3):
             session.seen_reliable_sequences.add(sequence)
         self.assertLessEqual(len(session.seen_reliable_sequences), SEQUENCE_MEMORY * 2)
+
+
+class CapacityTests(unittest.TestCase):
+    """The bound, published so that a running client can be held to it.
+
+    `SEQUENCE_MEMORY * 2` appeared in a docstring, in a comment beside the
+    soak gauge, and in the assertion above -- three copies of a number the
+    code did not state anywhere. `capacity` states it once, the soak log
+    records it beside the count, and `growth_report` reads a `.limit` row as
+    the ceiling for the row it names: the run says whether the bound held.
+    """
+
+    def test_the_capacity_is_both_halves_full(self) -> None:
+        self.assertEqual(RecentSequences(window=64).capacity, 128)
+
+    def test_it_follows_the_window_it_was_given(self) -> None:
+        self.assertEqual(RecentSequences(window=7).capacity, 14)
+
+    def test_the_default_capacity_is_the_documented_one(self) -> None:
+        self.assertEqual(RecentSequences().capacity, SEQUENCE_MEMORY * 2)
+
+    def test_nothing_ever_exceeds_it(self) -> None:
+        """Checked at every step rather than at the end, because the swap
+        happens on an insert and a bound that only holds between inserts is
+        not one the soak's ceiling row could be trusted to describe."""
+        recent = RecentSequences(window=16)
+        for sequence in range(16 * 10):
+            recent.add(sequence)
+            self.assertLessEqual(len(recent), recent.capacity)
+
+    def test_a_repeated_sequence_does_not_grow_it_either(self) -> None:
+        recent = RecentSequences(window=8)
+        for _ in range(5):
+            for sequence in range(20):
+                recent.seen(sequence)
+                self.assertLessEqual(len(recent), recent.capacity)
