@@ -20,14 +20,21 @@ missing code.
 
 ### Where each stands
 
-**A -- as of soak run 8 (2026-09-08), four hours clean.** 240 minutes,
-434,360 frames, 30.2 fps in both halves, RSS up four megabytes across the last
-166 minutes, no crash and no disconnect -- with the owner's own compiler builds
-loading the machine to 3-4 throughout. Every container gauge settles, goes
-flat, or is a counter. The one that still prints `growing`,
-`udp.seen_sequences`, ended at 3,775 against a bound of 8,192 and is reported
-as `bounded` on any run started after the `.limit` gauge landed. The write-up
-is further down under "Soak run 8".
+**A -- as of soak run 9 (2026-09-08), ten hours clean.** 600 minutes,
+1,086,015 frames, 30.2 fps in both halves, no crash and no disconnect, no
+resends and nothing abandoned -- with the owner's own compiler builds loading
+the machine to 3-4 throughout. Every container gauge settles, goes flat, is
+cyclic, or is a counter.
+
+The run's purpose was `udp.seen_sequences`, the gauge behind the only real
+leak this instrument has found, and it delivered: **peak 8,189 against a
+declared ceiling of 8,192, then 8,189 to 4,103 in one sample at minute
+530.8.** The window swap, observed outside a unit test for the first time. The
+bound is a fact now rather than a design.
+
+RSS ended at 628 MB, and reads as a staircase whose steps land where the
+*Python* heap is shrinking -- so the next look is not another census. Both
+write-ups are further down, under "Soak run 8" and "Soak run 9".
 
 What follows in this section is the history that got there, newest first.
 
@@ -5071,6 +5078,53 @@ gauge is `udp.seen_sequences.limit` now and a run started today reads
 Worth keeping: a fifth of everything the region sent was reliable
 (3,775 of 18,877), which is what makes the sequence memory grow at all in a
 region with three prims and one avatar in it.
+
+
+### Soak run 9: ten hours, and the bound is a fact now rather than a design
+
+Run 8 ended with `udp.seen_sequences` at 3,775 and the note that at that rate
+it would reach its 8,192 ceiling somewhere around hour nine. Run 9 was started
+to watch it happen. Same flags, `--run-seconds 36000`.
+
+```
+1201 samples over 600.0 min, 1,086,015 frames
+  frame rate   30.2 fps in the first half, 30.2 in the second (+0% slower)
+  gaps         8.0 s shortest, 30.2 s longest (asked for every 30 s)
+  machine      load 3.6 in the first half, 3.8 in the second
+  this client  0.23 cores in the first half, 0.24 in the second
+```
+
+**The tooth arrived at minute 530.8: 8,189 to 4,103 in one sample.** Peak
+8,189 against a declared ceiling of 8,192, never exceeded, and then the window
+swap took half of it back -- which is precisely what `udp/recent.py` says it
+does, and the first time anything outside a unit test has seen it do it. The
+verdict for the row is `settled`. Ten hours to observe one tooth is why this
+was never going to show up in a two-hour run.
+
+Thirty point two frames a second in both halves, again with the owner's builds
+on the machine throughout. No resends, nothing abandoned, one packet pending
+at the end.
+
+**RSS is worth reading carefully, because it says the opposite of what it
+looks like.** 471 MB at the first sample, 610 MB by minute 37, and then
+essentially flat for six hours -- 610 to 615, under a megabyte an hour. Then a
+cluster of steps between minutes 462 and 481 taking it to 628 MB, and flat
+again for the last two hours.
+
+Comparing the samples either side of that cluster:
+
+    proc.rss_bytes    615.9 MB  ->  628.5 MB
+    proc.py_blocks      441,145 ->    437,135
+    obj._total           13,095 ->     11,181
+    obj.list              2,910 ->      1,865
+    obj.dict              2,607 ->      2,322
+
+**Every Python object count went down while RSS went up**, across a garbage
+collection. So whatever grew is not a container this instrument can name: it
+is allocator arenas that were not returned, or C-level memory behind
+moderngl, SDL or pygame surfaces. That is a useful negative result -- it says
+the next look is not another census -- and it is bounded in practice, because
+the two hours after the cluster added nothing at all.
 
 
 ### Four ways a capability response could take the viewer down, one of them free
