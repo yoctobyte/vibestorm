@@ -139,6 +139,8 @@ Commands:
   census       Report what content the region actually holds (and what it lacks)
   inventory-walk  Recursively list the user's inventory (read-only)
                   add --library to walk the grid library instead
+  sync-object  Bind one in-world object to a local folder: --pull, --push or --watch
+  unknowns     Report what the diagnostics database recorded about a session
   upload-smoke Upload via NewFileAgentInventory - stores notecards as textures; kept as the counter-example
   upload-notecard Create a notecard and fill it in (CreateInventoryItem + UpdateNotecardAgentInventory)
   console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
@@ -346,7 +348,7 @@ prepare_login() {
 sl_confirmation_required() {
   [[ "$GRID_MODE" == "sl" ]] || return 1
   case "$command" in
-    eventq|udp|handshake|session|upload-smoke|upload-notecard|console|viewer|viewer3d)
+    eventq|udp|handshake|session|sync-object|upload-smoke|upload-notecard|console|viewer|viewer3d)
       return 0
       ;;
     *)
@@ -499,6 +501,10 @@ do_inventory_walk() {
   python_runner -m vibestorm.app.cli inventory-walk "${cli_base_args[@]}" "$@"
 }
 
+do_sync_object() {
+  python_runner -m vibestorm.app.cli sync-object "${cli_base_args[@]}" "$@"
+}
+
 do_upload_smoke() {
   python_runner -m vibestorm.app.cli upload-empty-text-smoke "${cli_base_args[@]}" "$@"
 }
@@ -597,6 +603,9 @@ case "$command" in
     ;;
   inventory-walk)
     run_login_command do_inventory_walk "$@"
+    ;;
+  sync-object)
+    run_login_command do_sync_object "$@"
     ;;
   upload-smoke)
     run_login_command do_upload_smoke "$@"

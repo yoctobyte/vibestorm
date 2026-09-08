@@ -4943,6 +4943,39 @@ passed while testing nothing. The mutation run is what said so -- the
 position guard died and the texture-coordinate one did not, from two tests
 that looked identical.
 
+### The documented way to run C, D and E did not exist
+
+`./run.sh tester sync-object --object <uuid> --folder ./work --push` appears
+four times in this document and is how the object-sync work is meant to be
+driven. Typed at a shell it answers:
+
+    Unknown command: sync-object
+
+The launcher's own dispatch is fine -- unlike `main`, its `case` ends in a
+`*)` that prints and exits 2 -- but the arm was never written. `sync-object`
+was reachable only as `python -m vibestorm.app.cli sync-object`, which is how
+it was live-verified and why nobody noticed: **a missing arm looks exactly
+like a command that was never meant to exist.**
+
+The two command lists are a translation maintained by hand in two languages
+-- `census` runs `world-census`, `eventq` runs `event-queue-once`, `udp` runs
+`udp-probe` -- and nothing compared them. `test_run_sh_commands.py` now does,
+in both directions: every CLI subcommand has to be reachable *through an arm*,
+and every name the launcher invokes has to be one argparse still accepts. A
+rename on the Python side otherwise fails at the end of a login rather than
+at the start of one.
+
+"Through an arm" is doing real work in that sentence, and a mutant said so.
+The first version scanned the whole file for `vibestorm.app.cli <name>`, so
+deleting the `census)` arm left `do_census` sitting there unreferenced and the
+test passed. Reachability now walks the arms, follows the `do_*` they call,
+and reads the subcommand out of the function body -- brace-counted, because
+every one of those bodies contains `"${cli_base_args[@]}"` and a match to the
+first `}` stops short of the name.
+
+`unknowns` was missing from the usage text as well, so the third test is that
+every arm a person can type is listed in `--help`.
+
 ## A Third Way: Testing The Piece And Not The Wiring (2026-09-07)
 
 The two below are about test *data*. This one is about test *reach*, it cost a
