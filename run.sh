@@ -145,7 +145,7 @@ Commands:
   upload-notecard Create a notecard and fill it in (CreateInventoryItem + UpdateNotecardAgentInventory)
   console      Run an indefinite live session, streaming events to stdout (Ctrl+C to stop)
   viewer       Run the pygame 2D bird's-eye viewer
-  viewer3d     Run the 3D viewer fork (currently identical to viewer; 3D work in progress)
+  viewer3d     Run the 3D viewer: terrain, water, prims, meshes, avatars and the HUD
   fixtures     Rebuild the structured fixture inventory/backlog
   test         Run the unit test suite
 

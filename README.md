@@ -11,17 +11,25 @@ The current focus is protocol-core runtime work:
 
 ## Status
 
-The project has moved past initial scaffolding. The current codebase already includes:
+The protocol core is done and there is a working 3D viewer on top of it:
 
-- XML-RPC login/bootstrap
-- seed capability resolution
-- `EventQueueGet` polling
-- UDP packet parsing, zerocode support, and message dispatch
-- bounded live session handling with ACK/reliability tracking
-- normalized region, coarse avatar, sim stats, time, and object-update models
+- XML-RPC login/bootstrap, seed capability resolution, `EventQueueGet` polling
+- UDP packet parsing, zerocode, message dispatch, and a live session loop with
+  ACK and reliability tracking
+- normalized region, avatar, sim stats, time, parcel and object-update models
+- an OpenGL viewer drawing terrain, water, prims, meshes, sculpts and avatars,
+  with a HUD, inventory and an object inspector -- mesh and sculpt fidelity is
+  first-pass, as `viewer3d/perspective.py` says at the top of itself
+- object sync: pull an in-world object's contents to a folder, push a folder
+  back into it, or watch the folder and push as it changes
 
-The main remaining work is deeper message coverage and richer world decoding, especially around
-object-update tails, appearance/state, and broader simulator behavior.
+What is *not* done is the one thing this project cannot do for itself:
+nothing here has ever logged in to the Second Life main grid, because that
+needs the owner's account. Everything up to the password on that path is
+verified; nothing past it is.
+
+`docs/current-handoff.md` is the honest, detailed state -- including a list
+of what each claim of "works" actually rests on.
 
 ## Protocol Work
 
@@ -64,7 +72,7 @@ uv run vibestorm --help
 ```
 
 The `dev` extra is what the fallback below installs as `.[dev]`, and the test
-suite needs it: a base-only environment skips the 137 viewer and GL tests and
+suite needs it: a base-only environment skips every viewer and GL test and
 errors on the two Pillow-backed J2K ones.
 
 Fallback:
@@ -78,14 +86,31 @@ vibestorm --help
 
 ## Current CLI Surface
 
+Protocol probes, one step each:
+
 - `vibestorm login-bootstrap`
 - `vibestorm resolve-seed-caps`
 - `vibestorm event-queue-once`
 - `vibestorm udp-probe`
 - `vibestorm handshake-probe`
-- `vibestorm session-run`
-- `./run.sh viewer`
-- `./run.sh viewer3d`
+
+Sessions and world work:
+
+- `vibestorm session-run` -- a bounded live session
+- `vibestorm console` -- an unbounded one, streaming events to stdout
+- `vibestorm world-census` -- what content a region actually holds
+- `vibestorm inventory-walk` -- the account's inventory, or the grid library
+- `vibestorm sync-object` -- bind an object to a folder: `--pull`, `--push`, `--watch`
+- `vibestorm upload-notecard`, `vibestorm upload-empty-text-smoke`
+- `vibestorm unknowns-report` -- what the diagnostics database recorded
+
+Viewers:
+
+- `./run.sh viewer` -- the 2D bird's-eye view
+- `./run.sh viewer3d` -- the OpenGL viewer
+
+`./run.sh` wraps all of these with login-profile handling and shorter names
+(`census`, `eventq`, `udp`); `./run.sh --help` lists them.
 
 ## Launching The Viewer
 
@@ -115,11 +140,18 @@ teleport-location request dialog, and the first read-only inventory manager wind
 renders decoded terrain, water, primitives, first-pass lighting/texturing, diagnostics/render
 settings, user inventory, and the object inspector with read-only task inventory asset viewing.
 
-## Next Step
+## What This Is For
 
-Build deeper message coverage on top of the existing runtime:
+The owner's five priorities, in their words, and where each stands. The
+detail behind every line is in `docs/current-handoff.md`.
 
-1. fuller `ObjectUpdate` tail decoding
-2. object lifecycle coverage such as `KillObject`
-3. richer avatar/chat/world message handling
-4. continued live-capture driven fixture expansion
+1. **A reasonable visualization of the world, without crashes.** The viewer
+   holds 30 fps for hours against the local region; the crash work is ongoing
+   and mostly about packets no local sim sends.
+2. **Log in to the Second Life main grid, at the home location.** Blocked on
+   the owner's credentials, and only on those.
+3. **Edit an object and extract all its internals.** Done, live-verified.
+4. **Upload a whole folder into an in-world object.** Done, live-verified,
+   for scripts, notecards, textures and gestures.
+5. **Sync an object's internals to an external folder.** Done, live-verified,
+   including a watch mode that pushes as files change.
