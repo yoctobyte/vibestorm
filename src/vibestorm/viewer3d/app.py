@@ -662,6 +662,40 @@ class _PhaseStats:
 _PHASE_STATS = _PhaseStats() if os.environ.get("VIBESTORM_PROFILE_FRAMES") else None
 
 
+
+
+async def stop_session_task(
+    session_task: asyncio.Task[object],
+    stop_event: asyncio.Event,
+    *,
+    timeout: float = 2.0,
+) -> BaseException | None:
+    """Ask the session to stop, wait a little, and return what it died of.
+
+    Returning the exception rather than raising it is the whole point. This
+    runs from the frame loop's `finally`, and what follows it is the teardown:
+    the last soak sample, closing the soak log, releasing the GL caches,
+    `pygame.quit()`. `asyncio.wait_for` re-raises, so a session that ended by
+    raising skipped every one of those -- and a run that ends on a session
+    crash is exactly the run whose final sample and flushed log a reader
+    wants. The caller re-raises once the teardown has run.
+
+    `CancelledError` is not held. It is not the session failing, it is this
+    coroutine being cancelled, and swallowing it would leave the canceller
+    waiting.
+    """
+    stop_event.set()
+    try:
+        await asyncio.wait_for(session_task, timeout=timeout)
+    except TimeoutError:
+        session_task.cancel()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
+        return exc
+    return None
+
+
 async def run_viewer(args: argparse.Namespace) -> int:
     import moderngl
     import pygame
@@ -1418,11 +1452,7 @@ async def run_viewer(args: argparse.Namespace) -> int:
                 )
             await asyncio.sleep(0)
     finally:
-        stop_event.set()
-        try:
-            await asyncio.wait_for(session_task, timeout=2.0)
-        except TimeoutError:
-            session_task.cancel()
+        session_error = await stop_session_task(session_task, stop_event)
         if probe is not None and soak_log is not None:
             # One last sample after the loop, before anything is torn down:
             # the shape of the final reading is what says whether a run that
@@ -1433,6 +1463,8 @@ async def run_viewer(args: argparse.Namespace) -> int:
         compositor.release()
         pygame.quit()
 
+    if session_error is not None:
+        raise session_error
     return 0
 
 

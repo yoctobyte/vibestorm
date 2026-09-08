@@ -377,5 +377,85 @@ class SyncFolderForTaskTests(unittest.TestCase):
             self.assertEqual(sync_folder_for_task(self.TASK, missing), missing)
 
 
+
+class StopSessionTaskTests(unittest.IsolatedAsyncioTestCase):
+    """What the viewer does with a session task that ends badly.
+
+    `run_viewer`'s frame loop stops when the session task finishes, and the
+    `finally` after it is the teardown: the last soak sample, closing the soak
+    log, releasing the GL caches, `pygame.quit()`. That teardown used to sit
+    behind a bare `asyncio.wait_for`, which re-raises -- so a session that
+    ended by *raising* skipped every part of it. A run that ends on a session
+    crash is exactly the run whose final sample and flushed log someone wants
+    to read, and it was the only run that never got one.
+
+    The fix is to hand the exception back instead, and let the caller re-raise
+    it once the teardown has run. These cover the three ways the task can end,
+    because the reason `wait_for` was there at all -- a session that will not
+    stop -- still has to work.
+    """
+
+    async def test_a_session_that_raised_is_handed_back_rather_than_raised(self) -> None:
+        import asyncio
+
+        from vibestorm.viewer3d.app import stop_session_task
+
+        boom = RuntimeError("circuit exploded")
+
+        async def failing() -> None:
+            raise boom
+
+        task = asyncio.ensure_future(failing())
+        error = await stop_session_task(task, asyncio.Event())
+        self.assertIs(error, boom)
+
+    async def test_a_clean_session_hands_back_nothing(self) -> None:
+        import asyncio
+
+        from vibestorm.viewer3d.app import stop_session_task
+
+        async def clean() -> None:
+            return None
+
+        task = asyncio.ensure_future(clean())
+        self.assertIsNone(await stop_session_task(task, asyncio.Event()))
+
+    async def test_the_stop_event_is_what_asks_it_to_finish(self) -> None:
+        """A session ends when the event is set, not when the task is killed.
+
+        Cancelling is the fallback for one that ignores the ask, and it costs
+        the logout: `build_shutdown_packets` never runs, so the simulator is
+        left holding a circuit until it times out.
+        """
+        import asyncio
+
+        from vibestorm.viewer3d.app import stop_session_task
+
+        stop_event = asyncio.Event()
+        stopped = asyncio.Event()
+
+        async def polite() -> None:
+            await stop_event.wait()
+            stopped.set()
+
+        task = asyncio.ensure_future(polite())
+        self.assertIsNone(await stop_session_task(task, stop_event))
+        self.assertTrue(stopped.is_set())
+        self.assertFalse(task.cancelled())
+
+    async def test_a_session_that_will_not_stop_is_cancelled(self) -> None:
+        import asyncio
+
+        from vibestorm.viewer3d.app import stop_session_task
+
+        async def stuck() -> None:
+            await asyncio.Event().wait()
+
+        task = asyncio.ensure_future(stuck())
+        error = await stop_session_task(task, asyncio.Event(), timeout=0.05)
+        self.assertIsNone(error)
+        self.assertTrue(task.cancelling() or task.cancelled() or task.done())
+
+
 if __name__ == "__main__":
     unittest.main()
