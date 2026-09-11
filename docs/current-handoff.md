@@ -5080,6 +5080,51 @@ Worth keeping: a fifth of everything the region sent was reliable
 region with three prims and one avatar in it.
 
 
+### The local sim wrote 2.3 GB of one stack trace (2026-09-11)
+
+A disk alert, relayed from another session: root at 92% with 12 GB free, and
+`local/opensim/runtime/bin/OpenSim.log` at **2.3 GB**. Essentially all of it
+was one message, 2,875,948 times:
+
+    ERROR Command error: System.InvalidOperationException: Cannot see if a key
+    has been pressed when either application does not have a console or when
+    console input has been redirected from a file.
+      at System.Console.get_KeyAvailable()
+      at OpenSim.Framework.Console.LocalConsole.ReadLine(...)
+      at OpenSim.Framework.Console.CommandConsole.Prompt()
+      at OpenSim.Application.Main(...)
+
+`Application.Main` prompts whether or not there is a terminal to prompt at, so
+the sim -- started detached, which is how every soak needs it -- logs a
+four-line trace and goes round again, unthrottled. Two copies per two
+milliseconds, measured off consecutive timestamps.
+
+Three things worth keeping:
+
+- **It was not running when found.** 1% of a core, log not growing, last
+  occurrence 2026-09-06 19:30. So it is a burst rather than a permanent spin,
+  and -- importantly for the numbers in this file -- **soak runs 8 and 9, on
+  2026-09-08, were not measured against a spinning simulator.** That was worth
+  checking before believing either write-up.
+- **Truncated, not deleted.** The process has been up five days and holds the
+  file open; an `rm` would have freed nothing until it exits. `truncate -s 0`
+  returned 2.3 GB immediately. The first 400 and last 3,000 lines are kept
+  compressed beside it, at 14 kB.
+- **The sim stays up.** It is the local test grid every live verification in
+  this project runs against, not a leftover experiment.
+
+`tools/start_opensim.sh` now rotates the log at start if it is over 256 MB.
+Rotating rather than preventing is deliberate: the loop needs a fix inside
+OpenSim's console handling, a shell script cannot make a terminal appear, and
+a sim that starts with a rotated log is a much better failure than one that
+fills the disk.
+
+The wider lesson is one this project already has in another costume: **a
+process nobody is watching is still writing.** The soak instrument watches the
+viewer's memory to four decimal places and nothing at all was watching the
+simulator it talks to.
+
+
 ### The same recursion, in the mesh decoder, on the render thread
 
 `assets/sl_mesh.py` parses the binary LLSD header of a mesh asset, and

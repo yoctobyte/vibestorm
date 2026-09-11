@@ -25,5 +25,34 @@ if [[ ! -x "$BIN_DIR/OpenSim" ]]; then
   exit 1
 fi
 
+# OpenSim.log had reached 2.3 GB on 2026-09-11, on a root filesystem with
+# 12 GB free. Essentially all of it -- 2,875,948 copies -- was one stack trace:
+#
+#   ERROR Command error: System.InvalidOperationException: Cannot see if a key
+#   has been pressed when either application does not have a console or when
+#   console input has been redirected from a file.
+#     at System.Console.get_KeyAvailable()
+#     at OpenSim.Framework.Console.LocalConsole.ReadLine(...)
+#     at OpenSim.Framework.Console.CommandConsole.Prompt()
+#
+# `Application.Main` prompts whether or not there is a terminal to prompt at,
+# so a run started detached logs a four-line trace and goes round again. It
+# does not throttle. Two copies per two milliseconds were measured.
+#
+# Rotated rather than prevented, deliberately: the loop needs a fix inside
+# OpenSim's console handling, this script cannot make a terminal appear, and a
+# sim that fills the disk is a much worse failure than one that starts with a
+# rotated log. The threshold is well above anything a normal session writes.
+LOG_FILE="$BIN_DIR/OpenSim.log"
+MAX_LOG_BYTES=$((256 * 1024 * 1024))
+if [[ -f "$LOG_FILE" ]] && (( $(stat -c %s "$LOG_FILE") > MAX_LOG_BYTES )); then
+  printf 'OpenSim.log is %s; keeping the last 3000 lines and truncating.\n' \
+    "$(du -h "$LOG_FILE" | cut -f1)" >&2
+  tail -n 3000 "$LOG_FILE" | gzip -9 > "$LOG_FILE.rotated-$(date +%Y-%m-%d).gz" || true
+  # Truncated rather than removed: a running OpenSim holds this open, and an
+  # unlink would free nothing until the process exits.
+  : > "$LOG_FILE"
+fi
+
 cd "$BIN_DIR"
 exec ./OpenSim "$@"
