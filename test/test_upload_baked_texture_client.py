@@ -1,5 +1,7 @@
 import socket
 import unittest
+
+from vibestorm.util import remote_url
 import urllib.error
 
 from http_fakes import serve_body
@@ -32,7 +34,7 @@ class UploadBakedTextureClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
@@ -40,7 +42,7 @@ class UploadBakedTextureClientTests(unittest.TestCase):
             captured["method"] = request.get_method()
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._request_uploader_sync(
                 "http://example.invalid/caps/upload-baked",
@@ -48,7 +50,7 @@ class UploadBakedTextureClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.uploader_url, "http://example.invalid/upload")
         self.assertEqual(result.state, "upload")
@@ -80,7 +82,7 @@ class UploadBakedTextureClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
@@ -88,7 +90,7 @@ class UploadBakedTextureClientTests(unittest.TestCase):
             captured["method"] = request.get_method()
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._upload_texture_bytes_sync(
                 "http://example.invalid/upload",
@@ -96,7 +98,7 @@ class UploadBakedTextureClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.state, "complete")
         self.assertEqual(result.new_asset_id, "12345678-1111-2222-3333-444444444444")
@@ -111,31 +113,31 @@ class UploadBakedTextureClientTests(unittest.TestCase):
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise socket.timeout("timed out")
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(UploadBakedTextureError, "timed out after 2.5s"):
                 client._request_uploader_sync("http://example.invalid/caps/upload-baked", None, "Vibestorm")
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
     def test_upload_texture_bytes_wraps_url_error(self) -> None:
         client = UploadBakedTextureClient()
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise urllib.error.URLError("connection refused")
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(UploadBakedTextureError, "connection refused"):
                 client._upload_texture_bytes_sync("http://example.invalid/upload", b"", "Vibestorm")
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]

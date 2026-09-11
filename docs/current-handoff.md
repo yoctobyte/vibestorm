@@ -5080,6 +5080,64 @@ Worth keeping: a fifth of everything the region sent was reliable
 region with three prims and one avatar in it.
 
 
+### The grid chose every URL, including the scheme (2026-09-11)
+
+The login response names the seed capability. The seed capability's own
+response names every other one. Nothing in that chain is ours -- and
+`urllib.request.urlopen` builds its opener from every handler installed by
+default, `FileHandler` and `FTPHandler` among them.
+
+So a grid answering the seed request with
+
+    <key>GetTexture</key><string>file:///home/you/.ssh/id_rsa</string>
+
+gets that file read and handed to whatever asked for a texture. Measured, not
+theorised: a `file://` URL through
+`CapabilityClient._fetch_capability_value_sync` came back with the file's
+contents. On the sync path (D and E) the same response is *written into* the
+folder being synced, so it is a copy as well as a read.
+
+Eleven call sites across eight modules, none of them checking a scheme.
+`util/remote_url.py` now has two guards, because either alone is weaker than
+it looks:
+
+- **`require_remote_http_url` runs before the `Request` is built.** Not only
+  before the fetch: `urllib.request.Request("")` raises a bare `ValueError`,
+  and that is not a `CapabilityError`, so a capability with no scheme at all
+  escaped as an exception nothing names. The refusal carries the calling
+  module's own error class and names both the URL and which capability wanted
+  it.
+- **The opener holds no handler but HTTP and HTTPS.** A check can be forgotten
+  at a twelfth call site; an opener with no `FileHandler` in it cannot open a
+  file however it is called. It also closes the redirect route, where the
+  scheme checked is not the scheme finally fetched -- `HTTPRedirectHandler`
+  already refuses everything but http, https and ftp, and this removes the
+  ftp.
+
+Built by naming what is wanted rather than by subtracting from the defaults,
+because subtracting means knowing the whole default list and keeping up with
+it. `OpenerDirector` starts empty.
+
+**And the empty opener had the same fault as everything else this week.**
+`OpenerDirector.open` on a scheme it has no handler for returns **None**
+rather than raising, so the first version refused to read the file and then
+handed the caller an `AttributeError: 'NoneType' object has no attribute
+'read'`. `urllib.request.UnknownHandler` is what turns that into a `URLError`.
+The test that caught it was asserting on the error class, not on the absence
+of a leak -- which is the only reason it was caught at all.
+
+What keeps this true is not the eleven edits. `test_remote_url.py` refuses
+`urllib.request.urlopen` anywhere in `src/vibestorm`, with an anti-vacuity
+test that at least eight modules reach the shared opener, because a check
+added at eleven places is a check missing from the twelfth.
+
+The ten test files that reached a fake response by assigning over
+`urllib.request.urlopen` -- someone else's global -- now replace
+`remote_url.open_http`, which is the same seam, owned and named here, and
+sits *below* the scheme check. A test that replaces it still cannot make
+`open_remote` fetch a `file:` URL.
+
+
 ### The local sim wrote 2.3 GB of one stack trace (2026-09-11)
 
 A disk alert, relayed from another session: root at 92% with 12 GB free, and

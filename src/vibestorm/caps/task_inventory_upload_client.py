@@ -12,6 +12,7 @@ from uuid import UUID
 from vibestorm.caps.client import CapabilityClient, CapabilityError
 from vibestorm.caps.llsd import LlsdError, parse_xml_value
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
+from vibestorm.util.remote_url import open_remote, require_remote_http_url
 
 
 class TaskInventoryUploadError(RuntimeError):
@@ -281,6 +282,9 @@ class TaskInventoryUploadClient:
         script_bytes: bytes,
         user_agent: str,
     ) -> TaskScriptUploadResult:
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not TaskInventoryUploadError.
+        require_remote_http_url(uploader_url, what="the script upload capability", error=TaskInventoryUploadError)
         request = urllib.request.Request(
             uploader_url,
             data=script_bytes,
@@ -292,7 +296,12 @@ class TaskInventoryUploadClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the script upload capability",
+                error=TaskInventoryUploadError,
+            ) as response:
                 payload = parse_xml_value(
                     read_bounded(
                         response,
@@ -354,6 +363,9 @@ class TaskInventoryUploadClient:
         user_agent: str,
         label: str = "notecard",
     ) -> TaskNotecardUploadResult:
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not TaskInventoryUploadError.
+        require_remote_http_url(uploader_url, what="the notecard upload capability", error=TaskInventoryUploadError)
         request = urllib.request.Request(
             uploader_url,
             data=notecard_bytes,
@@ -365,7 +377,12 @@ class TaskInventoryUploadClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the notecard upload capability",
+                error=TaskInventoryUploadError,
+            ) as response:
                 payload = parse_xml_value(
                     read_bounded(
                         response,

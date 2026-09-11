@@ -1,4 +1,6 @@
 import unittest
+
+from vibestorm.util import remote_url
 from urllib.error import URLError
 from uuid import UUID
 
@@ -34,7 +36,7 @@ class AssetUploadClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
@@ -42,7 +44,7 @@ class AssetUploadClientTests(unittest.TestCase):
             captured["method"] = request.get_method()
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._request_new_file_uploader_sync(
                 "http://example.invalid/caps/new-file",
@@ -55,7 +57,7 @@ class AssetUploadClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.uploader_url, "http://example.invalid/upload")
         self.assertEqual(result.state, "upload")
@@ -96,7 +98,7 @@ class AssetUploadClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
@@ -104,11 +106,11 @@ class AssetUploadClientTests(unittest.TestCase):
             captured["method"] = request.get_method()
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._upload_bytes_sync("http://example.invalid/upload", b" ", "Vibestorm")
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.state, "complete")
         self.assertEqual(result.new_asset_id, UUID("12345678-1111-2222-3333-444444444444"))
@@ -139,8 +141,8 @@ class AssetUploadClientTests(unittest.TestCase):
                     b"</map></map></llsd>"
                 ), amt)
 
-        original = urllib.request.urlopen
-        urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()  # type: ignore[assignment]
+        original = remote_url.open_http
+        remote_url.open_http = lambda *args, **kwargs: FakeResponse()  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(AssetUploadError, "Uploader busy"):
                 client._request_new_file_uploader_sync(
@@ -151,41 +153,41 @@ class AssetUploadClientTests(unittest.TestCase):
                     ),
                 )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
     def test_upload_bytes_wraps_timeout(self) -> None:
         client = AssetUploadClient(timeout_seconds=2.5)
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise TimeoutError("timed out")
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(AssetUploadError, "timed out after 2.5s"):
                 client._upload_bytes_sync("http://example.invalid/upload", b" ", "Vibestorm")
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
     def test_upload_bytes_wraps_url_error(self) -> None:
         client = AssetUploadClient()
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise URLError("connection refused")
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(AssetUploadError, "connection refused"):
                 client._upload_bytes_sync("http://example.invalid/upload", b" ", "Vibestorm")
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
 
 if __name__ == "__main__":

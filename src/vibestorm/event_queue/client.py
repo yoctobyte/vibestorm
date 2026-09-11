@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from vibestorm.caps.llsd import LlsdError, format_xml_map, parse_xml_value
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
+from vibestorm.util.remote_url import open_remote, require_remote_http_url
 
 
 @dataclass(slots=True, frozen=True)
@@ -48,6 +49,9 @@ class EventQueueClient:
         user_agent: str = "Vibestorm",
     ) -> EventQueuePollResult:
         body = format_xml_map({"ack": ack, "done": done})
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not EventQueueError.
+        require_remote_http_url(url, what="the event queue", error=EventQueueError)
         request = urllib.request.Request(
             url,
             data=body,
@@ -67,7 +71,12 @@ class EventQueueClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the event queue",
+                error=EventQueueError,
+            ) as response:
                 payload = read_bounded(
                     response,
                     max_bytes=MAX_LLSD_BODY_BYTES,

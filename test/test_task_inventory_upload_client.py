@@ -1,4 +1,6 @@
 import unittest
+
+from vibestorm.util import remote_url
 from dataclasses import fields
 from pathlib import Path
 from urllib.error import URLError
@@ -36,7 +38,7 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
@@ -44,7 +46,7 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             captured["method"] = request.get_method()
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._request_uploader_sync(
                 "http://example.invalid/caps/update-script",
@@ -57,7 +59,7 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.uploader_url, "http://example.invalid/upload-script")
         self.assertEqual(result.state, "upload")
@@ -99,7 +101,7 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
@@ -107,13 +109,13 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
             captured["method"] = request.get_method()
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._upload_script_bytes_sync(
                 "http://example.invalid/upload", b"default { state_entry() {} }", "Vibestorm"
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.state, "complete")
         self.assertTrue(result.compiled)
@@ -150,19 +152,19 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._upload_script_bytes_sync(
                 "http://example.invalid/upload", b"invalid code", "Vibestorm"
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.state, "complete")
         self.assertFalse(result.compiled)
@@ -191,19 +193,19 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["body"] = request.data
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._upload_notecard_bytes_sync(
                 "http://example.invalid/upload", b"hello task notecard", "Vibestorm"
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result.state, "complete")
         self.assertEqual(result.new_asset_id, UUID("12345678-1111-2222-3333-444444444444"))
@@ -230,8 +232,8 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                     b"</map></map></llsd>"
                 ), amt)
 
-        original = urllib.request.urlopen
-        urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()  # type: ignore[assignment]
+        original = remote_url.open_http
+        remote_url.open_http = lambda *args, **kwargs: FakeResponse()  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(TaskInventoryUploadError, "Failed to resolve prim"):
                 client._request_uploader_sync(
@@ -241,24 +243,24 @@ class TaskInventoryUploadClientTests(unittest.TestCase):
                     "Vibestorm",
                 )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
     def test_upload_bytes_wraps_timeout(self) -> None:
         client = TaskInventoryUploadClient(timeout_seconds=1.5)
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise TimeoutError("timed out")
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(TaskInventoryUploadError, "timed out after 1.5s"):
                 client._upload_script_bytes_sync("http://example.invalid/upload", b" ", "Vibestorm")
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
 
 class ScriptTaskCapNameTests(unittest.TestCase):

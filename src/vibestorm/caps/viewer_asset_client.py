@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from vibestorm.util.http_body import MAX_ASSET_BODY_BYTES, read_bounded
+from vibestorm.util.remote_url import open_remote, require_remote_http_url
 
 
 class ViewerAssetError(RuntimeError):
@@ -186,13 +187,21 @@ class ViewerAssetClient:
         separator = "&" if urllib.parse.urlparse(capability_url).query else "?"
         url = f"{capability_url}{separator}{query}"
 
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not ViewerAssetError.
+        require_remote_http_url(url, what="the ViewerAsset capability", error=ViewerAssetError)
         request = urllib.request.Request(
             url,
             headers={"Accept": "application/octet-stream, */*", "User-Agent": user_agent},
             method="GET",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the ViewerAsset capability",
+                error=ViewerAssetError,
+            ) as response:
                 status = getattr(response, "status", 200)
                 if status not in (200, 206):
                     raise ViewerAssetError(

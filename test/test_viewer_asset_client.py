@@ -10,6 +10,8 @@ check both halves rather than the shape of the dict.
 
 import re
 import unittest
+
+from vibestorm.util import remote_url
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -269,11 +271,11 @@ class _FakeResponse:
 
 class FetchTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._original = urllib.request.urlopen
+        self._original = remote_url.open_http
         self.requests: list[str] = []
 
     def tearDown(self) -> None:
-        urllib.request.urlopen = self._original  # type: ignore[assignment]
+        remote_url.open_http = self._original  # type: ignore[assignment]
 
     def _install(self, response) -> None:
         def fake_urlopen(request, timeout=None):  # type: ignore[no-untyped-def]
@@ -282,7 +284,7 @@ class FetchTests(unittest.TestCase):
                 raise response
             return response
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
 
     def test_the_type_selects_the_query_key(self) -> None:
         self._install(_FakeResponse(b"Hello notecard"))

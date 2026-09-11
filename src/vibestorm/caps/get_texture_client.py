@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from vibestorm.util.http_body import MAX_ASSET_BODY_BYTES, read_bounded
+from vibestorm.util.remote_url import open_remote, require_remote_http_url
 
 
 class GetTextureError(RuntimeError):
@@ -54,6 +55,9 @@ class GetTextureClient:
         separator = "&" if urllib.parse.urlparse(capability_url).query else "?"
         url = f"{capability_url}{separator}{query}"
 
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not GetTextureError.
+        require_remote_http_url(url, what="the GetTexture capability", error=GetTextureError)
         request = urllib.request.Request(
             url,
             headers={
@@ -63,7 +67,12 @@ class GetTextureClient:
             method="GET",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the GetTexture capability",
+                error=GetTextureError,
+            ) as response:
                 status = getattr(response, "status", 200)
                 if status != 200:
                     raise GetTextureError(

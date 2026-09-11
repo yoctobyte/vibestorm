@@ -1,5 +1,7 @@
 import socket
 import unittest
+
+from vibestorm.util import remote_url
 import urllib.error
 from uuid import UUID
 
@@ -44,7 +46,7 @@ class GetTextureClientTests(unittest.TestCase):
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):
             captured["url"] = request.full_url
@@ -53,7 +55,7 @@ class GetTextureClientTests(unittest.TestCase):
             captured["timeout"] = timeout
             return _FakeResponse(b"FAKEJ2KBYTES", content_type="image/x-j2c")
 
-        urllib.request.urlopen = fake_urlopen
+        remote_url.open_http = fake_urlopen
         try:
             result = client._fetch_sync(
                 "http://example.invalid/caps/get-texture",
@@ -61,7 +63,7 @@ class GetTextureClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original
+            remote_url.open_http = original
 
         self.assertEqual(result.texture_id, texture_id)
         self.assertEqual(result.data, b"FAKEJ2KBYTES")
@@ -77,13 +79,13 @@ class GetTextureClientTests(unittest.TestCase):
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):
             captured["url"] = request.full_url
             return _FakeResponse(b"X")
 
-        urllib.request.urlopen = fake_urlopen
+        remote_url.open_http = fake_urlopen
         try:
             client._fetch_sync(
                 "http://example.invalid/caps/get-texture?token=abc",
@@ -91,7 +93,7 @@ class GetTextureClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original
+            remote_url.open_http = original
 
         url = captured["url"]
         assert isinstance(url, str)
@@ -105,12 +107,12 @@ class GetTextureClientTests(unittest.TestCase):
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):
             raise urllib.error.URLError("connection refused")
 
-        urllib.request.urlopen = fake_urlopen
+        remote_url.open_http = fake_urlopen
         try:
             with self.assertRaises(GetTextureError) as ctx:
                 client._fetch_sync(
@@ -119,7 +121,7 @@ class GetTextureClientTests(unittest.TestCase):
                     "Vibestorm",
                 )
         finally:
-            urllib.request.urlopen = original
+            remote_url.open_http = original
 
         self.assertIn("connection refused", str(ctx.exception))
 
@@ -129,12 +131,12 @@ class GetTextureClientTests(unittest.TestCase):
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):
             raise socket.timeout()
 
-        urllib.request.urlopen = fake_urlopen
+        remote_url.open_http = fake_urlopen
         try:
             with self.assertRaises(GetTextureError) as ctx:
                 client._fetch_sync(
@@ -143,7 +145,7 @@ class GetTextureClientTests(unittest.TestCase):
                     "Vibestorm",
                 )
         finally:
-            urllib.request.urlopen = original
+            remote_url.open_http = original
 
         self.assertIn("timed out", str(ctx.exception))
 
@@ -153,12 +155,12 @@ class GetTextureClientTests(unittest.TestCase):
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):
             return _FakeResponse(b"")
 
-        urllib.request.urlopen = fake_urlopen
+        remote_url.open_http = fake_urlopen
         try:
             with self.assertRaises(GetTextureError) as ctx:
                 client._fetch_sync(
@@ -167,7 +169,7 @@ class GetTextureClientTests(unittest.TestCase):
                     "Vibestorm",
                 )
         finally:
-            urllib.request.urlopen = original
+            remote_url.open_http = original
 
         self.assertIn("empty body", str(ctx.exception))
 
@@ -185,8 +187,8 @@ class BodyCeilingTests(unittest.TestCase):
 
         import vibestorm.caps.get_texture_client as module
 
-        original, original_limit = urllib.request.urlopen, module.MAX_ASSET_BODY_BYTES
-        urllib.request.urlopen = lambda request, timeout: _FakeResponse(body)
+        original, original_limit = remote_url.open_http, module.MAX_ASSET_BODY_BYTES
+        remote_url.open_http = lambda request, timeout: _FakeResponse(body)
         module.MAX_ASSET_BODY_BYTES = limit
         try:
             module.GetTextureClient()._fetch_sync(
@@ -195,7 +197,7 @@ class BodyCeilingTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original
+            remote_url.open_http = original
             module.MAX_ASSET_BODY_BYTES = original_limit
 
     def test_an_oversized_body_is_a_get_texture_error(self) -> None:

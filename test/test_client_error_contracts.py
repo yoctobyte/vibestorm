@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import sys
 import unittest
+
+from vibestorm.util import remote_url
 import urllib.request
 from pathlib import Path
 from uuid import UUID
@@ -161,14 +163,14 @@ CASES = (
 
 class ClientErrorContractTests(unittest.TestCase):
     def _against(self, body: bytes, case: _ContractCase) -> BaseException:
-        original = urllib.request.urlopen
-        urllib.request.urlopen = lambda *args, **kwargs: _Response(body)
+        original = remote_url.open_http
+        remote_url.open_http = lambda *args, **kwargs: _Response(body)
         try:
             case.call()
         except BaseException as exc:  # noqa: BLE001 - the class is the assertion
             return exc
         finally:
-            urllib.request.urlopen = original
+            remote_url.open_http = original
         raise AssertionError(f"{case.name} accepted a body that is not LLSD")
 
     def test_a_proxy_error_page_raises_the_client_s_own_error(self) -> None:

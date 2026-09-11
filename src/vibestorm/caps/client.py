@@ -16,6 +16,7 @@ from vibestorm.caps.llsd import (
     parse_xml_value,
 )
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
+from vibestorm.util.remote_url import open_remote, require_remote_http_url
 
 
 class CapabilityError(RuntimeError):
@@ -77,6 +78,9 @@ class CapabilityClient:
         user_agent: str = "Vibestorm",
     ) -> dict[str, str]:
         body = format_xml_string_array(names)
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not CapabilityError.
+        require_remote_http_url(seed_url, what="the seed capability", error=CapabilityError)
         request = urllib.request.Request(
             seed_url,
             data=body,
@@ -88,7 +92,12 @@ class CapabilityClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the seed capability",
+                error=CapabilityError,
+            ) as response:
                 return parse_xml_string_map(
                     read_bounded(
                         response,
@@ -117,6 +126,9 @@ class CapabilityClient:
         udp_listen_port: int | None = None,
         user_agent: str = "Vibestorm",
     ) -> object:
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not CapabilityError.
+        require_remote_http_url(url, what="a capability", error=CapabilityError)
         request = urllib.request.Request(
             url,
             headers=self._request_headers(
@@ -126,7 +138,12 @@ class CapabilityClient:
             method="GET",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="a capability",
+                error=CapabilityError,
+            ) as response:
                 return parse_xml_value(
                     read_bounded(
                         response,
@@ -157,6 +174,9 @@ class CapabilityClient:
         user_agent: str = "Vibestorm",
     ) -> object:
         body = format_xml_map(payload)
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not CapabilityError.
+        require_remote_http_url(url, what="a capability", error=CapabilityError)
         request = urllib.request.Request(
             url,
             data=body,
@@ -168,7 +188,12 @@ class CapabilityClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="a capability",
+                error=CapabilityError,
+            ) as response:
                 return parse_xml_value(
                     read_bounded(
                         response,

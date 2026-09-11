@@ -11,6 +11,7 @@ from uuid import UUID
 from vibestorm.caps.client import CapabilityClient
 from vibestorm.caps.llsd import LlsdError, parse_xml_value
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
+from vibestorm.util.remote_url import open_remote, require_remote_http_url
 
 
 class AssetUploadError(RuntimeError):
@@ -199,6 +200,9 @@ class AssetUploadClient:
         data: bytes,
         user_agent: str = "Vibestorm",
     ) -> AssetUploadResult:
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not AssetUploadError.
+        require_remote_http_url(uploader_url, what="the asset upload capability", error=AssetUploadError)
         request = urllib.request.Request(
             uploader_url,
             data=data,
@@ -210,7 +214,12 @@ class AssetUploadClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the asset upload capability",
+                error=AssetUploadError,
+            ) as response:
                 payload = parse_xml_value(
                     read_bounded(
                         response,

@@ -1,5 +1,7 @@
 import socket
 import unittest
+
+from vibestorm.util import remote_url
 import urllib.error
 from uuid import UUID
 
@@ -29,7 +31,7 @@ class CapabilityClientTests(unittest.TestCase):
                 ), amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["headers"] = dict(request.header_items())
@@ -37,7 +39,7 @@ class CapabilityClientTests(unittest.TestCase):
             captured["timeout"] = timeout
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._resolve_seed_caps_sync(
                 "http://example.invalid/seed",
@@ -46,7 +48,7 @@ class CapabilityClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result["EventQueueGet"], "http://example.invalid/eq")
         headers = captured["headers"]
@@ -75,16 +77,16 @@ class CapabilityClientTests(unittest.TestCase):
                     b"</map></llsd>"
                 ), amt)
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._fetch_capability_value_sync("http://example.invalid/features", 37468, "Vibestorm")
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result, {"MeshUploadEnabled": True})
 
@@ -104,7 +106,7 @@ class CapabilityClientTests(unittest.TestCase):
                 return serve_body(self, b'<?xml version="1.0"?><llsd><map><key>ok</key><boolean>1</boolean></map></llsd>', amt)
 
         captured: dict[str, object] = {}
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
             captured["headers"] = dict(request.header_items())
@@ -112,7 +114,7 @@ class CapabilityClientTests(unittest.TestCase):
             captured["body"] = request.data
             return FakeResponse()
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             result = client._post_capability_value_sync(
                 "http://example.invalid/inventory",
@@ -131,7 +133,7 @@ class CapabilityClientTests(unittest.TestCase):
                 "Vibestorm",
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
         self.assertEqual(result, {"ok": True})
         headers = captured["headers"]
@@ -147,31 +149,31 @@ class CapabilityClientTests(unittest.TestCase):
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise socket.timeout("timed out")
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(CapabilityError, "timed out after 2.0s"):
                 client._resolve_seed_caps_sync("http://example.invalid/seed", ["EventQueueGet"])
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
     def test_resolve_seed_caps_wraps_url_error(self) -> None:
         client = CapabilityClient()
 
         import urllib.request
 
-        original = urllib.request.urlopen
+        original = remote_url.open_http
 
         def fake_urlopen(*args, **kwargs):  # type: ignore[no-untyped-def]
             raise urllib.error.URLError("connection refused")
 
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaisesRegex(CapabilityError, "connection refused"):
                 client._resolve_seed_caps_sync("http://example.invalid/seed", ["EventQueueGet"])
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]

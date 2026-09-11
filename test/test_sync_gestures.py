@@ -17,6 +17,8 @@ import asyncio
 import sys
 import tempfile
 import unittest
+
+from vibestorm.util import remote_url
 from pathlib import Path
 from uuid import uuid4
 
@@ -253,8 +255,8 @@ class UploadClientTests(unittest.IsolatedAsyncioTestCase):
     async def _upload(self, body: bytes = b"") -> object:
         import urllib.request
 
-        original = urllib.request.urlopen
-        urllib.request.urlopen = self._serve()  # type: ignore[assignment]
+        original = remote_url.open_http
+        remote_url.open_http = self._serve()  # type: ignore[assignment]
         try:
             return await TaskInventoryUploadClient().upload_task_gesture(
                 "http://example.invalid/cap/gesture",
@@ -263,7 +265,7 @@ class UploadClientTests(unittest.IsolatedAsyncioTestCase):
                 body or _valid(),
             )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
 
     async def test_the_bytes_go_to_the_uploader_not_the_capability(self) -> None:
         """Two hops. Posting the asset back to the capability url asks it to
@@ -316,15 +318,15 @@ class UploadClientTests(unittest.IsolatedAsyncioTestCase):
             self.posted.append((request.full_url, request.data))
             return Boom()
 
-        original = urllib.request.urlopen
-        urllib.request.urlopen = fake_urlopen  # type: ignore[assignment]
+        original = remote_url.open_http
+        remote_url.open_http = fake_urlopen  # type: ignore[assignment]
         try:
             with self.assertRaises(TaskInventoryUploadError) as caught:
                 await TaskInventoryUploadClient().upload_task_gesture(
                     "http://example.invalid/cap/gesture", self.item_id, self.task_id, _valid()
                 )
         finally:
-            urllib.request.urlopen = original  # type: ignore[assignment]
+            remote_url.open_http = original  # type: ignore[assignment]
         message = str(caught.exception).lower()
         self.assertIn("gesture", message)
         self.assertNotIn("notecard", message)

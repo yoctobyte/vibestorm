@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from vibestorm.caps.client import CapabilityClient, CapabilityError
 from vibestorm.caps.llsd import LlsdError, parse_xml_value
 from vibestorm.util.http_body import MAX_LLSD_BODY_BYTES, read_bounded
+from vibestorm.util.remote_url import open_remote, require_remote_http_url
 
 
 class UploadBakedTextureError(RuntimeError):
@@ -117,6 +118,9 @@ class UploadBakedTextureClient:
         texture_bytes: bytes,
         user_agent: str,
     ) -> UploadBakedTextureResult:
+        # Before the `Request`, which raises a bare `ValueError` on a URL with
+        # no scheme at all -- and that is not UploadBakedTextureError.
+        require_remote_http_url(uploader_url, what="the baked texture upload capability", error=UploadBakedTextureError)
         request = urllib.request.Request(
             uploader_url,
             data=texture_bytes,
@@ -130,7 +134,12 @@ class UploadBakedTextureClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with open_remote(
+                request,
+                timeout=self.timeout_seconds,
+                what="the baked texture upload capability",
+                error=UploadBakedTextureError,
+            ) as response:
                 payload = parse_xml_value(
                     read_bounded(
                         response,
