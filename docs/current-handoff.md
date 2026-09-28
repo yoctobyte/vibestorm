@@ -1,6 +1,6 @@
 # Current Handoff
 
-Last updated: 2026-09-08 (twentieth pass)
+Last updated: 2026-09-28 (twenty-first pass)
 
 ## The Owner's Priorities
 
@@ -4440,6 +4440,174 @@ The same log turned up a real bug here. Passing a duplicate local id to
 `ObjectDelink` made OpenSim throw a `NullReferenceException` inside
 `SceneGraph.DelinkObjects` -- a crash in the simulator, caused by this client.
 The tool deduplicates now.
+
+## The Suite Had Been Red For Twenty Days (2026-09-28)
+
+`./run.sh test` reported `FAILED (errors=2)` on every run from 2026-09-08 to
+today, and **eight commits were pushed over it** -- including all three on
+09-11. The push gate in `AGENTS.md` is the one hard rule in this repo, and
+what failed was not the rule but the reading of it.
+
+`test_pygame_gui_agreement._AgreementCase` is the abstract base holding the
+two claims with no screen to check them against, guarded with
+
+    __test__ = False
+
+which is **pytest's** convention. `run.sh` runs `unittest discover`, which
+does not read that attribute, so the base was collected like any other case
+and raised `NotImplementedError` out of its own `module()` -- once per claim,
+hence two errors.
+
+Three things worth keeping:
+
+- **It is not environment-dependent**, which was the first guess and was
+  wrong. The first theory was that a headless machine skips it in `setUp` and
+  a machine with a display does not, which would have made the gate pass or
+  fail by accident of where it ran. Both configurations fail: with `DISPLAY`
+  set and under `SDL_VIDEODRIVER=dummy` alike. The two commits that introduced
+  the file were checked out and the module run against each -- one error at
+  `3774b2d`, two at `f91fba5`. It was red from the commit that created it, and
+  the honest reading is that the suite was not run, or its last line not read.
+- **`test_scene_wiring._WiringCase` has the identical guard** and was saved by
+  a `skipTest("base class")` sitting behind it. Five tests collected and
+  reported as skips on every run -- by a class whose own comment says
+  `__test__` was chosen *so that the run would not report five skips*. The
+  convention failed silently in the benign direction there, which is exactly
+  why nobody went looking for the version of it that was not benign.
+- **Ten other abstract bases were never at risk**, and it is worth knowing
+  why: they hold helpers and leave every `test_` method to their subclasses,
+  so the loader finds nothing on them to run. Only the two that carry the
+  claims *themselves* were exposed. A pattern that is safe ten times out of
+  twelve is not a safe pattern; it is an unexamined one.
+
+Both bases are plain mixins now, with `(Mixin, unittest.TestCase)` at the
+concrete classes, so the guard is structural: a class that is not a
+`TestCase` cannot be collected, however it is annotated.
+
+`test/test_suite_collection.py` is what keeps it true. It asks
+`unittest discover` what it actually collected and fails on any
+underscore-named class, with an anti-vacuity floor so a discovery that
+returned nothing cannot pass by finding nothing to complain about -- and it
+**pins the stdlib behaviour** rather than describing it: a `TestCase` that
+declares `__test__ = False` is still collected. Without that, the attribute
+reads like something that ought to work and was merely applied wrongly, and
+the obvious repair is to put it back. Reverting either mixin fails the floor,
+and it names both classes when it does.
+
+The suite went from 2,958 tests to **2,956**, and the direction is the
+finding: six real tests added, eight removed. Those eight -- three
+`_AgreementCase` and five `_WiringCase` -- were counted as tests while
+checking nothing. Two errored, five skipped, one passed vacuously. A fix of
+this kind should make the number go *down*, and a count that only ever climbs
+is not by itself evidence that the suite is growing.
+
+The lesson is one this project has in other costumes and not yet in this one:
+**a guard written in a language its runner does not speak is not a guard, and
+it fails by looking like one.** The same sentence covers `__test__` here and
+`selected_option` in the login screen.
+
+## Every Test Run Was Writing Into The Evidence Database (2026-09-28)
+
+`SessionConfig.unknowns_db_path` defaults to `local/unknowns.sqlite3` -- the
+real forensic store, the one `projectstate.md` says to move aside rather than
+delete if it is ever polluted. It is a *relative* path resolved against the
+working directory, and the suite runs from the repository root.
+
+Measured on 2026-09-28, before the fix:
+
+    sessions              50,299   of which  343 from a real agent
+    inbound_messages   1,172,544   of which  180,947 from real sessions
+    file size             186 MB
+
+About 104 session rows per suite run, and the **14,650 rows dated 2026-09-08**
+are a mutation battery -- every mutant is a full suite run, so the instrument
+that found the `seen_sequences` leak was also the largest single polluter of
+the evidence it was reasoning about.
+
+Two consequences, and the second is the one that matters:
+
+- `./run.sh unknowns` with no arguments reports on the latest session, which
+  for months has meant *the last test*, not the last live run. `--all`
+  aggregates a store that is 97% synthetic.
+- **The last real live session in the database is 2026-09-08.** Nothing has
+  talked to a simulator in twenty days, and no report would have said so.
+
+### The first fix was a call-site fix, and it was measurably not enough
+
+Eleven `SessionConfig(...)` calls in `test/` took the default. They were given
+`unknowns_db_path=None`, a floor was written that walked every
+`SessionConfig(...)` in `test/` and failed on one that did not name its
+database, the suite went green -- **and the next run still wrote 86 rows.**
+
+That number is the whole entry. The default is reached by *three* routes, not
+one: an explicit `SessionConfig()`, `LiveCircuitSession`'s own dataclass
+default (`config: SessionConfig = field(default_factory=SessionConfig)`), and
+`run_live_session(config=None)`. Across `test/` that is **eighty-five call
+sites**, seventy-four of them by the route the first fix never looked at.
+
+It is the `remote_url.py` lesson arriving in a costume close enough to be
+missed: there the finding was that a scheme check at eleven call sites is a
+check missing from the twelfth, and the answer was an opener that holds no
+handler. Here the first attempt reproduced the mistake that finding exists to
+prevent -- and the only reason it did not ship that way is that the fix was
+*measured* rather than reasoned about. A green suite says nothing about
+whether a file was written to.
+
+### The fix that holds
+
+`DEFAULT_UNKNOWNS_DB_PATH` reads `VIBESTORM_UNKNOWNS_DB` at import, and
+`./run.sh test` exports it at a throwaway file with a trap to remove it. One
+place, every route at once, no call site involved. The override is the same
+shape as `VIBESTORM_LOGIN_MAC` / `VIBESTORM_LOGIN_ID0`: nothing in normal use
+sets it, so the default is unchanged for every real session.
+
+It must be read **at import**, and there is a test that says why:
+`SessionConfig` binds the module constant when the class is created, so a
+later assignment to the constant moves one and not the other, and a session
+would go on recording where the constant no longer points.
+
+`test_suite_collection.py` is the floor, and it is now a claim about where the
+default *points* rather than about how calls are written. It fails for a bare
+`python -m unittest discover -s test` as well as for a launcher that stopped
+isolating, and the failure names the remedy. Verified both directions: it
+fails outside the launcher and passes through it.
+
+The eleven `unknowns_db_path=None` edits are kept as belt-and-braces. They are
+not the guarantee and should not be read as a convention new tests must follow
+-- the guarantee is the one place above.
+
+**Verified empirically, which is the only evidence that counts here**: rows
+written to `local/unknowns.sqlite3` by a full suite run went 104 -> 86 -> 0.
+
+### What is not done
+
+- **The 186 MB database is untouched.** It is the owner's evidence and
+  `projectstate.md` is explicit that a polluted store gets moved aside, not
+  deleted. That is a decision about historical evidence, not a cleanup. The
+  343 real sessions are recoverable either way -- they are the ones whose
+  `agent_id` is not a placeholder.
+- **Nothing makes the push gate unmissable.** The fix above stops the suite
+  being red; it does not stop the next red suite going unread for twenty days.
+  `run.sh test` exits 1 correctly, so something only has to depend on that
+  exit code.
+
+### Also this pass
+
+**Sixteen divergence findings had been filed under `## Done` and never
+harvested.** `spec/divergence-queue.md` keeps Queued as a table and Done as a
+bullet list; sixteen table rows -- twelve Environment, four Neighbouring
+regions -- were sitting *below* the Done bullets with no heading of their own.
+All were discovered on 2026-09-06 or later; the docs project's last commit is
+2026-08-15 and contains none of them. A docs session reading the file as
+written would have skipped every one. They are back under Queued, which now
+holds 43 entries against the docs project's 3 commits, and the Done section
+says in one line that a table row under it is misfiled.
+
+### Concrete next step
+
+Decide what happens to `local/unknowns.sqlite3` -- move aside and start fresh,
+or keep and filter on `agent_id` -- and then either make the push gate
+unmissable or harvest the 43-entry queue, which is six weeks behind.
 
 ## Environment Note (2026-09-02)
 

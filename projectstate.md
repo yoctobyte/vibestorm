@@ -1,6 +1,6 @@
 # Project State
 
-Last updated: 2026-08-14
+Last updated: 2026-09-28
 
 ## Current Summary
 
@@ -444,6 +444,26 @@ Important note:
 - `local/unknowns.sqlite3` is now intended to accumulate session evidence for later forensic comparison
 - prefer preserving old sessions and using session-aware reporting instead of clearing the DB between runs
 - if the DB has been polluted with test or synthetic data, move it aside and start a fresh file rather than deleting useful historical evidence
+
+**It has been polluted, and by the suite itself** (found 2026-09-28). The
+default `unknowns_db_path` is a relative `local/unknowns.sqlite3`, the suite
+runs from the repository root, and eighty-five call sites across three routes
+reached that default -- about 104 synthetic session rows per run, and every
+mutant of a mutation battery is a run. As found: **50,299 session rows, 343 of
+them from a real agent**, and 186 MB. Live sessions are the ones whose
+`agent_id` is not a placeholder; the last of them is 2026-09-08.
+
+Two things follow for anyone using this store:
+
+- `./run.sh test` now exports `VIBESTORM_UNKNOWNS_DB` at a throwaway file, so
+  the suite cannot write here any more (verified: 104 -> 86 -> 0 rows per run).
+  The same variable redirects any session, which is the way to record a run
+  against a scratch file without touching this one.
+- **The existing file has not been moved aside.** That is a decision about the
+  owner's historical evidence, and until it is made, `./run.sh unknowns` with
+  no arguments reports on the latest *test* session rather than the latest
+  live one. Use `--session-id` against a real agent's session, or filter on
+  `agent_id`, until the store is dealt with.
 
 ## Canonical Docs
 
