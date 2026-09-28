@@ -51,13 +51,21 @@ from vibestorm.bus.events import (
 )
 
 
-class _WiringCase(unittest.TestCase):
-    """Wire a scene whose appliers are recorders, then publish at it."""
+class _WiringCase:
+    """Wire a scene whose appliers are recorders, then publish at it.
 
-    #: Not a case of its own: it has no viewer to wire. `__test__` rather than
-    #: a skip, so the run does not report five skipped tests that were never
-    #: meant to exist.
-    __test__ = False
+    Not a case of its own: it has no viewer to wire, so it is deliberately
+    **not** a `unittest.TestCase`. It used to say that with `__test__ = False`
+    and a `skipTest` behind it, which is pytest's convention and one
+    `unittest discover` does not read -- so the five tests the comment said
+    would not exist were collected and reported as skips on every run. The
+    skip was load-bearing after all, and it was the only thing standing
+    between this class and the failure its sibling in
+    `test_pygame_gui_agreement.py` had.
+
+    Being a mixin is what makes the claim true rather than merely stated, so
+    the `skipTest` is gone with nothing behind it.
+    """
 
     #: Subclasses set these.
     module = None
@@ -65,8 +73,6 @@ class _WiringCase(unittest.TestCase):
     pairs: tuple[tuple[type, str], ...] = ()
 
     def setUp(self) -> None:
-        if self.module is None:
-            self.skipTest("base class")
         self.calls: list[str] = []
         self.scene = self._recording_scene()
         self.bus = Bus()
@@ -155,10 +161,8 @@ class _WiringCase(unittest.TestCase):
         self.assertEqual(self.calls, ["apply_region_changed"])
 
 
-class Viewer3DSceneWiringTests(_WiringCase):
+class Viewer3DSceneWiringTests(_WiringCase, unittest.TestCase):
     """The 3D viewer, which wires all nineteen."""
-
-    __test__ = True
 
     from vibestorm.viewer3d import app as module  # noqa: PLC0415
     from vibestorm.viewer3d.scene import Scene as scene_class  # noqa: PLC0415
@@ -186,7 +190,7 @@ class Viewer3DSceneWiringTests(_WiringCase):
     )
 
 
-class Viewer2DSceneWiringTests(_WiringCase):
+class Viewer2DSceneWiringTests(_WiringCase, unittest.TestCase):
     """The 2D viewer, whose scene has seven appliers and wires all seven.
 
     Worth having its own case rather than being folded into the one above:
@@ -196,8 +200,6 @@ class Viewer2DSceneWiringTests(_WiringCase):
     scene class, so an applier added here and wired only in the 3D viewer is
     a failure here.
     """
-
-    __test__ = True
 
     from vibestorm.viewer import app as module  # noqa: PLC0415
     from vibestorm.viewer.scene import Scene as scene_class  # noqa: PLC0415

@@ -169,10 +169,18 @@ def widget_classes_assigned(module: object) -> dict[str, type]:
     return found
 
 
-class _AgreementCase(unittest.TestCase):
-    """Point `build()` at a screen and the walk does the rest."""
+class _AgreementCase:
+    """Point `build()` at a screen and the walk does the rest.
 
-    __test__ = False
+    Deliberately **not** a `unittest.TestCase`. It carries the two claims and
+    no screen to check them against, so it must not be collected -- and the
+    way to say that to `unittest` is to not be a case. `__test__ = False` is
+    pytest's convention and `unittest discover` does not read it: this class
+    was collected and run for twenty days, erroring on `NotImplementedError`
+    in its own `module()`, and a suite that reported `FAILED (errors=2)` was
+    pushed eight times over. A guard written in the wrong framework's
+    language is not a guard.
+    """
 
     #: Fewer pairs than this and the walk has stopped finding calls, rather
     #: than the screen having stopped making them.
@@ -274,8 +282,7 @@ class _AgreementCase(unittest.TestCase):
             self.assertIsInstance(checkable.get(name), type, f"{name} resolved to no class")
 
 
-class LoginScreenAgreementTests(_AgreementCase):
-    __test__ = True
+class LoginScreenAgreementTests(_AgreementCase, unittest.TestCase):
     EXPECTED_WIDGET = "remember_checkbox"
     MINIMUM_PAIRS = 30
     #: `preset_dropdown.selected_option`, which is where the first of the two
@@ -299,8 +306,7 @@ class LoginScreenAgreementTests(_AgreementCase):
         return LoginScreen((1024, 768))
 
 
-class Viewer2DHudAgreementTests(_AgreementCase):
-    __test__ = True
+class Viewer2DHudAgreementTests(_AgreementCase, unittest.TestCase):
     EXPECTED_WIDGET = "chat_input"
     MINIMUM_PAIRS = 30
 
@@ -315,8 +321,7 @@ class Viewer2DHudAgreementTests(_AgreementCase):
         return HUD((1024, 768), on_chat_submit=lambda text: None)
 
 
-class Viewer3DHudAgreementTests(_AgreementCase):
-    __test__ = True
+class Viewer3DHudAgreementTests(_AgreementCase, unittest.TestCase):
     EXPECTED_WIDGET = "chat_input"
     MINIMUM_PAIRS = 100
     MINIMUM_READS = 3
