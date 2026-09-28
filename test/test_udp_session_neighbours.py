@@ -889,7 +889,9 @@ class AcksAreFlushedEveryPassTests(NeighbourTestCase):
                     run_live_session(
                         self.session().bootstrap,
                         self.dispatcher,
-                        config=SessionConfig(caps_prelude=False, open_neighbours=False),
+                        config=SessionConfig(
+                            caps_prelude=False, open_neighbours=False, unknowns_db_path=None
+                        ),
                         world_client=client,
                         stop_event=stop,
                     )

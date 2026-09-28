@@ -76,7 +76,7 @@ class _TurnSession:
         self.session = LiveCircuitSession(
             _bootstrap(),
             MessageDispatcher.from_repo_root(Path.cwd()),
-            config=SessionConfig(turn_rate_degrees_per_second=rate_degrees),
+            config=SessionConfig(turn_rate_degrees_per_second=rate_degrees, unknowns_db_path=None),
         )
 
     def hold(self, flag: AgentControlFlags | int) -> None:

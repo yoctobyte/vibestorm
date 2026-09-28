@@ -233,7 +233,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session = LiveCircuitSession(
             self.bootstrap,
             self.dispatcher,
-            config=SessionConfig(agent_update_interval_seconds=1.0),
+            config=SessionConfig(agent_update_interval_seconds=1.0, unknowns_db_path=None),
         )
         session.start(10.0)
 
@@ -940,7 +940,9 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session = LiveCircuitSession(
             self.bootstrap,
             self.dispatcher,
-            config=SessionConfig(agent_update_interval_seconds=1.0, camera_sweep=True),
+            config=SessionConfig(
+                agent_update_interval_seconds=1.0, camera_sweep=True, unknowns_db_path=None
+            ),
         )
         session.start(10.0)
 
@@ -968,7 +970,9 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session = LiveCircuitSession(
             self.bootstrap,
             self.dispatcher,
-            config=SessionConfig(agent_update_interval_seconds=1.0, camera_sweep=False),
+            config=SessionConfig(
+                agent_update_interval_seconds=1.0, camera_sweep=False, unknowns_db_path=None
+            ),
         )
         session.start(10.0)
 
@@ -1115,7 +1119,12 @@ class LiveCircuitSessionTests(unittest.TestCase):
         session = LiveCircuitSession(
             self.bootstrap,
             self.dispatcher,
-            config=SessionConfig(agent_update_interval_seconds=1.0, spawn_test_cube=True, spawn_delay_seconds=0.0),
+            config=SessionConfig(
+                agent_update_interval_seconds=1.0,
+                spawn_test_cube=True,
+                spawn_delay_seconds=0.0,
+                unknowns_db_path=None,
+            ),
         )
         session.start(10.0)
         session.movement_completed = True
@@ -1170,6 +1179,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                     capture_dir=Path(tmpdir),
                     capture_messages=("ObjectUpdate",),
                     capture_mode="all",
+                    unknowns_db_path=None,
                 ),
             )
             session.start(10.0)
@@ -1224,6 +1234,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                     capture_dir=Path(tmpdir),
                     capture_messages=("ObjectUpdate",),
                     capture_mode="smart",
+                    unknowns_db_path=None,
                 ),
             )
             session.start(10.0)
@@ -1270,6 +1281,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                     capture_dir=Path(tmpdir),
                     capture_messages=("ObjectUpdate",),
                     capture_mode="smart",
+                    unknowns_db_path=None,
                 ),
             )
             session.start(10.0)
@@ -1326,6 +1338,7 @@ class LiveCircuitSessionTests(unittest.TestCase):
                     capture_dir=Path(tmpdir),
                     capture_messages=("ObjectUpdate",),
                     capture_mode="smart",
+                    unknowns_db_path=None,
                 ),
             )
             session.start(10.0)

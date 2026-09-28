@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,7 +20,24 @@ from vibestorm.udp.messages import (
 )
 
 
-DEFAULT_UNKNOWNS_DB_PATH = Path("local/unknowns.sqlite3")
+#: The evidence store every live session records into unless told otherwise.
+#:
+#: `VIBESTORM_UNKNOWNS_DB` redirects it, and exists for one reason: the path
+#: below is *relative*, the test suite runs from the repository root, and
+#: `SessionConfig.unknowns_db_path` defaults to whatever this name holds at
+#: import time. So every test that built a session and did not say otherwise
+#: recorded into the owner's forensic database -- 50,299 session rows by
+#: 2026-09-28, of which 343 came from a real agent. Eighty-five call sites
+#: reach this default, by three different routes, which is far past the count
+#: at which patching call sites is a strategy. `./run.sh test` points this at
+#: a throwaway file instead, and `test_suite_collection.py` fails if the suite
+#: is ever pointed back at the real one.
+#:
+#: Same shape as `VIBESTORM_LOGIN_MAC` / `VIBESTORM_LOGIN_ID0`: an override
+#: nothing in normal use sets.
+DEFAULT_UNKNOWNS_DB_PATH = Path(
+    os.environ.get("VIBESTORM_UNKNOWNS_DB") or "local/unknowns.sqlite3"
+)
 
 
 SCHEMA = """

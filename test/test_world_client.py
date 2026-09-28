@@ -598,7 +598,7 @@ class RunLiveSessionWorldClientWireupTests(unittest.TestCase):
         dispatcher = MessageDispatcher.from_repo_root(Path.cwd())
         bootstrap = _make_bootstrap(region_x=256, region_y=512, sim_port=9000)
         client = WorldClient()
-        config = SessionConfig(duration_seconds=0.0, caps_prelude=False)
+        config = SessionConfig(duration_seconds=0.0, caps_prelude=False, unknowns_db_path=None)
 
         async def runner() -> None:
             with patch("vibestorm.udp.session.socket.socket"):

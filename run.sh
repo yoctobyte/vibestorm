@@ -651,6 +651,15 @@ case "$command" in
     ;;
   test)
     cd "$ROOT_DIR"
+    # Isolate the evidence database. `SessionConfig.unknowns_db_path` defaults
+    # to local/unknowns.sqlite3 and eighty-five call sites in the suite reach
+    # that default, so without this every run appends ~100 synthetic sessions
+    # to the owner's forensic store -- and `./run.sh unknowns` then reports on
+    # the last test rather than the last live run. Exported rather than passed,
+    # because the routes into that default are three and the call sites many.
+    VIBESTORM_UNKNOWNS_DB_DIR="$(mktemp -d -t vibestorm-test-unknowns-XXXXXX)"
+    export VIBESTORM_UNKNOWNS_DB="$VIBESTORM_UNKNOWNS_DB_DIR/unknowns.sqlite3"
+    trap 'rm -rf "$VIBESTORM_UNKNOWNS_DB_DIR"' EXIT
     test_python_runner -m unittest discover -s test -v "$@"
     ;;
   fixtures)
