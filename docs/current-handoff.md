@@ -4599,9 +4599,34 @@ bullet list; sixteen table rows -- twelve Environment, four Neighbouring
 regions -- were sitting *below* the Done bullets with no heading of their own.
 All were discovered on 2026-09-06 or later; the docs project's last commit is
 2026-08-15 and contains none of them. A docs session reading the file as
-written would have skipped every one. They are back under Queued, which now
-holds 43 entries against the docs project's 3 commits, and the Done section
+written would have skipped every one. They are back under Queued, and the Done section
 says in one line that a table row under it is misfiled.
+
+**Four of them were then harvested**, which is the first docs-project work
+since 2026-08-15: the Neighbouring-regions group is now
+`divergences/neighbouring-regions.md` in `virtual-world-protocol`, 24 claims
+in 4 files, `python3 check.py` green. Re-verifying against source while
+writing corrected two of the four queue lines, which is exactly the step the
+protocol says it is for:
+
+- The initial-data guard has **three** gates, not the two the queue line
+  claimed. `NeedInitialData` is a counter: the handshake raises it to 2, the
+  seeds flag is second, and `if (++NeedInitialData < 6) return;` delays
+  several more heartbeats after that, commented in OpenSim as giving viewers
+  time to process the seeds. A client that concludes the POST failed after one
+  tick is wrong.
+- `SentSeeds` exists in **two enums with different values** -- `1` in
+  `Caps.CapsFlags`, `0x1000` in `ViewerFlags` -- bridged by
+  `LLClientView.GetViewerCaps`. And `0x1000` in `Caps.CapsFlags` is
+  `ViewerBenefits`, a live unrelated flag, so reading one enum's value against
+  the other's names is wrong without being obviously wrong. Same shape as the
+  `StatsID` / `StatsIndex` trap already recorded here.
+- The local id allocator is a per-instance counter **seeded at 720000**, so
+  adjacent regions do not merely risk colliding ids -- they start at the same
+  one and collide on nearly every early object.
+
+Queue is 39 entries now. The Environment group is 24 of them and is the
+obvious next harvest, being one coherent subject.
 
 ### Concrete next step
 
