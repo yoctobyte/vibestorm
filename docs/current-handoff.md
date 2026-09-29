@@ -4643,10 +4643,66 @@ session that writes it, and this session had a captured document but no live
 capability. Publishing them from notes would have been the one thing that
 protocol exists to stop.
 
-Queue 43 -> 26. Docs project: 37 claims in 5 files, `check.py` green, pushed.
-The remaining Environment eleven are the obvious next harvest and they need a
-session with the sim up and a login -- which is a bigger action than a docs
-pass, so it belongs with other live work rather than on its own.
+**And then the eight that needed only source**, which is the rest of what a
+session without a live capability can honestly do: asset formats (4), object
+lifecycle (2), object properties (1), parcels (1). Two came out sharper than
+the lines that pointed at them, and one was verified from both ends:
+
+- **`KillObject` does not merely omit a linkset's children.**
+  `Scene.SendKillObject` filters its input to parts where
+  `ParentGroup.RootPart == part`, so the message *cannot* carry a child even
+  when a caller supplies one. "The children are never listed" is the symptom;
+  the filter is the cause, and it is the thing a client needs to know.
+- **`ObjectProperties.CreationDate` is not "microseconds" as a bare fact.**
+  The server's own model is *seconds* -- `SceneObjectPart.CreationDate` is an
+  `int` from `Utils.DateTimeToUnixTime` -- and the multiply by 1,000,000
+  happens at exactly one place, where the block is written to the wire. The
+  same named quantity has two units either side of the serialiser, which is a
+  more useful thing to be told than the unit alone.
+- **The animation trailer is verified from both ends**: `BinBVHAnimation.
+  ToBytes` writes a four-byte zero after the joints, its own deserialising
+  constructor returns after the joints and never reads it, and both animations
+  in the stock library end with exactly four zero bytes.
+
+That delivers the whole "Asset formats" group the docs index had listed as
+planned, so that bullet is gone from its Planned list.
+
+**And finally the two `ExtraParams` quantisations**, both pinned from
+OpenSim's writer *and* its reader rather than from one side, which is what
+makes them layouts rather than inferences. Flexi softness is two bits split
+across the top bit of two bytes whose low seven hold tension and drag; a
+light's intensity is the fourth byte of what looks like an RGBA colour, and
+`ReadLightData` then assigns the colour's alpha to 1.0, so no opacity is
+carried in that block at all. Both share the property that makes this class
+expensive: **the misreading is self-consistent.** Naive flexi decoding is
+correct on every prim until it meets one with non-zero softness, and an
+alpha-as-opacity light dims in proportion to its own brightness, which looks
+like a lighting model rather than like a bug.
+
+Queue 43 -> 16. Docs project: 47 claims in 7 files, `check.py` green, pushed.
+
+What is left is 16 entries, and the split is by **what kind of evidence they
+need**, which is the useful way to read the remainder:
+
+- **Eleven Environment and three Sun and time need a live session.** The
+  evidence is an asset fetch (`normal_map` ripple count,
+  `transparent_texture` opacity, `cloud_id` tiling), a capability probe (the
+  503), or a measurement over time (the `SunPhase` rate). A docs pass alone
+  cannot re-verify these and must not publish them. The sim is up; what they
+  need is a login, which is a bigger action than a docs pass and belongs with
+  other live work.
+- **One Object updates entry has no server-side source at all.** The
+  `TextureEntry` face mask lives in libopenmetaverse, which OpenSimulator
+  consumes as a compiled assembly, so there is nothing in `opensim-source/` to
+  check it against. The docs index now says that explicitly rather than
+  listing it as merely pending. It needs evidence of a different kind --
+  a capture of a prim with two different face textures, which the test region
+  does not currently contain.
+- **One Asset formats entry probably does not meet the bar.** The
+  mesh-decoder-defaults line is a caution about *this* client's decoder
+  filling in absent fields, not a statement about what an implementation does.
+  `spec/divergence-queue.md` has a "Not divergences" section for exactly this.
+  Worth deciding rather than re-queueing.
 
 ### Concrete next step
 

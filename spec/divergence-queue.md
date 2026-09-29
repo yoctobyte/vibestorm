@@ -25,18 +25,8 @@ reference item, not a divergence.
 
 | Area | Divergence | Evidence lives in |
 | --- | --- | --- |
-| Object updates | Flexi softness is a 2-bit level split across the *top* bit of two bytes whose low 7 bits are tension/drag | `world/extra_params.py` |
-| Object updates | Light intensity is carried in the colour's **alpha** channel, not opacity | `world/extra_params.py` |
 | Object updates | `TextureEntry` face mask is MSB-first 7-bit groups, **not** LEB128 | `world/texture_entry.py` |
-| Asset formats | Gesture and wearable formats have no parser named after them; the only structural readers are inside `UuidGatherer`, a UUID scraper | `assets/gesture.py`, `assets/wearable.py` |
-| Asset formats | Animation assets end with four bytes OpenSim's own reader never looks at | `assets/animation.py` |
-| Asset formats | Settings assets are LLSD *notation*; OpenSim never structurally parses them — its only handling is a regex scrape its own source marks `// BAD to do` | `test/fixtures/library/README.md` |
-| Asset formats | Library notecards are plain UTF-8 with no container, unlike viewer-written ones | `assets/notecard.py` |
 | Asset formats | A mesh decoder fills in defaults for absent data, so "field is populated" never means "the asset supplied it" | `assets/sl_mesh.py` |
-| Parcels | Parcel bitmap bit order is LSB-first at index `y * edge + x` | `world/parcel_overlay.py` |
-| Object properties | `ObjectProperties.CreationDate` is **microseconds** since the epoch; the template says only `U64`, and every other timestamp a reader meets is seconds | `udp/messages.py`, `tools/verify_object_properties.py` |
-| Object lifecycle | `KillObject` names a linkset's **root only**; the children are never listed and a client must sweep them itself, or keep a phantom prim per linkset that ever leaves view | `world/models.py`, `test/test_world_kill_object.py` |
-| Object lifecycle | OpenSim has no handler for `ObjectDelete` at all -- it logs `ignoring unhandled packet` and answers nothing, so a client cannot tell a refusal from a delete that worked. `ObjectDetach` is the way out of a region: it takes a prim into inventory | `tools/delete_prims.py`, `tools/probe_support.py` |
 | Sun and time | `SimulatorViewerTimeMessage.SunDirection` arrives from OpenSim as `(0, 0, 0)`, every message. It is not a missing answer a client can test for with `None` -- it is a well-formed direction of length nothing, and a normalise steps over it into whatever fallback is behind. The sun in this viewer had therefore never moved in any session | `viewer3d/atmosphere.py`, `test/test_viewer3d_scene_environment.py` |
 | Sun and time | `SimulatorViewerTimeMessage.UsecSinceStart` is not an uptime: it is a **Unix timestamp in microseconds**. Checked against the machine's own clock on 2026-09-06 -- 1788651750037967 is 01:42 that morning | `viewer3d/scene.py` |
 | Sun and time | `SimulatorViewerTimeMessage.SunPhase` does **not** advance at a constant rate. Two runs twenty-odd minutes apart, each averaged over about 100 s, measured 2.1816e-4 and 4.3634e-4 rad/s -- a factor of exactly two -- on a region reporting `SecPerDay = 14400` both times. So it is not a clock a client can read: a single window's rate is that part of the day's rate. Nothing here depends on it; the day cycle's own `sun_rotation` track places the sun | `tools/probe_sun.py` |
@@ -166,3 +156,13 @@ Queued. A table row under this heading is misfiled; move it up.
 - sun_scale and moon_scale are 1.0 in every keyframe
 - sun_id is present and null in every keyframe
 - cloud_pos_density1 and 2 share their position in every keyframe
+- Gesture and wearable assets have no parser named after them
+- An animation asset's trailing four bytes are written and never read
+- Settings assets are scraped with a regex the source marks as bad
+- The grid library ships notecards OpenSim's own reader rejects
+- A parcel's bitmap is LSB-first at y * width + x
+- ObjectProperties.CreationDate is microseconds on the wire, seconds in the server
+- KillObject names a linkset's root only, and the server filters the rest out
+- OpenSim has no handler for ObjectDelete at all
+- Flexi softness is two bits split across the top bit of two bytes
+- A light's intensity is its colour's alpha, and the alpha is not opacity
