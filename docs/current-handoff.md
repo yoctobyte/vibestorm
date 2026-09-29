@@ -4710,6 +4710,63 @@ Decide what happens to `local/unknowns.sqlite3` -- move aside and start fresh,
 or keep and filter on `agent_id` -- and then either make the push gate
 unmissable or harvest the 43-entry queue, which is six weeks behind.
 
+## The Sim Is Down, And Its Log Is A Sparse File (2026-09-29)
+
+Two corrections and one fix, all from checking a thing I had already asserted.
+
+**The simulator is not running, and has not been since 2026-09-12.** Earlier
+in this session I twice reported it as up. That came from
+`pgrep -f 'OpenSim' && echo "sim up"`, which **matched its own command line** --
+the pattern was in the `bash -c` string `pgrep` was scanning. Checked properly
+there is no OpenSim process, nothing is listening on 9000, and
+`OpenSim.log` was last written on 2026-09-12. **A `pgrep` for a literal that
+appears in the command doing the pgrep always succeeds.** Use `ps` plus a
+`grep -v grep`, or a pattern the probe itself cannot contain.
+
+**And the 2.39 GB log is not 2.39 GB.** `ls` says 2,392,243,462 bytes; `du`
+says 76 KB. It is *sparse*, and the hole was made by the fix on 2026-09-11:
+`truncate -s 0` ran while the simulator still held the file open, so the writer
+carried on appending at its old offset and everything before it became a hole.
+The handoff entry from that day is right that the space came back -- `df`
+returned it immediately -- but the file has read enormous to `ls` ever since,
+and I spent a few minutes believing the spin had recurred. Disk is fine: 82%
+used, 27 GB free.
+
+**Which turned out to matter, because the guard written that same day measures
+the wrong one of the two.** `tools/start_opensim.sh` tests
+`stat -c %s "$LOG_FILE"` -- apparent size -- and its message reports
+`du -h "$LOG_FILE"` -- disk usage. For every file except a sparse one those are
+the same number, so the inconsistency was invisible until the same session
+created the exception. Run against the very file it was written for, the old
+guard rotates, and announces:
+
+    OpenSim.log is 76K; keeping the last 3000 lines and truncating.
+
+A guard whose stated reason contradicts its own condition. The fix is to
+measure what the guard is protecting: `%b * %B` is what the filesystem has
+actually allocated, and the message now interpolates the same variable the
+condition tested.
+
+`test/test_start_opensim_log_rotation.py` drives the real script in a temp
+tree with a stub `OpenSim` and a stub .NET root, so it exercises the shipped
+shell rather than a restatement of it. Four tests: a sparse log is left alone,
+a genuinely large one is still rotated (the control, without which the first
+passes by never rotating at all), no log is not an error, and a source pin that
+the condition and the message still read the same field. Three of the four fail
+against the old guard.
+
+One thing the source pin got wrong first, worth keeping because it is the same
+shape as the `__test__` finding earlier in this pass: it matched `stat -c %s`
+in the new block's own **comment**, which describes the old behaviour. **A test
+that scans a file's comments is not scanning its code.** It strips comment
+lines now.
+
+### What is not done
+
+The sparse remnant is still there. Clearing it is one `: > OpenSim.log`, the
+09-11 sample is archived beside it at 13 kB, and it costs 76 KB -- so this is
+tidiness rather than need, and it is the owner's log. Left alone.
+
 ## Environment Note (2026-09-02)
 
 `uv` was missing and `.venv/` did not exist, so nothing Python-side ran. Both

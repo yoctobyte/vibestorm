@@ -45,13 +45,28 @@ fi
 # rotated log. The threshold is well above anything a normal session writes.
 LOG_FILE="$BIN_DIR/OpenSim.log"
 MAX_LOG_BYTES=$((256 * 1024 * 1024))
-if [[ -f "$LOG_FILE" ]] && (( $(stat -c %s "$LOG_FILE") > MAX_LOG_BYTES )); then
-  printf 'OpenSim.log is %s; keeping the last 3000 lines and truncating.\n' \
-    "$(du -h "$LOG_FILE" | cut -f1)" >&2
-  tail -n 3000 "$LOG_FILE" | gzip -9 > "$LOG_FILE.rotated-$(date +%Y-%m-%d).gz" || true
-  # Truncated rather than removed: a running OpenSim holds this open, and an
-  # unlink would free nothing until the process exits.
-  : > "$LOG_FILE"
+# Disk usage, not apparent size, and the same measure in the test and in the
+# message. The first version of this guard tested `stat -c %s` and reported
+# `du -h`, which are the same number for every file except a sparse one -- and
+# truncating this log on 2026-09-11 while the simulator held it open made it
+# exactly that. The writer kept appending at its old offset, so the file has
+# read 2.39 GB to `ls` and 76 KB to `du` ever since, a factor of thirty
+# thousand. Against that file the old guard would have rotated, and printed
+# "OpenSim.log is 76K" as its reason for doing so.
+#
+# `%b` is in units of `%B`, so the product is what the filesystem has actually
+# allocated -- which is what a guard against filling the disk should be
+# reading.
+if [[ -f "$LOG_FILE" ]]; then
+  log_disk_bytes=$(( $(stat -c %b "$LOG_FILE") * $(stat -c %B "$LOG_FILE") ))
+  if (( log_disk_bytes > MAX_LOG_BYTES )); then
+    printf 'OpenSim.log is using %s of disk; keeping the last 3000 lines and truncating.\n' \
+      "$(numfmt --to=iec "$log_disk_bytes" 2>/dev/null || printf '%s bytes' "$log_disk_bytes")" >&2
+    tail -n 3000 "$LOG_FILE" | gzip -9 > "$LOG_FILE.rotated-$(date +%Y-%m-%d).gz" || true
+    # Truncated rather than removed: a running OpenSim holds this open, and an
+    # unlink would free nothing until the process exits.
+    : > "$LOG_FILE"
+  fi
 fi
 
 cd "$BIN_DIR"
