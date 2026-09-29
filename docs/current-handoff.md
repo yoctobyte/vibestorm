@@ -4625,8 +4625,28 @@ protocol says it is for:
   adjacent regions do not merely risk colliding ids -- they start at the same
   one and collide on nearly every early object.
 
-Queue is 39 entries now. The Environment group is 24 of them and is the
-obvious next harvest, being one coherent subject.
+**Then the Environment group, thirteen more.** `divergences/environment.md`,
+every number re-derived from `test/fixtures/environment/ext-environment-opensim.xml`
+while writing rather than quoted from the queue -- and that caught a line that
+was wrong twice over. `star_brightness` was queued as "exactly 500 in both
+night keyframes and exactly 0 in all six daytime ones". The capture has
+**three** non-zero frames, and two of them are **499.986**, not 500. A client
+special-casing 500 as a documented maximum misses two of the three. The queue
+line had been sitting there since 2026-09-06 reading perfectly plausibly.
+
+The boundary for what was left behind is deliberate and worth keeping: the
+eleven Environment entries still queued are the ones whose evidence is an
+**asset fetch or a live probe** -- the `normal_map` ripple count, the
+`transparent_texture` opacity, the `cloud_id` tiling, the 503, the
+`moon_rotation` handedness. The protocol says a claim is re-verified in the
+session that writes it, and this session had a captured document but no live
+capability. Publishing them from notes would have been the one thing that
+protocol exists to stop.
+
+Queue 43 -> 26. Docs project: 37 claims in 5 files, `check.py` green, pushed.
+The remaining Environment eleven are the obvious next harvest and they need a
+session with the sim up and a login -- which is a bigger action than a docs
+pass, so it belongs with other live work rather than on its own.
 
 ### Concrete next step
 
