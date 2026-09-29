@@ -1,6 +1,27 @@
 # Vibestorm Reverse-Engineered Protocol Notes
 
-Date: 2026-04-03
+Written 2026-04-03. Status reviewed 2026-09-29.
+
+**Read this first, because the date above is five months old and most of the
+body is not.** `AGENTS.md` lists this file fourth in its read-first order, and
+a reader who takes it as current will pick up finished work as open. The
+review on 2026-09-29 did not rewrite the notes -- they are still a good
+byte-level companion for reading captures -- but it did correct the framing and
+the one list that had gone actively misleading, the Open Questions at the end,
+where **six of eight questions had been answered months earlier**.
+
+Where current truth actually lives:
+
+| For | Read |
+|---|---|
+| What is implemented, and how strongly verified | `spec/message-coverage.md`, `spec/capability-coverage.md` -- both re-derived from the code by tests, so they cannot silently drift |
+| What surprised us, stated for outsiders | `virtual-world-protocol/divergences/` |
+| What is owed to that project | `spec/divergence-queue.md` |
+| What happened and why | `docs/current-handoff.md` |
+
+This file is the **byte-level working notes**: packet layouts, field offsets,
+the shape of a block as you meet it in a capture. It is not a coverage ledger
+and should not be read as one.
 
 This document is a working reverse-engineering reference for Vibestorm development.
 
@@ -1281,14 +1302,51 @@ For each pair, keep all unrelated properties fixed.
 
 ## Open Questions
 
-1. Where do ordinary prim names actually appear on the wire for current OpenSim `ObjectUpdate` traffic?
-2. ~~Is the current 22-byte skipped block a stable header extension, and what are its subfields?~~ Resolved 2026-05-04: it is the 23-byte path/profile block; see "The 23-byte Pre-Tail Block" above.
+Reviewed 2026-09-29. Six of the eight below had been answered months before
+that review and were still sitting here written as open, which is the exact
+failure `spec/divergence-queue.md` was created to stop happening to this file.
+Answers are struck through with where the answer now lives rather than deleted,
+because a list that quietly loses entries is one nobody trusts.
+
+1. ~~Where do ordinary prim names actually appear on the wire?~~ **Answered.**
+   `ObjectPropertiesFamily`, which is the highest-count inbound message in a
+   populated region; an avatar's name comes from `ObjectUpdate` NameValues
+   instead. Both `verified` in `spec/message-coverage.md`.
+2. ~~Is the current 22-byte skipped block a stable header extension, and what
+   are its subfields?~~ Resolved 2026-05-04: it is the 23-byte path/profile
+   block; see "The 23-byte Pre-Tail Block" above.
 3. What is the exact length/endian rule for every `ObjectUpdate` tail field?
-4. What are the semantic labels for `update_flags` bits?
-5. What does `TextureAnim` look like when explicitly enabled on a prim?
-6. Which object features populate `ExtraParams` in local OpenSim?
-7. When hover text is enabled, does it arrive in `Text`, `NameValue`, another UDP message, or a capability event?
-8. Which additional object update families need decoding next: `ImprovedTerseObjectUpdate`, `ObjectUpdateCached`, `KillObject`?
+   **Still open in the general form**, though the compressed path is settled:
+   see the divergence about `ProfileCurve` moving inside the compressed shape
+   block and shifting thirteen fields after it.
+4. What are the semantic labels for `update_flags` bits? **Still open, and the
+   reason is now known rather than unknown**: the table is libomv's
+   `PrimFlags`, which is not in `opensim-source/` -- libopenmetaverse reaches
+   OpenSim as a compiled assembly. The field is deliberately still rendered as
+   raw hex rather than guessed at. Recorded under "Not divergences" in the
+   queue, because a sourcing gap is not a protocol divergence.
+5. ~~What does `TextureAnim` look like when explicitly enabled on a prim?~~
+   **Answered structurally**: `world/texture_anim.py` decodes the block in both
+   update paths and it reaches the inspector. Note the remaining half -- the
+   test region contains no prim with it enabled, so this is `tested` rather
+   than `verified`, and the census reports it under `absent=`.
+6. ~~Which object features populate `ExtraParams` in local OpenSim?~~
+   **Answered.** `world/extra_params.py` decodes sculpt, mesh, flexi, light,
+   reflection probe and render-material blocks. Two of their quantisations are
+   published divergences: flexi softness split across the top bit of two bytes,
+   and light intensity carried in the colour's alpha.
+7. ~~When hover text is enabled, does it arrive in `Text`, `NameValue`, another
+   UDP message, or a capability event?~~ **Answered.** It decodes in both
+   update paths, reaches the inspector, and renders as a 3D billboard; its
+   colour's alpha is inverted on the wire, which is a published divergence.
+8. ~~Which additional object update families need decoding next?~~
+   **Answered -- all three are done and `verified`.**
+   `ImprovedTerseObjectUpdate` is observed every session; `ObjectUpdateCached`
+   is fully handled, with full-update requests issued for cache misses;
+   `KillObject` was observed on 2026-09-06 and carries a linkset's root only.
+
+The genuinely open items are now 3 and 4, and 4 is blocked on a source this
+tree does not have rather than on work.
 
 ## How To Use This Document
 

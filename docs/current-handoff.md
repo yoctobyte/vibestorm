@@ -4710,6 +4710,40 @@ Decide what happens to `local/unknowns.sqlite3` -- move aside and start fresh,
 or keep and filter on `agent_id` -- and then either make the push gate
 unmissable or harvest the 43-entry queue, which is six weeks behind.
 
+## The Canonical Protocol Notes Had Six Answered Open Questions (2026-09-29)
+
+`docs/reverse-engineered-protocol.md` is fourth in `AGENTS.md`'s read-first
+order and was dated 2026-04-03. Its closing "Open Questions" list had eight
+entries, and **six of them had been answered months earlier**:
+
+- prim names -- `ObjectPropertiesFamily`, the highest-count inbound message in
+  a populated region, with avatars named from `ObjectUpdate` NameValues
+- `TextureAnim` -- decoded in both update paths by `world/texture_anim.py`
+- which features populate `ExtraParams` -- sculpt, mesh, flexi, light,
+  reflection probe, render material, two of whose quantisations are now
+  published divergences
+- hover text -- decodes in both paths, renders as a billboard
+- and which update families to decode next, all three of which are `verified`
+
+Each was checked against the code and the self-checking ledgers before being
+struck through, not against memory. The two that remain open are the general
+`ObjectUpdate` tail rule, and `update_flags` -- and the second is now open for
+a *known* reason rather than an unknown one: its table is libomv's `PrimFlags`,
+and libopenmetaverse reaches OpenSim as a compiled assembly, so there is
+nothing in `opensim-source/` to read. The field stays raw hex rather than
+guessed.
+
+The file now opens by saying what it is and is not, with a table pointing at
+where current truth lives. It stays the byte-level working notes -- packet
+layouts, field offsets, the shape of a block as you meet it in a capture -- and
+is explicitly not a coverage ledger.
+
+**No new guard was added, deliberately.** The structural answer to this class
+already exists and is the pair of self-checking ledgers; the right move for a
+file that cannot be re-derived from code is to say plainly that it is prose and
+carries a date. A test asserting that a prose list agrees with the ledgers
+would be the kind of clever check that breaks on rewording and gets deleted.
+
 ## The Sim Is Down, And Its Log Is A Sparse File (2026-09-29)
 
 Two corrections and one fix, all from checking a thing I had already asserted.
